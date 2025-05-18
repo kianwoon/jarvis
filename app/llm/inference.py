@@ -22,18 +22,44 @@ class ModelCache:
         return cls._instance
     
     def get_model(self, model_name: str) -> AutoModelForCausalLM:
-        """Get or load model from cache."""
+        """Get or load model from cache, using MPS if available, and 8-bit quantization if on CUDA."""
         try:
             if model_name not in self._models:
                 logger.info(f"Loading model: {model_name}")
-                self._models[model_name] = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    device_map="auto",
-                    trust_remote_code=True,
-                    torch_dtype=torch.float16,  # Use FP16 for efficiency
-                    low_cpu_mem_usage=True
-                )
-                logger.info(f"Model {model_name} loaded successfully")
+                # Device selection
+                if torch.backends.mps.is_available():
+                    device = torch.device("mps")
+                    logger.info("Using MPS device (Apple Silicon GPU)")
+                    self._models[model_name] = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        device_map={"": device},
+                        trust_remote_code=True,
+                        torch_dtype=torch.float16,  # float16 for MPS
+                        low_cpu_mem_usage=True
+                    )
+                    logger.warning("8-bit quantization is not supported on MPS. Using float16 instead.")
+                elif torch.cuda.is_available():
+                    device = torch.device("cuda")
+                    logger.info("Using CUDA device (NVIDIA GPU)")
+                    self._models[model_name] = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        device_map="auto",
+                        trust_remote_code=True,
+                        load_in_8bit=True,  # 8-bit quantization for CUDA
+                        low_cpu_mem_usage=True
+                    )
+                else:
+                    device = torch.device("cpu")
+                    logger.info("Using CPU device")
+                    self._models[model_name] = AutoModelForCausalLM.from_pretrained(
+                        model_name,
+                        device_map={"": device},
+                        trust_remote_code=True,
+                        torch_dtype=torch.float32,  # Use float32 for CPU
+                        low_cpu_mem_usage=True
+                    )
+                    logger.warning("8-bit quantization is not supported on CPU. Using float32 instead.")
+                logger.info(f"Model {model_name} loaded successfully on {device}")
             return self._models[model_name]
         except Exception as e:
             logger.error(f"Error loading model {model_name}: {str(e)}")
