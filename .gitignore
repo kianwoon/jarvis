@@ -1,0 +1,7 @@
+.venv/*
+*.md
+.env
+venv/*
+llm_cache/*
+llm-ui/*
+node_modules/*
