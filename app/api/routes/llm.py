@@ -9,10 +9,10 @@ router = APIRouter()
 
 # Load model ONCE at startup
 config = LLMConfig(
-    model_name="qwen:7b",  # Ollama model name
+    model_name="qwen3:30b-a3b",  # Ollama model name for Qwen3-30B-A3B (MoE)
     temperature=0.7,
     top_p=1.0,
-    max_tokens=100
+    max_tokens=2048
 )
 inference = OllamaLLM(config)
 
@@ -25,6 +25,14 @@ class GenerateRequest(BaseModel):
 class GenerateResponse(BaseModel):
     text: str
     metadata: dict
+
+@router.get("/current_model")
+async def get_current_model():
+    """Return the current model being used by the LLM API."""
+    return {
+        "model_name": inference.model_name,
+        "display_name": "Qwen3-30B-A3B (MoE)"
+    }
 
 @router.post("/generate", response_model=GenerateResponse)
 async def generate(request: GenerateRequest):
