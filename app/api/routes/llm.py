@@ -4,6 +4,7 @@ from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 import asyncio
 from fastapi.responses import StreamingResponse
+import os
 
 router = APIRouter()
 
@@ -14,7 +15,9 @@ config = LLMConfig(
     top_p=1.0,
     max_tokens=2048
 )
-inference = OllamaLLM(config)
+ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+print("OLLAMA_BASE_URL at runtime:", ollama_base_url)
+inference = OllamaLLM(config, base_url=ollama_base_url)
 
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., description="Prompt for the LLM")
@@ -49,6 +52,26 @@ async def generate(request: GenerateRequest):
 @router.post("/generate_stream")
 async def generate_stream(request: GenerateRequest):
     async def event_stream():
-        async for chunk in inference.generate_stream(request.prompt):
-            yield f"data: {chunk.text}\n\n"
-    return StreamingResponse(event_stream(), media_type="text/event-stream") 
+        try:
+            # Update config params for this request
+            inference.config.temperature = request.temperature
+            inference.config.top_p = request.top_p
+            inference.config.max_tokens = request.max_tokens
+            
+            async for chunk in inference.generate_stream(request.prompt):
+                if chunk and chunk.text:
+                    yield f"data: {chunk.text}\n\n"
+        except Exception as e:
+            print(f"Streaming error: {str(e)}")  # Log the error
+            yield f"data: [ERROR] {str(e)}\n\n"
+            return
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    ) 

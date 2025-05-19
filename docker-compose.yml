@@ -11,10 +11,12 @@ services:
       - .:/app
     environment:
       - ENVIRONMENT=development
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
     depends_on:
       - postgres
       - qdrant
-      - memory-service
+      # - memory-service
+      # - ollama
 
   postgres:
     image: postgres:15
@@ -34,13 +36,23 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
-  memory-service:
-    image: memory-service:latest  # Replace with actual image
-    ports:
-      - "8001:8001"
-    environment:
-      - MEMORY_SERVICE_CONFIG=development
+  # memory-service:
+  #   image: supermemory/supermemory:latest  # Official Supermemory image
+  #   ports:
+  #     - "8001:8001"
+  #   environment:
+  #     - MEMORY_SERVICE_CONFIG=development
+
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     - OLLAMA_MODELS=qwen3:30b-a3b  # Preload Qwen3-30B-A3B model
 
 volumes:
   postgres_data:
-  qdrant_data: 
+  qdrant_data:
+  ollama_data: 

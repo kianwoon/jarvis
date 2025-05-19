@@ -25,5 +25,5 @@ async def health_check():
     }
 
 # Import and include routers
-# from app.api.v1 import router as api_v1_router
-# app.include_router(api_v1_router, prefix="/api/v1") 
+from app.api.v1 import api_router
+app.include_router(api_router, prefix="/api/v1") 
