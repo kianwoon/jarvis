@@ -59,8 +59,22 @@ services:
     volumes:
       - redis_data:/data
 
+  qwen-embedder:
+    build:
+      context: ../qwen_embedding
+    ports:
+      - "8050:8050"
+    restart: unless-stopped
+    networks:
+      - default
+    command: python app.py --port 8050
+
 volumes:
   postgres_data:
   qdrant_data:
   ollama_data:
-  redis_data: 
+  redis_data:
+
+networks:
+  default:
+    driver: bridge 

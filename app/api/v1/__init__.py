@@ -3,6 +3,7 @@ from app.api.v1.endpoints import document
 from app.api.routes import llm
 from app.api.v1.endpoints import settings
 from app.api.v1.endpoints import mcp_tools
+from app.api.v1.endpoints import langchain
 
 api_router = APIRouter()
 
@@ -28,4 +29,10 @@ api_router.include_router(
     mcp_tools.router,
     prefix="/mcp/tools",
     tags=["mcp"]
+)
+
+api_router.include_router(
+    langchain.router,
+    prefix="/langchain",
+    tags=["langchain"]
 ) 

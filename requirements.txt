@@ -23,3 +23,9 @@ tiktoken>=0.6.0
 pydantic-settings>=2.0.0 
 supermemory
 redis>=4.5.0
+langchain-community
+langchain
+pymilvus 
+qdrant-client
+sentence-transformers
+pypdf
