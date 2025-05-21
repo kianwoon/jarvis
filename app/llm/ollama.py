@@ -49,7 +49,6 @@ class OllamaLLM(BaseLLM):
                     try:
                         data_json = json.loads(line)
                         if "response" in data_json:
-                            print("Streaming chunk:", data_json["response"])  # Debug log
                             yield LLMResponse(
                                 text=data_json["response"],
                                 metadata={"model": self.model_name, "streaming": True}
