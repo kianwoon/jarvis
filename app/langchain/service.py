@@ -1,4 +1,6 @@
 import requests
+import re
+import httpx
 from app.core.llm_settings_cache import get_llm_settings
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
@@ -55,16 +57,25 @@ def rag_answer(question: str) -> dict:
     # 5. Construct prompt for LLM
     prompt = f"""Context:\n{context}\n\nQuestion:\n{question}\n\nAnswer:"""
 
-    # 6. Call internal LLM API
-    llm_api_url = "http://localhost:8000/api/v1/generate"
+    # 6. Call internal LLM API using streaming
+    llm_api_url = "http://localhost:8000/api/v1/generate_stream"
     payload = {
         "prompt": prompt,
         "temperature": llm_cfg.get("temperature", 0.7),
         "top_p": llm_cfg.get("top_p", 1.0),
         "max_tokens": llm_cfg.get("max_tokens", 2048)
     }
-    response = requests.post(llm_api_url, json=payload)
-    response.raise_for_status()
-    answer = response.json()["text"]
-
-    return {"answer": answer, "context": context} 
+    text = ""
+    with httpx.Client(timeout=None) as client:
+        with client.stream("POST", llm_api_url, json=payload) as response:
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
+                if line.startswith("data: "):
+                    token = line.replace("data: ", "")
+                    text += token
+    reasoning = re.findall(r"<think>(.*?)</think>", text, re.DOTALL)
+    answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    return {"answer": answer, "context": context, "reasoning": reasoning[0] if reasoning else None, "raw": text} 

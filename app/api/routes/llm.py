@@ -7,6 +7,7 @@ import asyncio
 from fastapi.responses import StreamingResponse
 import os
 import httpx
+import re
 
 router = APIRouter()
 
@@ -45,6 +46,8 @@ class GenerateRequest(BaseModel):
 
 class GenerateResponse(BaseModel):
     text: str
+    reasoning: str | None
+    answer: str
     metadata: dict
 
 @router.get("/current_model")
@@ -64,7 +67,15 @@ async def generate(request: GenerateRequest):
         inference.config.top_p = request.top_p
         inference.config.max_tokens = request.max_tokens
         response = await inference.generate(request.prompt)
-        return GenerateResponse(text=response.text, metadata=response.metadata)
+        text = response.text or ""
+        reasoning = re.findall(r"<think>(.*?)</think>", text, re.DOTALL)
+        answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        return {
+            "text": text,
+            "reasoning": reasoning[0] if reasoning else None,
+            "answer": answer,
+            "metadata": response.metadata
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
