@@ -22,7 +22,9 @@ class OllamaLLM(BaseLLM):
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{self.base_url}/api/generate", json=payload)
             response.raise_for_status()
-            data = response.json()
+            # Patch: Only parse the first JSON object in the response
+            lines = response.text.strip().splitlines()
+            data = json.loads(lines[0])
             return LLMResponse(
                 text=data["response"],
                 metadata={"model": self.model_name}

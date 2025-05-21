@@ -62,12 +62,22 @@ services:
   qwen-embedder:
     build:
       context: ../qwen_embedding
+      dockerfile: Dockerfile
+    container_name: qwen-embedder
     ports:
       - "8050:8050"
     restart: unless-stopped
-    networks:
-      - default
-    command: python app.py --port 8050
+
+  web:
+    build:
+      context: ./llm-ui
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./llm-ui:/app
+    environment:
+      - NODE_ENV=development
 
 volumes:
   postgres_data:

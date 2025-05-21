@@ -13,4 +13,4 @@ class RAGResponse(BaseModel):
 @router.post("/rag", response_model=RAGResponse)
 def rag_endpoint(request: RAGRequest):
     answer = rag_answer(request.question)
-    return RAGResponse(answer=answer) 
+    return RAGResponse(answer=answer["answer"]) 

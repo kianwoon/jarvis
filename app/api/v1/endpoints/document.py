@@ -5,12 +5,14 @@ import requests
 from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 from uuid import uuid4
 from datetime import datetime
+import hashlib
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Milvus, Qdrant
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
+from utils.deduplication import hash_text, get_existing_hashes, get_existing_doc_ids, filter_new_chunks
 
 router = APIRouter()
 
@@ -26,13 +28,13 @@ class HTTPEndeddingFunction:
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         embeddings = []
         for text in texts:
-            payload = {"text": text}
+            payload = {"texts": [text]}
             print("Request payload:", payload)
             resp = requests.post("http://qwen-embedder:8050/embed", json=payload)
             if resp.status_code == 422:
                 print("Response content:", resp.content)
             resp.raise_for_status()
-            embeddings.append(resp.json()["embedding"])
+            embeddings.append(resp.json()["embeddings"][0])
         return embeddings
     def embed_query(self, text: str) -> List[float]:
         return self.embed_documents([text])[0]
@@ -52,8 +54,10 @@ def ensure_milvus_collection(collection_name: str, vector_dim: int, uri: str, to
             FieldSchema(name="uploaded_at", dtype=DataType.VARCHAR, max_length=100),
             FieldSchema(name="section", dtype=DataType.VARCHAR, max_length=255),
             FieldSchema(name="author", dtype=DataType.VARCHAR, max_length=100),
+            FieldSchema(name="hash", dtype=DataType.VARCHAR, max_length=64),
+            FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=255),
         ]
-        schema = CollectionSchema(fields, description="Knowledge base with metadata")
+        schema = CollectionSchema(fields, description="Knowledge base with metadata, deduplication support")
         collection = Collection(collection_name, schema)
     # Create index for vector field if not exists
     has_index = False
@@ -104,11 +108,30 @@ async def upload_pdf(file: UploadFile = File(...)):
     with open(temp_path, "wb") as f:
         f.write(await file.read())
     # 2. Load PDF
-    loader = PyPDFLoader(temp_path)
-    docs = loader.load()
+    try:
+        loader = PyPDFLoader(temp_path)
+        docs = loader.load()
+        print(f"Number of docs loaded from PDF (PyPDFLoader): {len(docs)}")
+        # Check if all docs are empty, fallback to UnstructuredPDFLoader with OCR
+        if all(not doc.page_content.strip() for doc in docs):
+            print("All docs are empty. Falling back to UnstructuredPDFLoader with OCR.")
+            from langchain_community.document_loaders import UnstructuredPDFLoader
+            loader = UnstructuredPDFLoader(temp_path, mode="elements", strategy="ocr_only")
+            docs = loader.load()
+            print(f"Number of docs loaded from PDF (UnstructuredPDFLoader OCR): {len(docs)}")
+    except Exception as e:
+        print(f"Error loading PDF: {e}")
+        raise
     # 3. Split text
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.split_documents(docs)
+    print(f"Number of chunks created: {len(chunks)}")
+    # Fallback: treat short docs as single chunks if chunking produced zero chunks
+    if len(chunks) == 0:
+        print("No chunks created by splitter. Falling back to treating each doc as a single chunk.")
+        from langchain.schema import Document
+        chunks = [Document(page_content=doc.page_content, metadata=doc.metadata) for doc in docs if doc.page_content.strip()]
+        print(f"Number of fallback single-chunks created: {len(chunks)}")
     # 4. Get embedding config
     embedding_cfg = get_embedding_settings()
     embedding_model = embedding_cfg.get('embedding_model')
@@ -133,9 +156,47 @@ async def upload_pdf(file: UploadFile = File(...)):
         # Ensure collection exists with correct schema (configurable dim)
         ensure_milvus_collection(collection, vector_dim=vector_dim, uri=uri, token=token)
         from pymilvus import Collection
+        # Compute file hash for doc_id uniqueness
+        with open(temp_path, "rb") as f:
+            file_id = hashlib.sha256(f.read()).hexdigest()
         ids = [str(uuid4()) for _ in chunks]
         texts = [chunk.page_content for chunk in chunks]
-        embeddings_list = embeddings.embed_documents(texts)
+        # Set hash and doc_id for each chunk, always update chunk.metadata in-place
+        for i, chunk in enumerate(chunks):
+            if not hasattr(chunk, 'metadata') or chunk.metadata is None:
+                chunk.metadata = {}
+            chunk.metadata.setdefault('source', file.filename)
+            chunk.metadata.setdefault('page', 0)
+            chunk.metadata.setdefault('doc_type', 'pdf')
+            chunk.metadata.setdefault('uploaded_at', datetime.now().isoformat())
+            chunk.metadata.setdefault('section', '')
+            chunk.metadata.setdefault('author', '')
+            # Add hash and robust doc_id
+            chunk_hash = hash_text(chunk.page_content)
+            chunk.metadata['hash'] = chunk_hash
+            chunk.metadata['doc_id'] = f"{file_id}_page_{chunk.metadata['page']}"
+            # Comprehensive debug log for each chunk
+            print(f"Chunk {i} content: {repr(chunk.page_content)[:200]}")
+            print(f"Chunk {i} hash: {chunk.metadata['hash']}")
+            print(f"Chunk {i} doc_id: {chunk.metadata['doc_id']}")
+            print(f"Chunk {i} metadata: {chunk.metadata}")
+        # Deduplication: filter out chunks with existing hash or doc_id
+        collection_obj = Collection(collection)
+        collection_obj.load()
+        existing_hashes = get_existing_hashes(collection_obj)
+        existing_doc_ids = get_existing_doc_ids(collection_obj)
+        print(f"Total existing hashes: {len(existing_hashes)}")
+        print(f"Total existing doc_ids: {len(existing_doc_ids)}")
+        print(f"Existing hashes in collection: {list(existing_hashes)[:5]}... (total {len(existing_hashes)})")
+        print(f"Existing doc_ids in collection: {list(existing_doc_ids)[:5]}... (total {len(existing_doc_ids)})")
+        unique_chunks = filter_new_chunks(chunks, existing_hashes, existing_doc_ids)
+        print(f"Unique chunks to insert: {len(unique_chunks)}")
+        if not unique_chunks:
+            return {"status": "skipped", "reason": "All chunks are duplicates."}
+        # Prepare data for insertion
+        unique_ids = [str(uuid4()) for _ in unique_chunks]
+        unique_texts = [chunk.page_content for chunk in unique_chunks]
+        embeddings_list = embeddings.embed_documents(unique_texts)
         id_list = []
         vector_list = []
         content_list = []
@@ -145,15 +206,11 @@ async def upload_pdf(file: UploadFile = File(...)):
         uploaded_at_list = []
         section_list = []
         author_list = []
-        for i, chunk in enumerate(chunks):
+        hash_list = []
+        doc_id_list = []
+        for i, chunk in enumerate(unique_chunks):
             meta = chunk.metadata if hasattr(chunk, 'metadata') else {}
-            meta.setdefault('source', file.filename)
-            meta.setdefault('page', 0)
-            meta.setdefault('doc_type', 'pdf')
-            meta.setdefault('uploaded_at', datetime.now().isoformat())
-            meta.setdefault('section', '')
-            meta.setdefault('author', '')
-            id_list.append(ids[i])
+            id_list.append(unique_ids[i])
             vector_list.append(embeddings_list[i])
             content_list.append(chunk.page_content)
             source_list.append(meta.get('source', ''))
@@ -162,6 +219,8 @@ async def upload_pdf(file: UploadFile = File(...)):
             uploaded_at_list.append(meta.get('uploaded_at', ''))
             section_list.append(meta.get('section', ''))
             author_list.append(meta.get('author', ''))
+            hash_list.append(meta.get('hash', ''))
+            doc_id_list.append(meta.get('doc_id', ''))
         data = [
             id_list,
             vector_list,
@@ -172,8 +231,9 @@ async def upload_pdf(file: UploadFile = File(...)):
             uploaded_at_list,
             section_list,
             author_list,
+            hash_list,
+            doc_id_list,
         ]
-        collection_obj = Collection(collection)
         collection_obj.insert(data)
     elif qdrant_status:
         qdrant_cfg = vector_db_cfg["qdrant"]

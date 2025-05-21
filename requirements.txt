@@ -29,3 +29,7 @@ pymilvus
 qdrant-client
 sentence-transformers
 pypdf
+unstructured[local-inference]
+pdf2image
+pytesseract
+Pillow
