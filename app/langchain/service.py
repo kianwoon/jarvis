@@ -19,39 +19,32 @@ Qdrant = object  # Replace with: from langchain_community.vectorstores import Qd
 
 
 def build_prompt(prompt: str, thinking: bool = False, is_internal: bool = False) -> str:
-    """Helper to prepend /no_think to prompt if needed."""
-    if is_internal or not thinking:
-        return f"/no_think\n{prompt}"
+    if thinking:
+        return (
+            "Please show your reasoning step by step before giving the final answer.\n"
+            + prompt
+        )
     return prompt
 
 def classify_rag_need(question: str, llm_cfg) -> str:
-    """Use LLM to classify if a query needs RAG."""
+    print(f"[DEBUG] classify_rag_need: question = {question}")
     router_prompt = (
-        "You are an expert AI assistant. Only route to RAG if the question is about our company, internal data, business processes, proprietary knowledge, or client-specific information. For general knowledge, technology, or public information questions, use the LLM only.\n"
-        "Label as:\n"
-        "- 'RAG' if the question is about our business, internal data, company policies, client SOWs, or proprietary info.\n"
-        "- 'NO_RAG' if the question is about general knowledge, technology, public facts, or anything not specific to our company.\n"
-        "\nExamples:\n"
-        "Q: What is the capital of France?\nA: NO_RAG\n"
-        "Q: Summarize the latest company quarterly report.\nA: RAG\n"
-        "Q: Tell me a joke.\nA: NO_RAG\n"
-        "Q: What are the main points from the document I uploaded?\nA: RAG\n"
-        "Q: Who won the FIFA World Cup in 2018?\nA: NO_RAG\n"
-        "Q: What are the recent updates in EU data privacy laws?\nA: NO_RAG\n"
-        "Q: What is our client OCBC's SOW for 2024?\nA: RAG\n"
-        "Q: Compare OceanBase and MySQL.\nA: NO_RAG\n"
-        "Q: What is our internal process for onboarding new employees?\nA: RAG\n"
-        "\nNow, decide for this query:\n"
-        f"Query: \"{question}\"\nAnswer with only: 'RAG' or 'NO_RAG'"
+        "NO_THINK\nuser asking this question: '" + question + "'\n"
+        "do we need to check internal company info repository?"
+        "Just say 'YES' or 'NO'."
     )
+    print(f"[DEBUG] classify_rag_need: router_prompt = {router_prompt}")
     prompt = build_prompt(router_prompt, is_internal=True)
+    print(f"[DEBUG] classify_rag_need: prompt after build_prompt = {prompt}")
     llm_api_url = "http://localhost:8000/api/v1/generate_stream"
+    mode = llm_cfg["non_thinking_mode"]
     payload = {
         "prompt": prompt,
-        "temperature": llm_cfg.get("temperature", 0.0),
-        "top_p": 1.0,
-        "max_tokens": 10
+        "temperature": mode.get("temperature", 0.99),
+        "top_p": mode.get("top_p", 0.2),
+        "max_tokens": 100
     }
+    print(f"[DEBUG] classify_rag_need: payload = {payload}")
     text = ""
     with httpx.Client(timeout=None) as client:
         with client.stream("POST", llm_api_url, json=payload) as response:
@@ -63,33 +56,43 @@ def classify_rag_need(question: str, llm_cfg) -> str:
                 if line.startswith("data: "):
                     token = line.replace("data: ", "")
                     text += token
-    label = text.strip().upper()
-    return label if label in ("RAG", "NO_RAG") else "RAG"
+    print(f"[DEBUG] classify_rag_need: LLM raw output = {text}")
+    # Detect <think>...</think>NO or <think>...</think>YES
+    match = re.match(r"<think>.*?</think>\s*(NO|YES)$", text.strip(), re.DOTALL | re.IGNORECASE)
+    if match:
+        answer = match.group(1).upper()
+        if answer == "NO":
+            label = "NO RAG"
+        elif answer == "YES":
+            label = "RAG"
+        else:
+            label = "NO RAG"
+    else:
+        label = "NO RAG"
+    print(f"[DEBUG] classify_rag_need: extracted label = {label}")
+    return label
 
 def rag_answer(question: str, thinking: bool = False, stream: bool = False):
-    """
-    Retrieve relevant context from the vector DB and generate an answer using the LLM.
-    If stream=True, yield tokens as they arrive from the LLM (for StreamingResponse).
-    If stream=False, return a dict with 'answer', 'context', and 'source'.
-    """
-    # 1. Load configs
+    print(f"[DEBUG] rag_answer: incoming question = {question}")
     llm_cfg = get_llm_settings()
+    required_fields = ["model", "thinking_mode", "non_thinking_mode", "max_tokens"]
+    missing = [f for f in required_fields if f not in llm_cfg or llm_cfg[f] is None]
+    if missing:
+        raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
     embedding_cfg = get_embedding_settings()
     vector_db_cfg = get_vector_db_settings()
 
-    # 2. Use LLM to classify if RAG is needed
     route = classify_rag_need(question, llm_cfg)
-    print(f"[RAG ROUTER] Route decision: {route}")
+    print(f"[DEBUG] rag_answer: route = {route}")
     context = ""
     reasoning = None
     answer = ""
     raw = ""
     source = "LLM"
 
-    SIMILARITY_THRESHOLD = 0.7  # Only use context above this threshold
+    SIMILARITY_THRESHOLD = 0.7
 
     if route == "RAG":
-        # --- RAG pipeline ---
         embedding_endpoint = embedding_cfg.get("embedding_endpoint")
         if embedding_endpoint:
             embeddings = HTTPEndeddingFunction(embedding_endpoint)
@@ -105,10 +108,12 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False):
             connection_args={"uri": uri, "token": token},
             text_field="content"
         )
-        # Retrieve docs with similarity scores if possible
         docs = milvus_store.similarity_search_with_score(question, k=4) if hasattr(milvus_store, 'similarity_search_with_score') else [(doc, 1.0) for doc in milvus_store.similarity_search(question, k=4)]
+        print(f"[DEBUG] rag_answer: docs = {docs}")
         filtered_docs = [doc for doc, score in docs if score >= SIMILARITY_THRESHOLD]
+        print(f"[DEBUG] rag_answer: filtered_docs = {filtered_docs}")
         context = "\n\n".join([doc.page_content for doc in filtered_docs])
+        print(f"[DEBUG] rag_answer: context = {context}")
         if context.strip():
             user_prompt = (
                 "The following context is from our internal corporate knowledge base (business, data, internal docs). If the context is not relevant to the question, answer based on your own knowledge.\n\n"
@@ -117,21 +122,20 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False):
             prompt = build_prompt(user_prompt, thinking=thinking)
             source = "RAG"
         else:
-            # Fallback to LLM if no context found
             prompt = build_prompt(question, thinking=thinking)
             source = "LLM"
     else:
-        # --- Direct LLM pipeline ---
         prompt = build_prompt(question, thinking=thinking)
         source = "LLM"
-    print(f"[RAG ROUTER] Prompt sent to LLM:\n{prompt}")
+    print(f"[DEBUG] rag_answer: final prompt = {prompt}")
 
     # 3. Call internal LLM API using streaming
     llm_api_url = "http://localhost:8000/api/v1/generate_stream"
+    mode = llm_cfg["thinking_mode"] if thinking else llm_cfg["non_thinking_mode"]
     payload = {
         "prompt": prompt,
-        "temperature": llm_cfg.get("temperature", 0.7),
-        "top_p": llm_cfg.get("top_p", 1.0),
+        "temperature": mode.get("temperature", 0.7),
+        "top_p": mode.get("top_p", 1.0),
         "max_tokens": llm_cfg.get("max_tokens", 2048)
     }
     if stream:

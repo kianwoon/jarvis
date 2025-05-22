@@ -14,13 +14,21 @@ router = APIRouter()
 ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
 
 # Helper to create a new inference object with the latest settings
-def get_inference():
+def get_inference(thinking: bool = False):
     settings = get_llm_settings()
+    required_fields = ["model", "max_tokens"]
+    missing = [f for f in required_fields if f not in settings or settings[f] is None]
+    if missing:
+        raise HTTPException(status_code=500, detail=f"Missing required LLM config fields: {', '.join(missing)}")
+    mode = settings["thinking_mode"] if thinking else settings["non_thinking_mode"]
+    for param in ["temperature", "top_p", "top_k", "min_p"]:
+        if param not in mode:
+            raise HTTPException(status_code=500, detail=f"Missing '{param}' in {'thinking_mode' if thinking else 'non_thinking_mode'}")
     config = LLMConfig(
-        model_name=settings.get("model", "qwen3:30b-a3b"),
-        temperature=float(settings.get("temperature", 0.7)),
-        top_p=float(settings.get("top_p", 1.0)),
-        max_tokens=int(settings.get("max_tokens", 2048))
+        model_name=settings["model"],
+        temperature=float(mode["temperature"]),
+        top_p=float(mode["top_p"]),
+        max_tokens=int(settings["max_tokens"])
     )
     return OllamaLLM(config, base_url=ollama_base_url)
 
@@ -42,7 +50,7 @@ class GenerateRequest(BaseModel):
     prompt: str = Field(..., description="Prompt for the LLM")
     temperature: float = 0.7
     top_p: float = 1.0
-    max_tokens: int = 100
+    max_tokens: int = 4096
 
 class GenerateResponse(BaseModel):
     text: str
