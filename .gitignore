@@ -5,3 +5,6 @@ venv/*
 llm_cache/*
 llm-ui/*
 node_modules/*
+app/api/routes/__pycache__/*
+app/core/__pycache__/*
+*.pyc
