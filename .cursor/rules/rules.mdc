@@ -1,0 +1,20 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+## 1. No Hardcoding, No .env, read codebase
+## 2. Review Recent Changes when addressing bugs.
+## 3. Consider the upstream and downstream impact of your changes.
+## 4. No unauthorized deletion or rewrite of code without permission.
+## 5. Gate diagnostic changes.
+## 6. Plan before you code.
+## 7. Search the codebase yourself.
+## 8. Be relentlessly helpful.
+## 10. Validate every configuration.
+## 11. Investigate errors holistically.
+## 12. No assumptions.
+## 13. Maintain contextual consistency.
+## 14. Before making a decision to create a new variable for .ENV, ensure you thoroughly review the codebase. 
+## 15. Don’t assume the file is missing when you encounter a ModuleNotFoundError. Instead, thoroughly check the codebase.
+## 16. Always read the codebase before act, do, plan.

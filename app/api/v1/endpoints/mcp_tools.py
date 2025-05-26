@@ -51,7 +51,7 @@ class MCPToolResponse(MCPToolBase):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class MCPEnabledToolsUpdate(BaseModel):
     url: str
@@ -59,6 +59,7 @@ class MCPEnabledToolsUpdate(BaseModel):
 
 class ManifestCreate(BaseModel):
     url: str
+    hostname: str
 
 # Place this above the dynamic route
 @router.get("/manifests/all")
@@ -67,6 +68,7 @@ def list_manifests_with_tools(db: Session = Depends(get_db)):
     return [
         {
             "url": manifest.url,
+            "hostname": manifest.hostname,
             "tools": manifest.content.get("tools", [])
         }
         for manifest in manifests
@@ -83,12 +85,12 @@ def get_manifest_by_url(manifest_url: str, db: Session = Depends(get_db)):
     if not manifest:
         logger.error(f"Manifest not found for: '{decoded_url}'")
         raise HTTPException(status_code=404, detail="Manifest not found")
-    return {"tools": manifest.content.get("tools", [])}
+    return {"url": manifest.url, "hostname": manifest.hostname, "tools": manifest.content.get("tools", [])}
 
 # Manifest routes
 @router.post("/manifests")
 def add_manifest(data: ManifestCreate, db: Session = Depends(get_db)):
-    logger.debug(f"Attempting to add manifest from URL: {data.url}")
+    logger.debug(f"Attempting to add manifest from URL: {data.url} with hostname: {data.hostname}")
     # Fetch manifest from URL
     try:
         # Replace localhost with host.docker.internal for Docker container access
@@ -120,7 +122,7 @@ def add_manifest(data: ManifestCreate, db: Session = Depends(get_db)):
     manifest = db.query(MCPManifest).filter(MCPManifest.url == data.url).first()
     if not manifest:
         logger.debug("Creating new manifest...")
-        manifest = MCPManifest(url=data.url, content=manifest_json)
+        manifest = MCPManifest(url=data.url, hostname=data.hostname, content=manifest_json)
         db.add(manifest)
         db.commit()
         db.refresh(manifest)
@@ -128,6 +130,7 @@ def add_manifest(data: ManifestCreate, db: Session = Depends(get_db)):
     else:
         logger.debug(f"Updating existing manifest with ID: {manifest.id}")
         manifest.content = manifest_json
+        manifest.hostname = data.hostname
         db.commit()
 
     # Upsert tools
@@ -162,6 +165,30 @@ def add_manifest(data: ManifestCreate, db: Session = Depends(get_db)):
     db.commit()
     logger.debug("Successfully completed manifest and tools registration/update")
     return {"detail": "Manifest and tools registered/updated."}
+
+@router.delete("/manifests/{manifest_url:path}")
+def delete_manifest(manifest_url: str, db: Session = Depends(get_db)):
+    """Delete a manifest and its associated tools."""
+    decoded_url = unquote(manifest_url)
+    logger.debug(f"Attempting to delete manifest: '{decoded_url}'")
+    
+    manifest = db.query(MCPManifest).filter(MCPManifest.url == decoded_url).first()
+    if not manifest:
+        logger.error(f"Manifest not found for deletion: '{decoded_url}'")
+        raise HTTPException(status_code=404, detail="Manifest not found")
+    
+    try:
+        # First delete all associated tools
+        db.query(MCPTool).filter(MCPTool.manifest_id == manifest.id).delete()
+        # Then delete the manifest
+        db.delete(manifest)
+        db.commit()
+        logger.info(f"Successfully deleted manifest and associated tools for: '{decoded_url}'")
+        return {"detail": "Manifest and associated tools deleted"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting manifest '{decoded_url}': {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete manifest: {str(e)}")
 
 # Tool routes
 @router.post("/", response_model=MCPToolResponse)
@@ -205,16 +232,124 @@ def update_enabled_tools(data: MCPEnabledToolsUpdate, db: Session = Depends(get_
     reload_enabled_mcp_tools()
     return {"updated": updated}
 
+# IMPORTANT: Place these routes BEFORE the /{tool_id} route to avoid conflicts
+@router.get("/debug/endpoints")
+def debug_tool_endpoints(db: Session = Depends(get_db)):
+    """Debug endpoint to check all tool endpoints and settings"""
+    # Get MCP settings
+    from app.core.db import Settings as SettingsModel
+    settings_row = db.query(SettingsModel).filter(SettingsModel.category == 'mcp').first()
+    settings = settings_row.settings if settings_row else {}
+    
+    # Get all tools
+    tools = db.query(MCPTool).all()
+    
+    # Get all manifests
+    manifests = {m.id: m for m in db.query(MCPManifest).all()}
+    
+    # Format the response
+    result = {
+        "settings": {
+            "endpoint_prefix": settings.get("endpoint_prefix", ""),
+            "hostname": settings.get("hostname", ""),
+            "manifest_url": settings.get("manifest_url", "")
+        },
+        "tools": [
+            {
+                "id": tool.id,
+                "name": tool.name,
+                "endpoint": tool.endpoint,
+                "is_active": tool.is_active,
+                "manifest_id": tool.manifest_id,
+                "manifest_hostname": manifests.get(tool.manifest_id).hostname if tool.manifest_id in manifests else None
+            }
+            for tool in tools
+        ]
+    }
+    
+    return result 
+
+@router.get("/from-db")
+def get_mcp_tools_from_db(db: Session = Depends(get_db)):
+    """Get all MCP tools from the database with their manifest info."""
+    try:
+        # Get all manifests first for efficient lookup
+        manifests = {m.id: m for m in db.query(MCPManifest).all()}
+        
+        # Get all tools
+        tools = db.query(MCPTool).all()
+        
+        # Format the response
+        formatted_tools = []
+        for tool in tools:
+            manifest = manifests.get(tool.manifest_id)
+            
+            # Get the raw tool definition from the manifest content
+            raw_tool = None
+            if manifest and manifest.content and "tools" in manifest.content:
+                for t in manifest.content["tools"]:
+                    if t.get("name") == tool.name:
+                        raw_tool = t
+                        break
+            
+            formatted_tool = {
+                "id": tool.id,
+                "name": tool.name,
+                "description": tool.description,
+                "endpoint": tool.endpoint,
+                "method": tool.method,
+                "parameters": tool.parameters,
+                "headers": tool.headers,
+                "is_active": tool.is_active,
+                "manifest_id": tool.manifest_id,
+                "manifest_url": manifest.url if manifest else None,
+                "manifest_hostname": manifest.hostname if manifest else None,
+                "raw_tool": raw_tool
+            }
+            formatted_tools.append(formatted_tool)
+        
+        return {
+            "tools": formatted_tools,
+            "manifests": [
+                {
+                    "id": m.id,
+                    "url": m.url,
+                    "hostname": m.hostname,
+                    "has_api_key": bool(m.api_key),
+                    "tools_count": len([t for t in tools if t.manifest_id == m.id])
+                }
+                for m in manifests.values()
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error getting MCP tools from database: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get MCP tools: {str(e)}")
+
+# Tool-specific routes with ID parameter
 @router.get("/{tool_id}", response_model=MCPToolResponse)
-def get_mcp_tool(tool_id: int, db: Session = Depends(get_db)):
-    db_tool = db.query(MCPTool).filter(MCPTool.id == tool_id).first()
+def get_mcp_tool(tool_id: str, db: Session = Depends(get_db)):
+    # Try to convert tool_id to integer, return 404 if it's not a valid integer
+    try:
+        tool_id_int = int(tool_id)
+    except ValueError:
+        logger.error(f"Invalid tool ID format: {tool_id}")
+        raise HTTPException(status_code=404, detail="Tool not found")
+        
+    db_tool = db.query(MCPTool).filter(MCPTool.id == tool_id_int).first()
     if db_tool is None:
         raise HTTPException(status_code=404, detail="Tool not found")
     return db_tool
 
 @router.put("/{tool_id}", response_model=MCPToolResponse)
-def update_mcp_tool(tool_id: int, tool: MCPToolUpdate, db: Session = Depends(get_db)):
-    db_tool = db.query(MCPTool).filter(MCPTool.id == tool_id).first()
+def update_mcp_tool(tool_id: str, tool: MCPToolUpdate, db: Session = Depends(get_db)):
+    # Try to convert tool_id to integer, return 404 if it's not a valid integer
+    try:
+        tool_id_int = int(tool_id)
+    except ValueError:
+        logger.error(f"Invalid tool ID format: {tool_id}")
+        raise HTTPException(status_code=404, detail="Tool not found")
+        
+    db_tool = db.query(MCPTool).filter(MCPTool.id == tool_id_int).first()
     if db_tool is None:
         raise HTTPException(status_code=404, detail="Tool not found")
     
@@ -228,8 +363,15 @@ def update_mcp_tool(tool_id: int, tool: MCPToolUpdate, db: Session = Depends(get
     return db_tool
 
 @router.delete("/{tool_id}", response_model=MCPToolResponse)
-def delete_mcp_tool(tool_id: int, db: Session = Depends(get_db)):
-    db_tool = db.query(MCPTool).filter(MCPTool.id == tool_id).first()
+def delete_mcp_tool(tool_id: str, db: Session = Depends(get_db)):
+    # Try to convert tool_id to integer, return 404 if it's not a valid integer
+    try:
+        tool_id_int = int(tool_id)
+    except ValueError:
+        logger.error(f"Invalid tool ID format: {tool_id}")
+        raise HTTPException(status_code=404, detail="Tool not found")
+        
+    db_tool = db.query(MCPTool).filter(MCPTool.id == tool_id_int).first()
     if db_tool is None:
         raise HTTPException(status_code=404, detail="Tool not found")
     

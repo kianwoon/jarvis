@@ -1,3 +1,4 @@
+version: '3.9'
 services:
   app:
     build:
@@ -50,25 +51,21 @@ services:
       - "8050:8050"
     restart: unless-stopped
 
-  
+
   mcp:
     build:
-      context: .
-      dockerfile: docker/mcp.Dockerfile
+      context: ../MCP/MCP
+      dockerfile: Dockerfile
     container_name: mcp-jira-outlook
     command: python -m uvicorn app:app --host 0.0.0.0 --port 9000 --reload
     ports:
       - "9000:9000"
-    environment:
-      - JIRA_URL=http://host.docker.internal:8080
-      - JIRA_USER=admin
-      - JIRA_TOKEN=admin
-      - OUTLOOK_CLIENT_ID=your_client_id
-      - OUTLOOK_CLIENT_SECRET=your_client_secret
-      - OUTLOOK_TENANT_ID=your_tenant_id
+    env_file:
+      - ../MCP/MCP/.env
     volumes:
-      - ./MCP:/app
+      - ../MCP/MCP:/app
     working_dir: /app
+
 
 volumes:
   postgres_data:

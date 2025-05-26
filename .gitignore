@@ -1,10 +1,14 @@
-.venv/*
+*.pyc
 *.md
 .env
-venv/*
-llm_cache/*
+*/llm_cache/*
 llm-ui/*
 node_modules/*
 app/api/routes/__pycache__/*
 app/core/__pycache__/*
+node_modules
+/.venv
+/venv
 *.pyc
+/app/core/__pycache__
+/scripts

@@ -33,3 +33,4 @@ unstructured[local-inference]
 pdf2image
 pytesseract
 Pillow
+qwen-agent[mcp]

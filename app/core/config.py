@@ -13,26 +13,26 @@ class Settings(BaseSettings):
     API_PORT: int = 8000
     
     # Database
-    POSTGRES_USER: str
-    POSTGRES_PASSWORD: str
-    POSTGRES_DB: str
-    POSTGRES_HOST: str
-    POSTGRES_PORT: int
+    POSTGRES_USER: Optional[str] = "postgres"
+    POSTGRES_PASSWORD: Optional[str] = "postgres"
+    POSTGRES_DB: Optional[str] = "jarvis"
+    POSTGRES_HOST: Optional[str] = "postgres"
+    POSTGRES_PORT: Optional[int] = 5432
     
     # Qdrant
-    QDRANT_HOST: str
-    QDRANT_PORT: int
+    QDRANT_HOST: Optional[str] = "qdrant"
+    QDRANT_PORT: Optional[int] = 6333
     
     # LLM Configuration
-    LLM_MODEL: str
+    LLM_MODEL: Optional[str] = "llama2"
     LLM_API_KEY: Optional[str] = None
     LLM_BASE_URL: Optional[str] = None
     
     # Memory Service
-    MEMORY_SERVICE_URL: str
+    MEMORY_SERVICE_URL: Optional[str] = "http://memory:8000"
     
     # Security
-    SECRET_KEY: str
+    SECRET_KEY: Optional[str] = "dev-secret-key-change-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     class Config:

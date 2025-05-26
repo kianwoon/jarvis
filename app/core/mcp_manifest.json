@@ -1,0 +1,13 @@
+{
+  "tools": [
+    {
+      "name": "get_datetime",
+      "description": "Get the current local date and time in ISO 8601 format",
+      "endpoint": "http://mcp-jira-outlook:9000/datetime",
+      "method": "GET",
+      "parameters": {},
+      "is_active": true,
+      "priority": 1
+    }
+  ]
+} 
