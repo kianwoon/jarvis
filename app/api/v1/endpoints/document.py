@@ -1,7 +1,10 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import requests
+import json
+import asyncio
 from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 from uuid import uuid4
 from datetime import datetime
@@ -478,3 +481,313 @@ async def debug_search(query: str, limit: int = 10, min_score: float = 0.5, min_
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+class UploadProgress:
+    """Track upload progress"""
+    def __init__(self, total_steps: int = 7):
+        self.total_steps = total_steps
+        self.current_step = 0
+        self.current_step_name = ""
+        self.details = {}
+        self.error = None
+        
+    def update(self, step: int, step_name: str, details: Dict[str, Any] = None):
+        self.current_step = step
+        self.current_step_name = step_name
+        if details:
+            self.details.update(details)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "current_step": self.current_step,
+            "total_steps": self.total_steps,
+            "progress_percent": int((self.current_step / self.total_steps) * 100),
+            "step_name": self.current_step_name,
+            "details": self.details,
+            "error": self.error
+        }
+
+async def progress_generator(file: UploadFile, progress: UploadProgress):
+    """Generate SSE events for upload progress"""
+    import tempfile
+    
+    temp_path = None
+    try:
+        # Step 1: Save file
+        progress.update(1, "Saving uploaded file", {"filename": file.filename})
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        # Read file content (should already be available from wrapper)
+        file_content = await file.read()
+        
+        if not file_content:
+            raise ValueError("File is empty")
+            
+        file_size_mb = len(file_content) / (1024 * 1024)
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            temp_path = tmp_file.name
+            tmp_file.write(file_content)
+            
+        progress.details["file_size_mb"] = round(file_size_mb, 2)
+        
+        # Step 2: Load PDF
+        progress.update(2, "Loading PDF content", {"status": "processing"})
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        loader = PyPDFLoader(temp_path)
+        docs = loader.load()
+        total_pages = len(docs)
+        total_chars = sum(len(doc.page_content) for doc in docs)
+        
+        progress.details.update({
+            "total_pages": total_pages,
+            "total_characters": total_chars
+        })
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        # Check if OCR is needed
+        if all(not doc.page_content.strip() for doc in docs):
+            progress.update(2, "Applying OCR (this may take longer)", {"ocr_required": True})
+            yield f"data: {json.dumps(progress.to_dict())}\n\n"
+            
+            try:
+                from langchain_community.document_loaders import UnstructuredPDFLoader
+                loader = UnstructuredPDFLoader(temp_path, mode="elements", strategy="ocr_only")
+                docs = loader.load()
+                progress.details["ocr_applied"] = True
+            except ImportError:
+                raise HTTPException(status_code=400, detail="PDF appears to be empty and OCR is not available")
+        
+        # Step 3: Split into chunks
+        progress.update(3, "Splitting into chunks", {"chunking": "in_progress"})
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1500,
+            chunk_overlap=200,
+            separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""],
+            length_function=len,
+            is_separator_regex=False
+        )
+        
+        chunks = splitter.split_documents(docs)
+        progress.details["total_chunks"] = len(chunks)
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        # Step 4: Prepare embeddings
+        progress.update(4, "Preparing embeddings", {"embedding_setup": "initializing"})
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        embedding_cfg = get_embedding_settings()
+        embedding_endpoint = embedding_cfg.get('embedding_endpoint')
+        
+        if embedding_endpoint:
+            embeddings = HTTPEndeddingFunction(embedding_endpoint)
+            progress.details["embedding_type"] = "HTTP endpoint"
+        else:
+            from langchain_community.embeddings import HuggingFaceEmbeddings
+            embeddings = HuggingFaceEmbeddings(model_name=embedding_cfg["embedding_model"])
+            progress.details["embedding_type"] = f"HuggingFace: {embedding_cfg['embedding_model']}"
+        
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        # Step 5: Check for duplicates
+        progress.update(5, "Checking for duplicates", {"deduplication": "in_progress"})
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        # Compute file hash (using the already-read content)
+        file_id = hashlib.sha256(file_content).hexdigest()[:12]
+        
+        # Add metadata to chunks
+        for i, chunk in enumerate(chunks):
+            if not hasattr(chunk, 'metadata') or chunk.metadata is None:
+                chunk.metadata = {}
+            
+            original_page = chunk.metadata.get('page', 0)
+            chunk.metadata.update({
+                'source': file.filename,
+                'page': original_page,
+                'doc_type': 'pdf',
+                'uploaded_at': datetime.now().isoformat(),
+                'section': f"chunk_{i}",
+                'author': '',
+                'chunk_index': i,
+                'file_id': file_id,
+                'hash': hash_text(chunk.page_content),
+                'doc_id': f"{file_id}_p{original_page}_c{i}"
+            })
+        
+        # Connect to vector DB and check duplicates
+        vector_db_cfg = get_vector_db_settings()
+        milvus_cfg = vector_db_cfg["milvus"]
+        uri = milvus_cfg.get("MILVUS_URI")
+        token = milvus_cfg.get("MILVUS_TOKEN")
+        collection_name = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
+        vector_dim = int(milvus_cfg.get("dimension", 1536))
+        
+        ensure_milvus_collection(collection_name, vector_dim=vector_dim, uri=uri, token=token)
+        
+        collection = Collection(collection_name)
+        collection.load()
+        existing_hashes = get_existing_hashes(collection)
+        existing_doc_ids = get_existing_doc_ids(collection)
+        
+        # Filter duplicates
+        unique_chunks = []
+        duplicate_count = 0
+        
+        for chunk in chunks:
+            chunk_hash = chunk.metadata.get('hash')
+            doc_id = chunk.metadata.get('doc_id')
+            
+            if chunk_hash in existing_hashes or doc_id in existing_doc_ids:
+                duplicate_count += 1
+            else:
+                unique_chunks.append(chunk)
+        
+        progress.details.update({
+            "duplicates_found": duplicate_count,
+            "unique_chunks": len(unique_chunks)
+        })
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        if not unique_chunks:
+            progress.update(7, "Complete - All chunks are duplicates", {
+                "status": "skipped",
+                "reason": "All chunks already exist in database"
+            })
+            yield f"data: {json.dumps(progress.to_dict())}\n\n"
+            return
+        
+        # Step 6: Generate embeddings
+        progress.update(6, "Generating embeddings", {
+            "embedding_progress": 0,
+            "total_embeddings": len(unique_chunks)
+        })
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        # Process embeddings in batches for progress updates
+        batch_size = 10
+        all_embeddings = []
+        
+        for i in range(0, len(unique_chunks), batch_size):
+            batch = unique_chunks[i:i + batch_size]
+            batch_texts = [chunk.page_content for chunk in batch]
+            
+            batch_embeddings = embeddings.embed_documents(batch_texts)
+            all_embeddings.extend(batch_embeddings)
+            
+            progress.details["embedding_progress"] = len(all_embeddings)
+            yield f"data: {json.dumps(progress.to_dict())}\n\n"
+            
+            # Small delay to prevent overwhelming the client
+            await asyncio.sleep(0.1)
+        
+        # Step 7: Insert into Milvus
+        progress.update(7, "Inserting into vector database", {"insertion": "in_progress"})
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        # Prepare data for insertion
+        unique_ids = [str(uuid4()) for _ in unique_chunks]
+        unique_texts = [chunk.page_content for chunk in unique_chunks]
+        
+        data = [
+            unique_ids,
+            all_embeddings,
+            unique_texts,
+            [chunk.metadata.get('source', '') for chunk in unique_chunks],
+            [chunk.metadata.get('page', 0) for chunk in unique_chunks],
+            [chunk.metadata.get('doc_type', 'pdf') for chunk in unique_chunks],
+            [chunk.metadata.get('uploaded_at', '') for chunk in unique_chunks],
+            [chunk.metadata.get('section', '') for chunk in unique_chunks],
+            [chunk.metadata.get('author', '') for chunk in unique_chunks],
+            [chunk.metadata.get('hash', '') for chunk in unique_chunks],
+            [chunk.metadata.get('doc_id', '') for chunk in unique_chunks],
+        ]
+        
+        insert_result = collection.insert(data)
+        collection.flush()
+        
+        # Final success
+        progress.update(7, "Upload complete!", {
+            "status": "success",
+            "total_chunks": len(chunks),
+            "unique_chunks_inserted": len(unique_chunks),
+            "duplicates_filtered": duplicate_count,
+            "collection": collection_name,
+            "file_id": file_id
+        })
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+    except Exception as e:
+        import traceback
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        progress.error = error_msg
+        progress.details["status"] = "error"
+        progress.details["error_traceback"] = traceback.format_exc()
+        print(f"[ERROR] Upload failed: {error_msg}")
+        print(traceback.format_exc())
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+    finally:
+        # Cleanup
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                print(f"[INFO] Cleaned up temp file: {temp_path}")
+            except Exception as e:
+                print(f"[WARNING] Failed to remove temp file {temp_path}: {str(e)}")
+
+@router.post("/upload_pdf_progress")
+async def upload_pdf_with_progress(file: UploadFile = File(...)):
+    """Upload PDF with real-time progress updates via SSE"""
+    
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+        
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    
+    print(f"[INFO] Starting upload for file: {file.filename}")
+    
+    # Read the file content here before passing to generator
+    try:
+        file_content = await file.read()
+        if not file_content:
+            # Try reading using the file object directly
+            file.file.seek(0)
+            file_content = file.file.read()
+            
+        if not file_content:
+            raise HTTPException(status_code=400, detail="File is empty")
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to read uploaded file: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    # Create a simple wrapper that provides the content
+    class FileContentWrapper:
+        def __init__(self, filename, content):
+            self.filename = filename
+            self._content = content
+            
+        async def read(self):
+            return self._content
+            
+        async def seek(self, pos):
+            pass
+    
+    wrapped_file = FileContentWrapper(file.filename, file_content)
+    progress = UploadProgress()
+    
+    return StreamingResponse(
+        progress_generator(wrapped_file, progress),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable proxy buffering
+        }
+    )

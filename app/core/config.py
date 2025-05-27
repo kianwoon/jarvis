@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # Memory Service
     MEMORY_SERVICE_URL: Optional[str] = "http://memory:8000"
     
+    # Redis
+    REDIS_HOST: Optional[str] = "redis"
+    REDIS_PORT: Optional[int] = 6379
+    REDIS_DB: Optional[int] = 0
+    REDIS_PASSWORD: Optional[str] = None
+    
     # Security
     SECRET_KEY: Optional[str] = "dev-secret-key-change-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30

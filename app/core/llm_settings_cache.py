@@ -1,12 +1,15 @@
 import redis
 import json
 from app.core.db import SessionLocal, Settings as SettingsModel
+from app.core.config import get_settings
 
-REDIS_HOST = 'redis'
-REDIS_PORT = 6379
+config = get_settings()
+REDIS_HOST = config.REDIS_HOST
+REDIS_PORT = config.REDIS_PORT
+REDIS_PASSWORD = config.REDIS_PASSWORD
 LLM_SETTINGS_KEY = 'llm_settings_cache'
 
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
 
 def get_llm_settings():
     cached = r.get(LLM_SETTINGS_KEY)

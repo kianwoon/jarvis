@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import document
+from app.api.v1.endpoints import document, document_upload_fix
 from app.api.routes import llm
 from app.api.v1.endpoints import settings
 from app.api.v1.endpoints import mcp_tools
@@ -9,6 +9,12 @@ api_router = APIRouter()
 
 api_router.include_router(
     document.router,
+    prefix="/documents",
+    tags=["documents"]
+)
+
+api_router.include_router(
+    document_upload_fix.router,
     prefix="/documents",
     tags=["documents"]
 )
