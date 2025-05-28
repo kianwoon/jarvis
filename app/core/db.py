@@ -70,4 +70,24 @@ class MCPManifest(Base):
     updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
 
     # Relationship with MCPTool
-    tools = relationship("MCPTool", back_populates="manifest") 
+    tools = relationship("MCPTool", back_populates="manifest")
+
+class LangGraphAgent(Base):
+    __tablename__ = "langgraph_agents"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), unique=True, nullable=False)
+    role = Column(String(255), nullable=False)
+    system_prompt = Column(String, nullable=False)
+    tools = Column(JSON, default=list)
+    description = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close() 

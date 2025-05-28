@@ -239,7 +239,14 @@ def create_rag_graph() -> StateGraph:
     
     # Initialize Redis for checkpointing
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
-    checkpointer = RedisSaver(redis_client)
+    
+    # Try creating RedisSaver without any arguments - it might use default connection
+    try:
+        checkpointer = RedisSaver()
+    except:
+        # If that fails, disable checkpointing for now
+        print("[WARNING] RedisSaver initialization failed, disabling checkpointing")
+        checkpointer = None
     
     # Initialize conversation memory
     memory = ConversationMemory(redis_client)

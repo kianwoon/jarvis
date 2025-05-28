@@ -319,6 +319,11 @@ Examples:
 def llm_expand_query(question: str, llm_cfg: dict) -> list:
     """Use LLM to generate alternative queries for better retrieval"""
     
+    # Check if llm_cfg is valid
+    if not isinstance(llm_cfg, dict):
+        print(f"[ERROR] llm_expand_query: Invalid llm_cfg type: {type(llm_cfg)}")
+        return [question]  # Return original query only
+    
     # Extract important terms (proper nouns, acronyms, etc.)
     import re
     words = question.split()
@@ -378,6 +383,12 @@ Provide ONLY the 2 alternatives, one per line, no numbering or explanations."""
                             continue
                         if isinstance(line, bytes):
                             line = line.decode("utf-8")
+                        
+                        # Ensure line is a string before calling startswith
+                        if not isinstance(line, str):
+                            print(f"[ERROR] Unexpected line type in LLM response: {type(line)}")
+                            continue
+                            
                         if line.startswith("data: "):
                             token = line.replace("data: ", "")
                             text += token
@@ -609,9 +620,16 @@ def handle_rag_query(question: str, thinking: bool = False) -> tuple:
     """Handle RAG queries with hybrid search (vector + keyword) - returns context only"""
     print(f"[DEBUG] handle_rag_query: question = {question}, thinking = {thinking}")
     
-    embedding_cfg = get_embedding_settings()
-    vector_db_cfg = get_vector_db_settings()
-    llm_cfg = get_llm_settings()
+    try:
+        embedding_cfg = get_embedding_settings()
+        print(f"[DEBUG] embedding_cfg type: {type(embedding_cfg)}, value: {embedding_cfg}")
+        vector_db_cfg = get_vector_db_settings()
+        print(f"[DEBUG] vector_db_cfg type: {type(vector_db_cfg)}, value: {vector_db_cfg}")
+        llm_cfg = get_llm_settings()
+        print(f"[DEBUG] llm_cfg type: {type(llm_cfg)}, value: {llm_cfg}")
+    except Exception as e:
+        print(f"[ERROR] Failed to get settings: {str(e)}")
+        raise
     
     # Analyze query to determine search strategy
     query_analysis = analyze_query_type(question)
@@ -632,12 +650,16 @@ def handle_rag_query(question: str, thinking: bool = False) -> tuple:
     
     print(f"[DEBUG] handle_rag_query: Embedding config - endpoint: {embedding_endpoint}, model: {embedding_model}")
     
-    if embedding_endpoint:
+    if embedding_endpoint and isinstance(embedding_endpoint, str) and embedding_endpoint.strip():
         embeddings = HTTPEndeddingFunction(embedding_endpoint)
         print(f"[DEBUG] handle_rag_query: Using HTTP embedding endpoint")
     else:
-        embeddings = HuggingFaceEmbeddings(model_name=embedding_cfg["embedding_model"])
-        print(f"[DEBUG] handle_rag_query: Using HuggingFace embeddings")
+        # Use default model if embedding_model is not a valid string
+        model_name = embedding_cfg.get("embedding_model", "BAAI/bge-base-en-v1.5")
+        if not isinstance(model_name, str) or not model_name.strip():
+            model_name = "BAAI/bge-base-en-v1.5"
+        embeddings = HuggingFaceEmbeddings(model_name=model_name)
+        print(f"[DEBUG] handle_rag_query: Using HuggingFace embeddings with model: {model_name}")
     
     # Connect to vector store
     milvus_cfg = vector_db_cfg["milvus"]
@@ -949,6 +971,9 @@ Documents to score:
 def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True):
     """Main function with hybrid RAG+LLM approach prioritizing answer quality"""
     print(f"[DEBUG] rag_answer: incoming question = {question}")
+    
+    # Temporarily disable LangGraph due to Redis initialization issues
+    use_langgraph = False
     
     # Use LangGraph implementation if enabled
     if use_langgraph:

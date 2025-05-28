@@ -4,6 +4,7 @@ from app.api.routes import llm
 from app.api.v1.endpoints import settings
 from app.api.v1.endpoints import mcp_tools
 from app.api.v1.endpoints import langchain
+from app.api.v1.endpoints import langgraph_agents
 
 api_router = APIRouter()
 
@@ -41,4 +42,10 @@ api_router.include_router(
     langchain.router,
     prefix="/langchain",
     tags=["langchain"]
+)
+
+api_router.include_router(
+    langgraph_agents.router,
+    prefix="/langgraph",
+    tags=["langgraph"]
 ) 
