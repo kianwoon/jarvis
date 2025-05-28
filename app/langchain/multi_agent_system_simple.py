@@ -28,6 +28,16 @@ class AgentState(TypedDict):
     final_response: str
     metadata: Dict[str, Any]
     error: Optional[str]
+    # Inter-agent communication fields
+    agent_messages: List[Dict[str, Any]]  # Messages between agents
+    pending_requests: Dict[str, List[Dict]]  # Pending requests for each agent
+    agent_conversations: List[Dict[str, Any]]  # Track agent-to-agent conversations
+    # Collaboration patterns
+    execution_pattern: str  # 'parallel', 'sequential', 'hierarchical'
+    agent_dependencies: Dict[str, List[str]]  # Which agents depend on others
+    execution_order: List[str]  # For sequential execution
+    # Performance tracking
+    agent_metrics: Dict[str, Dict[str, Any]]  # Performance metrics per agent
 
 class MultiAgentSystem:
     """Simplified orchestration for multiple specialized agents"""
@@ -50,6 +60,19 @@ class MultiAgentSystem:
             "service_delivery_manager": "📋",
             "synthesizer": "🎯"
         }
+        
+        # Agent descriptions for hover tooltips
+        self.agent_descriptions = {
+            "router": "Analyzes your query and selects the most appropriate agents to handle it",
+            "document_researcher": "Searches through uploaded documents and knowledge base for relevant information",
+            "tool_executor": "Executes tools and calculations to provide computational results",
+            "context_manager": "Manages conversation history and maintains context across interactions",
+            "sales_strategist": "Provides strategic sales perspectives, value propositions, and client engagement strategies",
+            "technical_architect": "Offers technical architecture insights, system design, and implementation recommendations",
+            "financial_analyst": "Analyzes costs, ROI, pricing models, and financial implications",
+            "service_delivery_manager": "Designs service delivery plans, SLAs, and operational frameworks",
+            "synthesizer": "Combines insights from all agents into a comprehensive, coherent response"
+        }
     
     def _remove_thinking_tags(self, text: str) -> str:
         """Remove thinking tags from LLM response"""
@@ -71,6 +94,121 @@ class MultiAgentSystem:
         # Clean up multiple consecutive newlines (more than 2)
         text = re.sub(r'\n{3,}', '\n\n', text)
         return text.strip()
+    
+    def determine_collaboration_pattern(self, query: str, selected_agents: List[str]) -> Dict[str, Any]:
+        """Determine the best collaboration pattern based on query and agents"""
+        query_lower = query.lower()
+        
+        # Check for sequential needs
+        needs_sequential = any(keyword in query_lower for keyword in [
+            "step by step", "first then", "after", "followed by", "process"
+        ])
+        
+        # Check for hierarchical needs
+        needs_hierarchical = any(keyword in query_lower for keyword in [
+            "coordinate", "delegate", "assign", "manage", "oversee"
+        ])
+        
+        # Default patterns based on agent combinations
+        if "sales_strategist" in selected_agents and "financial_analyst" in selected_agents:
+            # Sales often needs financial input first
+            return {
+                "pattern": "sequential",
+                "order": ["financial_analyst", "sales_strategist", "technical_architect", "service_delivery_manager"],
+                "dependencies": {
+                    "sales_strategist": ["financial_analyst"],
+                    "service_delivery_manager": ["technical_architect"]
+                }
+            }
+        elif needs_hierarchical:
+            return {
+                "pattern": "hierarchical",
+                "lead_agent": "sales_strategist",
+                "dependencies": {
+                    "sales_strategist": ["financial_analyst", "technical_architect"],
+                    "service_delivery_manager": ["technical_architect"]
+                }
+            }
+        elif needs_sequential:
+            return {
+                "pattern": "sequential",
+                "order": selected_agents,
+                "dependencies": {}
+            }
+        else:
+            # Default to parallel for speed
+            return {
+                "pattern": "parallel",
+                "dependencies": {}
+            }
+    
+    async def send_message_to_agent(self, from_agent: str, to_agent: str, message: str, state: AgentState, message_type: str = "query"):
+        """Send a message from one agent to another and get response"""
+        message_id = str(uuid.uuid4())
+        agent_message = {
+            "id": message_id,
+            "from": from_agent,
+            "to": to_agent,
+            "message": message,
+            "type": message_type,
+            "timestamp": datetime.now().isoformat(),
+            "status": "pending"
+        }
+        
+        # Add to agent messages log
+        state["agent_messages"].append(agent_message)
+        
+        # Add to pending requests for the target agent
+        if to_agent not in state["pending_requests"]:
+            state["pending_requests"][to_agent] = []
+        state["pending_requests"][to_agent].append(agent_message)
+        
+        # Yield communication event for UI
+        yield {
+            "type": "agent_communication",
+            "from_agent": from_agent,
+            "to_agent": to_agent,
+            "message": message,
+            "message_id": message_id
+        }
+    
+    def check_agent_messages(self, agent_name: str, state: AgentState) -> List[Dict]:
+        """Check if there are any messages for this agent"""
+        messages = state.get("pending_requests", {}).get(agent_name, [])
+        # Clear processed messages
+        if agent_name in state.get("pending_requests", {}):
+            state["pending_requests"][agent_name] = []
+        return messages
+    
+    async def respond_to_message(self, agent_name: str, message_id: str, response: str, state: AgentState):
+        """Respond to a message from another agent"""
+        # Find the original message
+        for msg in state["agent_messages"]:
+            if msg["id"] == message_id:
+                msg["status"] = "responded"
+                msg["response"] = response
+                msg["response_time"] = datetime.now().isoformat()
+                
+                # Add to agent conversations
+                conversation = {
+                    "from": msg["from"],
+                    "to": msg["to"],
+                    "query": msg["message"],
+                    "response": response,
+                    "timestamp": msg["timestamp"],
+                    "response_time": msg["response_time"]
+                }
+                state["agent_conversations"].append(conversation)
+                
+                # Yield response event for UI
+                yield {
+                    "type": "agent_response",
+                    "from_agent": agent_name,
+                    "to_agent": msg["from"],
+                    "response": response,
+                    "message_id": message_id
+                }
+                break
         
     def _extract_query_context(self, query: str) -> Dict[str, Any]:
         """Extract key information from the query"""
@@ -84,14 +222,36 @@ class MultiAgentSystem:
         
         # Extract client name
         import re
-        client_match = re.search(r'(?:client|customer)[,:\s]+([A-Z][A-Za-z0-9\s&]+?)(?:\s+request|\s+is|\s+wants|,|\.)', query, re.IGNORECASE)
-        if client_match:
-            context["client"] = client_match.group(1).strip()
+        
+        # Look for patterns like "ABC Bank", "XYZ Company", etc.
+        client_patterns = [
+            r'(?:for|converting|transition|from)\s+([A-Z][A-Za-z0-9\s&]+?)\s+(?:from|to|request|is|wants|,|\.)',
+            r'([A-Z][A-Za-z0-9\s&]+?)\s+(?:bank|company|corp|inc|limited|ltd)',
+            r'(?:client|customer)[,:\s]+([A-Z][A-Za-z0-9\s&]+?)(?:\s+request|\s+is|\s+wants|,|\.)'
+        ]
+        
+        for pattern in client_patterns:
+            client_match = re.search(pattern, query, re.IGNORECASE)
+            if client_match:
+                context["client"] = client_match.group(1).strip()
+                break
         
         # Extract requirement (e.g., "3 x system engineers")
-        req_match = re.search(r'(\d+\s*x?\s*(?:L1|L2|L3|system|network|database|security)?\s*(?:engineer|admin|analyst|developer|architect)s?)', query, re.IGNORECASE)
-        if req_match:
-            context["requirement"] = req_match.group(1).strip()
+        req_patterns = [
+            r'(\d+\s*x?\s*(?:L1|L2|L3|system|network|database|security)?\s*(?:engineer|admin|analyst|developer|architect)s?)',
+            r'((?:system|network|database|security)\s*(?:engineer|admin|analyst|developer|architect)s?)',
+            r'(IT\s*(?:support|services|infrastructure))'
+        ]
+        
+        for pattern in req_patterns:
+            req_match = re.search(pattern, query, re.IGNORECASE)
+            if req_match:
+                context["requirement"] = req_match.group(1).strip()
+                break
+        
+        # If no specific requirement found but it's about services
+        if context["requirement"] == "Unknown" and "service" in query.lower():
+            context["requirement"] = "IT Services"
         
         # Identify current and proposed models
         if any(term in query.lower() for term in ["t&m", "time and material", "time & material"]):
@@ -149,7 +309,8 @@ class MultiAgentSystem:
                     "type": "agent_complete",
                     "agent": agent_name,
                     "content": display_content,
-                    "avatar": self.agent_avatars.get(agent_name, "🤖")
+                    "avatar": self.agent_avatars.get(agent_name, "🤖"),
+                    "description": self.agent_descriptions.get(agent_name, "")
                 }
                 yield event
             else:
@@ -285,10 +446,31 @@ Important: Only use agent names that exist in the available agents list above.""
         
         query_lower = query.lower()
         
-        # For a proposal discussion, we want multiple perspectives
-        if any(word in query_lower for word in ["proposal", "client", "discuss", "counter"]):
+        # Comprehensive managed services keywords
+        managed_services_keywords = [
+            "managed service", "managed services", "msp",
+            "t&m", "time and material", "time & material",
+            "convert", "transition", "proposal",
+            "pricing", "cost", "roi", "financial",
+            "strategy", "approach", "pitch",
+            "bank", "banking", "client"
+        ]
+        
+        # Check for managed services context
+        is_managed_services = any(keyword in query_lower for keyword in managed_services_keywords)
+        
+        # Check for specific business contexts
+        has_pricing = any(word in query_lower for word in ["pricing", "price", "cost", "financial", "budget", "fee"])
+        has_strategy = any(word in query_lower for word in ["strategy", "approach", "plan", "convert", "transition"])
+        has_client = any(word in query_lower for word in ["client", "customer", "bank", "abc"])
+        has_service_model = any(word in query_lower for word in ["t&m", "managed service", "time and material", "msp"])
+        
+        # For a proposal discussion or managed services query, we want multiple perspectives
+        if (any(word in query_lower for word in ["proposal", "client", "discuss", "counter"]) or
+            is_managed_services or
+            (has_client and (has_pricing or has_strategy or has_service_model))):
             routing["agents"] = ["sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager"]
-            routing["reasoning"] = "Keyword-based routing: Strategic proposal discussion detected."
+            routing["reasoning"] = "Managed services/strategic discussion detected - engaging specialist team."
         else:
             # Original routing logic for other queries
             if any(word in query_lower for word in ["document", "file", "pdf", "information", "data"]):
@@ -377,6 +559,28 @@ Important: Only use agent names that exist in the available agents list above.""
         # Extract context from query
         context = self._extract_query_context(state["query"])
         
+        # Check for messages from other agents
+        messages = self.check_agent_messages("sales_strategist", state)
+        financial_insights = ""
+        
+        for msg in messages:
+            if msg["from"] == "financial_analyst":
+                financial_insights = f"\n\nFinancial Analyst Insights: {msg['message']}"
+                # Send response back
+                async for event in self.respond_to_message("sales_strategist", msg["id"], "Thank you for the financial analysis. I'll incorporate this into my sales strategy.", state):
+                    yield event
+        
+        # Check if we need financial input for pricing strategy
+        if ("pricing" in state["query"].lower() or "cost" in state["query"].lower()) and not financial_insights:
+            # Request input from financial analyst
+            async for event in self.send_message_to_agent(
+                "sales_strategist", 
+                "financial_analyst",
+                f"I need cost-benefit analysis for {context['client']} - {context['requirement']}. What are the key financial advantages of managed services over {context['current_model']}?",
+                state
+            ):
+                yield event
+        
         prompt = f"""You are an experienced Sales Strategist specializing in IT services and managed service proposals.
 
 Context:
@@ -384,7 +588,7 @@ Context:
 - Current Requirement: {context['requirement']}
 - Current Model: {context['current_model']}
 - Proposed Model: {context['proposed_model']}
-- Details: {context['details']}
+- Details: {context['details']}{financial_insights}
 
 Provide strategic sales advice for converting this requirement from {context['current_model']} to {context['proposed_model']}.
 
@@ -430,6 +634,14 @@ Focus on technical excellence and reliability that banks require. Be specific ab
         """Financial perspective on the proposal - streaming version"""
         context = self._extract_query_context(state["query"])
         
+        # Check for messages from other agents
+        messages = self.check_agent_messages("financial_analyst", state)
+        additional_queries = []
+        
+        for msg in messages:
+            additional_queries.append(f"\n\nAdditional request from {msg['from']}: {msg['message']}")
+            # We'll respond after generating our analysis
+        
         prompt = f"""You are a Financial Analyst specializing in IT services cost modeling and ROI analysis.
 
 Context:
@@ -463,10 +675,17 @@ Your analysis should include:
    - Recommend optimal pricing structure for {context['client']}
    - Show flexibility options
 
-Use realistic market rates for Singapore/APAC region. Present numbers clearly with executive summary."""
+Use realistic market rates for Singapore/APAC region. Present numbers clearly with executive summary.{''.join(additional_queries)}"""
 
+        # First generate our main analysis
         async for event in self._call_llm_stream(prompt, "financial_analyst", temperature=0.5, timeout=20):
             yield event
+        
+        # Then respond to any messages from other agents
+        for msg in messages:
+            response = f"Key financial insights for {msg['from']}: 1) Managed services typically reduce TCO by 25-35% over 3 years. 2) Predictable monthly costs vs variable T&M billing. 3) Risk mitigation through SLAs and penalties. 4) Access to senior expertise without full-time cost."
+            async for event in self.respond_to_message("financial_analyst", msg["id"], response, state):
+                yield event
     
     async def _service_delivery_manager_agent(self, state: AgentState):
         """Service delivery perspective on the proposal - streaming version"""
@@ -635,6 +854,63 @@ Remember {context['client']} is a major bank requiring highest service standards
             print(f"[ERROR] RAG stream error: {str(e)}")
             yield {"error": str(e)}
     
+    def _generate_performance_summary(self, state: AgentState) -> Dict[str, Any]:
+        """Generate a performance summary from agent metrics"""
+        summary = {
+            "total_agents": len(state["agent_metrics"]),
+            "completed_agents": 0,
+            "failed_agents": 0,
+            "total_processing_time": state["metadata"].get("total_duration", 0),
+            "agents_performance": {}
+        }
+        
+        # Analyze each agent's performance
+        for agent_name, metrics in state["agent_metrics"].items():
+            if metrics["status"] == "completed":
+                summary["completed_agents"] += 1
+            elif metrics["status"] == "failed":
+                summary["failed_agents"] += 1
+            
+            summary["agents_performance"][agent_name] = {
+                "status": metrics["status"],
+                "duration": metrics.get("duration", 0),
+                "start_time": metrics.get("start_time"),
+                "end_time": metrics.get("end_time")
+            }
+        
+        # Calculate average processing time for completed agents
+        completed_durations = [
+            metrics.get("duration", 0) 
+            for metrics in state["agent_metrics"].values() 
+            if metrics["status"] == "completed" and metrics.get("duration")
+        ]
+        
+        if completed_durations:
+            summary["average_agent_duration"] = sum(completed_durations) / len(completed_durations)
+        else:
+            summary["average_agent_duration"] = 0
+        
+        # Find slowest and fastest agents
+        if completed_durations:
+            agent_durations = [
+                (name, metrics.get("duration", 0))
+                for name, metrics in state["agent_metrics"].items()
+                if metrics["status"] == "completed" and metrics.get("duration")
+            ]
+            agent_durations.sort(key=lambda x: x[1])
+            
+            if agent_durations:
+                summary["fastest_agent"] = {
+                    "name": agent_durations[0][0],
+                    "duration": agent_durations[0][1]
+                }
+                summary["slowest_agent"] = {
+                    "name": agent_durations[-1][0],
+                    "duration": agent_durations[-1][1]
+                }
+        
+        return summary
+    
     async def stream_events(
         self, 
         query: str, 
@@ -658,40 +934,93 @@ Remember {context['client']} is a major bank requiring highest service standards
                     "start_time": datetime.now().isoformat(),
                     "mode": "multi_agent"
                 },
-                error=None
+                error=None,
+                # Inter-agent communication fields
+                agent_messages=[],
+                pending_requests={},
+                agent_conversations=[],
+                # Collaboration patterns
+                execution_pattern="parallel",
+                agent_dependencies={},
+                execution_order=[],
+                # Performance tracking
+                agent_metrics={}
             )
             
             # Step 1: Router
+            router_start_time = datetime.now()
             yield {
                 "type": "agent_start",
                 "agent": "router",
                 "content": "Analyzing query...",
-                "avatar": self.agent_avatars.get("router", "🧭")
+                "avatar": self.agent_avatars.get("router", "🧭"),
+                "description": self.agent_descriptions.get("router", ""),
+                "start_time": router_start_time.isoformat()
             }
             
             routing = await self._router_agent(query, conversation_history)
             state["routing_decision"] = routing
             
+            router_end_time = datetime.now()
+            router_duration = (router_end_time - router_start_time).total_seconds()
             yield {
                 "type": "agent_complete",
                 "agent": "router",
                 "content": routing["reasoning"],
                 "routing": routing,
-                "avatar": self.agent_avatars.get("router", "🧭")
+                "avatar": self.agent_avatars.get("router", "🧭"),
+                "description": self.agent_descriptions.get("router", ""),
+                "duration": router_duration,
+                "end_time": router_end_time.isoformat()
             }
             
-            # Step 2: Execute selected agents in parallel with streaming
+            # Step 2: Determine collaboration pattern
             agents_to_run = selected_agents or routing["agents"]
             print(f"[DEBUG] Agents to run: {agents_to_run}")
             
+            # Determine collaboration pattern
+            collaboration = self.determine_collaboration_pattern(query, agents_to_run)
+            state["execution_pattern"] = collaboration["pattern"]
+            state["agent_dependencies"] = collaboration.get("dependencies", {})
+            state["execution_order"] = collaboration.get("order", agents_to_run)
+            
+            # Yield collaboration pattern info
+            yield {
+                "type": "collaboration_pattern",
+                "pattern": collaboration["pattern"],
+                "dependencies": collaboration.get("dependencies", {}),
+                "order": collaboration.get("order", [])
+            }
+            
             # Create async tasks for all agents
             agent_tasks = []
+            agent_start_times = {}  # Track start times for each agent
+            
+            # Initialize performance metrics
             for agent_name in agents_to_run:
+                state["agent_metrics"][agent_name] = {
+                    "start_time": None,
+                    "end_time": None,
+                    "duration": None,
+                    "tokens_generated": 0,
+                    "messages_sent": 0,
+                    "messages_received": 0,
+                    "status": "pending"
+                }
+            
+            for agent_name in agents_to_run:
+                agent_start_times[agent_name] = datetime.now()
+                state["agent_metrics"][agent_name]["start_time"] = agent_start_times[agent_name].isoformat()
+                state["agent_metrics"][agent_name]["status"] = "running"
+                
                 yield {
                     "type": "agent_start",
                     "agent": agent_name,
                     "content": f"Starting {agent_name}...",
-                    "avatar": self.agent_avatars.get(agent_name, "🤖")
+                    "avatar": self.agent_avatars.get(agent_name, "🤖"),
+                    "description": self.agent_descriptions.get(agent_name, ""),
+                    "start_time": agent_start_times[agent_name].isoformat(),
+                    "pattern": state["execution_pattern"]
                 }
                 
                 # Create async generator for each agent
@@ -712,33 +1041,66 @@ Remember {context['client']} is a major bank requiring highest service standards
                     # Handle non-streaming agents
                     result = await self._document_researcher_agent(state)
                     state["agent_outputs"][agent_name] = result
+                    end_time = datetime.now()
+                    duration = (end_time - agent_start_times[agent_name]).total_seconds()
+                    # Update agent metrics
+                    state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
+                    state["agent_metrics"][agent_name]["duration"] = duration
+                    state["agent_metrics"][agent_name]["status"] = "completed"
                     yield {
                         "type": "agent_complete",
                         "agent": agent_name,
                         "content": result.get("response", ""),
-                        "avatar": self.agent_avatars.get(agent_name, "🤖")
+                        "avatar": self.agent_avatars.get(agent_name, "🤖"),
+                        "description": self.agent_descriptions.get(agent_name, ""),
+                        "duration": duration,
+                        "end_time": end_time.isoformat()
                     }
                 elif agent_name == "tool_executor":
                     result = await self._tool_executor_agent(state)
                     state["agent_outputs"][agent_name] = result
+                    end_time = datetime.now()
+                    duration = (end_time - agent_start_times[agent_name]).total_seconds()
+                    # Update agent metrics
+                    state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
+                    state["agent_metrics"][agent_name]["duration"] = duration
+                    state["agent_metrics"][agent_name]["status"] = "completed"
                     yield {
                         "type": "agent_complete", 
                         "agent": agent_name,
                         "content": result.get("response", ""),
-                        "avatar": self.agent_avatars.get(agent_name, "🤖")
+                        "avatar": self.agent_avatars.get(agent_name, "🤖"),
+                        "description": self.agent_descriptions.get(agent_name, ""),
+                        "duration": duration,
+                        "end_time": end_time.isoformat()
                     }
                 elif agent_name == "context_manager":
                     result = await self._context_manager_agent(state)
                     state["agent_outputs"][agent_name] = result
+                    end_time = datetime.now()
+                    duration = (end_time - agent_start_times[agent_name]).total_seconds()
+                    # Update agent metrics
+                    state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
+                    state["agent_metrics"][agent_name]["duration"] = duration
+                    state["agent_metrics"][agent_name]["status"] = "completed"
                     yield {
                         "type": "agent_complete",
                         "agent": agent_name, 
                         "content": result.get("response", ""),
-                        "avatar": self.agent_avatars.get(agent_name, "🤖")
+                        "avatar": self.agent_avatars.get(agent_name, "🤖"),
+                        "description": self.agent_descriptions.get(agent_name, ""),
+                        "duration": duration,
+                        "end_time": end_time.isoformat()
                     }
                 else:
                     # Handle unimplemented agents
                     print(f"[WARNING] Agent '{agent_name}' not implemented, skipping")
+                    end_time = datetime.now()
+                    duration = (end_time - agent_start_times[agent_name]).total_seconds()
+                    # Update agent metrics
+                    state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
+                    state["agent_metrics"][agent_name]["duration"] = duration
+                    state["agent_metrics"][agent_name]["status"] = "failed"
                     yield {
                         "type": "agent_complete",
                         "agent": agent_name,
@@ -748,14 +1110,9 @@ Remember {context['client']} is a major bank requiring highest service standards
             
             # Process streaming agents concurrently
             if agent_tasks:
-                import asyncio
-                
-                # Process agent streams - moved inside merge_agent_streams to avoid unused warning
-                
                 # Run all agents concurrently and merge streams
                 async def merge_agent_streams():
                     # Create queue for collecting events from all agents
-                    import asyncio
                     from asyncio import Queue
                     
                     event_queue = Queue()
@@ -812,26 +1169,54 @@ Remember {context['client']} is a major bank requiring highest service standards
                         if agent_name not in state["agent_outputs"]:
                             state["agent_outputs"][agent_name] = {}
                         state["agent_outputs"][agent_name]["response"] = event["content"]
+                        
+                        # Add timing information if we have start time
+                        if agent_name in agent_start_times:
+                            end_time = datetime.now()
+                            duration = (end_time - agent_start_times[agent_name]).total_seconds()
+                            event["duration"] = duration
+                            event["end_time"] = end_time.isoformat()
+                            # Update agent metrics for streaming agents
+                            state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
+                            state["agent_metrics"][agent_name]["duration"] = duration
+                            state["agent_metrics"][agent_name]["status"] = "completed"
                     
                     yield event
             
             # Step 3: Synthesize
+            synthesizer_start_time = datetime.now()
             yield {
                 "type": "agent_start",
                 "agent": "synthesizer",
                 "content": "Synthesizing final response...",
-                "avatar": self.agent_avatars.get("synthesizer", "🎯")
+                "avatar": self.agent_avatars.get("synthesizer", "🎯"),
+                "description": self.agent_descriptions.get("synthesizer", ""),
+                "start_time": synthesizer_start_time.isoformat()
             }
             
             final_response = await self._synthesizer_agent(state)
             state["final_response"] = final_response
+            
+            synthesizer_end_time = datetime.now()
+            synthesizer_duration = (synthesizer_end_time - synthesizer_start_time).total_seconds()
+            
+            # Update metadata with end time and performance summary
+            state["metadata"]["end_time"] = datetime.now().isoformat()
+            state["metadata"]["total_duration"] = (datetime.fromisoformat(state["metadata"]["end_time"]) - 
+                                                    datetime.fromisoformat(state["metadata"]["start_time"])).total_seconds()
+            
+            # Generate performance summary
+            performance_summary = self._generate_performance_summary(state)
             
             yield {
                 "type": "final_response",
                 "response": final_response,
                 "metadata": state["metadata"],
                 "routing": state["routing_decision"],
-                "agent_outputs": state["agent_outputs"]
+                "agent_outputs": state["agent_outputs"],
+                "synthesizer_duration": synthesizer_duration,
+                "agent_metrics": state["agent_metrics"],
+                "performance_summary": performance_summary
             }
             
         except Exception as e:
