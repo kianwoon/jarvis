@@ -5,8 +5,23 @@
       "Bash(npm run build:*)",
       "Bash(find:*)",
       "Bash(python:*)",
-      "Bash(lsof:*)"
+      "Bash(lsof:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(Check if rehype-raw is installed)",
+      "Bash(rg:*)",
+      "Bash(timeout:*)",
+      "Bash(redis-cli:*)",
+      "Bash(chmod:*)",
+      "Bash(docker logs:*)",
+      "Bash(ls:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker-compose restart:*)",
+      "Bash(mv:*)",
+      "Bash(cp:*)",
+      "Bash(curl:*)"
     ],
     "deny": []
-  }
+  },
+  "enableAllProjectMcpServers": false
 }

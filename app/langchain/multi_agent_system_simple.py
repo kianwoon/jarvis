@@ -123,10 +123,10 @@ class MultiAgentSystem:
         elif needs_hierarchical:
             return {
                 "pattern": "hierarchical",
-                "lead_agent": "sales_strategist",
+                "order": selected_agents,
+                "lead_agent": selected_agents[0] if selected_agents else "router",
                 "dependencies": {
-                    "sales_strategist": ["financial_analyst", "technical_architect"],
-                    "service_delivery_manager": ["technical_architect"]
+                    selected_agents[0]: selected_agents[1:] if len(selected_agents) > 1 else []
                 }
             }
         elif needs_sequential:
@@ -139,6 +139,7 @@ class MultiAgentSystem:
             # Default to parallel for speed
             return {
                 "pattern": "parallel",
+                "order": selected_agents,
                 "dependencies": {}
             }
     
@@ -213,10 +214,10 @@ class MultiAgentSystem:
     def _extract_query_context(self, query: str) -> Dict[str, Any]:
         """Extract key information from the query"""
         context = {
-            "client": "Unknown",
-            "requirement": "Unknown",
-            "current_model": "Unknown",
-            "proposed_model": "Unknown",
+            "client": "",
+            "requirement": "",
+            "current_model": "",
+            "proposed_model": "",
             "details": query
         }
         
@@ -250,7 +251,7 @@ class MultiAgentSystem:
                 break
         
         # If no specific requirement found but it's about services
-        if context["requirement"] == "Unknown" and "service" in query.lower():
+        if not context["requirement"] and "service" in query.lower():
             context["requirement"] = "IT Services"
         
         # Identify current and proposed models
@@ -269,17 +270,29 @@ class MultiAgentSystem:
             # Import LLM service directly to avoid HTTP recursion
             from app.llm.ollama import OllamaLLM
             from app.llm.base import LLMConfig
+            from app.core.langgraph_agents_cache import get_agent_by_role
             import os
             
-            # Use thinking mode settings if available
+            # Get agent-specific configuration
+            agent_data = get_agent_by_role(agent_name)
+            agent_config = agent_data.get("config", {}) if agent_data else {}
+            
+            # Use agent config with fallbacks to thinking mode settings
             model_config = self.llm_settings.get("thinking_mode", {})
+            
+            # Dynamic configuration based on agent settings
+            actual_temperature = agent_config.get("temperature", temperature)
+            actual_timeout = agent_config.get("timeout", timeout)
+            actual_max_tokens = agent_config.get("max_tokens", model_config.get("max_tokens", 4000))
+            
+            print(f"[DEBUG] {agent_name}: Using config - max_tokens={actual_max_tokens}, timeout={actual_timeout}, temp={actual_temperature}")
             
             # Create LLM config
             config = LLMConfig(
                 model_name=model_config.get("model", "qwen3:30b-a3b"),
-                temperature=temperature,
+                temperature=actual_temperature,
                 top_p=model_config.get("top_p", 0.9),
-                max_tokens=model_config.get("max_tokens", 2000)
+                max_tokens=actual_max_tokens
             )
             
             # Ollama base URL
@@ -291,10 +304,19 @@ class MultiAgentSystem:
             
             # Accumulate complete response without streaming individual tokens
             response_text = ""
-            print(f"[DEBUG] {agent_name}: Starting to generate complete response")
+            print(f"[DEBUG] {agent_name}: Starting to generate complete response with timeout={actual_timeout}s")
             
-            async for response_chunk in llm.generate_stream(prompt):
-                response_text += response_chunk.text
+            # Use asyncio timeout for the actual timeout
+            import asyncio
+            try:
+                async with asyncio.timeout(actual_timeout):
+                    async for response_chunk in llm.generate_stream(prompt):
+                        response_text += response_chunk.text
+            except asyncio.TimeoutError:
+                print(f"[WARNING] {agent_name}: Response generation timed out after {actual_timeout}s")
+                # Return partial response if available
+                if response_text:
+                    print(f"[WARNING] {agent_name}: Returning partial response of {len(response_text)} chars")
             
             print(f"[DEBUG] {agent_name}: Completed generation, response length = {len(response_text)}")
             
@@ -328,7 +350,22 @@ class MultiAgentSystem:
         """Hybrid LLM-based routing with keyword fallback"""
         print(f"[DEBUG] Starting routing for query: {query[:100]}...")
         
-        # For now, use keyword-based routing (LLM routing has cache dependency issues)
+        # Try dynamic LLM routing first
+        try:
+            print("[DEBUG] Attempting dynamic LLM-based routing")
+            from app.langchain.dynamic_agent_system import DynamicMultiAgentSystem
+            dynamic_system = DynamicMultiAgentSystem()
+            routing_result = await dynamic_system.route_query(query, conversation_history)
+            
+            if routing_result.get("agents"):
+                print(f"[DEBUG] Dynamic routing selected agents: {routing_result['agents']}")
+                return routing_result
+        except Exception as e:
+            print(f"[DEBUG] Dynamic routing failed: {e}, falling back to keyword routing")
+            import traceback
+            traceback.print_exc()
+        
+        # Fallback to keyword-based routing
         print("[DEBUG] Using keyword-based routing")
         return await self._keyword_router_agent(query)
     
@@ -601,7 +638,7 @@ Your response should include:
 
 Be specific to {context['client']} and their industry. Use persuasive but professional language."""
 
-        async for event in self._call_llm_stream(prompt, "sales_strategist", temperature=0.7, timeout=20):
+        async for event in self._call_llm_stream(prompt, "sales_strategist", temperature=0.7):
             yield event
     
     async def _technical_architect_agent(self, state: AgentState):
@@ -611,11 +648,11 @@ Be specific to {context['client']} and their industry. Use persuasive but profes
         prompt = f"""You are a Senior Technical Architect with expertise in IT infrastructure and managed services.
 
 Context:
-- Client: {context['client']}
-- Requirement: {context['requirement']}
-- Moving from: {context['current_model']} to {context['proposed_model']}
+- Client: {context['client'] or 'the organization'}
+- Requirement: {context['requirement'] or 'IT services'}
+- Moving from: {context['current_model'] or 'current model'} to {context['proposed_model'] or 'managed services'}
 
-Provide a technical analysis of how managed services will better serve {context['client']}'s needs.
+Provide a technical analysis of how managed services will better serve {context['client'] or 'the client'}'s needs.
 
 Your response should cover:
 1. Technical Architecture - How the managed service will be structured
@@ -627,7 +664,7 @@ Your response should cover:
 
 Focus on technical excellence and reliability that banks require. Be specific about technologies and metrics."""
 
-        async for event in self._call_llm_stream(prompt, "technical_architect", temperature=0.6, timeout=20):
+        async for event in self._call_llm_stream(prompt, "technical_architect", temperature=0.6):
             yield event
     
     async def _financial_analyst_agent(self, state: AgentState):
@@ -678,7 +715,7 @@ Your analysis should include:
 Use realistic market rates for Singapore/APAC region. Present numbers clearly with executive summary.{''.join(additional_queries)}"""
 
         # First generate our main analysis
-        async for event in self._call_llm_stream(prompt, "financial_analyst", temperature=0.5, timeout=20):
+        async for event in self._call_llm_stream(prompt, "financial_analyst", temperature=0.5):
             yield event
         
         # Then respond to any messages from other agents
@@ -694,9 +731,9 @@ Use realistic market rates for Singapore/APAC region. Present numbers clearly wi
         prompt = f"""You are a Service Delivery Manager with 15+ years experience in managing IT services for financial institutions.
 
 Context:
-- Client: {context['client']}
-- Service Requirement: {context['requirement']}
-- Service Model: Transitioning to {context['proposed_model']}
+- Client: {context['client'] or 'the organization'}
+- Service Requirement: {context['requirement'] or 'IT services'}
+- Service Model: Transitioning to {context['proposed_model'] or 'managed services'}
 
 Design a comprehensive service delivery plan that ensures smooth operations and exceeds {context['client']}'s expectations.
 
@@ -733,7 +770,7 @@ Your plan should detail:
 
 Remember {context['client']} is a major bank requiring highest service standards. Be specific and actionable."""
 
-        async for event in self._call_llm_stream(prompt, "service_delivery_manager", temperature=0.6, timeout=20):
+        async for event in self._call_llm_stream(prompt, "service_delivery_manager", temperature=0.6):
             yield event
     
     async def _tool_executor_agent(self, state: AgentState) -> Dict[str, Any]:
@@ -762,6 +799,12 @@ Remember {context['client']} is a major bank requiring highest service standards
         """Synthesize final response from all agent outputs"""
         final_parts = []
         
+        # Debug: Print what outputs we have
+        print(f"[DEBUG] Synthesizer received outputs from agents: {list(state['agent_outputs'].keys())}")
+        for agent, output in state["agent_outputs"].items():
+            response_len = len(output.get("response", "")) if output else 0
+            print(f"[DEBUG] Agent {agent} output length: {response_len}")
+        
         # Check if we have any meaningful responses
         has_meaningful_response = False
         for output in state["agent_outputs"].values():
@@ -770,10 +813,16 @@ Remember {context['client']} is a major bank requiring highest service standards
                 break
         
         # Skip the fallback message if we have specialized agents responding
+        # Check both hardcoded and dynamic agents
+        specialized_agents = [
+            "sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager",
+            "PreSalesArchitect", "CTO_Agent", "ROI_Analyst", "ComplianceAgent",
+            "CEO_Agent", "CIO_Agent", "BizAnalystAgent", "Corporate_Strategist"
+        ]
         has_specialized_agents = any(
             agent in state["agent_outputs"] 
-            for agent in ["sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager"]
-        )
+            for agent in specialized_agents
+        ) or len(state["agent_outputs"]) > 1  # Multiple agents usually means specialized response
         
         if not has_meaningful_response and not has_specialized_agents:
             # No meaningful responses, provide a helpful default
@@ -790,7 +839,10 @@ Remember {context['client']} is a major bank requiring highest service standards
             final_parts.append("Based on the multi-agent analysis, here's a comprehensive response:\n")
             
             # Add each specialized agent's response with proper formatting
+            # First try hardcoded agent order for consistency
             agent_order = ["sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager"]
+            displayed_agents = set()
+            
             for agent_name in agent_order:
                 if agent_name in state["agent_outputs"]:
                     output = state["agent_outputs"][agent_name]
@@ -800,6 +852,16 @@ Remember {context['client']} is a major bank requiring highest service standards
                         final_parts.append(f"## {agent_title} Perspective\n")
                         final_parts.append(output["response"])
                         final_parts.append("")  # Add blank line for spacing
+                        displayed_agents.add(agent_name)
+            
+            # Then add any dynamic agents that weren't in the predefined order
+            for agent_name, output in state["agent_outputs"].items():
+                if agent_name not in displayed_agents and output.get("response"):
+                    # Format agent name nicely
+                    agent_title = agent_name.replace('_', ' ').replace('Agent', ' Agent').strip().title()
+                    final_parts.append(f"## {agent_title} Perspective\n")
+                    final_parts.append(output["response"])
+                    final_parts.append("")  # Add blank line for spacing
         else:
             # Standard routing with icons
             if state["routing_decision"] and state["routing_decision"].get("reasoning"):
@@ -978,18 +1040,27 @@ Remember {context['client']} is a major bank requiring highest service standards
             agents_to_run = selected_agents or routing["agents"]
             print(f"[DEBUG] Agents to run: {agents_to_run}")
             
-            # Determine collaboration pattern
-            collaboration = self.determine_collaboration_pattern(query, agents_to_run)
-            state["execution_pattern"] = collaboration["pattern"]
-            state["agent_dependencies"] = collaboration.get("dependencies", {})
-            state["execution_order"] = collaboration.get("order", agents_to_run)
+            # Use collaboration pattern from routing (LLM-determined) or fallback
+            if "collaboration_pattern" in routing:
+                # Use LLM-determined pattern
+                state["execution_pattern"] = routing["collaboration_pattern"]
+                state["execution_order"] = routing.get("order", agents_to_run)
+                state["agent_dependencies"] = routing.get("dependencies", {})
+                print(f"[DEBUG] Using LLM-determined collaboration pattern: {state['execution_pattern']}")
+            else:
+                # Fallback to determine pattern
+                collaboration = self.determine_collaboration_pattern(query, agents_to_run)
+                state["execution_pattern"] = collaboration["pattern"]
+                state["agent_dependencies"] = collaboration.get("dependencies", {})
+                state["execution_order"] = collaboration.get("order", agents_to_run)
+                print(f"[DEBUG] Using fallback collaboration pattern: {state['execution_pattern']}")
             
             # Yield collaboration pattern info
             yield {
                 "type": "collaboration_pattern",
-                "pattern": collaboration["pattern"],
-                "dependencies": collaboration.get("dependencies", {}),
-                "order": collaboration.get("order", [])
+                "pattern": state["execution_pattern"],
+                "dependencies": state.get("agent_dependencies", {}),
+                "order": state.get("execution_order", [])
             }
             
             # Create async tasks for all agents
@@ -1023,165 +1094,110 @@ Remember {context['client']} is a major bank requiring highest service standards
                     "pattern": state["execution_pattern"]
                 }
                 
-                # Create async generator for each agent
-                if agent_name == "sales_strategist":
-                    print(f"[DEBUG] Adding streaming agent: {agent_name}")
-                    agent_tasks.append((agent_name, self._sales_strategist_agent(state)))
-                elif agent_name == "technical_architect":
-                    print(f"[DEBUG] Adding streaming agent: {agent_name}")
-                    agent_tasks.append((agent_name, self._technical_architect_agent(state)))
-                elif agent_name == "financial_analyst":
-                    print(f"[DEBUG] Adding streaming agent: {agent_name}")
-                    agent_tasks.append((agent_name, self._financial_analyst_agent(state)))
-                elif agent_name == "service_delivery_manager":
-                    print(f"[DEBUG] Adding streaming agent: {agent_name}")
-                    agent_tasks.append((agent_name, self._service_delivery_manager_agent(state)))
-                elif agent_name == "document_researcher":
-                    print(f"[DEBUG] Executing non-streaming agent: {agent_name}")
-                    # Handle non-streaming agents
-                    result = await self._document_researcher_agent(state)
-                    state["agent_outputs"][agent_name] = result
-                    end_time = datetime.now()
-                    duration = (end_time - agent_start_times[agent_name]).total_seconds()
-                    # Update agent metrics
-                    state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
-                    state["agent_metrics"][agent_name]["duration"] = duration
-                    state["agent_metrics"][agent_name]["status"] = "completed"
-                    yield {
-                        "type": "agent_complete",
-                        "agent": agent_name,
-                        "content": result.get("response", ""),
-                        "avatar": self.agent_avatars.get(agent_name, "🤖"),
-                        "description": self.agent_descriptions.get(agent_name, ""),
-                        "duration": duration,
-                        "end_time": end_time.isoformat()
-                    }
-                elif agent_name == "tool_executor":
-                    result = await self._tool_executor_agent(state)
-                    state["agent_outputs"][agent_name] = result
-                    end_time = datetime.now()
-                    duration = (end_time - agent_start_times[agent_name]).total_seconds()
-                    # Update agent metrics
-                    state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
-                    state["agent_metrics"][agent_name]["duration"] = duration
-                    state["agent_metrics"][agent_name]["status"] = "completed"
-                    yield {
-                        "type": "agent_complete", 
-                        "agent": agent_name,
-                        "content": result.get("response", ""),
-                        "avatar": self.agent_avatars.get(agent_name, "🤖"),
-                        "description": self.agent_descriptions.get(agent_name, ""),
-                        "duration": duration,
-                        "end_time": end_time.isoformat()
-                    }
-                elif agent_name == "context_manager":
-                    result = await self._context_manager_agent(state)
-                    state["agent_outputs"][agent_name] = result
-                    end_time = datetime.now()
-                    duration = (end_time - agent_start_times[agent_name]).total_seconds()
-                    # Update agent metrics
-                    state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
-                    state["agent_metrics"][agent_name]["duration"] = duration
-                    state["agent_metrics"][agent_name]["status"] = "completed"
-                    yield {
-                        "type": "agent_complete",
-                        "agent": agent_name, 
-                        "content": result.get("response", ""),
-                        "avatar": self.agent_avatars.get(agent_name, "🤖"),
-                        "description": self.agent_descriptions.get(agent_name, ""),
-                        "duration": duration,
-                        "end_time": end_time.isoformat()
-                    }
+                # REMOVED HARDCODED AGENTS - All agents now load from database
+                # Always use dynamic execution to avoid maintenance issues
+                use_dynamic_only = True
+                
+                if False:  # Disabled hardcoded agents
+                    # Use existing hardcoded implementation
+                    if agent_name in ["sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager"]:
+                        # Streaming agents
+                        print(f"[DEBUG] Adding hardcoded streaming agent: {agent_name}")
+                        agent_tasks.append((agent_name, hardcoded_agents[agent_name](state)))
+                    else:
+                        # Non-streaming agents
+                        print(f"[DEBUG] Executing hardcoded non-streaming agent: {agent_name}")
+                        result = await hardcoded_agents[agent_name](state)
+                        state["agent_outputs"][agent_name] = result
+                        end_time = datetime.now()
+                        duration = (end_time - agent_start_times[agent_name]).total_seconds()
+                        state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
+                        state["agent_metrics"][agent_name]["duration"] = duration
+                        state["agent_metrics"][agent_name]["status"] = "completed"
+                        yield {
+                            "type": "agent_complete",
+                            "agent": agent_name,
+                            "content": result.get("response", ""),
+                            "avatar": self.agent_avatars.get(agent_name, "🤖"),
+                            "description": self.agent_descriptions.get(agent_name, ""),
+                            "duration": duration,
+                            "end_time": end_time.isoformat()
+                        }
                 else:
-                    # Handle unimplemented agents
-                    print(f"[WARNING] Agent '{agent_name}' not implemented, skipping")
-                    end_time = datetime.now()
-                    duration = (end_time - agent_start_times[agent_name]).total_seconds()
-                    # Update agent metrics
-                    state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
-                    state["agent_metrics"][agent_name]["duration"] = duration
-                    state["agent_metrics"][agent_name]["status"] = "failed"
-                    yield {
-                        "type": "agent_complete",
-                        "agent": agent_name,
-                        "content": f"Agent '{agent_name}' is not yet implemented. Please check the agent configuration.",
-                        "avatar": self.agent_avatars.get(agent_name, "🤖")
-                    }
-            
-            # Process streaming agents concurrently
-            if agent_tasks:
-                # Run all agents concurrently and merge streams
-                async def merge_agent_streams():
-                    # Create queue for collecting events from all agents
-                    from asyncio import Queue
+                    # Use dynamic agent execution for any other agent
+                    print(f"[DEBUG] Using dynamic execution for agent: {agent_name}")
                     
-                    event_queue = Queue()
-                    active_tasks = []
-                    
-                    async def agent_worker(name, gen):
-                        try:
-                            async for event in gen:
-                                if not isinstance(event, dict):
-                                    print(f"[ERROR] Agent {name} yielded non-dict: {type(event)} - {str(event)[:100]}")
-                                    # Skip non-dict events
-                                    continue
-                                await event_queue.put(event)
-                        except Exception as e:
-                            await event_queue.put({
-                                "type": "error",
-                                "agent": name,
-                                "error": str(e)
-                            })
-                        finally:
-                            await event_queue.put({"type": "agent_done", "agent": name})
-                    
-                    # Start all agent tasks
-                    for name, gen in agent_tasks:
-                        task = asyncio.create_task(agent_worker(name, gen))
-                        active_tasks.append(task)
-                    
-                    # Track completed agents
-                    completed_agents = 0
-                    total_agents = len(agent_tasks)
-                    
-                    # Process events from queue
-                    while completed_agents < total_agents:
-                        event = await event_queue.get()
+                    async def dynamic_agent_wrapper(agent_name_local=agent_name):
+                        print(f"[DEBUG] dynamic_agent_wrapper called for {agent_name_local}")
+                        from app.langchain.dynamic_agent_system import DynamicMultiAgentSystem
+                        from app.core.langgraph_agents_cache import get_agent_by_name
                         
-                        if event.get("type") == "agent_done":
-                            completed_agents += 1
-                        else:
+                        agent_data = get_agent_by_name(agent_name_local)
+                        print(f"[DEBUG] Agent data found: {agent_data is not None}")
+                        if not agent_data:
+                            yield {
+                                "type": "agent_error",
+                                "agent": agent_name_local,
+                                "error": f"Agent {agent_name_local} not found in system"
+                            }
+                            return
+                        
+                        dynamic_system = DynamicMultiAgentSystem()
+                        start_time = agent_start_times[agent_name_local]
+                        
+                        async for event in dynamic_system.execute_agent(
+                            agent_name_local,
+                            agent_data,
+                            state["query"],
+                            context=self._extract_query_context(state["query"])
+                        ):
+                            if event.get("type") == "agent_complete":
+                                end_time = datetime.now()
+                                duration = (end_time - start_time).total_seconds()
+                                
+                                # Store output
+                                content = event.get("content", "")
+                                print(f"[DEBUG] Dynamic agent {agent_name_local} completed with content length: {len(content)}")
+                                state["agent_outputs"][agent_name_local] = {
+                                    "response": content,
+                                    "duration": duration
+                                }
+                                
+                                # Update metrics
+                                state["agent_metrics"][agent_name_local]["end_time"] = end_time.isoformat()
+                                state["agent_metrics"][agent_name_local]["duration"] = duration
+                                state["agent_metrics"][agent_name_local]["status"] = "completed"
+                                
+                                # Add duration to event
+                                event["duration"] = duration
+                                event["end_time"] = end_time.isoformat()
+                            
                             yield event
                     
-                    # Wait for all tasks to complete
-                    await asyncio.gather(*active_tasks, return_exceptions=True)
+                    # Add to streaming tasks
+                    agent_tasks.append((agent_name, dynamic_agent_wrapper()))
+            
+            # Process agents according to collaboration pattern
+            if agent_tasks:
+                from app.langchain.collaboration_executor import CollaborationExecutor
+                executor = CollaborationExecutor()
                 
-                # Stream events from all agents
-                async for event in merge_agent_streams():
-                    if not isinstance(event, dict):
-                        print(f"[ERROR] merge_agent_streams yielded non-dict: {type(event)} - {event}")
-                        # Skip non-dict events
-                        continue
-                    
-                    # Capture agent responses in state for synthesizer
-                    if event.get("type") == "agent_complete" and event.get("agent") and event.get("content"):
-                        agent_name = event["agent"]
-                        if agent_name not in state["agent_outputs"]:
-                            state["agent_outputs"][agent_name] = {}
-                        state["agent_outputs"][agent_name]["response"] = event["content"]
-                        
-                        # Add timing information if we have start time
-                        if agent_name in agent_start_times:
-                            end_time = datetime.now()
-                            duration = (end_time - agent_start_times[agent_name]).total_seconds()
-                            event["duration"] = duration
-                            event["end_time"] = end_time.isoformat()
-                            # Update agent metrics for streaming agents
-                            state["agent_metrics"][agent_name]["end_time"] = end_time.isoformat()
-                            state["agent_metrics"][agent_name]["duration"] = duration
-                            state["agent_metrics"][agent_name]["status"] = "completed"
-                    
+                print(f"[DEBUG] Executing {len(agent_tasks)} agents with {state['execution_pattern']} pattern")
+                
+                # Execute agents according to collaboration pattern
+                async for event in executor.execute_agents(
+                    pattern=state["execution_pattern"],
+                    agent_tasks=agent_tasks,
+                    state=state,
+                    agent_start_times=agent_start_times
+                ):
                     yield event
+            
+            # Debug: Check what we have before synthesizing
+            print(f"[DEBUG] Before synthesis - agent_outputs keys: {list(state['agent_outputs'].keys())}")
+            for agent_name, output in state["agent_outputs"].items():
+                if output and output.get("response"):
+                    print(f"[DEBUG] Agent {agent_name} has response of length: {len(output['response'])}")
             
             # Step 3: Synthesize
             synthesizer_start_time = datetime.now()

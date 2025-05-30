@@ -3,6 +3,7 @@ from app.api.v1.endpoints import document, document_upload_fix
 from app.api.routes import llm
 from app.api.v1.endpoints import settings
 from app.api.v1.endpoints import mcp_tools
+from app.api.v1.endpoints import mcp_servers
 from app.api.v1.endpoints import langchain
 from app.api.v1.endpoints import langgraph_agents
 
@@ -35,6 +36,12 @@ api_router.include_router(
 api_router.include_router(
     mcp_tools.router,
     prefix="/mcp/tools",
+    tags=["mcp"]
+)
+
+api_router.include_router(
+    mcp_servers.router,
+    prefix="/mcp/servers",
     tags=["mcp"]
 )
 

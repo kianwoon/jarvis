@@ -1,44 +1,20 @@
-import redis
 import json
 import logging
 from app.core.db import SessionLocal, MCPTool, Settings as SettingsModel
+from app.core.redis_base import RedisCache
 
-REDIS_HOST = 'redis'
-REDIS_PORT = 6379
 MCP_TOOLS_KEY = 'mcp_tools_cache'
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Try to connect to Redis, use in-memory cache as fallback
-try:
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-    r.ping()  # Test connection
-    logger.info("Successfully connected to Redis")
-except Exception as e:
-    logger.warning(f"Redis connection failed: {str(e)}")
-    logger.warning("Using in-memory cache instead of Redis")
-    
-    # Simple in-memory cache as fallback
-    class InMemoryCache:
-        def __init__(self):
-            self.cache = {}
-        
-        def get(self, key):
-            return self.cache.get(key)
-        
-        def set(self, key, value):
-            self.cache[key] = value
-            return True
-    
-    r = InMemoryCache()
+# Initialize cache with lazy Redis connection
+cache = RedisCache(key_prefix="")
 
 def get_enabled_mcp_tools():
-    cached = r.get(MCP_TOOLS_KEY)
+    cached = cache.get(MCP_TOOLS_KEY)
     if cached:
-        if isinstance(cached, str):
-            return json.loads(cached)
-        return cached  # Already a dict for in-memory cache
+        return cached
     return reload_enabled_mcp_tools()
 
 def reload_enabled_mcp_tools():
@@ -98,7 +74,7 @@ def reload_enabled_mcp_tools():
         api_key_count = sum(1 for tool_info in enabled_tools.values() if tool_info.get('api_key'))
         logger.info(f"Caching {len(enabled_tools)} tools, {api_key_count} with API keys")
             
-        r.set(MCP_TOOLS_KEY, json.dumps(enabled_tools))
+        cache.set(MCP_TOOLS_KEY, enabled_tools)
         logger.info(f"Reloaded {len(enabled_tools)} enabled MCP tools to cache")
         return enabled_tools
     finally:

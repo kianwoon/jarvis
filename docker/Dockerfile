@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     poppler-utils \
     libgl1 \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache

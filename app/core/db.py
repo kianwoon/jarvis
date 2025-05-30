@@ -82,6 +82,7 @@ class LangGraphAgent(Base):
     tools = Column(JSON, default=list)
     description = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
+    config = Column(JSON, default=dict)  # Agent-specific configuration
     created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
 

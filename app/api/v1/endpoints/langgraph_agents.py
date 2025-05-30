@@ -31,6 +31,7 @@ class LangGraphAgentBase(BaseModel):
     tools: List[str] = []
     description: Optional[str] = None
     is_active: bool = True
+    config: Optional[dict] = None
 
 class LangGraphAgentCreate(LangGraphAgentBase):
     pass
@@ -42,6 +43,7 @@ class LangGraphAgentUpdate(BaseModel):
     tools: Optional[List[str]] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
+    config: Optional[dict] = None
 
 class LangGraphAgent(LangGraphAgentBase):
     id: int

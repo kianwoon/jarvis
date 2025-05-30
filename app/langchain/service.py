@@ -1201,6 +1201,14 @@ def call_mcp_tool(tool_name, parameters):
     
     tool_info = enabled_tools[tool_name]
     endpoint = tool_info["endpoint"]
+    
+    # Replace localhost with the actual hostname from manifest if available
+    # This handles the case where endpoints are stored with localhost but need to use Docker hostname
+    manifest_hostname = tool_info.get("manifest_hostname")
+    if manifest_hostname and "localhost" in endpoint:
+        endpoint = endpoint.replace("localhost", manifest_hostname)
+        print(f"[DEBUG] Replaced localhost with manifest hostname '{manifest_hostname}' in endpoint")
+    
     method = tool_info.get("method", "POST")
     headers = tool_info.get("headers") or {}
     

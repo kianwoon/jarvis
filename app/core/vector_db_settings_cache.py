@@ -1,18 +1,17 @@
-import redis
 import json
 from app.core.db import SessionLocal, Settings as SettingsModel
+from app.core.redis_base import RedisCache
 
-REDIS_HOST = 'redis'
-REDIS_PORT = 6379
 VECTOR_DB_SETTINGS_KEY = 'vector_db_settings_cache'
 
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+# Initialize cache with lazy Redis connection
+cache = RedisCache(key_prefix="")
 
 def get_vector_db_settings():
     try:
-        cached = r.get(VECTOR_DB_SETTINGS_KEY)
+        cached = cache.get(VECTOR_DB_SETTINGS_KEY)
         if cached:
-            return json.loads(cached)
+            return cached
         return reload_vector_db_settings()
     except Exception as e:
         print(f"[ERROR] Failed to get vector DB settings from cache: {str(e)}")
@@ -28,7 +27,7 @@ def get_vector_db_settings():
         }
 
 def set_vector_db_settings(settings_dict):
-    r.set(VECTOR_DB_SETTINGS_KEY, json.dumps(settings_dict))
+    cache.set(VECTOR_DB_SETTINGS_KEY, settings_dict)
 
 # Call this after updating settings in DB
 def reload_vector_db_settings():
@@ -36,11 +35,11 @@ def reload_vector_db_settings():
     try:
         row = db.query(SettingsModel).filter(SettingsModel.category == 'storage').first()
         if row and 'vector_db' in row.settings:
-            r.set(VECTOR_DB_SETTINGS_KEY, json.dumps(row.settings['vector_db']))
+            cache.set(VECTOR_DB_SETTINGS_KEY, row.settings['vector_db'])
             return row.settings['vector_db']
         else:
             default = {"active": "milvus", "milvus": {}, "qdrant": {}}
-            r.set(VECTOR_DB_SETTINGS_KEY, json.dumps(default))
+            cache.set(VECTOR_DB_SETTINGS_KEY, default)
             return default
     finally:
         db.close() 

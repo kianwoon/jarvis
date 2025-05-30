@@ -4,6 +4,13 @@ Test script to verify multi-agent chat functionality after fixes
 
 import asyncio
 import json
+import os
+
+# Set environment variables for local testing
+os.environ["REDIS_HOST"] = "localhost"
+os.environ["POSTGRES_HOST"] = "localhost"
+os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434"
+
 from app.langchain.multi_agent_system_simple import MultiAgentSystem
 
 async def test_multi_agent_streaming():

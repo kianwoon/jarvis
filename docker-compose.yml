@@ -8,12 +8,17 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
+    env_file:
+      - .env.docker
     environment:
       - ENVIRONMENT=development
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
     depends_on:
       - postgres
       - qdrant
+      - redis
       # - memory-service
       # - ollama
 
