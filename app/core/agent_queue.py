@@ -150,4 +150,5 @@ class AgentExecutionQueue:
         }
 
 # Global instance for shared use
-agent_queue = AgentExecutionQueue(max_concurrent=2)
+# Increased from 2 to 3 to better handle multi-agent scenarios with 5+ agents
+agent_queue = AgentExecutionQueue(max_concurrent=3)

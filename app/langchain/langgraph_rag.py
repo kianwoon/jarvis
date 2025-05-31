@@ -16,7 +16,7 @@ from app.core.llm_settings_cache import get_llm_settings
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
-from app.api.v1.endpoints.document import HTTPEndeddingFunction
+from app.api.v1.endpoints.document import HTTPEmbeddingFunction
 import httpx
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
@@ -334,7 +334,7 @@ def retrieve_documents_node(state: RAGState) -> RAGState:
     # Set up embeddings
     embedding_endpoint = embedding_cfg.get("embedding_endpoint")
     if embedding_endpoint:
-        embeddings = HTTPEndeddingFunction(embedding_endpoint)
+        embeddings = HTTPEmbeddingFunction(embedding_endpoint)
     else:
         embeddings = HuggingFaceEmbeddings(model_name=embedding_cfg["embedding_model"])
     

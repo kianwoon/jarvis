@@ -19,7 +19,8 @@
       "Bash(docker-compose restart:*)",
       "Bash(mv:*)",
       "Bash(cp:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(docker restart:*)"
     ],
     "deny": []
   },

@@ -240,7 +240,20 @@ Respond in JSON:
         # Add context if available
         context_str = ""
         if context:
-            context_str = f"\n\nCONTEXT:\n{json.dumps(context, indent=2)}"
+            # Special handling for conversation history
+            if "conversation_history" in context:
+                context_str = f"\n\nCONTEXT:\nPrevious conversation:\n"
+                for msg in context.get("conversation_history", [])[-6:]:  # Last 6 messages
+                    role = "User" if msg.get("role") == "user" else "Assistant"
+                    content = msg.get("content", "")[:200]  # Truncate long messages
+                    context_str += f"{role}: {content}\n"
+                
+                # Add other context fields
+                other_context = {k: v for k, v in context.items() if k != "conversation_history"}
+                if other_context:
+                    context_str += f"\nAdditional context:\n{json.dumps(other_context, indent=2)}"
+            else:
+                context_str = f"\n\nCONTEXT:\n{json.dumps(context, indent=2)}"
         
         full_prompt = f"""{system_prompt}
 

@@ -20,7 +20,7 @@ from pymilvus import Collection, utility
 
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
-from app.api.v1.endpoints.document import HTTPEndeddingFunction, ensure_milvus_collection
+from app.api.v1.endpoints.document import HTTPEmbeddingFunction, ensure_milvus_collection
 from utils.deduplication import hash_text, get_existing_hashes, get_existing_doc_ids
 
 router = APIRouter()
@@ -118,7 +118,7 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
         embedding_endpoint = embedding_cfg.get('embedding_endpoint')
         
         if embedding_endpoint:
-            embeddings = HTTPEndeddingFunction(embedding_endpoint)
+            embeddings = HTTPEmbeddingFunction(embedding_endpoint)
             progress.details["embedding_type"] = "HTTP endpoint"
         else:
             from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -143,7 +143,7 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
             
             original_page = chunk.metadata.get('page', 0)
             chunk.metadata.update({
-                'source': file.filename,
+                'source': file.filename.lower(),  # Normalize filename to lowercase
                 'page': original_page,
                 'doc_type': 'pdf',
                 'uploaded_at': datetime.now().isoformat(),

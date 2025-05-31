@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import document, document_upload_fix
+from app.api.v1.endpoints import document, document_upload_fix, document_multi, document_multi_progress, document_preview
 from app.api.routes import llm
 from app.api.v1.endpoints import settings
 from app.api.v1.endpoints import mcp_tools
@@ -55,4 +55,22 @@ api_router.include_router(
     langgraph_agents.router,
     prefix="/langgraph",
     tags=["langgraph"]
+)
+
+api_router.include_router(
+    document_multi.router,
+    prefix="/documents",
+    tags=["documents"]
+)
+
+api_router.include_router(
+    document_multi_progress.router,
+    prefix="/documents",
+    tags=["documents"]
+)
+
+api_router.include_router(
+    document_preview.router,
+    prefix="/documents",
+    tags=["documents"]
 ) 

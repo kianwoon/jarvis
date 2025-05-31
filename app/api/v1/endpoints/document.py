@@ -26,14 +26,16 @@ class DocumentRequest(BaseModel):
     metadata: Optional[dict] = None
 
 # Custom embedding function for HTTP endpoint
-class HTTPEndeddingFunction:
+class HTTPEmbeddingFunction:
     def __init__(self, endpoint: str):
         self.endpoint = endpoint
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         embeddings = []
         for text in texts:
-            payload = {"texts": [text]}
+            # Use lowercase for consistent embeddings
+            normalized_text = text.lower().strip()
+            payload = {"texts": [normalized_text]}
             resp = requests.post("http://qwen-embedder:8050/embed", json=payload)
             if resp.status_code == 422:
                 print("Response content:", resp.content)
@@ -42,6 +44,7 @@ class HTTPEndeddingFunction:
         return embeddings
     
     def embed_query(self, text: str) -> List[float]:
+        # Also normalize queries to lowercase
         return self.embed_documents([text])[0]
 
 def ensure_milvus_collection(collection_name: str, vector_dim: int, uri: str, token: str):
@@ -174,7 +177,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     embedding_endpoint = embedding_cfg.get('embedding_endpoint')
     
     if embedding_endpoint:
-        embeddings = HTTPEndeddingFunction(embedding_endpoint)
+        embeddings = HTTPEmbeddingFunction(embedding_endpoint)
         print("✅ Using HTTP embedding endpoint")
     else:
         from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -198,7 +201,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         original_page = chunk.metadata.get('page', 0)
         
         chunk.metadata.update({
-            'source': file.filename,
+            'source': file.filename.lower(),  # Normalize filename to lowercase
             'page': original_page,  # Keep original page number
             'doc_type': 'pdf',
             'uploaded_at': datetime.now().isoformat(),
@@ -389,7 +392,7 @@ async def debug_search(query: str, limit: int = 10, min_score: float = 0.5, min_
     # Set up embeddings
     embedding_endpoint = embedding_cfg.get("embedding_endpoint")
     if embedding_endpoint:
-        embeddings = HTTPEndeddingFunction(embedding_endpoint)
+        embeddings = HTTPEmbeddingFunction(embedding_endpoint)
     else:
         from langchain_community.embeddings import HuggingFaceEmbeddings
         embeddings = HuggingFaceEmbeddings(model_name=embedding_cfg["embedding_model"])
@@ -409,10 +412,12 @@ async def debug_search(query: str, limit: int = 10, min_score: float = 0.5, min_
     
     # Search with more results to filter from
     try:
+        # Normalize query for consistent vector search
+        normalized_query = query.lower().strip()
         if hasattr(milvus_store, 'similarity_search_with_score'):
-            docs = milvus_store.similarity_search_with_score(query, k=limit * 3)  # Get 3x more to filter
+            docs = milvus_store.similarity_search_with_score(normalized_query, k=limit * 3)  # Get 3x more to filter
         else:
-            docs_without_score = milvus_store.similarity_search(query, k=limit * 3)
+            docs_without_score = milvus_store.similarity_search(normalized_query, k=limit * 3)
             docs = [(doc, 1.0) for doc in docs_without_score]
         
         results = []
@@ -584,7 +589,7 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
         embedding_endpoint = embedding_cfg.get('embedding_endpoint')
         
         if embedding_endpoint:
-            embeddings = HTTPEndeddingFunction(embedding_endpoint)
+            embeddings = HTTPEmbeddingFunction(embedding_endpoint)
             progress.details["embedding_type"] = "HTTP endpoint"
         else:
             from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -607,7 +612,7 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
             
             original_page = chunk.metadata.get('page', 0)
             chunk.metadata.update({
-                'source': file.filename,
+                'source': file.filename.lower(),  # Normalize filename to lowercase
                 'page': original_page,
                 'doc_type': 'pdf',
                 'uploaded_at': datetime.now().isoformat(),

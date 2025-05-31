@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Markdown Display</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/react-markdown@8.0.7/react-markdown.min.js"></script>
+    <script src="https://unpkg.com/remark-gfm@3.0.1/dist/remark-gfm.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-case { margin: 20px 0; padding: 20px; border: 1px solid #ccc; }
+        .raw { background: #f0f0f0; padding: 10px; margin: 10px 0; }
+        .rendered { background: #fff; padding: 10px; margin: 10px 0; border: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+    <h1>Markdown Rendering Test</h1>
+    
+    <div class="test-case">
+        <h2>Test 1: Bold Text</h2>
+        <div class="raw">Raw: **This should be bold**</div>
+        <div class="rendered">Expected: <strong>This should be bold</strong></div>
+    </div>
+
+    <div class="test-case">
+        <h2>Test 2: Italic Text</h2>
+        <div class="raw">Raw: *This should be italic*</div>
+        <div class="rendered">Expected: <em>This should be italic</em></div>
+    </div>
+
+    <div class="test-case">
+        <h2>Test 3: Mixed Formatting</h2>
+        <div class="raw">Raw: Here is **bold** and *italic* text</div>
+        <div class="rendered">Expected: Here is <strong>bold</strong> and <em>italic</em> text</div>
+    </div>
+
+    <div class="test-case">
+        <h2>Test 4: Lists</h2>
+        <div class="raw">Raw:<br>
+1. First item<br>
+2. Second item<br>
+- Bullet item<br>
+- Another bullet
+        </div>
+        <div class="rendered">Expected: 
+            <ol><li>First item</li><li>Second item</li></ol>
+            <ul><li>Bullet item</li><li>Another bullet</li></ul>
+        </div>
+    </div>
+
+    <div id="react-test"></div>
+
+    <script>
+        // Test with actual React Markdown
+        const testContent = `
+**This should be bold**
+
+*This should be italic*
+
+Here is **bold** and *italic* text
+
+1. First item
+2. Second item
+
+- Bullet item
+- Another bullet
+`;
+
+        console.log("Testing markdown:", testContent);
+    </script>
+</body>
+</html>

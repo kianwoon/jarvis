@@ -3,8 +3,10 @@ from typing import List, Set
 from pymilvus import Collection
 
 def hash_text(text: str) -> str:
-    """Return SHA256 hash of the input text."""
-    return hashlib.sha256(text.encode()).hexdigest()
+    """Return SHA256 hash of the input text (case-insensitive)."""
+    # Convert to lowercase for consistent hashing
+    normalized_text = text.lower().strip()
+    return hashlib.sha256(normalized_text.encode()).hexdigest()
 
 def get_existing_hashes(collection: Collection, limit: int = 10000) -> Set[str]:
     """Query all existing chunk hashes from the collection."""

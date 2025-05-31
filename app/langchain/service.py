@@ -2,13 +2,59 @@ import requests
 import re
 import httpx
 import json
+from datetime import datetime
 from app.core.llm_settings_cache import get_llm_settings
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
-from app.api.v1.endpoints.document import HTTPEndeddingFunction
+from app.api.v1.endpoints.document import HTTPEmbeddingFunction
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Milvus
+
+# Simple in-memory conversation cache
+_conversation_cache = {}
+
+def get_conversation_history(conversation_id: str) -> str:
+    """Get formatted conversation history for a given conversation ID"""
+    if not conversation_id:
+        return ""
+    
+    try:
+        history = _conversation_cache.get(conversation_id, [])
+        if not history:
+            return ""
+        
+        # Format last 5 exchanges
+        formatted = []
+        for msg in history[-10:]:  # Last 10 messages (5 exchanges)
+            role = "User" if msg.get("role") == "user" else "Assistant"
+            formatted.append(f"{role}: {msg.get('content', '')}")
+        
+        return "\n".join(formatted)
+    except Exception as e:
+        print(f"[ERROR] Failed to get conversation history: {e}")
+        return ""
+
+def store_conversation_message(conversation_id: str, role: str, content: str):
+    """Store a message in conversation history"""
+    if not conversation_id:
+        return
+    
+    try:
+        if conversation_id not in _conversation_cache:
+            _conversation_cache[conversation_id] = []
+        
+        _conversation_cache[conversation_id].append({
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Keep only last 20 messages
+        if len(_conversation_cache[conversation_id]) > 20:
+            _conversation_cache[conversation_id] = _conversation_cache[conversation_id][-20:]
+    except Exception as e:
+        print(f"[ERROR] Failed to store conversation message: {e}")
 
 def build_prompt(prompt: str, thinking: bool = False, is_internal: bool = False) -> str:
     if thinking:
@@ -400,11 +446,14 @@ Provide ONLY the 2 alternatives, one per line, no numbering or explanations."""
         except Exception as e:
             print(f"[DEBUG] LLM query expansion failed: {str(e)}")
     
-    print(f"[DEBUG] Expanded queries: {expanded_queries}")
-    return expanded_queries
+    # Normalize all queries to lowercase for consistent searching
+    normalized_queries = [query.lower().strip() for query in expanded_queries]
+    
+    print(f"[DEBUG] Expanded queries: {normalized_queries}")
+    return normalized_queries
 
 def keyword_search_milvus(question: str, collection_name: str, uri: str, token: str) -> list:
-    """Perform direct keyword search in Milvus using expressions"""
+    """Enhanced keyword search with smart term extraction"""
     from pymilvus import Collection, connections
     import re
     
@@ -425,14 +474,41 @@ def keyword_search_milvus(question: str, collection_name: str, uri: str, token: 
         words = question.lower().split()
         search_terms = []
         
-        # First pass: identify and prioritize important terms
-        important_terms = []
-        content_terms = []
+        # Use lightweight keyword extraction (no external dependencies)
+        try:
+            from app.langchain.lightweight_keyword_extractor import LightweightKeywordExtractor
+            extractor = LightweightKeywordExtractor()
+            extracted_terms = extractor.extract_key_terms(question)
+            
+            # Get prioritized search terms
+            important_terms = extractor.get_search_terms(extracted_terms, max_terms=5)
+            
+            # Get all extracted terms
+            all_extracted = []
+            for terms in extracted_terms.values():
+                all_extracted.extend(terms)
+            all_extracted = list(set(all_extracted))
+            
+            print(f"[DEBUG] Keyword extraction - patterns: {extracted_terms.get('pattern_matches', [])}")
+            print(f"[DEBUG] Keyword extraction - entities: {extracted_terms.get('potential_entities', [])}")
+            print(f"[DEBUG] Keyword extraction - phrases: {extracted_terms.get('important_phrases', [])}")
+            print(f"[DEBUG] Keyword extraction - final search terms: {important_terms}")
+            
+        except Exception as e:
+            print(f"[WARNING] Keyword extraction failed: {e}")
+            # Fallback to empty
+            important_terms = []
+            all_extracted = []
         
+        # Basic extraction as fallback or complement
+        content_terms = []
         for word in words:
-            # Clean the word
             clean_word = re.sub(r'[^\w]', '', word)
             if len(clean_word) < 2:
+                continue
+            
+            # Skip if already extracted by smart extractor
+            if clean_word in all_extracted:
                 continue
             
             # Check if it's an important term by looking at original casing
@@ -444,7 +520,8 @@ def keyword_search_milvus(question: str, collection_name: str, uri: str, token: 
                     if (orig_clean.isupper() and len(orig_clean) > 1) or \
                        (orig_clean[0].isupper() and orig_clean.lower() not in stop_words and 
                         orig_clean not in ['Find', 'Get', 'Show', 'Tell', 'Give', 'Provide']):
-                        important_terms.append(clean_word)
+                        if clean_word not in important_terms:
+                            important_terms.append(clean_word)
                     break
             
             # Also collect content terms (not stop words, length > 2)
@@ -471,7 +548,8 @@ def keyword_search_milvus(question: str, collection_name: str, uri: str, token: 
         
         # Strategy 1: All terms must be present (AND)
         if len(search_terms) <= 3:
-            conditions = [f'content like "%{word}%"' for word in search_terms]
+            # Use lowercase for case-insensitive search
+            conditions = [f'content like "%{word.lower()}%"' for word in search_terms]
             expr = " and ".join(conditions)
             
             print(f"[DEBUG] Keyword search expression (AND): {expr}")
@@ -483,6 +561,27 @@ def keyword_search_milvus(question: str, collection_name: str, uri: str, token: 
             )
             all_results.extend(results)
             print(f"[DEBUG] AND search found {len(results)} results")
+            
+            # Also search in source field for important terms
+            if important_terms and len(all_results) < 10:
+                source_conditions = [f'source like "%{word.lower()}%"' for word in important_terms]
+                source_expr = " or ".join(source_conditions)
+                
+                print(f"[DEBUG] Source field search expression: {source_expr}")
+                
+                source_results = collection.query(
+                    expr=source_expr,
+                    output_fields=["content", "source", "page", "hash", "doc_id"],
+                    limit=20
+                )
+                
+                # Add unique results from source search
+                existing_hashes = {r.get("hash") for r in all_results}
+                for r in source_results:
+                    if r.get("hash") not in existing_hashes:
+                        all_results.append(r)
+                
+                print(f"[DEBUG] Source field search added {len(source_results)} results")
         
         # Strategy 2: Any important term (OR) - if AND didn't find enough
         if len(all_results) < 5 and important_terms:
@@ -504,6 +603,27 @@ def keyword_search_milvus(question: str, collection_name: str, uri: str, token: 
                     all_results.append(r)
             
             print(f"[DEBUG] OR search added {len(results)} results")
+            
+        # Strategy 3: Search in source field for all search terms if still not enough results
+        if len(all_results) < 10 and search_terms:
+            source_conditions = [f'source like "%{word.lower()}%"' for word in search_terms]
+            source_expr = " or ".join(source_conditions)
+            
+            print(f"[DEBUG] Extended source field search expression: {source_expr}")
+            
+            source_results = collection.query(
+                expr=source_expr,
+                output_fields=["content", "source", "page", "hash", "doc_id"],
+                limit=20
+            )
+            
+            # Add unique results from source search
+            existing_hashes = {r.get("hash") for r in all_results}
+            for r in source_results:
+                if r.get("hash") not in existing_hashes:
+                    all_results.append(r)
+            
+            print(f"[DEBUG] Extended source search added {len(source_results)} results")
         
         print(f"[DEBUG] Keyword search total found {len(all_results)} results")
         
@@ -651,7 +771,7 @@ def handle_rag_query(question: str, thinking: bool = False) -> tuple:
     print(f"[DEBUG] handle_rag_query: Embedding config - endpoint: {embedding_endpoint}, model: {embedding_model}")
     
     if embedding_endpoint and isinstance(embedding_endpoint, str) and embedding_endpoint.strip():
-        embeddings = HTTPEndeddingFunction(embedding_endpoint)
+        embeddings = HTTPEmbeddingFunction(embedding_endpoint)
         print(f"[DEBUG] handle_rag_query: Using HTTP embedding endpoint")
     else:
         # Use default model if embedding_model is not a valid string
@@ -693,7 +813,9 @@ def handle_rag_query(question: str, thinking: bool = False) -> tuple:
         # 1. Vector search with query expansion
         for query in queries_to_try:
             try:
-                docs = milvus_store.similarity_search_with_score(query, k=NUM_DOCS) if hasattr(milvus_store, 'similarity_search_with_score') else [(doc, 0.0) for doc in milvus_store.similarity_search(query, k=NUM_DOCS)]
+                # Normalize query to lowercase for consistent vector search
+                normalized_query = query.lower().strip()
+                docs = milvus_store.similarity_search_with_score(normalized_query, k=NUM_DOCS) if hasattr(milvus_store, 'similarity_search_with_score') else [(doc, 0.0) for doc in milvus_store.similarity_search(normalized_query, k=NUM_DOCS)]
                 
                 # Add unique documents
                 for doc, score in docs:
@@ -971,6 +1093,11 @@ Documents to score:
 def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True):
     """Main function with hybrid RAG+LLM approach prioritizing answer quality"""
     print(f"[DEBUG] rag_answer: incoming question = {question}")
+    print(f"[DEBUG] rag_answer: conversation_id = {conversation_id}")
+    
+    # Store the user's question in conversation history
+    if conversation_id:
+        store_conversation_message(conversation_id, "user", question)
     
     # Temporarily disable LangGraph due to Redis initialization issues
     use_langgraph = False
@@ -1015,6 +1142,12 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
         if not tool_calls:
             print(f"[DEBUG] rag_answer: No tools actually executed despite TOOLS classification")
     
+    # Get conversation history
+    conversation_history = get_conversation_history(conversation_id) if conversation_id else ""
+    history_prompt = ""
+    if conversation_history:
+        history_prompt = f"Previous conversation:\n{conversation_history}\n\n"
+    
     # STEP 3: Hybrid approach - combine available sources for optimal answer
     context = ""
     source = ""
@@ -1023,7 +1156,7 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
         # BEST CASE: RAG + TOOLS + LLM synthesis
         source = "RAG+TOOLS+LLM"
         context = f"RAG Context:\n{rag_context}\n\nTool Results:\n{tool_context}"
-        prompt = f"""You have both internal knowledge base information and tool results to answer this question comprehensively.
+        prompt = f"""{history_prompt}You have both internal knowledge base information and tool results to answer this question comprehensively.
 
 Internal Knowledge Base Context:
 {rag_context}
@@ -1042,7 +1175,7 @@ Answer:"""
         # IDEAL CASE: RAG + LLM synthesis 
         source = "RAG+LLM"
         context = rag_context
-        prompt = f"""You have relevant information from our internal knowledge base. Use this along with your general knowledge to provide a comprehensive, insightful answer.
+        prompt = f"""{history_prompt}You have relevant information from our internal knowledge base. Use this along with your general knowledge to provide a comprehensive, insightful answer.
 
 Internal Knowledge Base Context:
 {rag_context}
@@ -1058,7 +1191,7 @@ Answer:"""
         # TOOLS + LLM
         source = "TOOLS+LLM"
         context = tool_context
-        prompt = f"""Based on the tool results below, provide a comprehensive answer that incorporates this information along with relevant general knowledge.
+        prompt = f"""{history_prompt}Based on the tool results below, provide a comprehensive answer that incorporates this information along with relevant general knowledge.
 
 Tool Results:
 {tool_context}
@@ -1072,7 +1205,7 @@ Answer:"""
         # RAG was attempted but no documents found - still use RAG+LLM to indicate RAG was checked
         source = "RAG+LLM"
         context = ""
-        prompt = f"""No specific documents were found in our internal knowledge base for this query, but I'll provide a comprehensive answer based on general knowledge.
+        prompt = f"""{history_prompt}No specific documents were found in our internal knowledge base for this query, but I'll provide a comprehensive answer based on general knowledge.
 
 Question: {question}
 
@@ -1082,7 +1215,7 @@ Answer:"""
     else:
         # FALLBACK: Pure LLM
         source = "LLM"
-        prompt = f"Question: {question}\n\nAnswer:"
+        prompt = f"{history_prompt}Question: {question}\n\nAnswer:"
         print(f"[DEBUG] rag_answer: Using pure LLM approach (no relevant context or tools)")
     
     # Apply thinking wrapper if needed
@@ -1135,6 +1268,10 @@ Answer:"""
             else:
                 answer = ""
             
+            # Store assistant's response in conversation history
+            if conversation_id and answer:
+                store_conversation_message(conversation_id, "assistant", answer)
+            
             yield json.dumps({
                 "answer": answer,
                 "source": source,
@@ -1164,6 +1301,11 @@ Answer:"""
         
         print(f"[RAG ROUTER] Final answer preview: {answer[:100]}...")
         print(f"[RAG ROUTER] Source used: {source}")
+        
+        # Store assistant's response in conversation history
+        if conversation_id and answer:
+            store_conversation_message(conversation_id, "assistant", answer)
+        
         return {
             "answer": answer,
             "context": context,

@@ -1145,11 +1145,16 @@ Remember {context['client']} is a major bank requiring highest service standards
                         dynamic_system = DynamicMultiAgentSystem()
                         start_time = agent_start_times[agent_name_local]
                         
+                        # Build context including conversation history
+                        agent_context = self._extract_query_context(state["query"])
+                        if conversation_history:
+                            agent_context["conversation_history"] = conversation_history
+                        
                         async for event in dynamic_system.execute_agent(
                             agent_name_local,
                             agent_data,
                             state["query"],
-                            context=self._extract_query_context(state["query"])
+                            context=agent_context
                         ):
                             if event.get("type") == "agent_complete":
                                 end_time = datetime.now()

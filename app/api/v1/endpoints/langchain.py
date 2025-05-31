@@ -12,6 +12,7 @@ class RAGRequest(BaseModel):
     question: str
     thinking: bool = False
     conversation_id: Optional[str] = None
+    session_id: Optional[str] = None  # Add this for backward compatibility
     use_langgraph: bool = True
 
 class RAGResponse(BaseModel):
@@ -21,12 +22,15 @@ class RAGResponse(BaseModel):
 
 @router.post("/rag")
 def rag_endpoint(request: RAGRequest):
+    # Use session_id as conversation_id if conversation_id is not provided
+    conversation_id = request.conversation_id or request.session_id
+    
     def stream():
         for chunk in rag_answer(
             request.question, 
             thinking=request.thinking, 
             stream=True,
-            conversation_id=request.conversation_id,
+            conversation_id=conversation_id,
             use_langgraph=request.use_langgraph
         ):
             yield chunk
