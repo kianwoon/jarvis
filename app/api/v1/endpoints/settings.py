@@ -6,6 +6,7 @@ from app.core.vector_db_settings_cache import reload_vector_db_settings
 from app.core.embedding_settings_cache import reload_embedding_settings
 from app.core.iceberg_settings_cache import reload_iceberg_settings
 from app.core.mcp_tools_cache import reload_enabled_mcp_tools
+from app.core.large_generation_settings_cache import reload_large_generation_settings, validate_large_generation_config, merge_with_defaults
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
 import requests
@@ -166,6 +167,27 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
     if category == 'mcp':
         logger.info("Processing MCP settings with special handling")
         handle_mcp_settings_update(update, db)
+    
+    # If updating large generation settings, validate and reload cache
+    if category == 'large_generation':
+        logger.info("Processing large generation settings")
+        
+        # Merge with defaults to ensure all required fields exist
+        merged_settings = merge_with_defaults(update.settings)
+        
+        # Validate configuration
+        is_valid, error_msg = validate_large_generation_config(merged_settings)
+        if not is_valid:
+            logger.error(f"Invalid large generation configuration: {error_msg}")
+            raise HTTPException(status_code=400, detail=f"Invalid configuration: {error_msg}")
+        
+        # Update the database with merged settings
+        settings_row.settings = merged_settings
+        db.commit()
+        
+        # Reload cache
+        reload_large_generation_settings()
+        logger.info("Large generation settings validated and cache reloaded")
     
     return {"category": category, "settings": settings_row.settings}
 

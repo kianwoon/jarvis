@@ -25,32 +25,50 @@ class CollaborationExecutor:
         Yields:
             Events from agent execution
         """
+        print(f"[DEBUG] CollaborationExecutor.execute_agents called with pattern={pattern}")
+        print(f"[DEBUG] CollaborationExecutor received {len(agent_tasks)} tasks: {[task[0] for task in agent_tasks]}")
+        
         if pattern == "sequential":
+            print(f"[DEBUG] CollaborationExecutor: Using sequential execution")
             async for event in self._execute_sequential(agent_tasks, state, agent_start_times):
                 yield event
         elif pattern == "hierarchical":
+            print(f"[DEBUG] CollaborationExecutor: Using hierarchical execution")
             async for event in self._execute_hierarchical(agent_tasks, state, agent_start_times):
                 yield event
         else:  # parallel
+            print(f"[DEBUG] CollaborationExecutor: Using parallel execution")
             async for event in self._execute_parallel(agent_tasks, state, agent_start_times):
                 yield event
+        
+        print(f"[DEBUG] CollaborationExecutor.execute_agents finished for pattern={pattern}")
     
     async def _execute_sequential(self, agent_tasks: List[Tuple[str, Any]], 
                                 state: Dict, agent_start_times: Dict):
         """Execute agents one after another"""
         logger.info(f"[SEQUENTIAL] Executing {len(agent_tasks)} agents sequentially")
+        print(f"[DEBUG] _execute_sequential: Processing {len(agent_tasks)} agents")
         
         for agent_name, agent_gen in agent_tasks:
             logger.info(f"[SEQUENTIAL] Starting agent: {agent_name}")
+            print(f"[DEBUG] _execute_sequential: About to iterate over generator for {agent_name}")
+            print(f"[DEBUG] _execute_sequential: Generator type for {agent_name}: {type(agent_gen)}")
             
             # Execute agent and collect response
             agent_response = None
+            event_count = 0
+            print(f"[DEBUG] _execute_sequential: Starting async iteration for {agent_name}")
             async for event in agent_gen:
+                event_count += 1
                 if isinstance(event, dict):
                     # Update metrics and state
                     if event.get("type") == "agent_complete":
                         agent_response = event.get("content", "")
+                        print(f"[DEBUG] CollaborationExecutor: Agent {agent_name} completed with content length: {len(agent_response)}")
+                        print(f"[DEBUG] CollaborationExecutor: Content preview: {agent_response[:100]!r}")
                         self._update_agent_state(event, state, agent_start_times)
+                    elif event.get("type") == "agent_token":
+                        # Tokens are forwarded without logging for performance
                     yield event
                 else:
                     logger.warning(f"[SEQUENTIAL] Agent {agent_name} yielded non-dict: {type(event)}")

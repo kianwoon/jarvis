@@ -3,11 +3,14 @@ Simplified Multi-Agent System without LangGraph dependency
 Implements router-based communication between specialized agents
 """
 
-from typing import Dict, List, Any, Optional, TypedDict
+from typing import Dict, List, Any, Optional, TypedDict, AsyncGenerator
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from app.core.langgraph_agents_cache import get_langgraph_agents, get_agent_by_role, get_active_agents
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
 from app.core.llm_settings_cache import get_llm_settings
+from app.agents.task_decomposer import TaskDecomposer, TaskChunk
+from app.agents.continuity_manager import ContinuityManager
+from app.agents.redis_continuation_manager import RedisContinuityManager
 import json
 import uuid
 from datetime import datetime
@@ -302,9 +305,9 @@ class MultiAgentSystem:
             # Create LLM instance with base URL
             llm = OllamaLLM(config, base_url=ollama_url)
             
-            # Accumulate complete response without streaming individual tokens
+            # Stream tokens in real-time for better user experience
             response_text = ""
-            print(f"[DEBUG] {agent_name}: Starting to generate complete response with timeout={actual_timeout}s")
+            print(f"[DEBUG] {agent_name}: Starting to stream response with timeout={actual_timeout}s")
             
             # Use asyncio timeout for the actual timeout
             import asyncio
@@ -312,6 +315,16 @@ class MultiAgentSystem:
                 async with asyncio.timeout(actual_timeout):
                     async for response_chunk in llm.generate_stream(prompt):
                         response_text += response_chunk.text
+                        
+                        # Stream tokens in real-time to show progress
+                        if response_chunk.text.strip():  # Only yield non-empty tokens
+                            yield {
+                                "type": "agent_token",
+                                "agent": agent_name,
+                                "token": response_chunk.text,
+                                "avatar": self.agent_avatars.get(agent_name, "🤖"),
+                                "description": self.agent_descriptions.get(agent_name, "")
+                            }
             except asyncio.TimeoutError:
                 print(f"[WARNING] {agent_name}: Response generation timed out after {actual_timeout}s")
                 # Return partial response if available
@@ -320,23 +333,21 @@ class MultiAgentSystem:
             
             print(f"[DEBUG] {agent_name}: Completed generation, response length = {len(response_text)}")
             
-            # Clean the response and yield only one final event
+            # Clean the response and yield final completion event
             cleaned_content = self._remove_thinking_tags(response_text)
             cleaned_content = self._clean_markdown_formatting(cleaned_content)
             display_content = cleaned_content.strip()
             
-            if display_content:  # Only yield if there's actual content
-                print(f"[DEBUG] {agent_name}: Yielding final response event")
-                event = {
-                    "type": "agent_complete",
-                    "agent": agent_name,
-                    "content": display_content,
-                    "avatar": self.agent_avatars.get(agent_name, "🤖"),
-                    "description": self.agent_descriptions.get(agent_name, "")
-                }
-                yield event
-            else:
-                print(f"[DEBUG] {agent_name}: No content to yield after cleaning")
+            # Always yield a completion event, even if content is empty
+            print(f"[DEBUG] {agent_name}: Yielding final completion event")
+            yield {
+                "type": "agent_complete",
+                "agent": agent_name,
+                "content": display_content,
+                "avatar": self.agent_avatars.get(agent_name, "🤖"),
+                "description": self.agent_descriptions.get(agent_name, ""),
+                "final": True  # Mark as final completion
+            }
             
         except Exception as e:
             print(f"[ERROR] LLM call failed for {agent_name}: {str(e)}")
@@ -349,6 +360,8 @@ class MultiAgentSystem:
     async def _router_agent(self, query: str, conversation_history: List[Dict] = None) -> Dict[str, Any]:
         """Hybrid LLM-based routing with keyword fallback"""
         print(f"[DEBUG] Starting routing for query: {query[:100]}...")
+        
+# Removed early large generation detection - let multi-agent system handle it
         
         # Try dynamic LLM routing first
         try:
@@ -482,6 +495,8 @@ Important: Only use agent names that exist in the available agents list above.""
         }
         
         query_lower = query.lower()
+        
+        # Note: Large generation detection removed from keyword routing to allow multi-agent collaboration
         
         # Comprehensive managed services keywords
         managed_services_keywords = [
@@ -801,9 +816,14 @@ Remember {context['client']} is a major bank requiring highest service standards
         
         # Debug: Print what outputs we have
         print(f"[DEBUG] Synthesizer received outputs from agents: {list(state['agent_outputs'].keys())}")
+        print(f"[DEBUG] Synthesizer: Total agent_outputs entries: {len(state['agent_outputs'])}")
         for agent, output in state["agent_outputs"].items():
             response_len = len(output.get("response", "")) if output else 0
             print(f"[DEBUG] Agent {agent} output length: {response_len}")
+            if response_len > 0:
+                print(f"[DEBUG] Agent {agent} output preview: {output.get('response', '')[:100]!r}")
+            else:
+                print(f"[DEBUG] Agent {agent} output structure: {output}")
         
         # Check if we have any meaningful responses
         has_meaningful_response = False
@@ -826,6 +846,7 @@ Remember {context['client']} is a major bank requiring highest service standards
         
         if not has_meaningful_response and not has_specialized_agents:
             # No meaningful responses, provide a helpful default
+            print(f"[DEBUG] Synthesizer: No meaningful responses found. has_meaningful_response={has_meaningful_response}, has_specialized_agents={has_specialized_agents}")
             return (
                 "I couldn't find specific information in the knowledge base to help with your query.\n\n"
                 "Please try:\n"
@@ -1036,6 +1057,8 @@ Remember {context['client']} is a major bank requiring highest service standards
                 "end_time": router_end_time.isoformat()
             }
             
+# Removed large generation redirect - agents will handle large tasks themselves
+            
             # Step 2: Determine collaboration pattern
             agents_to_run = selected_agents or routing["agents"]
             print(f"[DEBUG] Agents to run: {agents_to_run}")
@@ -1125,7 +1148,7 @@ Remember {context['client']} is a major bank requiring highest service standards
                         }
                 else:
                     # Use dynamic agent execution for any other agent
-                    print(f"[DEBUG] Using dynamic execution for agent: {agent_name}")
+                    print(f"[DEBUG] FIXED: Using dynamic execution for agent: {agent_name}")
                     
                     async def dynamic_agent_wrapper(agent_name_local=agent_name):
                         print(f"[DEBUG] dynamic_agent_wrapper called for {agent_name_local}")
@@ -1135,6 +1158,7 @@ Remember {context['client']} is a major bank requiring highest service standards
                         agent_data = get_agent_by_name(agent_name_local)
                         print(f"[DEBUG] Agent data found: {agent_data is not None}")
                         if not agent_data:
+                            print(f"[ERROR] Agent {agent_name_local} not found, yielding error")
                             yield {
                                 "type": "agent_error",
                                 "agent": agent_name_local,
@@ -1150,19 +1174,23 @@ Remember {context['client']} is a major bank requiring highest service standards
                         if conversation_history:
                             agent_context["conversation_history"] = conversation_history
                         
+                        print(f"[DEBUG] dynamic_agent_wrapper: About to call execute_agent for {agent_name_local}")
+                        event_count = 0
                         async for event in dynamic_system.execute_agent(
                             agent_name_local,
                             agent_data,
                             state["query"],
                             context=agent_context
                         ):
+                            event_count += 1
+                            # Removed excessive event counting debug logs
                             if event.get("type") == "agent_complete":
                                 end_time = datetime.now()
                                 duration = (end_time - start_time).total_seconds()
                                 
                                 # Store output
                                 content = event.get("content", "")
-                                print(f"[DEBUG] Dynamic agent {agent_name_local} completed with content length: {len(content)}")
+                                print(f"[DEBUG] Agent {agent_name_local} completed with {len(content)} chars")
                                 state["agent_outputs"][agent_name_local] = {
                                     "response": content,
                                     "duration": duration
@@ -1178,9 +1206,13 @@ Remember {context['client']} is a major bank requiring highest service standards
                                 event["end_time"] = end_time.isoformat()
                             
                             yield event
+                        
+                        print(f"[DEBUG] dynamic_agent_wrapper: Finished processing {event_count} events for {agent_name_local}")
                     
                     # Add to streaming tasks
+                    print(f"[DEBUG] Adding dynamic agent task for {agent_name} to agent_tasks")
                     agent_tasks.append((agent_name, dynamic_agent_wrapper()))
+                    print(f"[DEBUG] Agent tasks now contains {len(agent_tasks)} tasks: {[task[0] for task in agent_tasks]}")
             
             # Process agents according to collaboration pattern
             if agent_tasks:
@@ -1188,15 +1220,26 @@ Remember {context['client']} is a major bank requiring highest service standards
                 executor = CollaborationExecutor()
                 
                 print(f"[DEBUG] Executing {len(agent_tasks)} agents with {state['execution_pattern']} pattern")
+                print(f"[DEBUG] About to call executor.execute_agents with tasks: {[task[0] for task in agent_tasks]}")
+                
+                # Debug: Check if agent_tasks contains valid generators
+                for task_name, task_gen in agent_tasks:
+                    print(f"[DEBUG] Task {task_name} has generator type: {type(task_gen)}")
                 
                 # Execute agents according to collaboration pattern
+                event_count = 0
                 async for event in executor.execute_agents(
                     pattern=state["execution_pattern"],
                     agent_tasks=agent_tasks,
                     state=state,
                     agent_start_times=agent_start_times
                 ):
+                    event_count += 1
+                    if event_count % 20 == 0:
+                        print(f"[DEBUG] Yielded {event_count} events from collaboration executor")
                     yield event
+                
+                print(f"[DEBUG] Collaboration executor finished, yielded {event_count} total events")
             
             # Debug: Check what we have before synthesizing
             print(f"[DEBUG] Before synthesis - agent_outputs keys: {list(state['agent_outputs'].keys())}")
@@ -1229,6 +1272,8 @@ Remember {context['client']} is a major bank requiring highest service standards
             # Generate performance summary
             performance_summary = self._generate_performance_summary(state)
             
+            print(f"[DEBUG] Yielding final_response event with response length: {len(final_response)}")
+            print(f"[DEBUG] Final response preview (first 200 chars): {final_response[:200]!r}")
             yield {
                 "type": "final_response",
                 "response": final_response,
@@ -1239,6 +1284,7 @@ Remember {context['client']} is a major bank requiring highest service standards
                 "agent_metrics": state["agent_metrics"],
                 "performance_summary": performance_summary
             }
+            print(f"[DEBUG] Multi-agent processing completed successfully")
             
         except Exception as e:
             print(f"[ERROR] Exception in stream_events: {str(e)}")
@@ -1248,3 +1294,273 @@ Remember {context['client']} is a major bank requiring highest service standards
                 "type": "error",
                 "error": str(e)
             }
+    
+    async def stream_large_generation_events(
+        self, 
+        query: str,
+        target_count: int = 100,
+        chunk_size: Optional[int] = None,
+        conversation_history: Optional[List[Dict]] = None
+    ):
+        """
+        Stream events for large generation tasks with intelligent chunking
+        that transcends context limits while maintaining continuity
+        
+        Args:
+            query: The generation task description
+            target_count: Total number of items to generate
+            chunk_size: Optional fixed chunk size, otherwise auto-calculated
+            conversation_history: Previous conversation for context
+            
+        Yields:
+            Events tracking decomposition, progress, and final results
+        """
+        try:
+            print(f"[LARGE_GEN] Starting large generation: {target_count} items for query: {query[:100]}...")
+            
+            # Step 1: Task Decomposition
+            yield {
+                "type": "decomposition_started",
+                "query": query,
+                "target_count": target_count,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            decomposer = TaskDecomposer()
+            task_chunks = await decomposer.decompose_large_task(
+                query=query,
+                target_count=target_count,
+                chunk_size=chunk_size
+            )
+            
+            yield {
+                "type": "task_decomposed",
+                "total_chunks": len(task_chunks),
+                "chunk_size": task_chunks[0].chunk_size if task_chunks else 0,
+                "estimated_duration": len(task_chunks) * 45,  # seconds per chunk estimate
+                "chunks_info": [
+                    {
+                        "chunk_number": chunk.chunk_number,
+                        "items_range": f"{chunk.start_index}-{chunk.end_index}",
+                        "chunk_size": chunk.chunk_size
+                    }
+                    for chunk in task_chunks
+                ]
+            }
+            
+            # Step 2: Execute chunks with Redis-based continuity management
+            continuity_manager = RedisContinuityManager(session_id=self.conversation_id)
+            
+            yield {
+                "type": "execution_started",
+                "session_id": continuity_manager.session_id,
+                "strategy": "chunked_continuation"
+            }
+            
+            # Stream the chunked execution
+            async for event in continuity_manager.execute_chunked_task(
+                chunks=task_chunks,
+                agent_name="continuation_agent"
+            ):
+                # Forward all events from the continuity manager
+                yield event
+                
+                # If task completed, do final quality check and synthesis
+                if event.get("type") == "task_completed":
+                    final_results = event.get("final_results", [])
+                    
+                    # Step 3: Quality assurance and final synthesis
+                    yield {
+                        "type": "quality_check_started",
+                        "items_to_validate": len(final_results)
+                    }
+                    
+                    # Perform quality validation
+                    quality_report = await self._validate_generation_quality(
+                        original_query=query,
+                        generated_items=final_results,
+                        target_count=target_count
+                    )
+                    
+                    yield {
+                        "type": "quality_check_completed",
+                        "quality_score": quality_report.get("overall_score", 0.8),
+                        "validation_details": quality_report,
+                        "recommendations": quality_report.get("recommendations", [])
+                    }
+                    
+                    # Final completion with enhanced metadata
+                    yield {
+                        "type": "large_generation_completed",
+                        "session_id": continuity_manager.session_id,
+                        "original_query": query,
+                        "target_count": target_count,
+                        "actual_count": len(final_results),
+                        "completion_rate": len(final_results) / target_count if target_count > 0 else 1.0,
+                        "final_results": final_results,
+                        "execution_summary": event.get("summary", {}),
+                        "quality_report": quality_report,
+                        "metadata": {
+                            "chunks_executed": len(task_chunks),
+                            "total_execution_time": event.get("total_execution_time", 0),
+                            "average_items_per_chunk": len(final_results) / len(task_chunks) if task_chunks else 0,
+                            "success_rate": quality_report.get("overall_score", 0.8)
+                        }
+                    }
+                    
+        except Exception as e:
+            print(f"[ERROR] Large generation failed: {str(e)}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            yield {
+                "type": "large_generation_error",
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+    
+    async def _validate_generation_quality(
+        self, 
+        original_query: str, 
+        generated_items: List[str], 
+        target_count: int
+    ) -> Dict[str, Any]:
+        """
+        Validate the quality of generated content across all chunks
+        
+        Args:
+            original_query: Original generation task
+            generated_items: All generated items from all chunks
+            target_count: Target number of items
+            
+        Returns:
+            Quality validation report
+        """
+        try:
+            print(f"[QUALITY] Validating {len(generated_items)} generated items")
+            
+            # Basic validation metrics
+            quality_metrics = {
+                "count_accuracy": len(generated_items) / target_count if target_count > 0 else 1.0,
+                "content_consistency": 0.8,  # Default assumption
+                "numbering_correctness": 0.9,  # Default assumption
+                "format_consistency": 0.85,  # Default assumption
+                "overall_score": 0.0
+            }
+            
+            # Check for proper numbering if items appear to be numbered
+            numbering_issues = []
+            if generated_items:
+                import re
+                expected_number = 1
+                
+                for i, item in enumerate(generated_items):
+                    # Check if item starts with a number
+                    match = re.match(r'^(\d+)[\.\)]\s*', item.strip())
+                    if match:
+                        actual_number = int(match.group(1))
+                        if actual_number != expected_number:
+                            numbering_issues.append(f"Item {i+1}: expected {expected_number}, got {actual_number}")
+                        expected_number += 1
+                    else:
+                        # If first few items have numbers, this might be an issue
+                        if i < 3 and any(re.match(r'^\d+[\.\)]\s*', other_item.strip()) for other_item in generated_items[:5]):
+                            numbering_issues.append(f"Item {i+1}: missing number")
+            
+            # Adjust numbering score based on issues found
+            if numbering_issues:
+                quality_metrics["numbering_correctness"] = max(0.0, 1.0 - (len(numbering_issues) / len(generated_items)))
+            
+            # Check content length consistency (items should be roughly similar length)
+            if len(generated_items) > 1:
+                lengths = [len(item) for item in generated_items]
+                avg_length = sum(lengths) / len(lengths)
+                length_variance = sum((length - avg_length) ** 2 for length in lengths) / len(lengths)
+                
+                # If variance is low, content is consistent
+                if length_variance < avg_length * 0.5:  # Low variance
+                    quality_metrics["content_consistency"] = 0.9
+                elif length_variance < avg_length * 1.0:  # Medium variance
+                    quality_metrics["content_consistency"] = 0.7
+                else:  # High variance
+                    quality_metrics["content_consistency"] = 0.5
+            
+            # Check format consistency (similar structure across items)
+            format_patterns = []
+            for item in generated_items[:10]:  # Sample first 10 items
+                # Check if starts with number, has certain punctuation patterns, etc.
+                patterns = []
+                if re.match(r'^\d+[\.\)]', item.strip()):
+                    patterns.append("numbered")
+                if ':' in item:
+                    patterns.append("has_colon")
+                if '?' in item:
+                    patterns.append("has_question")
+                if len(item.split()) > 10:
+                    patterns.append("long_form")
+                format_patterns.append(patterns)
+            
+            # Calculate format consistency
+            if format_patterns:
+                common_patterns = set(format_patterns[0])
+                for patterns in format_patterns[1:]:
+                    common_patterns = common_patterns.intersection(set(patterns))
+                
+                format_consistency = len(common_patterns) / max(1, len(format_patterns[0]))
+                quality_metrics["format_consistency"] = format_consistency
+            
+            # Calculate overall score
+            quality_metrics["overall_score"] = (
+                quality_metrics["count_accuracy"] * 0.3 +
+                quality_metrics["content_consistency"] * 0.3 +
+                quality_metrics["numbering_correctness"] * 0.2 +
+                quality_metrics["format_consistency"] * 0.2
+            )
+            
+            # Generate recommendations
+            recommendations = []
+            if quality_metrics["count_accuracy"] < 0.9:
+                recommendations.append(f"Generated {len(generated_items)} items but target was {target_count}")
+            if quality_metrics["numbering_correctness"] < 0.8:
+                recommendations.append(f"Numbering issues detected: {len(numbering_issues)} problems found")
+            if quality_metrics["content_consistency"] < 0.7:
+                recommendations.append("Content length varies significantly across items")
+            if quality_metrics["format_consistency"] < 0.7:
+                recommendations.append("Inconsistent formatting across generated items")
+            
+            return {
+                **quality_metrics,
+                "total_items": len(generated_items),
+                "target_items": target_count,
+                "numbering_issues": numbering_issues[:5],  # Top 5 issues
+                "recommendations": recommendations,
+                "validation_timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Quality validation failed: {e}")
+            return {
+                "overall_score": 0.6,  # Default moderate score
+                "error": str(e),
+                "recommendations": ["Quality validation failed - manual review recommended"]
+            }
+    
+    async def get_chunked_generation_progress(self, session_id: str) -> Dict[str, Any]:
+        """Get progress for an ongoing chunked generation task"""
+        # This could be enhanced to track active sessions
+        return {
+            "session_id": session_id,
+            "status": "not_found",
+            "message": "Session tracking not yet implemented"
+        }
+    
+    async def resume_chunked_generation(
+        self, 
+        session_id: str, 
+        from_chunk: int = 0
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Resume a chunked generation from a specific chunk"""
+        # Implementation for resuming interrupted generation
+        yield {
+            "type": "resume_not_implemented",
+            "message": "Resume functionality will be implemented in the progress recovery system"
+        }

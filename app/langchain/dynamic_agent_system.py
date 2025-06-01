@@ -227,6 +227,7 @@ Respond in JSON:
         
         print(f"[DEBUG] DynamicMultiAgentSystem.execute_agent called for {agent_name}")
         print(f"[DEBUG] Agent data keys: {list(agent_data.keys()) if agent_data else 'None'}")
+        print(f"[DEBUG] execute_agent: Starting async generator for {agent_name}")
         
         # Get agent configuration
         agent_config = agent_data.get("config", {})
@@ -255,9 +256,14 @@ Respond in JSON:
             else:
                 context_str = f"\n\nCONTEXT:\n{json.dumps(context, indent=2)}"
         
+        # Enhance prompt for completion tasks
+        task_enhancement = ""
+        if any(keyword in query.lower() for keyword in ["50", "interview", "questions", "generate", "create"]):
+            task_enhancement = "\n\nIMPORTANT: If the user is asking you to generate a specific number of items (like 50 interview questions), you MUST generate the complete requested amount. Do not stop early or provide fewer items than requested."
+        
         full_prompt = f"""{system_prompt}
 
-USER QUERY: {query}{context_str}
+USER QUERY: {query}{context_str}{task_enhancement}
 
 Please provide a comprehensive response based on your role and expertise."""
 
@@ -265,6 +271,9 @@ Please provide a comprehensive response based on your role and expertise."""
         try:
             print(f"[DEBUG] Executing {agent_name} with config: max_tokens={max_tokens}, temp={temperature}, timeout={timeout}")
             print(f"[DEBUG] Prompt length: {len(full_prompt)} chars")
+            print(f"[DEBUG] {agent_name} prompt preview (last 200 chars): {full_prompt[-200:]!r}")
+            if task_enhancement:
+                print(f"[DEBUG] {agent_name}: Task enhancement applied for completion task")
             
             response_text = ""
             error_occurred = False
@@ -276,30 +285,41 @@ Please provide a comprehensive response based on your role and expertise."""
                 max_tokens=max_tokens,
                 timeout=timeout
             ):
+                # Removed excessive debug logging for chunk processing
+                
                 if chunk.get("type") == "agent_complete":
                     response_text = chunk.get("content", "")
+                    # Enhance the completion event with avatar and description
+                    enhanced_chunk = {
+                        **chunk,
+                        "avatar": self.get_agent_avatar(agent_name, agent_data.get("role", "")),
+                        "description": agent_data.get("description", "")
+                    }
+                    print(f"[DEBUG] execute_agent: Agent {agent_name} completed")
+                    yield enhanced_chunk
                 elif chunk.get("type") == "agent_error":
                     error_occurred = True
-                    # Still yield the error event
+                    print(f"[DEBUG] execute_agent: Agent {agent_name} error")
                     yield chunk
-                    
-            # Always yield an agent completion event, even if empty
-            if not error_occurred or response_text:
-                yield {
-                    "type": "agent_complete",
-                    "agent": agent_name,
-                    "content": response_text,
-                    "avatar": self.get_agent_avatar(agent_name, agent_data.get("role", "")),
-                    "description": agent_data.get("description", "")
-                }
+                elif chunk.get("type") == "agent_token":
+                    # Forward tokens without logging each one
+                    yield chunk
+                else:
+                    # Forward any other event types
+                    yield chunk
+                    yield chunk
             
         except Exception as e:
             print(f"[ERROR] Agent {agent_name} execution failed: {e}")
+            import traceback
+            print(f"[ERROR] Agent {agent_name} traceback: {traceback.format_exc()}")
             yield {
                 "type": "agent_error",
                 "agent": agent_name,
                 "error": str(e)
             }
+        finally:
+            print(f"[DEBUG] execute_agent: Finished (finally block) for {agent_name}")
     
     async def _call_llm(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2000) -> str:
         """Simple LLM call that returns complete response"""
@@ -323,23 +343,62 @@ Please provide a comprehensive response based on your role and expertise."""
     
     async def _call_llm_stream(self, prompt: str, agent_name: str, temperature: float = 0.7, 
                                max_tokens: int = 4000, timeout: int = 60):
-        """Streaming LLM call for agent execution"""
+        """Streaming LLM call for agent execution with real-time token streaming"""
         try:
             response_text = ""
+            token_count = 0
             
-            # Use asyncio timeout
+            # Create LLM instance for streaming
+            model_config = self.llm_settings.get("thinking_mode", {})
+            config = LLMConfig(
+                model_name=model_config.get("model", "qwen3:30b-a3b"),
+                temperature=temperature,
+                top_p=model_config.get("top_p", 0.9),
+                max_tokens=max_tokens
+            )
+            
+            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            llm = OllamaLLM(config, base_url=ollama_url)
+            
+            print(f"[DEBUG] {agent_name}: Starting FIXED real-time streaming with timeout={timeout}s")
+            print(f"[DEBUG] {agent_name}: Using model {config.model_name} with max_tokens={max_tokens}")
+            
+            # Use asyncio timeout and stream tokens in real-time
             async with asyncio.timeout(timeout):
-                response_text = await self._call_llm(prompt, temperature, max_tokens)
+                async for response_chunk in llm.generate_stream(prompt):
+                    token_count += 1
+                    response_text += response_chunk.text
+                    
+                    # Log every 100th token to track progress (reduced verbosity)
+                    if token_count % 100 == 0:
+                        print(f"[DEBUG] {agent_name}: Received {token_count} tokens, total length: {len(response_text)}")
+                    
+                    # Stream tokens in real-time for better UX
+                    if response_chunk.text:  # Don't filter out whitespace tokens
+                        yield {
+                            "type": "agent_token",
+                            "agent": agent_name,
+                            "token": response_chunk.text
+                        }
             
-            # Clean response
+            print(f"[DEBUG] {agent_name}: *** STREAMING COMPLETE ***")
+            print(f"[DEBUG] {agent_name}: Total tokens received: {token_count}")
+            print(f"[DEBUG] {agent_name}: Total response length: {len(response_text)}")
+            print(f"[DEBUG] {agent_name}: Response preview (first 200 chars): {response_text[:200]!r}")
+            
+            # Clean response and yield final completion
+            print(f"[DEBUG] {agent_name}: Calling _clean_response on {len(response_text)} chars")
             cleaned_content = self._clean_response(response_text)
+            print(f"[DEBUG] {agent_name}: After cleaning: {len(cleaned_content)} chars")
+            print(f"[DEBUG] {agent_name}: Cleaned preview (first 200 chars): {cleaned_content[:200]!r}")
             
-            if cleaned_content:
-                yield {
-                    "type": "agent_complete",
-                    "agent": agent_name,
-                    "content": cleaned_content
-                }
+            # ALWAYS yield completion event, even if content is empty
+            print(f"[DEBUG] {agent_name}: Yielding completion event with content_length={len(cleaned_content)}")
+            yield {
+                "type": "agent_complete",
+                "agent": agent_name,
+                "content": cleaned_content
+            }
                 
         except asyncio.TimeoutError:
             print(f"[WARNING] Agent {agent_name} timed out after {timeout}s")
@@ -381,17 +440,36 @@ Please provide a comprehensive response based on your role and expertise."""
         }
     
     def _clean_response(self, text: str) -> str:
-        """Clean LLM response"""
+        """Clean LLM response - preserve thinking tags for frontend processing"""
         import re
         
-        # Remove thinking tags
-        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        text = re.sub(r'</?think>', '', text)
+        print(f"[DEBUG] _clean_response: Input length: {len(text)}")
+        print(f"[DEBUG] _clean_response: Input preview: {text[:100]!r}")
         
-        # Clean excessive whitespace
+        original_text = text
+        
+        # DON'T remove thinking tags - let frontend handle them for "Reasoning:" display
+        # text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # text = re.sub(r'</?think>', '', text)
+        # print(f"[DEBUG] _clean_response: After removing thinking tags: {len(text)} chars")
+        
+        # Only clean excessive whitespace
         text = re.sub(r'\n{3,}', '\n\n', text)
+        print(f"[DEBUG] _clean_response: After cleaning whitespace: {len(text)} chars")
         
-        return text.strip()
+        cleaned = text.strip()
+        print(f"[DEBUG] _clean_response: After strip(): {len(cleaned)} chars")
+        print(f"[DEBUG] _clean_response: Final preview: {cleaned[:100]!r}")
+        
+        # Check if we have thinking content to preserve
+        if '<think>' in cleaned:
+            print(f"[DEBUG] _clean_response: Preserving thinking content for frontend extraction")
+        
+        if len(cleaned) == 0 and len(original_text) > 0:
+            print(f"[WARNING] _clean_response: Content was completely cleaned away!")
+            print(f"[WARNING] _clean_response: Original had {len(original_text)} chars: {original_text[:200]!r}")
+        
+        return cleaned
     
     async def synthesize_responses(self, agent_responses: Dict[str, str], original_query: str) -> str:
         """Synthesize multiple agent responses into cohesive answer"""

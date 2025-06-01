@@ -11,22 +11,57 @@ from app.api.v1.endpoints.document import HTTPEmbeddingFunction
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Milvus
 
-# Simple in-memory conversation cache
-_conversation_cache = {}
+# Enhanced conversation management with Redis fallback
+_conversation_cache = {}  # In-memory fallback
+
+def get_redis_conversation_client():
+    """Get Redis client specifically for conversation storage"""
+    try:
+        from app.core.redis_client import get_redis_client
+        return get_redis_client()
+    except Exception as e:
+        print(f"[DEBUG] Redis client not available for conversations: {e}")
+        return None
 
 def get_conversation_history(conversation_id: str) -> str:
-    """Get formatted conversation history for a given conversation ID"""
+    """Get formatted conversation history with Redis support"""
     if not conversation_id:
         return ""
     
+    from app.core.large_generation_utils import get_config_accessor
+    config = get_config_accessor()
+    
     try:
+        # Try Redis first
+        redis_client = get_redis_conversation_client()
+        if redis_client:
+            try:
+                # Get conversation from Redis
+                redis_key = f"conversation:{conversation_id}"
+                history_json = redis_client.lrange(redis_key, -config.conversation_history_display, -1)  # Last N messages
+                
+                if history_json:
+                    import json
+                    history = [json.loads(msg) for msg in history_json]
+                    
+                    # Format messages
+                    formatted = []
+                    for msg in history:
+                        role = "User" if msg.get("role") == "user" else "Assistant"
+                        formatted.append(f"{role}: {msg.get('content', '')}")
+                    
+                    return "\n".join(formatted)
+            except Exception as e:
+                print(f"[DEBUG] Redis conversation retrieval failed: {e}")
+        
+        # Fallback to in-memory cache
         history = _conversation_cache.get(conversation_id, [])
         if not history:
             return ""
         
-        # Format last 5 exchanges
+        # Format last N exchanges
         formatted = []
-        for msg in history[-10:]:  # Last 10 messages (5 exchanges)
+        for msg in history[-config.conversation_history_display:]:  # Last N messages
             role = "User" if msg.get("role") == "user" else "Assistant"
             formatted.append(f"{role}: {msg.get('content', '')}")
         
@@ -35,26 +70,177 @@ def get_conversation_history(conversation_id: str) -> str:
         print(f"[ERROR] Failed to get conversation history: {e}")
         return ""
 
+def get_limited_conversation_history(conversation_id: str, max_messages: int = 2) -> str:
+    """Get limited conversation history for simple factual queries"""
+    if not conversation_id:
+        return ""
+    
+    try:
+        # Try Redis first
+        redis_client = get_redis_conversation_client()
+        if redis_client:
+            try:
+                # Get conversation from Redis - only last few messages
+                redis_key = f"conversation:{conversation_id}"
+                history_json = redis_client.lrange(redis_key, -max_messages, -1)  # Last max_messages only
+                
+                if history_json:
+                    import json
+                    history = [json.loads(msg) for msg in history_json]
+                    
+                    # Filter out unrelated content (long responses, complex topics)
+                    filtered_history = []
+                    for msg in history:
+                        content = msg.get('content', '')
+                        # Skip very long responses or responses about complex topics that might bleed
+                        if len(content) > 200 or any(word in content.lower() for word in [
+                            'interview questions', 'generate', 'strategy', 'analysis', 'comprehensive',
+                            'questions', 'tailored', 'director', 'bank', '50', 'below are',
+                            'chunk', 'chunked', 'continuation', 'generate items', 'item number'
+                        ]):
+                            continue
+                        filtered_history.append(msg)
+                    
+                    # Format filtered messages
+                    formatted = []
+                    for msg in filtered_history:
+                        role = "User" if msg.get("role") == "user" else "Assistant"
+                        content = msg.get('content', '')[:100]  # Truncate long content
+                        formatted.append(f"{role}: {content}")
+                    
+                    return "\n".join(formatted)
+            except Exception as e:
+                print(f"[DEBUG] Redis limited conversation retrieval failed: {e}")
+        
+        # Fallback to in-memory cache
+        history = _conversation_cache.get(conversation_id, [])
+        if not history:
+            return ""
+        
+        # Get only recent, short exchanges
+        recent_history = history[-max_messages:]
+        formatted = []
+        for msg in recent_history:
+            content = msg.get('content', '')
+            # Skip long or complex responses
+            if len(content) > 200:
+                continue
+            role = "User" if msg.get("role") == "user" else "Assistant"
+            formatted.append(f"{role}: {content[:100]}")
+        
+        return "\n".join(formatted)
+    except Exception as e:
+        print(f"[ERROR] Failed to get limited conversation history: {e}")
+        return ""
+
 def store_conversation_message(conversation_id: str, role: str, content: str):
-    """Store a message in conversation history"""
+    """Store a message in conversation history with Redis support"""
+    if not conversation_id:
+        return
+    
+    from app.core.large_generation_utils import get_config_accessor
+    config = get_config_accessor()
+    
+    message = {
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    try:
+        # Try Redis first
+        redis_client = get_redis_conversation_client()
+        if redis_client:
+            try:
+                import json
+                redis_key = f"conversation:{conversation_id}"
+                
+                # Store message in Redis list
+                redis_client.lpush(redis_key, json.dumps(message))
+                
+                # Keep only last N messages (more than in-memory for persistence)
+                redis_client.ltrim(redis_key, 0, config.max_redis_messages - 1)
+                
+                # Set expiration (configurable TTL for conversations)
+                redis_client.expire(redis_key, config.redis_conversation_ttl)
+                
+                print(f"[DEBUG] Stored message in Redis for conversation {conversation_id}")
+                
+                # Also update in-memory cache for immediate access
+                if conversation_id not in _conversation_cache:
+                    _conversation_cache[conversation_id] = []
+                _conversation_cache[conversation_id].append(message)
+                if len(_conversation_cache[conversation_id]) > config.max_memory_messages:
+                    _conversation_cache[conversation_id] = _conversation_cache[conversation_id][-config.max_memory_messages:]
+                
+                return
+            except Exception as e:
+                print(f"[DEBUG] Redis conversation storage failed: {e}")
+        
+        # Fallback to in-memory storage
+        if conversation_id not in _conversation_cache:
+            _conversation_cache[conversation_id] = []
+        
+        _conversation_cache[conversation_id].append(message)
+        
+        # Keep only last N messages
+        if len(_conversation_cache[conversation_id]) > config.max_memory_messages:
+            _conversation_cache[conversation_id] = _conversation_cache[conversation_id][-config.max_memory_messages:]
+            
+        print(f"[DEBUG] Stored message in memory cache for conversation {conversation_id}")
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to store conversation message: {e}")
+
+
+def clear_conversation_context_bleeding(conversation_id: str):
+    """Clear conversation context to prevent bleeding between different query types"""
     if not conversation_id:
         return
     
     try:
-        if conversation_id not in _conversation_cache:
-            _conversation_cache[conversation_id] = []
+        # Clear from in-memory cache
+        if conversation_id in _conversation_cache:
+            print(f"[DEBUG] Clearing conversation cache for {conversation_id}")
+            del _conversation_cache[conversation_id]
         
-        _conversation_cache[conversation_id].append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat()
-        })
+        # Optionally clear from Redis (only if we're sure it's needed)
+        # This is commented out to preserve legitimate conversation history
+        # redis_client = get_redis_conversation_client()
+        # if redis_client:
+        #     redis_key = f"conversation:{conversation_id}"
+        #     redis_client.delete(redis_key)
         
-        # Keep only last 20 messages
-        if len(_conversation_cache[conversation_id]) > 20:
-            _conversation_cache[conversation_id] = _conversation_cache[conversation_id][-20:]
     except Exception as e:
-        print(f"[ERROR] Failed to store conversation message: {e}")
+        print(f"[ERROR] Failed to clear conversation context: {e}")
+
+
+def get_full_conversation_history(conversation_id: str) -> list:
+    """Get full conversation history as list for chunked processing"""
+    if not conversation_id:
+        return []
+    
+    try:
+        # Try Redis first for full history
+        redis_client = get_redis_conversation_client()
+        if redis_client:
+            try:
+                import json
+                redis_key = f"conversation:{conversation_id}"
+                history_json = redis_client.lrange(redis_key, 0, -1)  # All messages
+                
+                if history_json:
+                    # Redis stores newest first, so reverse for chronological order
+                    return [json.loads(msg) for msg in reversed(history_json)]
+            except Exception as e:
+                print(f"[DEBUG] Redis full conversation retrieval failed: {e}")
+        
+        # Fallback to in-memory cache
+        return _conversation_cache.get(conversation_id, [])
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to get full conversation history: {e}")
+        return []
 
 def build_prompt(prompt: str, thinking: bool = False, is_internal: bool = False) -> str:
     if thinking:
@@ -175,14 +361,104 @@ def calculate_relevance_score(query: str, context: str) -> float:
     # Ensure score is between 0 and 1
     return min(1.0, max(0.0, final_score))
 
+def detect_large_output_potential(question: str) -> dict:
+    """Detect if question will likely produce large output requiring chunked processing"""
+    from app.core.large_generation_utils import get_config_accessor
+    config = get_config_accessor()
+    
+    large_output_indicators = config.large_output_indicators
+    
+    # Count indicator patterns
+    score = 0
+    question_lower = question.lower()
+    matched_indicators = []
+    
+    for indicator in large_output_indicators:
+        if indicator in question_lower:
+            score += 1
+            matched_indicators.append(indicator)
+    
+    # Extract numbers that might indicate quantity
+    import re
+    numbers = re.findall(r'\b(\d+)\b', question)
+    max_number = max([int(n) for n in numbers], default=0)
+    
+    # Additional patterns that suggest large output
+    large_patterns = config.large_patterns
+    
+    pattern_matches = []
+    for pattern in large_patterns:
+        matches = re.findall(pattern, question_lower)
+        if matches:
+            pattern_matches.extend(matches)
+            score += config.pattern_score_weight  # Patterns get higher weight
+    
+    # Calculate confidence and estimated items
+    base_confidence = min(1.0, score / config.max_score_for_confidence)
+    number_confidence = min(1.0, max_number / config.max_number_for_confidence) if max_number > 0 else 0
+    final_confidence = max(base_confidence, number_confidence)
+    
+    # Estimate number of items to generate
+    if max_number > 10:
+        estimated_items = max_number
+    elif score >= 3:
+        estimated_items = score * config.score_multiplier  # Heuristic: more indicators = more items
+    elif any(keyword in question_lower for keyword in config.comprehensive_keywords):
+        estimated_items = config.default_comprehensive_items  # Default for comprehensive requests
+    else:
+        estimated_items = config.min_estimated_items
+    
+    # More refined logic for determining if it's a large generation request
+    is_likely_large = False
+    
+    # Strong indicators: explicit large numbers
+    if max_number >= config.strong_number_threshold:
+        is_likely_large = True
+    # Medium indicators: moderate numbers + generation keywords
+    elif max_number >= config.medium_number_threshold and score >= config.min_score_for_medium_numbers:
+        is_likely_large = True
+    # Pattern-based indicators: multiple strong keywords suggesting comprehensive content
+    elif score >= config.min_score_for_keywords and any(keyword in question_lower for keyword in config.comprehensive_keywords):
+        is_likely_large = True
+    # Don't trigger for small numbers even with keywords
+    elif max_number > 0 and max_number < config.small_number_threshold:
+        is_likely_large = False
+    
+    # Adjust estimated items for small number requests
+    if max_number > 0 and max_number < config.small_number_threshold:
+        estimated_items = max_number
+    
+    result = {
+        "likely_large": is_likely_large,
+        "estimated_items": estimated_items,
+        "confidence": final_confidence,
+        "score": score,
+        "max_number": max_number,
+        "matched_indicators": matched_indicators,
+        "pattern_matches": pattern_matches
+    }
+    
+    print(f"[DEBUG] Large output detection for '{question}': {result}")
+    return result
+
 def classify_query_type(question: str, llm_cfg) -> str:
     """
-    Classify the query into one of three categories:
+    Classify the query into one of four categories:
+    - LARGE_GENERATION: Requires chunked processing for large outputs
     - RAG: Needs internal company documents/knowledge base
     - TOOLS: Needs function calls (current time, calculations, API calls, etc.)
     - LLM: Can be answered with general knowledge
     """
     print(f"[DEBUG] classify_query_type: question = {question}")
+    
+    # First check for large generation requirements
+    large_output_analysis = detect_large_output_potential(question)
+    from app.core.large_generation_utils import get_config_accessor
+    config = get_config_accessor()
+    
+    if large_output_analysis["likely_large"] and large_output_analysis["estimated_items"] >= config.min_items_for_chunking:
+        print(f"[DEBUG] classify_query_type: Detected large generation requirement")
+        return "LARGE_GENERATION"
     
     # Get available tools for better classification
     available_tools = get_enabled_mcp_tools()
@@ -999,12 +1275,16 @@ Documents to score:
             for part in scores_text.split(','):
                 if ':' in part:
                     doc_part, score_part = part.split(':', 1)
-                    doc_num = int(''.join(filter(str.isdigit, doc_part)))
-                    try:
-                        score = float(''.join(filter(lambda x: x.isdigit() or x == '.', score_part)))
-                        llm_scores[doc_num] = score / 10.0  # Normalize to 0-1
-                    except:
-                        pass
+                    doc_digits = ''.join(filter(str.isdigit, doc_part))
+                    if doc_digits:  # Only process if we have digits
+                        try:
+                            doc_num = int(doc_digits)
+                            score_digits = ''.join(filter(lambda x: x.isdigit() or x == '.', score_part))
+                            if score_digits:  # Only process if we have a score
+                                score = float(score_digits)
+                                llm_scores[doc_num] = score / 10.0  # Normalize to 0-1
+                        except (ValueError, ZeroDivisionError):
+                            continue  # Skip invalid entries
             
             print(f"[DEBUG] LLM scores: {llm_scores}")
             
@@ -1098,6 +1378,16 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
     # Store the user's question in conversation history
     if conversation_id:
         store_conversation_message(conversation_id, "user", question)
+        
+        # Detect if this is a simple query after complex generation task
+        # and clear context bleeding if needed
+        question_lower = question.lower()
+        if any(simple_indicator in question_lower for simple_indicator in [
+            'what is', 'who is', 'when is', 'where is', 'how much', 'what time',
+            'current', 'today', 'now', 'date', 'time'
+        ]) and len(question.split()) <= 10:
+            # This looks like a simple factual query, ensure no complex context bleeding
+            print(f"[DEBUG] Detected simple query after potential complex task, using limited context")
     
     # Temporarily disable LangGraph due to Redis initialization issues
     use_langgraph = False
@@ -1125,15 +1415,314 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
     if missing:
         raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
     
-    # STEP 1: Always attempt RAG first to find relevant context
-    print(f"[DEBUG] rag_answer: Step 1 - Attempting RAG retrieval")
-    rag_context, _ = handle_rag_query(question, thinking)
-    print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
-    
-    # STEP 2: Check if tools can add value
-    print(f"[DEBUG] rag_answer: Step 2 - Checking tool applicability")
+    # STEP 1: Check if this requires large generation (chunked processing) FIRST
     query_type = classify_query_type(question, llm_cfg)
     print(f"[DEBUG] rag_answer: query_type = {query_type}")
+    
+    # STEP 2: If large generation, check if chunking is actually needed
+    if query_type == "LARGE_GENERATION":
+        large_output_analysis = detect_large_output_potential(question)
+        target_count = large_output_analysis["estimated_items"]
+        
+        # CRITICAL FIX: Only use chunking for truly large requests (>100 items)
+        if target_count <= 100:
+            print(f"[DEBUG] rag_answer: {target_count} items is manageable - using single LLM call instead of chunking")
+            # Convert to regular LLM processing for better quality
+            query_type = "LLM"  # Override to use single call
+            rag_context = ""
+        else:
+            print(f"[DEBUG] rag_answer: {target_count} items requires chunking - proceeding with chunked processing")
+            rag_context = ""  # Skip RAG entirely for large generation to avoid delays
+            print(f"[DEBUG] rag_answer: Proceeding without RAG context for chunked processing")
+    else:
+        # STEP 2a: For non-large generation, do full RAG retrieval
+        print(f"[DEBUG] rag_answer: Step 2a - Attempting full RAG retrieval")
+        rag_context, _ = handle_rag_query(question, thinking)
+        print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
+    
+    # STEP 3: Handle large generation immediately if detected
+    if query_type == "LARGE_GENERATION":
+        print(f"[DEBUG] rag_answer: Routing to chunked large generation system")
+        
+        # Check if LLM settings are configured before proceeding
+        try:
+            llm_settings_test = get_llm_settings()
+            if not llm_settings_test:
+                raise RuntimeError("LLM settings not configured")
+        except Exception as e:
+            print(f"[ERROR] Cannot use chunked generation: {e}")
+            # Fall back to regular LLM processing with a helpful message
+            error_message = "⚠️ Large generation detected but LLM settings not configured. Please configure LLM settings in the Settings page first."
+            
+            if stream:
+                def error_stream():
+                    yield json.dumps({"token": error_message}) + "\n"
+                    yield json.dumps({
+                        "answer": error_message,
+                        "source": "ERROR",
+                        "context": "",
+                        "query_type": "ERROR"
+                    }) + "\n"
+                return error_stream()
+            else:
+                return {
+                    "answer": error_message,
+                    "source": "ERROR",
+                    "context": "",
+                    "query_type": "ERROR"
+                }
+        
+        # Import here to avoid circular imports
+        from app.langchain.multi_agent_system_simple import MultiAgentSystem
+        
+        # Get large output analysis for parameters
+        large_output_analysis = detect_large_output_potential(question)
+        target_count = large_output_analysis["estimated_items"]
+        
+        # Create multi-agent system for chunked processing
+        try:
+            system = MultiAgentSystem(conversation_id=conversation_id)
+        except Exception as e:
+            print(f"[ERROR] Failed to create MultiAgentSystem: {e}")
+            # Fall back with error message
+            error_message = f"⚠️ Chunked generation failed to initialize: {str(e)}"
+            
+            if stream:
+                def error_stream():
+                    yield json.dumps({"token": error_message}) + "\n"
+                    yield json.dumps({
+                        "answer": error_message,
+                        "source": "ERROR",
+                        "context": "",
+                        "query_type": "ERROR"
+                    }) + "\n"
+                return error_stream()
+            else:
+                return {
+                    "answer": error_message,
+                    "source": "ERROR",
+                    "context": "",
+                    "query_type": "ERROR"
+                }
+        
+        # Transform question into a generation task with RAG context if available
+        if rag_context:
+            enhanced_query = f"""Based on the following context from our knowledge base, {question}
+
+Context from knowledge base:
+{rag_context}
+
+Please generate the requested items incorporating relevant information from the context above."""
+        else:
+            enhanced_query = question
+        
+        # Get LIMITED conversation history for context to prevent bleeding
+        conversation_history_text = get_limited_conversation_history(conversation_id, max_messages=3) if conversation_id else ""
+        conversation_history_list = get_full_conversation_history(conversation_id) if conversation_id else []
+        # Also limit the list version to prevent bleeding
+        if len(conversation_history_list) > 6:  # 3 user + 3 assistant messages max
+            conversation_history_list = conversation_history_list[-6:]
+        
+        # Stream chunked generation events, converting them to RAG format
+        def chunked_generation_stream():
+            import asyncio
+            async def run_chunked():
+                async for event in system.stream_large_generation_events(
+                    query=enhanced_query,
+                    target_count=target_count,
+                    conversation_history=conversation_history_list
+                ):
+                    # Convert chunked events to RAG streaming format
+                    print(f"[DEBUG] Processing chunked event: type={event.get('type')}, keys={list(event.keys())}")
+                    
+                    if event.get("type") == "chunk_completed":
+                        # Stream chunk content as tokens
+                        content = event.get("content", "")
+                        print(f"[DEBUG] chunk_completed event - content length: {len(content)}")
+                        if content:
+                            print(f"[DEBUG] Streaming chunk content: {content[:100]}...")
+                            # Stream content more naturally as sentences/lines rather than individual words
+                            sentences = content.replace('\n', ' ').split('. ')
+                            for sentence in sentences:
+                                if sentence.strip():
+                                    yield json.dumps({"token": sentence.strip() + ". "}) + "\n"
+                    elif event.get("type") == "task_completed":
+                        # This is the actual final completion from Redis manager
+                        final_results = event.get("final_results", [])
+                        answer = "\n".join(final_results)
+                        
+                        print(f"[DEBUG] Task completed with {len(final_results)} items")
+                        
+                        # Store assistant's response in conversation history
+                        if conversation_id and answer:
+                            store_conversation_message(conversation_id, "assistant", answer)
+                        
+                        yield json.dumps({
+                            "answer": answer,
+                            "source": "RAG+CHUNKED",
+                            "context": rag_context,
+                            "query_type": "RAG+CHUNKED",
+                            "metadata": {
+                                "target_count": target_count,
+                                "actual_count": len(final_results),
+                                "execution_summary": event.get("summary", {}),
+                                "quality_report": event.get("quality_report", {})
+                            }
+                        }) + "\n"
+                    elif event.get("type") == "large_generation_completed":
+                        # Handle the quality-checked final completion
+                        final_results = event.get("final_results", [])
+                        answer = "\n".join(final_results)
+                        
+                        print(f"[DEBUG] Large generation completed with {len(final_results)} items")
+                        
+                        # Store assistant's response in conversation history
+                        if conversation_id and answer:
+                            store_conversation_message(conversation_id, "assistant", answer)
+                        
+                        yield json.dumps({
+                            "answer": answer,
+                            "source": "RAG+CHUNKED",
+                            "context": rag_context,
+                            "query_type": "RAG+CHUNKED",
+                            "metadata": {
+                                "target_count": target_count,
+                                "actual_count": len(final_results),
+                                "execution_summary": event.get("execution_summary", {}),
+                                "quality_report": event.get("quality_report", {})
+                            }
+                        }) + "\n"
+                    elif event.get("type") in ["decomposition_started", "task_decomposed", "execution_started", "chunk_started"]:
+                        # Progress events - send as progress metadata, not content tokens
+                        chunk_number = event.get('chunk_number', event.get('total_chunks', '...'))
+                        yield json.dumps({
+                            "progress": f"Processing chunk {chunk_number}",
+                            "chunk_number": chunk_number,
+                            "total_chunks": event.get('total_chunks', ''),
+                            "type": "progress"
+                        }) + "\n"
+                    elif event.get("type") in ["chunk_failed", "large_generation_error"]:
+                        # Error events - send as error metadata, not content tokens
+                        yield json.dumps({
+                            "error": event.get('error', 'Unknown error'),
+                            "type": "error"
+                        }) + "\n"
+                    else:
+                        # Log unhandled events for debugging
+                        print(f"[DEBUG] Unhandled chunked event: {event.get('type')} - {event}")
+                        
+                        # Handle any other completion events we might have missed
+                        if 'completed' in event.get('type', ''):
+                            final_results = event.get("final_results", [])
+                            if final_results:
+                                answer = "\n".join(final_results)
+                                print(f"[DEBUG] Found completion event with {len(final_results)} items")
+                                
+                                # Store assistant's response in conversation history
+                                if conversation_id and answer:
+                                    store_conversation_message(conversation_id, "assistant", answer)
+                                
+                                yield json.dumps({
+                                    "answer": answer,
+                                    "source": "RAG+CHUNKED",
+                                    "context": rag_context,
+                                    "query_type": "RAG+CHUNKED",
+                                    "metadata": {
+                                        "target_count": target_count,
+                                        "actual_count": len(final_results),
+                                        "execution_summary": event.get("summary", {}),
+                                        "event_type": event.get('type')
+                                    }
+                                }) + "\n"
+            
+            # Run async generator in sync context with timeout
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async_gen = run_chunked()
+                timeout_counter = 0
+                max_timeout = 300  # 5 minutes total timeout
+                
+                while True:
+                    try:
+                        # Use a shorter timeout per iteration to avoid hanging
+                        event = loop.run_until_complete(
+                            asyncio.wait_for(async_gen.__anext__(), timeout=30)
+                        )
+                        yield event
+                        timeout_counter = 0  # Reset timeout counter on successful event
+                    except StopAsyncIteration:
+                        print(f"[DEBUG] Chunked generation completed normally")
+                        break
+                    except asyncio.TimeoutError:
+                        timeout_counter += 30
+                        print(f"[DEBUG] Chunked generation timeout: {timeout_counter}/{max_timeout}s")
+                        if timeout_counter >= max_timeout:
+                            print(f"[ERROR] Chunked generation timed out after {max_timeout}s")
+                            yield json.dumps({
+                            "progress": f"Timeout: Generation stopped after {max_timeout}s",
+                            "type": "timeout_error"
+                        }) + "\n"
+                            yield json.dumps({
+                                "answer": "Generation timed out. This may be due to missing LLM configuration or system issues.",
+                                "source": "ERROR",
+                                "context": "",
+                                "query_type": "ERROR"
+                            }) + "\n"
+                            break
+                        else:
+                            # Continue waiting but show progress - send as progress metadata
+                            yield json.dumps({
+                                "progress": f"Still processing... {timeout_counter}s",
+                                "timeout_counter": timeout_counter,
+                                "type": "timeout_progress"
+                            }) + "\n"
+                    except Exception as e:
+                        print(f"[ERROR] Chunked generation exception: {e}")
+                        yield json.dumps({
+                            "error": str(e),
+                            "type": "exception_error"
+                        }) + "\n"
+                        yield json.dumps({
+                            "answer": f"Generation failed: {str(e)}",
+                            "source": "ERROR", 
+                            "context": "",
+                            "query_type": "ERROR"
+                        }) + "\n"
+                        break
+            finally:
+                loop.close()
+        
+        if stream:
+            return chunked_generation_stream()
+        else:
+            # For non-stream mode, collect all results
+            all_results = []
+            for chunk in chunked_generation_stream():
+                if chunk.strip():
+                    try:
+                        data = json.loads(chunk)
+                        if "answer" in data:
+                            return {
+                                "answer": data["answer"],
+                                "context": data.get("context", ""),
+                                "source": data["source"],
+                                "query_type": data["query_type"],
+                                "metadata": data.get("metadata", {})
+                            }
+                    except json.JSONDecodeError:
+                        continue
+            
+            # Fallback if no final answer found
+            return {
+                "answer": "Large generation task completed. Please check the streaming output for results.",
+                "context": rag_context,
+                "source": "RAG+CHUNKED", 
+                "query_type": "RAG+CHUNKED"
+            }
+    
+    # STEP 3: Check if tools can add value (for non-large generation queries)
+    print(f"[DEBUG] rag_answer: Step 3 - Checking tool applicability")
     
     tool_calls = []
     tool_context = ""
@@ -1142,13 +1731,17 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
         if not tool_calls:
             print(f"[DEBUG] rag_answer: No tools actually executed despite TOOLS classification")
     
-    # Get conversation history
-    conversation_history = get_conversation_history(conversation_id) if conversation_id else ""
+    # Get conversation history with smart filtering for ALL query types
+    conversation_history = ""
     history_prompt = ""
-    if conversation_history:
-        history_prompt = f"Previous conversation:\n{conversation_history}\n\n"
+    if conversation_id:
+        # ALWAYS use limited conversation history to prevent context bleeding
+        conversation_history = get_limited_conversation_history(conversation_id, max_messages=3)
+        
+        if conversation_history:
+            history_prompt = f"Previous conversation:\n{conversation_history}\n\n"
     
-    # STEP 3: Hybrid approach - combine available sources for optimal answer
+    # STEP 4: Hybrid approach - combine available sources for optimal answer
     context = ""
     source = ""
     
@@ -1191,14 +1784,14 @@ Answer:"""
         # TOOLS + LLM
         source = "TOOLS+LLM"
         context = tool_context
-        prompt = f"""{history_prompt}Based on the tool results below, provide a comprehensive answer that incorporates this information along with relevant general knowledge.
+        prompt = f"""{history_prompt}I have executed tools to gather current information. Now I need to provide a comprehensive answer based on the tool results and relevant general knowledge.
 
 Tool Results:
 {tool_context}
 
 Question: {question}
 
-Answer:"""
+Please provide a direct, helpful answer using the tool results above."""
         print(f"[DEBUG] rag_answer: Using TOOLS+LLM approach")
         
     elif query_type == "RAG":
@@ -1213,9 +1806,31 @@ Answer:"""
         print(f"[DEBUG] rag_answer: Using RAG+LLM approach (no documents found)")
         
     else:
-        # FALLBACK: Pure LLM
+        # FALLBACK: Pure LLM (including large single generations)
         source = "LLM"
-        prompt = f"{history_prompt}Question: {question}\n\nAnswer:"
+        
+        # Enhanced prompt for large generation requests
+        if "generate" in question.lower() and any(word in question.lower() for word in ["questions", "items", "list"]):
+            # Extract number for better prompt
+            import re
+            numbers = re.findall(r'\b(\d+)\b', question)
+            target_num = max([int(n) for n in numbers], default=10) if numbers else 10
+            
+            prompt = f"""{history_prompt}Generate exactly {target_num} high-quality, unique interview questions for the specified role and context.
+
+Requirements:
+- Each question must be completely unique and cover different aspects
+- Avoid any semantic duplicates or variations of the same concept  
+- Number each question clearly (1. 2. 3. etc.)
+- Ensure professional interview quality
+- Cover diverse competency areas
+
+{question}
+
+Generate exactly {target_num} questions:"""
+        else:
+            prompt = f"{history_prompt}Question: {question}\n\nAnswer:"
+        
         print(f"[DEBUG] rag_answer: Using pure LLM approach (no relevant context or tools)")
     
     # Apply thinking wrapper if needed
@@ -1228,58 +1843,139 @@ Answer:"""
     llm_api_url = "http://localhost:8000/api/v1/generate_stream"
     mode_config = llm_cfg["thinking_mode"] if thinking else llm_cfg["non_thinking_mode"]
     
+    # Dynamic max_tokens based on request type
+    if "generate" in question.lower() and any(word in question.lower() for word in ["questions", "items", "list"]):
+        # For generation tasks, calculate appropriate token limit
+        import re
+        numbers = re.findall(r'\b(\d+)\b', question)
+        target_num = max([int(n) for n in numbers], default=10) if numbers else 10
+        # Estimate ~100 tokens per question + 500 buffer for instructions
+        estimated_tokens = target_num * 100 + 500
+        max_tokens = min(estimated_tokens, 8192)  # Cap at 8K tokens
+        print(f"[DEBUG] rag_answer: Using dynamic max_tokens={max_tokens} for {target_num} items")
+    else:
+        max_tokens = llm_cfg.get("max_tokens", 2048)
+    
     payload = {
         "prompt": prompt,
         "temperature": mode_config.get("temperature", 0.7),
         "top_p": mode_config.get("top_p", 1.0),
-        "max_tokens": llm_cfg.get("max_tokens", 2048)
+        "max_tokens": max_tokens
     }
     
     if stream:
         def token_stream():
+            # Capture max_tokens in local scope
+            tokens_limit = max_tokens
             text = ""
-            with httpx.Client(timeout=None) as client:
-                with client.stream("POST", llm_api_url, json=payload) as response:
-                    for line in response.iter_lines():
-                        if not line:
-                            continue
-                        if isinstance(line, bytes):
-                            line = line.decode("utf-8")
-                        if line.startswith("data: "):
-                            token = line.replace("data: ", "")
-                            text += token
-                            yield json.dumps({"token": token}) + "\n"
+            try:
+                with httpx.Client(timeout=300) as client:  # 5 minute timeout
+                    with client.stream("POST", llm_api_url, json=payload) as response:
+                        response.raise_for_status()  # Raise exception for HTTP errors
+                        for line in response.iter_lines():
+                            if not line:
+                                continue
+                            if isinstance(line, bytes):
+                                line = line.decode("utf-8")
+                            if line.startswith("data: "):
+                                token = line.replace("data: ", "")
+                                if token.strip():  # Only process non-empty tokens
+                                    text += token
+                                    yield json.dumps({"token": token}) + "\n"
+                        
+                        # Ensure response is fully consumed
+                        print(f"[DEBUG] HTTP streaming completed, total text length: {len(text)}")
+                        print(f"[DEBUG] Starting post-processing of response")
+            except httpx.TimeoutException:
+                print(f"[ERROR] HTTP timeout after 300 seconds")
+                # Send completion event to stop cursor
+                yield json.dumps({
+                    "answer": "Request timed out. Please try again.",
+                    "source": "ERROR",
+                    "error": "Request timed out"
+                }) + "\n"
+                return
+            except httpx.HTTPStatusError as e:
+                print(f"[ERROR] HTTP error: {e.response.status_code} - {e.response.text}")
+                # Send completion event to stop cursor
+                yield json.dumps({
+                    "answer": f"HTTP error: {e.response.status_code}. Please try again.",
+                    "source": "ERROR", 
+                    "error": f"HTTP error: {e.response.status_code}"
+                }) + "\n"
+                return
+            except Exception as e:
+                print(f"[ERROR] Streaming error: {e}")
+                # Send completion event to stop cursor  
+                yield json.dumps({
+                    "answer": f"Streaming failed: {str(e)}. Please try again.",
+                    "source": "ERROR",
+                    "error": f"Streaming failed: {str(e)}"
+                }) + "\n"
+                return
             
-            # Extract reasoning and preserve formatting in answer
-            reasoning = re.findall(r"<think>(.*?)</think>", text, re.DOTALL)
-            # Remove thinking tags but preserve all formatting
-            answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-            
-            # Clean up the answer while preserving structure
-            if answer:
-                # Remove excessive blank lines (more than 2)
-                answer = re.sub(r'\n{3,}', '\n\n', answer)
-                # Remove leading/trailing whitespace but preserve internal structure
-                answer = answer.strip()
-                # Ensure proper spacing after periods for readability
-                answer = re.sub(r'\.([A-Z])', r'. \1', answer)
-                # Fix any missing spaces after colons
-                answer = re.sub(r':([A-Z])', r': \1', answer)
-            else:
-                answer = ""
-            
-            # Store assistant's response in conversation history
-            if conversation_id and answer:
-                store_conversation_message(conversation_id, "assistant", answer)
-            
-            yield json.dumps({
-                "answer": answer,
-                "source": source,
-                "context": context,
-                "reasoning": reasoning[0] if reasoning else None,
-                "tool_calls": tool_calls,
-                "query_type": source  # Use source as query_type for backward compatibility
-            }) + "\n"
+            print(f"[DEBUG] Post-processing response: text_length={len(text)}")
+            try:
+                import re  # Import re inside the function to fix scoping issue
+                # Extract reasoning and preserve formatting in answer
+                reasoning = re.findall(r"<think>(.*?)</think>", text, re.DOTALL)
+                print(f"[DEBUG] Found {len(reasoning)} reasoning sections")
+                # Remove thinking tags but preserve all formatting
+                answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+                
+                # Clean up the answer while preserving structure
+                if answer:
+                    # Remove excessive blank lines (more than 2)
+                    answer = re.sub(r'\n{3,}', '\n\n', answer)
+                    # Remove leading/trailing whitespace but preserve internal structure
+                    answer = answer.strip()
+                    # Ensure proper spacing after periods for readability
+                    answer = re.sub(r'\.([A-Z])', r'. \1', answer)
+                    # Fix any missing spaces after colons
+                    answer = re.sub(r':([A-Z])', r': \1', answer)
+                else:
+                    answer = ""
+                
+                # Store assistant's response in conversation history
+                if conversation_id and answer:
+                    store_conversation_message(conversation_id, "assistant", answer)
+                
+                # Send completion event with the exact format the frontend expects
+                completion_event = {
+                    "answer": answer,  # This is the key field the frontend looks for
+                    "source": source,
+                    "reasoning": reasoning[0] if reasoning else None,
+                    "tool_calls": tool_calls,
+                    "query_type": source,
+                    "metadata": {
+                        "streaming_complete": True,
+                        "total_tokens": len(text),
+                        "response_length": len(answer),
+                        "max_tokens_used": tokens_limit,
+                        "completion_timestamp": datetime.now().isoformat()
+                    }
+                }
+                
+                print(f"[DEBUG] Sending completion event: answer_length={len(answer)}, source={source}")
+                try:
+                    completion_json = json.dumps(completion_event, ensure_ascii=False)
+                    print(f"[DEBUG] Completion JSON length: {len(completion_json)}")
+                    yield completion_json + "\n"
+                except Exception as json_error:
+                    print(f"[ERROR] Failed to serialize completion event: {json_error}")
+                    # Send a minimal completion event as fallback
+                    fallback_event = {"answer": answer, "source": source}
+                    yield json.dumps(fallback_event, ensure_ascii=False) + "\n"
+            except Exception as e:
+                print(f"[ERROR] Completion processing error: {e}")
+                import traceback
+                traceback.print_exc()
+                # Always send a completion event even on error to stop the cursor
+                yield json.dumps({
+                    "answer": f"Error: {str(e)}",
+                    "source": "ERROR",
+                    "error": f"Completion failed: {str(e)}"
+                }) + "\n"
         
         return token_stream()
     
@@ -1314,7 +2010,13 @@ Answer:"""
             "route": source,  # Updated to use source
             "source": source,
             "tool_calls": tool_calls,
-            "query_type": source  # Use source as query_type for backward compatibility
+            "query_type": source,  # Use source as query_type for backward compatibility
+            "metadata": {
+                "total_tokens": len(text),
+                "response_length": len(answer),
+                "max_tokens_used": max_tokens,
+                "completion_timestamp": datetime.now().isoformat()
+            }
         }
 
 # Keep existing helper functions
