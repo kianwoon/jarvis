@@ -57,26 +57,42 @@ class LangGraphAgent(LangGraphAgentBase):
 def update_redis_cache(db: Session):
     """Update Redis cache with all agents"""
     if not r:
-        return
+        print("[WARNING] Redis not available, cannot update cache")
+        return False
     
-    agents = db.query(LangGraphAgentDB).all()
-    agents_dict = {}
-    
-    for agent in agents:
-        agents_dict[agent.name] = {
-            "id": agent.id,
-            "name": agent.name,
-            "role": agent.role,
-            "system_prompt": agent.system_prompt,
-            "tools": agent.tools or [],
-            "description": agent.description,
-            "is_active": agent.is_active,
-            "created_at": agent.created_at.isoformat() if agent.created_at else None,
-            "updated_at": agent.updated_at.isoformat() if agent.updated_at else None
-        }
-    
-    r.set(LANGGRAPH_AGENTS_KEY, json.dumps(agents_dict))
-    print(f"Updated Redis cache with {len(agents_dict)} agents")
+    try:
+        agents = db.query(LangGraphAgentDB).all()
+        agents_dict = {}
+        
+        for agent in agents:
+            # Include config in cache data
+            agent_config = agent.config or {}
+            agents_dict[agent.name] = {
+                "id": agent.id,
+                "name": agent.name,
+                "role": agent.role,
+                "system_prompt": agent.system_prompt,
+                "tools": agent.tools or [],
+                "description": agent.description,
+                "is_active": agent.is_active,
+                "config": agent_config,
+                "created_at": agent.created_at.isoformat() if agent.created_at else None,
+                "updated_at": agent.updated_at.isoformat() if agent.updated_at else None
+            }
+        
+        r.set(LANGGRAPH_AGENTS_KEY, json.dumps(agents_dict))
+        print(f"[DEBUG] Updated Redis cache with {len(agents_dict)} agents: {list(agents_dict.keys())}")
+        
+        # Verify the cache was updated
+        cached_data = r.get(LANGGRAPH_AGENTS_KEY)
+        if cached_data:
+            cached_agents = json.loads(cached_data)
+            print(f"[DEBUG] Cache verification: {len(cached_agents)} agents now in cache")
+        
+        return True
+    except Exception as e:
+        print(f"[ERROR] Failed to update Redis cache: {e}")
+        return False
 
 @router.get("/tools/available")
 async def get_available_tools():
@@ -185,11 +201,48 @@ async def delete_agent(agent_id: int, db: Session = Depends(get_db)):
     
     return {"message": "Agent deleted successfully"}
 
+@router.get("/agents/cache/status")
+async def get_cache_status():
+    """Get Redis cache status for agents"""
+    try:
+        from app.core.langgraph_agents_cache import get_cache_status
+        status = get_cache_status()
+        return {
+            "status": "success",
+            "cache_status": status,
+            "timestamp": json.dumps(datetime.now().isoformat())
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": json.dumps(datetime.now().isoformat())
+        }
+
 @router.post("/agents/cache/reload")
 async def reload_agents_cache(db: Session = Depends(get_db)):
     """Reload agents cache in Redis"""
-    update_redis_cache(db)
-    return {"message": "Cache reloaded successfully"}
+    try:
+        success = update_redis_cache(db)
+        if success:
+            return {"message": "Cache reloaded successfully", "status": "success"}
+        else:
+            return {"message": "Cache reload failed", "status": "error"}
+    except Exception as e:
+        return {"message": f"Cache reload failed: {str(e)}", "status": "error"}
+
+@router.post("/agents/cache/warm")
+async def warm_agents_cache():
+    """Ensure Redis cache is warmed with agents"""
+    try:
+        from app.core.langgraph_agents_cache import validate_and_warm_cache
+        success = validate_and_warm_cache()
+        if success:
+            return {"message": "Cache warmed successfully", "status": "success"}
+        else:
+            return {"message": "Cache warming failed", "status": "error"}
+    except Exception as e:
+        return {"message": f"Cache warming failed: {str(e)}", "status": "error"}
 
 @router.post("/agents/migrate")
 async def migrate_agents_table():

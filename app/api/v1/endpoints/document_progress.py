@@ -22,6 +22,7 @@ from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.api.v1.endpoints.document import HTTPEmbeddingFunction, ensure_milvus_collection
 from utils.deduplication import hash_text, get_existing_hashes, get_existing_doc_ids
+from app.rag.bm25_processor import BM25Processor
 
 router = APIRouter()
 
@@ -136,6 +137,9 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
             file_content = f.read()
             file_id = hashlib.sha256(file_content).hexdigest()[:12]
         
+        # Initialize BM25 processor
+        bm25_processor = BM25Processor()
+        
         # Add metadata to chunks
         for i, chunk in enumerate(chunks):
             if not hasattr(chunk, 'metadata') or chunk.metadata is None:
@@ -154,6 +158,10 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
                 'hash': hash_text(chunk.page_content),
                 'doc_id': f"{file_id}_p{original_page}_c{i}"
             })
+            
+            # Add BM25 preprocessing
+            bm25_metadata = bm25_processor.prepare_document_for_bm25(chunk.page_content, chunk.metadata)
+            chunk.metadata.update(bm25_metadata)
         
         # Connect to vector DB and check duplicates
         vector_db_cfg = get_vector_db_settings()
@@ -241,6 +249,11 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
             [chunk.metadata.get('author', '') for chunk in unique_chunks],
             [chunk.metadata.get('hash', '') for chunk in unique_chunks],
             [chunk.metadata.get('doc_id', '') for chunk in unique_chunks],
+            # BM25 enhancement fields
+            [chunk.metadata.get('bm25_tokens', '') for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_term_count', 0) for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_unique_terms', 0) for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_top_terms', '') for chunk in unique_chunks],
         ]
         
         insert_result = collection.insert(data)

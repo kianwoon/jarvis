@@ -14,12 +14,13 @@ class AgentExecutionQueue:
     while maintaining the benefits of parallel collaboration patterns
     """
     
-    def __init__(self, max_concurrent: int = 2):
+    def __init__(self, max_concurrent: int = 1):
         """
         Initialize the execution queue
         
         Args:
             max_concurrent: Maximum number of agents that can execute simultaneously
+                          Default is 1 for MacBook stability and resource management
         """
         self.max_concurrent = max_concurrent
         self.semaphore = asyncio.Semaphore(max_concurrent)
@@ -94,6 +95,9 @@ class AgentExecutionQueue:
         Yields:
             Events from all agents
         """
+        # Note: With max_concurrent=1, this is effectively sequential execution
+        logger.info(f"[QUEUE] Starting execution of {len(agent_tasks)} agents (max_concurrent={self.max_concurrent} for MacBook stability)")
+        
         # Create queue for collecting events
         event_queue = asyncio.Queue()
         active_tasks = []
@@ -150,5 +154,8 @@ class AgentExecutionQueue:
         }
 
 # Global instance for shared use
-# Increased from 2 to 3 to better handle multi-agent scenarios with 5+ agents
-agent_queue = AgentExecutionQueue(max_concurrent=3)
+# Default to 1 for MacBook stability, but allow override via environment variable
+import os
+max_concurrent_agents = int(os.getenv("MAX_CONCURRENT_AGENTS", "1"))
+print(f"[CONFIG] Agent queue initialized with max_concurrent={max_concurrent_agents} (set MAX_CONCURRENT_AGENTS env var to override)")
+agent_queue = AgentExecutionQueue(max_concurrent=max_concurrent_agents)

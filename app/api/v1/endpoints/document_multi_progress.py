@@ -28,6 +28,7 @@ from app.api.v1.endpoints.document import (
     get_existing_hashes,
     get_existing_doc_ids
 )
+from app.rag.bm25_processor import BM25Processor
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from pymilvus import Collection
@@ -36,17 +37,46 @@ from uuid import uuid4
 router = APIRouter()
 
 # Document handler registry
-DOCUMENT_HANDLERS = {
-    '.xlsx': ExcelHandler(),
-    '.xls': ExcelHandler(),
-    '.docx': WordHandler(),
-    '.doc': WordHandler(),
-    '.pptx': PowerPointHandler(),
-    '.ppt': PowerPointHandler(),
-}
+# Document handler registry - lazy initialization to avoid import errors
+def get_document_handlers():
+    """Get document handlers with lazy initialization"""
+    handlers = {}
+    
+    # Initialize handlers that are available
+    try:
+        handlers['.xlsx'] = ExcelHandler()
+        handlers['.xls'] = ExcelHandler()
+    except ImportError:
+        logger.warning("Excel handler not available")
+    
+    try:
+        handlers['.docx'] = WordHandler()
+    except ImportError:
+        logger.warning("Word handler not available")
+    
+    try:
+        from app.document_handlers.powerpoint_handler import PowerPointHandler
+        handlers['.pptx'] = PowerPointHandler()
+        handlers['.ppt'] = PowerPointHandler()
+    except ImportError:
+        logger.warning("PowerPoint handler not available")
+    
+    return handlers
 
-# Allowed file extensions
-ALLOWED_EXTENSIONS = {'.pdf', '.xlsx', '.xls', '.docx', '.doc', '.pptx', '.ppt'}
+# Cache the handlers after first initialization
+_document_handlers = None
+
+def get_handler_for_file(file_extension):
+    """Get the appropriate handler for a file extension"""
+    global _document_handlers
+    if _document_handlers is None:
+        _document_handlers = get_document_handlers()
+    return _document_handlers.get(file_extension)
+
+DOCUMENT_HANDLERS = None  # Will be lazy-loaded
+
+# Allowed file extensions  
+ALLOWED_EXTENSIONS = {'.pdf', '.xlsx', '.xls', '.docx', '.pptx', '.ppt'}  # .doc not fully supported yet
 
 async def progress_generator(file_path: str, file_name: str, file_ext: str, options: Dict[str, Any]):
     """Generate progress updates for document processing"""
@@ -59,7 +89,7 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
         yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Validating file', 'progress_percent': int(current_step / total_steps * 100)})}\n\n"
         await asyncio.sleep(0.1)
         
-        handler = DOCUMENT_HANDLERS.get(file_ext)
+        handler = get_handler_for_file(file_ext)
         if not handler:
             yield f"data: {json.dumps({'error': f'No handler for {file_ext}'})}\n\n"
             return
@@ -123,6 +153,9 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
         existing_hashes = get_existing_hashes(collection_obj)
         existing_doc_ids = get_existing_doc_ids(collection_obj)
         
+        # Initialize BM25 processor
+        bm25_processor = BM25Processor()
+        
         unique_chunks = []
         duplicate_count = 0
         
@@ -138,6 +171,11 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
                 
             chunk.metadata['hash'] = chunk_hash
             chunk.metadata['doc_id'] = doc_id
+            
+            # Add BM25 preprocessing
+            bm25_metadata = bm25_processor.prepare_document_for_bm25(chunk.content, chunk.metadata)
+            chunk.metadata.update(bm25_metadata)
+            
             unique_chunks.append(chunk)
         
         if not unique_chunks:
@@ -168,6 +206,11 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
             [chunk.metadata.get('author', '') for chunk in unique_chunks],
             [chunk.metadata.get('hash', '') for chunk in unique_chunks],
             [chunk.metadata.get('doc_id', '') for chunk in unique_chunks],
+            # BM25 enhancement fields
+            [chunk.metadata.get('bm25_tokens', '') for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_term_count', 0) for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_unique_terms', 0) for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_top_terms', '') for chunk in unique_chunks],
         ]
         
         insert_result = collection_obj.insert(data)
@@ -183,10 +226,29 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
                     sheets[sheet] = 0
                 sheets[sheet] += 1
             metadata_summary['sheets_processed'] = sheets
+        elif file_ext in ['.pptx', '.ppt']:
+            slides = {}
+            for chunk in unique_chunks:
+                slide = chunk.metadata.get('slide_number', 'Unknown')
+                if slide not in slides:
+                    slides[slide] = 0
+                slides[slide] += 1
+            metadata_summary['slides_processed'] = slides
+        elif file_ext in ['.docx']:
+            sections = {}
+            for chunk in unique_chunks:
+                section = chunk.metadata.get('section', 'Unknown')
+                if section not in sections:
+                    sections[section] = 0
+                sections[section] += 1
+            metadata_summary['sections_processed'] = sections
+        
+        # Quality scores for all file types
+        if unique_chunks and hasattr(unique_chunks[0], 'quality_score'):
             metadata_summary['quality_scores'] = {
-                'avg': sum(c.quality_score for c in unique_chunks) / len(unique_chunks) if unique_chunks else 0,
-                'min': min(c.quality_score for c in unique_chunks) if unique_chunks else 0,
-                'max': max(c.quality_score for c in unique_chunks) if unique_chunks else 0
+                'avg': sum(getattr(c, 'quality_score', 0.5) for c in unique_chunks) / len(unique_chunks),
+                'min': min(getattr(c, 'quality_score', 0.5) for c in unique_chunks),
+                'max': max(getattr(c, 'quality_score', 0.5) for c in unique_chunks)
             }
         
         yield f"data: {json.dumps({'current_step': total_steps, 'total_steps': total_steps, 'step_name': 'Complete', 'progress_percent': 100, 'details': {'status': 'success', 'total_chunks': len(chunks), 'unique_chunks_inserted': len(unique_chunks), 'duplicates_filtered': duplicate_count, 'metadata_summary': metadata_summary}})}\n\n"

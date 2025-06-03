@@ -13,6 +13,8 @@ import hashlib
 # Document handlers
 from app.document_handlers.base import ExtractedChunk
 from app.document_handlers.excel_handler import ExcelHandler
+from app.document_handlers.word_handler import WordHandler
+from app.document_handlers.powerpoint_handler import PowerPointHandler
 
 # Existing imports for vector storage
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -24,27 +26,59 @@ from app.api.v1.endpoints.document import (
     get_existing_hashes,
     get_existing_doc_ids
 )
+from app.rag.bm25_processor import BM25Processor
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from pymilvus import Collection
 from uuid import uuid4
+from app.core.document_classifier import get_document_classifier
+from app.core.collection_registry_cache import get_collection_config
 
 router = APIRouter()
 
-# Document handler registry
-DOCUMENT_HANDLERS = {
-    '.pdf': None,  # Will use existing PDF handler
-    '.xlsx': ExcelHandler(),
-    '.xls': ExcelHandler(),
-    # Future handlers
-    # '.docx': WordHandler(),
-    # '.doc': WordHandler(),
-    # '.pptx': PowerPointHandler(),
-    # '.ppt': PowerPointHandler(),
-}
+# Document handler registry - lazy initialization to avoid import errors
+def get_document_handlers():
+    """Get document handlers with lazy initialization"""
+    handlers = {
+        '.pdf': None,  # Will use existing PDF handler
+    }
+    
+    # Initialize handlers that are available
+    try:
+        handlers['.xlsx'] = ExcelHandler()
+        handlers['.xls'] = ExcelHandler()
+    except ImportError:
+        logger.warning("Excel handler not available")
+    
+    try:
+        handlers['.docx'] = WordHandler()
+    except ImportError:
+        logger.warning("Word handler not available")
+    
+    try:
+        from app.document_handlers.powerpoint_handler import PowerPointHandler
+        handlers['.pptx'] = PowerPointHandler()
+        handlers['.ppt'] = PowerPointHandler()
+    except ImportError:
+        logger.warning("PowerPoint handler not available")
+    
+    return handlers
+
+# Cache the handlers after first initialization
+_document_handlers = None
+
+def get_handler_for_file(file_extension):
+    """Get the appropriate handler for a file extension"""
+    global _document_handlers
+    if _document_handlers is None:
+        _document_handlers = get_document_handlers()
+    return _document_handlers.get(file_extension)
+
+# Keep the old interface for compatibility
+DOCUMENT_HANDLERS = None  # Will be lazy-loaded
 
 # Allowed file extensions
-ALLOWED_EXTENSIONS = {'.pdf', '.xlsx', '.xls'}  # Will expand as we add handlers
+ALLOWED_EXTENSIONS = {'.pdf', '.xlsx', '.xls', '.docx', '.pptx', '.ppt'}
 
 from fastapi.responses import StreamingResponse
 import asyncio
@@ -55,6 +89,8 @@ async def upload_document(
     preview: bool = Query(False, description="Preview extraction without storing"),
     sheets: Optional[str] = Query(None, description="Comma-separated sheet names for Excel"),
     exclude_sheets: Optional[str] = Query(None, description="Sheets to exclude"),
+    collection_name: Optional[str] = Query(None, description="Target collection name"),
+    auto_classify: bool = Query(True, description="Auto-classify document if collection not specified"),
 ):
     """
     Upload and process various document types
@@ -88,7 +124,7 @@ async def upload_document(
             return {"status": "PDF processing not refactored yet", "message": "Please use /upload_pdf endpoint"}
         
         # Get handler
-        handler = DOCUMENT_HANDLERS.get(file_ext)
+        handler = get_handler_for_file(file_ext)
         if not handler:
             raise HTTPException(status_code=500, detail=f"No handler for {file_ext}")
         
@@ -125,7 +161,9 @@ async def upload_document(
         print(f"✅ Extracted {len(chunks)} chunks from {file.filename}")
         
         # Store in vector database
-        result = await store_chunks_in_vectordb(chunks, file.filename, file_ext)
+        result = await store_chunks_in_vectordb(
+            chunks, file.filename, file_ext, collection_name, auto_classify
+        )
         
         return result
         
@@ -143,7 +181,9 @@ async def upload_document(
 async def store_chunks_in_vectordb(
     chunks: List[ExtractedChunk], 
     filename: str,
-    file_type: str
+    file_type: str,
+    collection_name: Optional[str] = None,
+    auto_classify: bool = True
 ) -> Dict[str, Any]:
     """Store extracted chunks in vector database"""
     
@@ -171,14 +211,51 @@ async def store_chunks_in_vectordb(
     milvus_cfg = vector_db_cfg["milvus"]
     uri = milvus_cfg.get("MILVUS_URI")
     token = milvus_cfg.get("MILVUS_TOKEN")
-    collection_name = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
     vector_dim = int(milvus_cfg.get("dimension", 1536))
     
+    # Determine target collection
+    classified_type = None
+    if collection_name:
+        # Validate the provided collection exists
+        collection_info = get_collection_config(collection_name)
+        if not collection_info:
+            raise HTTPException(status_code=400, detail=f"Collection '{collection_name}' not found")
+        target_collection = collection_name
+        print(f"📂 Using specified collection: {target_collection}")
+    elif auto_classify and chunks:
+        # Auto-classify document using first chunk
+        classifier = get_document_classifier()
+        sample_content = chunks[0].content
+        doc_metadata = chunks[0].metadata if chunks[0].metadata else {}
+        collection_type = classifier.classify_document(sample_content, doc_metadata)
+        classified_type = collection_type
+        target_collection = classifier.get_target_collection(collection_type)
+        if not target_collection:
+            target_collection = "default_knowledge"
+        print(f"🤖 Auto-classified as '{collection_type}', using collection: {target_collection}")
+        
+        # Extract domain-specific metadata
+        domain_metadata = classifier.extract_domain_metadata(sample_content, collection_type)
+        for chunk in chunks:
+            if chunk.metadata is None:
+                chunk.metadata = {}
+            chunk.metadata.update(domain_metadata)
+    else:
+        # Use default collection
+        target_collection = "default_knowledge"
+        print(f"📂 Using default collection: {target_collection}")
+    
+    # Add collection info to chunk metadata
+    for chunk in chunks:
+        if chunk.metadata is None:
+            chunk.metadata = {}
+        chunk.metadata['collection_name'] = target_collection
+    
     # Ensure collection exists
-    ensure_milvus_collection(collection_name, vector_dim=vector_dim, uri=uri, token=token)
+    ensure_milvus_collection(target_collection, vector_dim=vector_dim, uri=uri, token=token)
     
     # Deduplication check
-    collection_obj = Collection(collection_name)
+    collection_obj = Collection(target_collection)
     collection_obj.load()
     existing_hashes = get_existing_hashes(collection_obj)
     existing_doc_ids = get_existing_doc_ids(collection_obj)
@@ -186,6 +263,9 @@ async def store_chunks_in_vectordb(
     print(f"📊 Deduplication analysis:")
     print(f"   - Total chunks to process: {len(chunks)}")
     print(f"   - Existing hashes in DB: {len(existing_hashes)}")
+    
+    # Initialize BM25 processor
+    bm25_processor = BM25Processor()
     
     # Convert ExtractedChunk to format for vector DB
     unique_chunks = []
@@ -204,6 +284,11 @@ async def store_chunks_in_vectordb(
         # Add hash to metadata
         chunk.metadata['hash'] = chunk_hash
         chunk.metadata['doc_id'] = chunk_id
+        
+        # Add BM25 preprocessing
+        bm25_metadata = bm25_processor.prepare_document_for_bm25(chunk.content, chunk.metadata)
+        chunk.metadata.update(bm25_metadata)
+        
         unique_chunks.append(chunk)
     
     print(f"📊 After deduplication:")
@@ -243,6 +328,11 @@ async def store_chunks_in_vectordb(
         [chunk.metadata.get('author', '') for chunk in unique_chunks],
         [chunk.metadata.get('hash', '') for chunk in unique_chunks],
         [chunk.metadata.get('doc_id', '') for chunk in unique_chunks],
+        # BM25 enhancement fields
+        [chunk.metadata.get('bm25_tokens', '') for chunk in unique_chunks],
+        [chunk.metadata.get('bm25_term_count', 0) for chunk in unique_chunks],
+        [chunk.metadata.get('bm25_unique_terms', 0) for chunk in unique_chunks],
+        [chunk.metadata.get('bm25_top_terms', '') for chunk in unique_chunks],
     ]
     
     print(f"🔄 Inserting {len(unique_chunks)} chunks into Milvus collection '{collection_name}'...")
@@ -265,23 +355,50 @@ async def store_chunks_in_vectordb(
                 sheets[sheet] = 0
             sheets[sheet] += 1
         metadata_summary['sheets_processed'] = sheets
+    elif file_type in ['.pptx', '.ppt']:
+        # Summarize by slide
+        slides = {}
+        for chunk in unique_chunks:
+            slide = chunk.metadata.get('slide_number', 'Unknown')
+            if slide not in slides:
+                slides[slide] = 0
+            slides[slide] += 1
+        metadata_summary['slides_processed'] = slides
+    elif file_type in ['.docx']:
+        # Summarize by section
+        sections = {}
+        for chunk in unique_chunks:
+            section = chunk.metadata.get('section', 'Unknown')
+            if section not in sections:
+                sections[section] = 0
+            sections[section] += 1
+        metadata_summary['sections_processed'] = sections
+    
+    # Quality scores for all file types
+    if unique_chunks and hasattr(unique_chunks[0], 'quality_score'):
         metadata_summary['quality_scores'] = {
-            'avg': sum(c.quality_score for c in unique_chunks) / len(unique_chunks),
-            'min': min(c.quality_score for c in unique_chunks),
-            'max': max(c.quality_score for c in unique_chunks)
+            'avg': sum(getattr(c, 'quality_score', 0.5) for c in unique_chunks) / len(unique_chunks),
+            'min': min(getattr(c, 'quality_score', 0.5) for c in unique_chunks),
+            'max': max(getattr(c, 'quality_score', 0.5) for c in unique_chunks)
         }
     
-    return {
+    response = {
         "status": "success",
         "total_chunks": len(chunks),
         "unique_chunks": len(unique_chunks),
         "duplicates_filtered": duplicate_count,
         "filename": filename,
         "file_type": file_type,
-        "collection": collection_name,
+        "collection": target_collection,
         "embedding_model": embedding_model or "HTTP endpoint",
         "metadata_summary": metadata_summary
     }
+    
+    if classified_type:
+        response["classified_type"] = classified_type
+        response["auto_classified"] = True
+        
+    return response
 
 @router.get("/supported-types")
 async def get_supported_types():
@@ -302,12 +419,24 @@ async def get_supported_types():
                 "extension": ".xls", 
                 "description": "Excel Workbook (97-2003)",
                 "features": ["Multi-sheet support", "Table structure preservation", "Smart chunking"]
+            },
+            {
+                "extension": ".docx",
+                "description": "Word Document (2007+)",
+                "features": ["Section-based chunking", "Table extraction", "Heading preservation"]
+            },
+            {
+                "extension": ".pptx",
+                "description": "PowerPoint Presentation (2007+)",
+                "features": ["Slide-based chunking", "Text extraction", "Note extraction"]
+            },
+            {
+                "extension": ".ppt",
+                "description": "PowerPoint Presentation (97-2003)",
+                "features": ["Slide-based chunking", "Text extraction", "Note extraction"]
             }
         ],
         "coming_soon": [
-            {"extension": ".docx", "description": "Word Document"},
-            {"extension": ".doc", "description": "Word Document (97-2003)"},
-            {"extension": ".pptx", "description": "PowerPoint Presentation"},
-            {"extension": ".ppt", "description": "PowerPoint Presentation (97-2003)"}
+            {"extension": ".doc", "description": "Word Document (97-2003)"}
         ]
     }

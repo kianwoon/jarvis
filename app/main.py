@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.db import Base, engine
 from app.core.healthcheck import check_all_services
+from app.core.mcp_process_manager import start_process_monitor
+import asyncio
 import logging
 
 # Set up logging
@@ -23,6 +25,13 @@ app = FastAPI(
     description="Enterprise-grade LLM platform with FastAPI, AutoGen, and MCP",
     version="0.1.0"
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize background tasks on startup"""
+    logger.info("Starting MCP process monitor...")
+    asyncio.create_task(start_process_monitor())
+    logger.info("MCP process monitor started")
 
 # CORS middleware configuration
 app.add_middleware(

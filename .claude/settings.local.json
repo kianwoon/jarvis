@@ -20,7 +20,8 @@
       "Bash(mv:*)",
       "Bash(cp:*)",
       "Bash(curl:*)",
-      "Bash(docker restart:*)"
+      "Bash(docker restart:*)",
+      "Bash(rm:*)"
     ],
     "deny": []
   },

@@ -15,6 +15,8 @@ class RAGRequest(BaseModel):
     conversation_id: Optional[str] = None
     session_id: Optional[str] = None  # Add this for backward compatibility
     use_langgraph: bool = True
+    collections: Optional[List[str]] = None  # Specific collections to search
+    collection_strategy: str = "auto"  # "auto", "specific", or "all"
 
 class RAGResponse(BaseModel):
     answer: str
@@ -34,7 +36,9 @@ def rag_endpoint(request: RAGRequest):
                 thinking=request.thinking, 
                 stream=True,
                 conversation_id=conversation_id,
-                use_langgraph=request.use_langgraph
+                use_langgraph=request.use_langgraph,
+                collections=request.collections,
+                collection_strategy=request.collection_strategy
             ):
                 try:
                     if chunk:  # Only yield non-empty chunks

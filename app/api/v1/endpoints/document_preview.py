@@ -15,14 +15,44 @@ from app.document_handlers.powerpoint_handler import PowerPointHandler
 router = APIRouter()
 
 # Document handler registry
-PREVIEW_HANDLERS = {
-    '.xlsx': ExcelHandler(),
-    '.xls': ExcelHandler(),
-    '.docx': WordHandler(),
-    '.doc': WordHandler(),
-    '.pptx': PowerPointHandler(),
-    '.ppt': PowerPointHandler(),
-}
+# Preview handler registry - lazy initialization to avoid import errors
+def get_preview_handlers():
+    """Get preview handlers with lazy initialization"""
+    handlers = {}
+    
+    # Initialize handlers that are available
+    try:
+        handlers['.xlsx'] = ExcelHandler()
+        handlers['.xls'] = ExcelHandler()
+    except ImportError:
+        logger.warning("Excel handler not available")
+    
+    try:
+        handlers['.docx'] = WordHandler()
+        handlers['.doc'] = WordHandler()
+    except ImportError:
+        logger.warning("Word handler not available")
+    
+    try:
+        from app.document_handlers.powerpoint_handler import PowerPointHandler
+        handlers['.pptx'] = PowerPointHandler()
+        handlers['.ppt'] = PowerPointHandler()
+    except ImportError:
+        logger.warning("PowerPoint handler not available")
+    
+    return handlers
+
+# Cache the handlers after first initialization
+_preview_handlers = None
+
+def get_preview_handler_for_file(file_extension):
+    """Get the appropriate preview handler for a file extension"""
+    global _preview_handlers
+    if _preview_handlers is None:
+        _preview_handlers = get_preview_handlers()
+    return _preview_handlers.get(file_extension)
+
+PREVIEW_HANDLERS = None  # Will be lazy-loaded
 
 
 @router.post("/preview")
@@ -34,10 +64,11 @@ async def preview_document(file: UploadFile = File(...)) -> Dict[str, Any]:
     # Validate file extension
     file_ext = os.path.splitext(file.filename)[1].lower()
     
-    if file_ext not in PREVIEW_HANDLERS:
+    available_handlers = get_preview_handlers()
+    if file_ext not in available_handlers:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {file_ext}. Supported types: {', '.join(PREVIEW_HANDLERS.keys())}"
+            detail=f"Unsupported file type: {file_ext}. Supported types: {', '.join(available_handlers.keys())}"
         )
     
     # Create temporary directory
@@ -51,7 +82,7 @@ async def preview_document(file: UploadFile = File(...)) -> Dict[str, Any]:
             f.write(content)
         
         # Get appropriate handler
-        handler = PREVIEW_HANDLERS[file_ext]
+        handler = get_preview_handler_for_file(file_ext)
         
         # Extract preview
         preview_data = handler.extract_preview(temp_path)
@@ -88,9 +119,9 @@ async def test_preview_endpoint():
     """Test endpoint to verify preview service is running"""
     return {
         'status': 'ok',
-        'supported_types': list(PREVIEW_HANDLERS.keys()),
+        'supported_types': list(get_preview_handlers().keys()),
         'handlers': {
             ext: type(handler).__name__ 
-            for ext, handler in PREVIEW_HANDLERS.items()
+            for ext, handler in get_preview_handlers().items()
         }
     }

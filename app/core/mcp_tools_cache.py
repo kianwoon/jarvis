@@ -34,16 +34,28 @@ def reload_enabled_mcp_tools():
         tools = db.query(MCPTool).filter(MCPTool.is_active == True).all()
         enabled_tools = {}
         for tool in tools:
-            manifest = tool.manifest
-            
-            # Get API key from manifest rather than settings
+            # Get server and manifest information
+            server = tool.server if tool.server else None
+            manifest = None
             api_key = None
-            if manifest:
-                api_key = manifest.api_key
-                if api_key:
-                    has_api_key = bool(api_key)
-                    api_key_length = len(api_key or '')
-                    logger.info(f"Retrieved API key from manifest (ID: {manifest.id}): present={has_api_key}, length={api_key_length}")
+            hostname = None
+            
+            if server:
+                # For manifest-based servers, get the manifest
+                if server.config_type == "manifest":
+                    from app.core.db import MCPManifest
+                    manifest = db.query(MCPManifest).filter(MCPManifest.server_id == server.id).first()
+                    if manifest:
+                        api_key = manifest.api_key
+                        hostname = manifest.hostname
+                        if api_key:
+                            has_api_key = bool(api_key)
+                            api_key_length = len(api_key or '')
+                            logger.info(f"Retrieved API key from manifest (server ID: {server.id}): present={has_api_key}, length={api_key_length}")
+                else:
+                    # For command-based servers, use server's hostname and api_key
+                    api_key = server.api_key
+                    hostname = server.hostname
             
             # Make sure endpoint has the correct prefix if needed
             tool_endpoint = tool.endpoint
@@ -58,15 +70,16 @@ def reload_enabled_mcp_tools():
                 "method": tool.method,
                 "parameters": tool.parameters,
                 "headers": tool.headers,
-                "manifest_id": tool.manifest_id,
-                "manifest_hostname": manifest.hostname if manifest else None,
+                "server_id": tool.server_id,
+                "manifest_id": tool.manifest_id,  # Keep for backward compatibility
+                "server_hostname": hostname,
                 "endpoint_prefix": endpoint_prefix if endpoint_prefix else None,
-                "api_key": api_key  # Include API key from manifest in cached data
+                "api_key": api_key  # Include API key from server/manifest in cached data
             }
             
             # Log if we're using a hostname and/or prefix
-            if manifest and manifest.hostname:
-                logger.info(f"Tool {tool.name} will use hostname: {manifest.hostname}")
+            if hostname:
+                logger.info(f"Tool {tool.name} will use hostname: {hostname}")
             if endpoint_prefix:
                 logger.info(f"Tool {tool.name} endpoint: {original_endpoint} (with prefix: {endpoint_prefix})")
         

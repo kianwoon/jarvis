@@ -6,6 +6,8 @@ import os
 import json
 from typing import Optional, Any, Dict
 from functools import wraps
+from datetime import datetime, date
+from decimal import Decimal
 
 class RedisCache:
     """Redis cache with fallback support"""
@@ -55,8 +57,19 @@ class RedisCache:
             print(f"Redis get error: {e}")
             return default
     
+    def _json_serializer(self, obj: Any) -> Any:
+        """Custom JSON serializer for objects not serializable by default json code"""
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        elif isinstance(obj, Decimal):
+            return float(obj)
+        elif hasattr(obj, '__dict__'):
+            return obj.__dict__
+        else:
+            raise TypeError(f"Type {type(obj)} not serializable")
+    
     def set(self, key: str, value: Any, expire: Optional[int] = None) -> bool:
-        """Set value in cache"""
+        """Set value in cache with automatic JSON serialization"""
         client = self._get_client()
         if not client:
             return False
@@ -64,7 +77,11 @@ class RedisCache:
         try:
             full_key = f"{self.key_prefix}{key}"
             if isinstance(value, (dict, list)):
-                value = json.dumps(value)
+                # Use custom serializer for datetime and other objects
+                value = json.dumps(value, default=self._json_serializer)
+            elif isinstance(value, (datetime, date)):
+                # Handle datetime objects directly
+                value = value.isoformat()
             
             if expire:
                 return bool(client.setex(full_key, expire, value))

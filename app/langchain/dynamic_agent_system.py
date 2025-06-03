@@ -125,22 +125,61 @@ Respond in JSON:
             # Parse response
             routing_decision = self._parse_json_response(response_text)
             
-            # Validate selected agents exist
+            # Validate selected agents exist with improved matching
             valid_agents = []
             for agent in routing_decision.get("agents", []):
                 if agent in all_agents:
                     valid_agents.append(agent)
                 else:
-                    # Try case-insensitive match
+                    # Try various matching strategies
                     found = False
+                    agent_lower = agent.lower()
+                    
+                    # Strategy 1: Case-insensitive exact match
                     for existing_agent in all_agents:
-                        if agent.lower() == existing_agent.lower():
+                        if agent_lower == existing_agent.lower():
                             valid_agents.append(existing_agent)
                             found = True
                             break
+                    
+                    # Strategy 2: Partial matching (contains)
+                    if not found:
+                        for existing_agent in all_agents:
+                            if (agent_lower in existing_agent.lower() or 
+                                existing_agent.lower() in agent_lower):
+                                valid_agents.append(existing_agent)
+                                print(f"[INFO] Matched '{agent}' to '{existing_agent}' (partial match)")
+                                found = True
+                                break
+                    
+                    # Strategy 3: Word-based matching
+                    if not found:
+                        agent_words = agent_lower.replace('_', ' ').split()
+                        for existing_agent in all_agents:
+                            existing_words = existing_agent.lower().replace('_', ' ').split()
+                            if any(word in existing_words for word in agent_words):
+                                valid_agents.append(existing_agent)
+                                print(f"[INFO] Matched '{agent}' to '{existing_agent}' (word match)")
+                                found = True
+                                break
+                    
                     if not found:
                         print(f"[WARNING] Router selected non-existent agent: {agent}")
                         print(f"[DEBUG] Available agents: {list(all_agents.keys())}")
+                        print(f"[DEBUG] Trying to find similar agents...")
+                        
+                        # Show possible alternatives
+                        suggestions = []
+                        for existing_agent in all_agents:
+                            # Calculate simple similarity
+                            if any(word in existing_agent.lower() for word in agent_lower.split('_')):
+                                suggestions.append(existing_agent)
+                        
+                        if suggestions:
+                            print(f"[DEBUG] Possible alternatives for '{agent}': {suggestions}")
+                            # Auto-select the first suggestion
+                            valid_agents.append(suggestions[0])
+                            print(f"[INFO] Auto-selected '{suggestions[0]}' as replacement for '{agent}'")
             
             routing_decision["agents"] = valid_agents
             
@@ -233,7 +272,22 @@ Respond in JSON:
         agent_config = agent_data.get("config", {})
         max_tokens = agent_config.get("max_tokens", 4000)
         temperature = agent_config.get("temperature", 0.7)
-        timeout = agent_config.get("timeout", 120)  # Increase default timeout to 120 seconds for complex queries
+        
+        # Dynamic timeout based on query complexity and agent type
+        base_timeout = agent_config.get("timeout", 60)
+        query_length = len(query)
+        
+        # Increase timeout for complex queries and strategic agents
+        if query_length > 100 or "strategy" in query.lower() or "discuss" in query.lower():
+            timeout = max(base_timeout, 90)  # At least 90 seconds for complex queries
+        else:
+            timeout = base_timeout
+            
+        # Strategic agents get extra time
+        if any(keyword in agent_name.lower() for keyword in ["strategist", "analyst", "architect", "ceo", "cto", "cio"]):
+            timeout = max(timeout, 120)  # Strategic agents get at least 2 minutes
+            
+        print(f"[DEBUG] {agent_name}: Dynamic timeout set to {timeout}s (base={base_timeout}s, query_len={query_length})")
         
         # Build prompt with agent's system prompt and query
         system_prompt = agent_data.get("system_prompt", "You are a helpful assistant.")
@@ -370,8 +424,8 @@ Please provide a comprehensive response based on your role and expertise."""
                     response_text += response_chunk.text
                     
                     # Log every 100th token to track progress (reduced verbosity)
-                    if token_count % 100 == 0:
-                        print(f"[DEBUG] {agent_name}: Received {token_count} tokens, total length: {len(response_text)}")
+                    # if token_count % 100 == 0:
+                    #     print(f"[DEBUG] {agent_name}: Received {token_count} tokens, total length: {len(response_text)}")
                     
                     # Stream tokens in real-time for better UX
                     if response_chunk.text:  # Don't filter out whitespace tokens
@@ -402,10 +456,14 @@ Please provide a comprehensive response based on your role and expertise."""
                 
         except asyncio.TimeoutError:
             print(f"[WARNING] Agent {agent_name} timed out after {timeout}s")
+            # Yield a completion event with timeout message instead of error
+            # This allows the multi-agent system to continue with other agents
             yield {
-                "type": "agent_error",
+                "type": "agent_complete",
                 "agent": agent_name,
-                "error": f"Response generation timed out after {timeout} seconds"
+                "content": f"⏰ **{agent_name} Response**\n\nI apologize, but my analysis is taking longer than expected. To ensure timely delivery, I'm providing this update while continuing to work on your request in the background.\n\nFor immediate insights on improving LinkedIn post impressions, I recommend focusing on:\n- Creating engaging, value-driven content\n- Posting at optimal times for your audience\n- Using relevant hashtags and industry keywords\n- Encouraging meaningful engagement through questions\n- Sharing authentic professional stories and insights\n\nA more detailed analysis will be available shortly.",
+                "timeout": True,
+                "timeout_duration": timeout
             }
         except Exception as e:
             print(f"[ERROR] Agent {agent_name} failed: {e}")

@@ -17,6 +17,9 @@ from langchain_community.vectorstores import Milvus, Qdrant
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from utils.deduplication import hash_text, get_existing_hashes, get_existing_doc_ids, filter_new_chunks
+from app.rag.bm25_processor import BM25Processor
+from app.core.document_classifier import get_document_classifier
+from app.core.collection_registry_cache import get_collection_config
 
 router = APIRouter()
 
@@ -65,6 +68,11 @@ def ensure_milvus_collection(collection_name: str, vector_dim: int, uri: str, to
             FieldSchema(name="author", dtype=DataType.VARCHAR, max_length=100),
             FieldSchema(name="hash", dtype=DataType.VARCHAR, max_length=64),
             FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=255),
+            # BM25 enhancement fields
+            FieldSchema(name="bm25_tokens", dtype=DataType.VARCHAR, max_length=2000),
+            FieldSchema(name="bm25_term_count", dtype=DataType.INT64),
+            FieldSchema(name="bm25_unique_terms", dtype=DataType.INT64),
+            FieldSchema(name="bm25_top_terms", dtype=DataType.VARCHAR, max_length=1000),
         ]
         schema = CollectionSchema(fields, description="Knowledge base with metadata, deduplication support")
         collection = Collection(collection_name, schema)
@@ -112,7 +120,11 @@ async def generate_document(
         )
 
 @router.post("/upload_pdf")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(
+    file: UploadFile = File(...),
+    collection_name: Optional[str] = None,
+    auto_classify: bool = True
+):
     """Enhanced PDF upload with better chunking, metadata handling, and debugging"""
     
     # 1. Save file temporarily
@@ -184,13 +196,16 @@ async def upload_pdf(file: UploadFile = File(...)):
         embeddings = HuggingFaceEmbeddings(model_name=embedding_model)
         print(f"✅ Using HuggingFace embeddings: {embedding_model}")
     
-    # 5. Enhanced metadata handling with proper page numbers
+    # 5. Enhanced metadata handling with proper page numbers and BM25 preprocessing
     # Compute file hash for doc_id uniqueness
     with open(temp_path, "rb") as f:
         file_content = f.read()
         file_id = hashlib.sha256(file_content).hexdigest()[:12]  # Shorter hash
     
     print(f"🔑 File ID: {file_id}")
+    
+    # Initialize BM25 processor
+    bm25_processor = BM25Processor()
     
     # Enhanced metadata setting - preserve original page numbers from PyPDFLoader
     for i, chunk in enumerate(chunks):
@@ -215,8 +230,47 @@ async def upload_pdf(file: UploadFile = File(...)):
         chunk_hash = hash_text(chunk.page_content)
         chunk.metadata['hash'] = chunk_hash
         chunk.metadata['doc_id'] = f"{file_id}_p{original_page}_c{i}"
+        
+        # Add BM25 preprocessing
+        bm25_metadata = bm25_processor.prepare_document_for_bm25(chunk.page_content, chunk.metadata)
+        chunk.metadata.update(bm25_metadata)
     
-    # 6. Vector DB storage with enhanced deduplication logic
+    # 6. Determine target collection
+    classified_type = None
+    if collection_name:
+        # Validate the provided collection exists
+        collection_info = get_collection_config(collection_name)
+        if not collection_info:
+            raise HTTPException(status_code=400, detail=f"Collection '{collection_name}' not found")
+        target_collection = collection_name
+        print(f"📂 Using specified collection: {target_collection}")
+    elif auto_classify:
+        # Auto-classify document
+        classifier = get_document_classifier()
+        # Use first chunk for classification
+        sample_content = chunks[0].page_content if chunks else ""
+        doc_metadata = chunks[0].metadata if chunks else {}
+        collection_type = classifier.classify_document(sample_content, doc_metadata)
+        classified_type = collection_type  # Store for response
+        target_collection = classifier.get_target_collection(collection_type)
+        if not target_collection:
+            target_collection = "default_knowledge"
+        print(f"🤖 Auto-classified as '{collection_type}', using collection: {target_collection}")
+        
+        # Extract domain-specific metadata
+        domain_metadata = classifier.extract_domain_metadata(sample_content, collection_type)
+        for chunk in chunks:
+            chunk.metadata.update(domain_metadata)
+    else:
+        # Use default collection
+        target_collection = "default_knowledge"
+        print(f"📂 Using default collection: {target_collection}")
+    
+    # Add collection info to chunk metadata
+    for chunk in chunks:
+        chunk.metadata['collection_name'] = target_collection
+    
+    # 7. Vector DB storage with enhanced deduplication logic
     vector_db_cfg = get_vector_db_settings()
     milvus_status = vector_db_cfg.get("milvus", {}).get("status", False)
     qdrant_status = vector_db_cfg.get("qdrant", {}).get("status", False)
@@ -226,7 +280,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         milvus_cfg = vector_db_cfg["milvus"]
         uri = milvus_cfg.get("MILVUS_URI")
         token = milvus_cfg.get("MILVUS_TOKEN")
-        collection = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
+        collection = target_collection  # Use the determined target collection
         vector_dim = int(milvus_cfg.get("dimension", 1536))
         
         # Ensure collection exists
@@ -306,6 +360,11 @@ async def upload_pdf(file: UploadFile = File(...)):
             [chunk.metadata.get('author', '') for chunk in unique_chunks],
             [chunk.metadata.get('hash', '') for chunk in unique_chunks],
             [chunk.metadata.get('doc_id', '') for chunk in unique_chunks],
+            # BM25 enhancement fields
+            [chunk.metadata.get('bm25_tokens', '') for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_term_count', 0) for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_unique_terms', 0) for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_top_terms', '') for chunk in unique_chunks],
         ]
         
         print(f"🔄 Inserting {len(unique_chunks)} chunks into Milvus collection '{collection}'...")
@@ -329,7 +388,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         except Exception as e:
             print(f"⚠️  Could not remove temp file: {e}")
         
-        return {
+        response = {
             "status": "success", 
             "total_chunks": len(chunks),
             "unique_chunks": len(unique_chunks),
@@ -342,13 +401,19 @@ async def upload_pdf(file: UploadFile = File(...)):
             "chunk_size": 1500,
             "embedding_model": embedding_model or "HTTP endpoint"
         }
+        
+        if classified_type:
+            response["classified_type"] = classified_type
+            response["auto_classified"] = True
+            
+        return response
     
     elif qdrant_status:
         print("🔄 Using Qdrant vector database")
         qdrant_cfg = vector_db_cfg["qdrant"]
         host = qdrant_cfg.get("QDRANT_HOST", "localhost")
         port = qdrant_cfg.get("QDRANT_PORT", 6333)
-        collection = qdrant_cfg.get("QDRANT_COLLECTION", "default_knowledge")
+        collection = target_collection  # Use the determined target collection
         
         vector_store = Qdrant(
             embedding_function=embeddings,
@@ -365,13 +430,20 @@ async def upload_pdf(file: UploadFile = File(...)):
         except Exception as e:
             print(f"⚠️  Could not remove temp file: {e}")
         
-        return {
+        response = {
             "status": "success", 
             "chunks": len(chunks),
             "filename": file.filename,
+            "collection": collection,
             "pages_processed": len(docs),
             "vector_db": "qdrant"
         }
+        
+        if classified_type:
+            response["classified_type"] = classified_type
+            response["auto_classified"] = True
+            
+        return response
     
     else:
         # Cleanup temporary file even on error
@@ -489,7 +561,7 @@ async def debug_search(query: str, limit: int = 10, min_score: float = 0.5, min_
 
 class UploadProgress:
     """Track upload progress"""
-    def __init__(self, total_steps: int = 7):
+    def __init__(self, total_steps: int = 8):
         self.total_steps = total_steps
         self.current_step = 0
         self.current_step_name = ""
@@ -512,11 +584,12 @@ class UploadProgress:
             "error": self.error
         }
 
-async def progress_generator(file: UploadFile, progress: UploadProgress):
+async def progress_generator(file: UploadFile, progress: UploadProgress, collection_name: Optional[str] = None, auto_classify: bool = True):
     """Generate SSE events for upload progress"""
     import tempfile
     
     temp_path = None
+    classified_type = None
     try:
         # Step 1: Save file
         progress.update(1, "Saving uploaded file", {"filename": file.filename})
@@ -598,12 +671,52 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
         
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
-        # Step 5: Check for duplicates
-        progress.update(5, "Checking for duplicates", {"deduplication": "in_progress"})
+        # Step 5: Determine target collection
+        progress.update(5, "Determining collection", {"collection_selection": "in_progress"})
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        if collection_name:
+            # Validate the provided collection exists
+            collection_info = get_collection_config(collection_name)
+            if not collection_info:
+                raise HTTPException(status_code=400, detail=f"Collection '{collection_name}' not found")
+            target_collection = collection_name
+            progress.details["collection_method"] = "specified"
+        elif auto_classify:
+            # Auto-classify document
+            classifier = get_document_classifier()
+            # Use first chunk for classification
+            sample_content = chunks[0].page_content if chunks else ""
+            doc_metadata = chunks[0].metadata if chunks else {}
+            collection_type = classifier.classify_document(sample_content, doc_metadata)
+            classified_type = collection_type  # Store for response
+            target_collection = classifier.get_target_collection(collection_type)
+            if not target_collection:
+                target_collection = "default_knowledge"
+            progress.details["collection_method"] = "auto_classified"
+            progress.details["classified_type"] = collection_type
+            
+            # Extract domain-specific metadata
+            domain_metadata = classifier.extract_domain_metadata(sample_content, collection_type)
+            for chunk in chunks:
+                chunk.metadata.update(domain_metadata)
+        else:
+            # Use default collection
+            target_collection = "default_knowledge"
+            progress.details["collection_method"] = "default"
+        
+        progress.details["target_collection"] = target_collection
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        # Step 6: Check for duplicates
+        progress.update(6, "Checking for duplicates", {"deduplication": "in_progress"})
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
         # Compute file hash (using the already-read content)
         file_id = hashlib.sha256(file_content).hexdigest()[:12]
+        
+        # Initialize BM25 processor
+        bm25_processor = BM25Processor()
         
         # Add metadata to chunks
         for i, chunk in enumerate(chunks):
@@ -621,15 +734,20 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
                 'chunk_index': i,
                 'file_id': file_id,
                 'hash': hash_text(chunk.page_content),
-                'doc_id': f"{file_id}_p{original_page}_c{i}"
+                'doc_id': f"{file_id}_p{original_page}_c{i}",
+                'collection_name': target_collection
             })
+            
+            # Add BM25 preprocessing
+            bm25_metadata = bm25_processor.prepare_document_for_bm25(chunk.page_content, chunk.metadata)
+            chunk.metadata.update(bm25_metadata)
         
         # Connect to vector DB and check duplicates
         vector_db_cfg = get_vector_db_settings()
         milvus_cfg = vector_db_cfg["milvus"]
         uri = milvus_cfg.get("MILVUS_URI")
         token = milvus_cfg.get("MILVUS_TOKEN")
-        collection_name = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
+        collection_name = target_collection  # Use the determined target collection
         vector_dim = int(milvus_cfg.get("dimension", 1536))
         
         ensure_milvus_collection(collection_name, vector_dim=vector_dim, uri=uri, token=token)
@@ -659,15 +777,15 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
         if not unique_chunks:
-            progress.update(7, "Complete - All chunks are duplicates", {
+            progress.update(8, "Complete - All chunks are duplicates", {
                 "status": "skipped",
                 "reason": "All chunks already exist in database"
             })
             yield f"data: {json.dumps(progress.to_dict())}\n\n"
             return
         
-        # Step 6: Generate embeddings
-        progress.update(6, "Generating embeddings", {
+        # Step 7: Generate embeddings
+        progress.update(7, "Generating embeddings", {
             "embedding_progress": 0,
             "total_embeddings": len(unique_chunks)
         })
@@ -690,8 +808,8 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
             # Small delay to prevent overwhelming the client
             await asyncio.sleep(0.1)
         
-        # Step 7: Insert into Milvus
-        progress.update(7, "Inserting into vector database", {"insertion": "in_progress"})
+        # Step 8: Insert into Milvus
+        progress.update(8, "Inserting into vector database", {"insertion": "in_progress"})
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
         # Prepare data for insertion
@@ -710,19 +828,26 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
             [chunk.metadata.get('author', '') for chunk in unique_chunks],
             [chunk.metadata.get('hash', '') for chunk in unique_chunks],
             [chunk.metadata.get('doc_id', '') for chunk in unique_chunks],
+            # BM25 enhancement fields
+            [chunk.metadata.get('bm25_tokens', '') for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_term_count', 0) for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_unique_terms', 0) for chunk in unique_chunks],
+            [chunk.metadata.get('bm25_top_terms', '') for chunk in unique_chunks],
         ]
         
         insert_result = collection.insert(data)
         collection.flush()
         
         # Final success
-        progress.update(7, "Upload complete!", {
+        progress.update(8, "Upload complete!", {
             "status": "success",
             "total_chunks": len(chunks),
             "unique_chunks_inserted": len(unique_chunks),
             "duplicates_filtered": duplicate_count,
             "collection": collection_name,
-            "file_id": file_id
+            "file_id": file_id,
+            "classified_type": classified_type,
+            "auto_classified": bool(classified_type)
         })
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
@@ -746,7 +871,11 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
                 print(f"[WARNING] Failed to remove temp file {temp_path}: {str(e)}")
 
 @router.post("/upload_pdf_progress")
-async def upload_pdf_with_progress(file: UploadFile = File(...)):
+async def upload_pdf_with_progress(
+    file: UploadFile = File(...),
+    collection_name: Optional[str] = None,
+    auto_classify: bool = True
+):
     """Upload PDF with real-time progress updates via SSE"""
     
     if not file.filename:
@@ -788,7 +917,7 @@ async def upload_pdf_with_progress(file: UploadFile = File(...)):
     progress = UploadProgress()
     
     return StreamingResponse(
-        progress_generator(wrapped_file, progress),
+        progress_generator(wrapped_file, progress, collection_name, auto_classify),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

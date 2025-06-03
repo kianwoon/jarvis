@@ -43,11 +43,30 @@ class AgentState(TypedDict):
     agent_metrics: Dict[str, Dict[str, Any]]  # Performance metrics per agent
 
 class MultiAgentSystem:
-    """Simplified orchestration for multiple specialized agents"""
+    """
+    Simplified orchestration for multiple specialized agents
+    
+    Optimized for MacBook environments:
+    - Sequential execution (1 agent at a time) by default
+    - Resource-conscious timeout management
+    - Graceful handling of system constraints
+    """
     
     def __init__(self, conversation_id: Optional[str] = None):
         self.conversation_id = conversation_id or str(uuid.uuid4())
+        
+        # Ensure Redis cache is warmed before proceeding
+        from app.core.langgraph_agents_cache import validate_and_warm_cache, get_cache_status
+        cache_status = get_cache_status()
+        print(f"[DEBUG] Cache status on init: {cache_status}")
+        
+        if not cache_status.get("cache_exists") or cache_status.get("agent_count", 0) == 0:
+            print("[DEBUG] Cache not ready, warming cache...")
+            validate_and_warm_cache()
+        
         self.agents = get_langgraph_agents()
+        print(f"[DEBUG] MultiAgentSystem initialized with {len(self.agents)} agents: {list(self.agents.keys())}")
+        
         self.llm_settings = get_llm_settings()
         self.routing_cache = {}  # Simple in-memory cache for routing decisions
         
@@ -139,9 +158,9 @@ class MultiAgentSystem:
                 "dependencies": {}
             }
         else:
-            # Default to parallel for speed
+            # Default to sequential for MacBook stability and resource management
             return {
-                "pattern": "parallel",
+                "pattern": "sequential", 
                 "order": selected_agents,
                 "dependencies": {}
             }
@@ -496,6 +515,12 @@ Important: Only use agent names that exist in the available agents list above.""
         
         query_lower = query.lower()
         
+        # Get available agents from database to ensure we only select existing ones
+        from app.core.langgraph_agents_cache import get_active_agents
+        available_agents = get_active_agents()
+        
+        print(f"[DEBUG] Keyword router - Available agents: {list(available_agents.keys())}")
+        
         # Note: Large generation detection removed from keyword routing to allow multi-agent collaboration
         
         # Comprehensive managed services keywords
@@ -517,31 +542,81 @@ Important: Only use agent names that exist in the available agents list above.""
         has_client = any(word in query_lower for word in ["client", "customer", "bank", "abc"])
         has_service_model = any(word in query_lower for word in ["t&m", "managed service", "time and material", "msp"])
         
+        # Helper function to find best matching agent
+        def find_matching_agent(target_names):
+            matches = []
+            for target in target_names:
+                # First try exact match
+                if target in available_agents:
+                    matches.append(target)
+                else:
+                    # Try case-insensitive and partial matching
+                    target_lower = target.lower()
+                    for available_agent in available_agents:
+                        if (target_lower in available_agent.lower() or 
+                            available_agent.lower() in target_lower or
+                            any(word in available_agent.lower() for word in target_lower.split('_'))):
+                            matches.append(available_agent)
+                            break
+            return matches
+        
         # For a proposal discussion or managed services query, we want multiple perspectives
         if (any(word in query_lower for word in ["proposal", "client", "discuss", "counter"]) or
             is_managed_services or
             (has_client and (has_pricing or has_strategy or has_service_model))):
-            routing["agents"] = ["sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager"]
+            # Try to find specialist team agents
+            desired_agents = ["sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager"]
+            routing["agents"] = find_matching_agent(desired_agents)
+            
+            # If we couldn't find the specialist team, look for any strategic agents
+            if not routing["agents"]:
+                strategic_keywords = ["strategist", "architect", "analyst", "manager", "ceo", "cto", "cio"]
+                for agent_name in available_agents:
+                    if any(keyword in agent_name.lower() for keyword in strategic_keywords):
+                        routing["agents"].append(agent_name)
+                # Limit to 4 agents max
+                routing["agents"] = routing["agents"][:4]
+            
             routing["reasoning"] = "Managed services/strategic discussion detected - engaging specialist team."
         else:
             # Original routing logic for other queries
             if any(word in query_lower for word in ["document", "file", "pdf", "information", "data"]):
-                routing["agents"].append("document_researcher")
+                doc_agents = find_matching_agent(["document_researcher"])
+                routing["agents"].extend(doc_agents)
                 routing["reasoning"] += "Document research needed. "
                 
             if any(word in query_lower for word in ["calculate", "compute", "execute", "run", "tool"]):
-                routing["agents"].append("tool_executor")
+                tool_agents = find_matching_agent(["tool_executor"])
+                routing["agents"].extend(tool_agents)
                 routing["reasoning"] += "Tool execution may be required. "
                 
             if any(word in query_lower for word in ["history", "context", "previous", "earlier", "remember"]):
-                routing["agents"].append("context_manager")
+                context_agents = find_matching_agent(["context_manager"])
+                routing["agents"].extend(context_agents)
                 routing["reasoning"] += "Historical context referenced. "
         
-        # Default if no specific routing
+        # Default if no specific routing - find any available agent
         if not routing["agents"]:
-            routing["agents"] = ["document_researcher"]
-            routing["reasoning"] = "Keyword-based fallback: Defaulting to document research."
+            # Try document researcher first
+            doc_agents = find_matching_agent(["document_researcher"])
+            if doc_agents:
+                routing["agents"] = doc_agents
+                routing["reasoning"] = "Keyword-based fallback: Defaulting to document research."
+            else:
+                # Use any available agent
+                routing["agents"] = [list(available_agents.keys())[0]] if available_agents else []
+                routing["reasoning"] = "Keyword-based fallback: Using first available agent."
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_agents = []
+        for agent in routing["agents"]:
+            if agent not in seen:
+                seen.add(agent)
+                unique_agents.append(agent)
+        routing["agents"] = unique_agents
             
+        print(f"[DEBUG] Keyword router selected: {routing['agents']}")
         routing["reasoning"] = f"Keyword-based routing: {routing['reasoning']}"
         return routing
     
@@ -825,12 +900,21 @@ Remember {context['client']} is a major bank requiring highest service standards
             else:
                 print(f"[DEBUG] Agent {agent} output structure: {output}")
         
-        # Check if we have any meaningful responses
+        # Check if we have any meaningful responses (including timeout responses)
         has_meaningful_response = False
+        timeout_responses = 0
+        successful_responses = 0
+        
         for output in state["agent_outputs"].values():
-            if output.get("response") and len(output["response"]) > 20:
+            response = output.get("response", "")
+            if response and len(response) > 20:
                 has_meaningful_response = True
-                break
+                if "⏰" in response or "timed out" in response.lower():
+                    timeout_responses += 1
+                else:
+                    successful_responses += 1
+        
+        print(f"[DEBUG] Synthesizer: {successful_responses} successful responses, {timeout_responses} timeout responses")
         
         # Skip the fallback message if we have specialized agents responding
         # Check both hardcoded and dynamic agents
@@ -857,7 +941,10 @@ Remember {context['client']} is a major bank requiring highest service standards
         
         # For specialized agents, create a well-formatted comprehensive response
         if has_specialized_agents:
-            final_parts.append("Based on the multi-agent analysis, here's a comprehensive response:\n")
+            if timeout_responses > 0:
+                final_parts.append(f"Based on the multi-agent analysis (⚠️ {timeout_responses} agents experienced delays), here's a comprehensive response:\n")
+            else:
+                final_parts.append("Based on the multi-agent analysis, here's a comprehensive response:\n")
             
             # Add each specialized agent's response with proper formatting
             # First try hardcoded agent order for consistency
@@ -1002,6 +1089,10 @@ Remember {context['client']} is a major bank requiring highest service standards
         conversation_history: Optional[List[Dict]] = None
     ):
         """Stream events from multi-agent processing"""
+        # Add execution ID to prevent duplicate processing
+        execution_id = str(uuid.uuid4())[:8]
+        print(f"[DEBUG] Starting multi-agent execution {execution_id} for query: {query[:100]}...")
+        
         try:
             # Initialize state
             state = AgentState(
@@ -1029,6 +1120,16 @@ Remember {context['client']} is a major bank requiring highest service standards
                 # Performance tracking
                 agent_metrics={}
             )
+            
+            # Ensure cache is fresh before execution
+            from app.core.langgraph_agents_cache import get_cache_status, validate_and_warm_cache
+            cache_status = get_cache_status()
+            if not cache_status.get("cache_exists") or cache_status.get("agent_count", 0) == 0:
+                print("[WARNING] Cache not ready during execution, warming cache...")
+                validate_and_warm_cache()
+                # Refresh agents list after cache warming
+                self.agents = get_langgraph_agents()
+                print(f"[DEBUG] Refreshed agents after cache warming: {len(self.agents)} agents")
             
             # Step 1: Router
             router_start_time = datetime.now()
@@ -1077,6 +1178,11 @@ Remember {context['client']} is a major bank requiring highest service standards
                 state["agent_dependencies"] = collaboration.get("dependencies", {})
                 state["execution_order"] = collaboration.get("order", agents_to_run)
                 print(f"[DEBUG] Using fallback collaboration pattern: {state['execution_pattern']}")
+            
+            # Override to sequential for MacBook resource management
+            if len(agents_to_run) > 1:
+                print(f"[DEBUG] Enforcing sequential execution for MacBook stability with {len(agents_to_run)} agents")
+                state["execution_pattern"] = "sequential"
             
             # Yield collaboration pattern info
             yield {
@@ -1158,13 +1264,38 @@ Remember {context['client']} is a major bank requiring highest service standards
                         agent_data = get_agent_by_name(agent_name_local)
                         print(f"[DEBUG] Agent data found: {agent_data is not None}")
                         if not agent_data:
-                            print(f"[ERROR] Agent {agent_name_local} not found, yielding error")
-                            yield {
-                                "type": "agent_error",
-                                "agent": agent_name_local,
-                                "error": f"Agent {agent_name_local} not found in system"
-                            }
-                            return
+                            # Get list of available agents for debugging
+                            from app.core.langgraph_agents_cache import get_active_agents
+                            available_agents = list(get_active_agents().keys())
+                            print(f"[ERROR] Agent {agent_name_local} not found in system")
+                            print(f"[ERROR] Available agents: {available_agents}")
+                            
+                            # Try case-insensitive and partial matching
+                            possible_matches = []
+                            agent_name_lower = agent_name_local.lower()
+                            for available_agent in available_agents:
+                                if agent_name_lower in available_agent.lower() or available_agent.lower() in agent_name_lower:
+                                    possible_matches.append(available_agent)
+                            
+                            if possible_matches:
+                                print(f"[INFO] Possible matches for {agent_name_local}: {possible_matches}")
+                                # Use the first match
+                                suggested_agent = possible_matches[0]
+                                print(f"[INFO] Using {suggested_agent} instead of {agent_name_local}")
+                                agent_data = get_agent_by_name(suggested_agent)
+                                agent_name_local = suggested_agent  # Update the local agent name
+                            
+                            if not agent_data:
+                                print(f"[ERROR] Agent {agent_name_local} not found, skipping this agent")
+                                yield {
+                                    "type": "agent_error",
+                                    "agent": agent_name_local,
+                                    "error": f"Agent {agent_name_local} not found in system. Available: {available_agents}"
+                                }
+                                # Mark as failed and continue to next agent instead of returning
+                                state["agent_metrics"][agent_name_local]["status"] = "failed"
+                                state["agent_metrics"][agent_name_local]["end_time"] = datetime.now().isoformat()
+                                return  # Return from this specific wrapper, not the main function
                         
                         dynamic_system = DynamicMultiAgentSystem()
                         start_time = agent_start_times[agent_name_local]
@@ -1214,6 +1345,23 @@ Remember {context['client']} is a major bank requiring highest service standards
                     agent_tasks.append((agent_name, dynamic_agent_wrapper()))
                     print(f"[DEBUG] Agent tasks now contains {len(agent_tasks)} tasks: {[task[0] for task in agent_tasks]}")
             
+            # Debug: Print final agent_tasks before execution
+            print(f"[DEBUG] FINAL: agent_tasks contains {len(agent_tasks)} tasks total")
+            print(f"[DEBUG] FINAL: Task names: {[task[0] for task in agent_tasks]}")
+            print(f"[DEBUG] FINAL: agents_to_run was: {agents_to_run}")
+            
+            # Check for missing agents
+            task_names = {task[0] for task in agent_tasks}
+            missing_from_tasks = [agent for agent in agents_to_run if agent not in task_names]
+            if missing_from_tasks:
+                print(f"[WARNING] Agents in agents_to_run but missing from agent_tasks: {missing_from_tasks}")
+                # Mark missing agents as failed in metrics for tracking
+                for missing_agent in missing_from_tasks:
+                    if missing_agent in state["agent_metrics"]:
+                        state["agent_metrics"][missing_agent]["status"] = "failed"
+                        state["agent_metrics"][missing_agent]["end_time"] = datetime.now().isoformat()
+                        print(f"[DEBUG] Marked {missing_agent} as failed in metrics")
+            
             # Process agents according to collaboration pattern
             if agent_tasks:
                 from app.langchain.collaboration_executor import CollaborationExecutor
@@ -1235,8 +1383,8 @@ Remember {context['client']} is a major bank requiring highest service standards
                     agent_start_times=agent_start_times
                 ):
                     event_count += 1
-                    if event_count % 20 == 0:
-                        print(f"[DEBUG] Yielded {event_count} events from collaboration executor")
+                    # if event_count % 20 == 0:
+                    #     print(f"[DEBUG] Yielded {event_count} events from collaboration executor")
                     yield event
                 
                 print(f"[DEBUG] Collaboration executor finished, yielded {event_count} total events")
@@ -1284,15 +1432,16 @@ Remember {context['client']} is a major bank requiring highest service standards
                 "agent_metrics": state["agent_metrics"],
                 "performance_summary": performance_summary
             }
-            print(f"[DEBUG] Multi-agent processing completed successfully")
+            print(f"[DEBUG] Multi-agent execution {execution_id} completed successfully with {len(state['agent_outputs'])} agent responses")
             
         except Exception as e:
-            print(f"[ERROR] Exception in stream_events: {str(e)}")
+            print(f"[ERROR] Exception in multi-agent execution {execution_id}: {str(e)}")
             import traceback
             print(f"[ERROR] Traceback: {traceback.format_exc()}")
             yield {
                 "type": "error",
-                "error": str(e)
+                "error": str(e),
+                "execution_id": execution_id
             }
     
     async def stream_large_generation_events(

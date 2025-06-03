@@ -3,6 +3,7 @@ import re
 import httpx
 import json
 from datetime import datetime
+from typing import List, Optional, Dict, Any, Tuple
 from app.core.llm_settings_cache import get_llm_settings
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
@@ -10,9 +11,26 @@ from app.core.mcp_tools_cache import get_enabled_mcp_tools
 from app.api.v1.endpoints.document import HTTPEmbeddingFunction
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Milvus
+from app.rag.bm25_processor import BM25Processor, BM25CorpusManager
 
 # Enhanced conversation management with Redis fallback
 _conversation_cache = {}  # In-memory fallback
+
+# Simple query cache for RAG results (in-memory, expires after 5 minutes)
+import time
+_rag_cache = {}  # {query_hash: (result, timestamp)}
+RAG_CACHE_TTL = 300  # 5 minutes
+RAG_CACHE_MAX_SIZE = 100  # Maximum cache entries to prevent memory bloat
+
+def _cache_rag_result(query_hash: int, result: tuple, current_time: float):
+    """Helper function to cache RAG results with cleanup"""
+    _rag_cache[query_hash] = (result, current_time)
+    # Clean up cache if it gets too large
+    if len(_rag_cache) > RAG_CACHE_MAX_SIZE:
+        # Remove oldest entries
+        sorted_cache = sorted(_rag_cache.items(), key=lambda x: x[1][1])
+        for old_key, _ in sorted_cache[:20]:  # Remove 20 oldest entries
+            del _rag_cache[old_key]
 
 def get_redis_conversation_client():
     """Get Redis client specifically for conversation storage"""
@@ -250,8 +268,26 @@ def build_prompt(prompt: str, thinking: bool = False, is_internal: bool = False)
         )
     return prompt
 
-def calculate_relevance_score(query: str, context: str) -> float:
-    """Calculate relevance score using TF-IDF-like keyword matching for hybrid search"""
+def calculate_relevance_score(query: str, context: str, corpus_stats=None) -> float:
+    """Enhanced relevance score using BM25 with fallback to existing TF-IDF logic"""
+    if not context or not query:
+        return 0.0
+    
+    # Initialize BM25 processor
+    bm25_processor = BM25Processor()
+    
+    # Use enhanced BM25 scoring
+    enhanced_score = bm25_processor.enhance_existing_relevance_score(
+        query=query,
+        content=context,
+        corpus_stats=corpus_stats,
+        existing_score=_calculate_legacy_relevance_score(query, context)
+    )
+    
+    return enhanced_score
+
+def _calculate_legacy_relevance_score(query: str, context: str) -> float:
+    """Legacy TF-IDF-like calculation as fallback"""
     if not context or not query:
         return 0.0
         
@@ -378,10 +414,27 @@ def detect_large_output_potential(question: str) -> dict:
             score += 1
             matched_indicators.append(indicator)
     
-    # Extract numbers that might indicate quantity
+    # Extract numbers that might indicate quantity (exclude years and contextual numbers)
     import re
-    numbers = re.findall(r'\b(\d+)\b', question)
-    max_number = max([int(n) for n in numbers], default=0)
+    all_numbers = re.findall(r'\b(\d+)\b', question)
+    
+    # Filter out years and other contextual numbers that don't indicate quantity
+    quantity_numbers = []
+    for num_str in all_numbers:
+        num = int(num_str)
+        # Exclude common year ranges (1900-2100) and other contextual numbers
+        if num >= 1900 and num <= 2100:
+            continue  # Skip years
+        # Exclude small contextual numbers that might be version numbers, IDs, etc.
+        if num <= 5 and not any(quantity_word in question_lower for quantity_word in [
+            "generate", "create", "list", "write", "questions", "items", "examples", "steps"
+        ]):
+            continue  # Skip small numbers without generation context
+        quantity_numbers.append(num)
+    
+    max_number = max(quantity_numbers, default=0)
+    
+    print(f"[DEBUG] Number filtering - All numbers: {all_numbers}, Quantity numbers: {quantity_numbers}, Max: {max_number}")
     
     # Additional patterns that suggest large output
     large_patterns = config.large_patterns
@@ -398,7 +451,7 @@ def detect_large_output_potential(question: str) -> dict:
     number_confidence = min(1.0, max_number / config.max_number_for_confidence) if max_number > 0 else 0
     final_confidence = max(base_confidence, number_confidence)
     
-    # Estimate number of items to generate
+    # Estimate number of items to generate (only use filtered quantity numbers)
     if max_number > 10:
         estimated_items = max_number
     elif score >= 3:
@@ -411,8 +464,26 @@ def detect_large_output_potential(question: str) -> dict:
     # More refined logic for determining if it's a large generation request
     is_likely_large = False
     
-    # Strong indicators: explicit large numbers
-    if max_number >= config.strong_number_threshold:
+    # Check for factual question patterns that should NOT trigger large generation
+    factual_patterns = [
+        r'\bwho\s+(is|are|was|were)\b',  # "who is/are/was/were"
+        r'\bwhat\s+(is|are|was|were)\b',  # "what is/are/was/were"
+        r'\bwhen\s+(is|are|was|were|did|will)\b',  # "when is/are/was/were/did/will"
+        r'\bwhere\s+(is|are|was|were)\b',  # "where is/are/was/were"
+        r'\bhow\s+(much|many|long|old)\b',  # "how much/many/long/old"
+        r'\bwinner[s]?\s+(of|for)\b',  # "winner of/for"
+        r'\bresult[s]?\s+(of|for)\b',  # "result of/for"
+        r'\bchampion[s]?\s+(of|for)\b',  # "champion of/for"
+    ]
+    
+    is_factual_query = any(re.search(pattern, question_lower) for pattern in factual_patterns)
+    
+    # If it's a factual query, don't trigger large generation even with numbers
+    if is_factual_query:
+        print(f"[DEBUG] Detected factual query pattern, skipping large generation: {question}")
+        is_likely_large = False
+    # Strong indicators: explicit large numbers (but only if not a factual query)
+    elif max_number >= config.strong_number_threshold:
         is_likely_large = True
     # Medium indicators: moderate numbers + generation keywords
     elif max_number >= config.medium_number_threshold and score >= config.min_score_for_medium_numbers:
@@ -424,9 +495,11 @@ def detect_large_output_potential(question: str) -> dict:
     elif max_number > 0 and max_number < config.small_number_threshold:
         is_likely_large = False
     
-    # Adjust estimated items for small number requests
+    # Adjust estimated items for small number requests and factual queries
     if max_number > 0 and max_number < config.small_number_threshold:
         estimated_items = max_number
+    elif is_factual_query:
+        estimated_items = 1  # Factual queries typically return single answers
     
     result = {
         "likely_large": is_likely_large,
@@ -511,7 +584,7 @@ Answer with exactly one word: RAG, TOOLS, or LLM"""
     }
     
     text = ""
-    with httpx.Client(timeout=None) as client:
+    with httpx.Client(timeout=30.0) as client:  # Add timeout to prevent hanging
         with client.stream("POST", llm_api_url, json=payload) as response:
             for line in response.iter_lines():
                 if not line:
@@ -606,7 +679,7 @@ Examples:
     }
     
     tool_selection_text = ""
-    with httpx.Client(timeout=None) as client:
+    with httpx.Client(timeout=30.0) as client:  # Add timeout to prevent hanging
         with client.stream("POST", llm_api_url, json=payload) as response:
             for line in response.iter_lines():
                 if not line:
@@ -1012,9 +1085,29 @@ def analyze_query_type(question: str) -> dict:
     
     return analysis
 
-def handle_rag_query(question: str, thinking: bool = False) -> tuple:
-    """Handle RAG queries with hybrid search (vector + keyword) - returns context only"""
-    print(f"[DEBUG] handle_rag_query: question = {question}, thinking = {thinking}")
+def handle_rag_query(question: str, thinking: bool = False, collections: List[str] = None, collection_strategy: str = "auto") -> tuple:
+    """Handle RAG queries with hybrid search (vector + keyword) - returns context only
+    
+    Args:
+        question: The user's question
+        thinking: Whether to enable extended thinking
+        collections: List of collection names to search (None = auto-detect)
+        collection_strategy: "auto", "specific", or "all"
+    """
+    print(f"[DEBUG] handle_rag_query: question = {question}, thinking = {thinking}, collections = {collections}, strategy = {collection_strategy}")
+    
+    # Check cache first for performance
+    query_hash = hash(question.lower().strip())
+    current_time = time.time()
+    
+    if query_hash in _rag_cache:
+        cached_result, timestamp = _rag_cache[query_hash]
+        if current_time - timestamp < RAG_CACHE_TTL:
+            print(f"[DEBUG] handle_rag_query: Using cached result for query")
+            return cached_result
+        else:
+            # Remove expired cache entry
+            del _rag_cache[query_hash]
     
     try:
         embedding_cfg = get_embedding_settings()
@@ -1057,84 +1150,140 @@ def handle_rag_query(question: str, thinking: bool = False) -> tuple:
         embeddings = HuggingFaceEmbeddings(model_name=model_name)
         print(f"[DEBUG] handle_rag_query: Using HuggingFace embeddings with model: {model_name}")
     
-    # Connect to vector store
+    # Determine which collections to search
     milvus_cfg = vector_db_cfg["milvus"]
-    collection = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
     uri = milvus_cfg.get("MILVUS_URI")
     token = milvus_cfg.get("MILVUS_TOKEN")
     
-    print(f"[DEBUG] handle_rag_query: Connecting to collection '{collection}' at URI '{uri}'")
+    # Get collections to search based on strategy
+    collections_to_search = []
     
-    milvus_store = Milvus(
-        embedding_function=embeddings,
-        collection_name=collection,
-        connection_args={"uri": uri, "token": token},
-        text_field="content"
-    )
+    if collection_strategy == "specific" and collections:
+        # Use only specified collections
+        collections_to_search = collections
+        print(f"[DEBUG] Using specific collections: {collections_to_search}")
+    elif collection_strategy == "all":
+        # Get all available collections from registry
+        from app.core.collection_registry_cache import get_all_collections
+        all_collections = get_all_collections()
+        collections_to_search = [col["collection_name"] for col in all_collections]
+        print(f"[DEBUG] Searching all collections: {collections_to_search}")
+    else:  # "auto" strategy
+        # Auto-detect relevant collections based on query
+        from app.core.document_classifier import get_document_classifier
+        classifier = get_document_classifier()
+        
+        # Use query analysis to determine collection type
+        collection_type = classifier.classify_document(question, {"query": True})
+        target_collection = classifier.get_target_collection(collection_type)
+        
+        if target_collection:
+            collections_to_search = [target_collection]
+            # Also add default_knowledge for broader search
+            if target_collection != "default_knowledge":
+                collections_to_search.append("default_knowledge")
+        else:
+            collections_to_search = ["default_knowledge"]
+            
+        print(f"[DEBUG] Auto-detected collections for type '{collection_type}': {collections_to_search}")
     
-    # Retrieve relevant documents - increase k for better coverage
+    # Fallback to default if no collections determined
+    if not collections_to_search:
+        collections_to_search = ["default_knowledge"]
+        print(f"[DEBUG] Using default collection as fallback")
+    
+    print(f"[DEBUG] handle_rag_query: Will search collections: {collections_to_search}")
+    
+    # Retrieve relevant documents - optimized for performance
     # IMPORTANT: Milvus with COSINE distance returns lower scores for more similar vectors
     # Score range: 0 (identical) to 2 (opposite)
     SIMILARITY_THRESHOLD = 1.5  # Very inclusive for initial retrieval (let re-ranking filter)
-    NUM_DOCS = 50  # Retrieve many candidates for re-ranking to work with
+    NUM_DOCS = 20  # Reduced from 50 to 20 for better performance while maintaining quality
     
     # Use LLM to expand queries for better recall
     queries_to_try = llm_expand_query(question, llm_cfg)
     
     try:
-        # HYBRID SEARCH: Run both vector and keyword search in parallel
+        # HYBRID SEARCH: Run both vector and keyword search across all collections
         all_docs = []
         seen_ids = set()
         
-        # 1. Vector search with query expansion
-        for query in queries_to_try:
-            try:
-                # Normalize query to lowercase for consistent vector search
-                normalized_query = query.lower().strip()
-                docs = milvus_store.similarity_search_with_score(normalized_query, k=NUM_DOCS) if hasattr(milvus_store, 'similarity_search_with_score') else [(doc, 0.0) for doc in milvus_store.similarity_search(normalized_query, k=NUM_DOCS)]
-                
-                # Add unique documents
-                for doc, score in docs:
-                    # Create a unique ID based on content hash
-                    doc_id = hash(doc.page_content)
-                    if doc_id not in seen_ids:
-                        seen_ids.add(doc_id)
-                        all_docs.append((doc, score))
+        # Search each collection
+        for collection_name in collections_to_search:
+            print(f"[DEBUG] Searching collection: {collection_name}")
+            
+            # Create Milvus store for this collection
+            milvus_store = Milvus(
+                embedding_function=embeddings,
+                collection_name=collection_name,
+                connection_args={"uri": uri, "token": token},
+                text_field="content"
+            )
+            
+            # 1. Vector search with query expansion
+            for query in queries_to_try:
+                try:
+                    # Normalize query to lowercase for consistent vector search
+                    normalized_query = query.lower().strip()
+                    vector_search_start = time.time()
+                    docs = milvus_store.similarity_search_with_score(normalized_query, k=NUM_DOCS) if hasattr(milvus_store, 'similarity_search_with_score') else [(doc, 0.0) for doc in milvus_store.similarity_search(normalized_query, k=NUM_DOCS)]
+                    vector_search_end = time.time()
+                    print(f"[DEBUG] Vector search in {collection_name} for '{normalized_query[:50]}...' took {vector_search_end - vector_search_start:.2f} seconds, found {len(docs)} docs")
+                    
+                    # Add unique documents with collection metadata
+                    for doc, score in docs:
+                        # Add collection info to metadata
+                        if not hasattr(doc, 'metadata'):
+                            doc.metadata = {}
+                        doc.metadata['source_collection'] = collection_name
                         
-            except Exception as e:
-                print(f"[ERROR] handle_rag_query: Failed for query '{query}': {str(e)}")
+                        # Create a unique ID based on content hash
+                        doc_id = hash(doc.page_content)
+                        if doc_id not in seen_ids:
+                            seen_ids.add(doc_id)
+                            all_docs.append((doc, score))
+                            
+                except Exception as e:
+                    print(f"[ERROR] handle_rag_query: Failed for query '{query}' in collection {collection_name}: {str(e)}")
+            
+            # 2. ALWAYS perform keyword search in parallel (not just as fallback)
+            print(f"[DEBUG] Running keyword search in {collection_name}")
+            keyword_docs = keyword_search_milvus(
+                question,
+                collection_name,
+                uri=milvus_cfg.get("MILVUS_URI"),
+                token=milvus_cfg.get("MILVUS_TOKEN")
+            )
+            
+            print(f"[DEBUG] Keyword search in {collection_name} found {len(keyword_docs)} docs")
+            
+            # Add keyword search results with a favorable score (0.8 = good match in cosine distance)
+            keyword_boost_count = 0
+            for doc in keyword_docs:
+                # Add collection info to metadata
+                if not hasattr(doc, 'metadata'):
+                    doc.metadata = {}
+                doc.metadata['source_collection'] = collection_name
+                
+                doc_id = hash(doc.page_content)
+                if doc_id not in seen_ids:
+                    seen_ids.add(doc_id)
+                    all_docs.append((doc, 0.8))  # Good match score for keyword results
+                    print(f"[DEBUG] Added keyword-only doc: {doc.page_content[:100]}...")
+                else:
+                    # If document already found by vector search, boost its importance
+                    for i, (existing_doc, existing_score) in enumerate(all_docs):
+                        if hash(existing_doc.page_content) == doc_id:
+                            # Improve score if found by both methods
+                            old_score = existing_score
+                            all_docs[i] = (existing_doc, min(existing_score * 0.7, 0.5))
+                            keyword_boost_count += 1
+                            print(f"[DEBUG] Boosted doc score from {old_score} to {all_docs[i][1]}")
+                            break
+            
+            print(f"[DEBUG] Keyword search in {collection_name} added {len(keyword_docs) - keyword_boost_count} new docs and boosted {keyword_boost_count} existing docs")
         
-        # 2. ALWAYS perform keyword search in parallel (not just as fallback)
-        print(f"[DEBUG] Running keyword search in parallel with vector search")
-        keyword_docs = keyword_search_milvus(
-            question,
-            collection,
-            uri=milvus_cfg.get("MILVUS_URI"),
-            token=milvus_cfg.get("MILVUS_TOKEN")
-        )
-        
-        print(f"[DEBUG] Vector search found {len(all_docs)} docs, Keyword search found {len(keyword_docs)} docs")
-        
-        # Add keyword search results with a favorable score (0.8 = good match in cosine distance)
-        keyword_boost_count = 0
-        for doc in keyword_docs:
-            doc_id = hash(doc.page_content)
-            if doc_id not in seen_ids:
-                seen_ids.add(doc_id)
-                all_docs.append((doc, 0.8))  # Good match score for keyword results
-                print(f"[DEBUG] Added keyword-only doc: {doc.page_content[:100]}...")
-            else:
-                # If document already found by vector search, boost its importance
-                for i, (existing_doc, existing_score) in enumerate(all_docs):
-                    if hash(existing_doc.page_content) == doc_id:
-                        # Improve score if found by both methods
-                        old_score = existing_score
-                        all_docs[i] = (existing_doc, min(existing_score * 0.7, 0.5))
-                        keyword_boost_count += 1
-                        print(f"[DEBUG] Boosted doc score from {old_score} to {all_docs[i][1]}")
-                        break
-        
-        print(f"[DEBUG] Keyword search added {len(keyword_docs) - keyword_boost_count} new docs and boosted {keyword_boost_count} existing docs")
+        print(f"[DEBUG] Total documents from all collections: {len(all_docs)}")
         
         if not all_docs:
             print(f"[ERROR] handle_rag_query: No documents retrieved from vector or keyword search")
@@ -1152,7 +1301,9 @@ def handle_rag_query(question: str, thinking: bool = False) -> tuple:
                 try:
                     from pymilvus import Collection, connections
                     connections.connect(uri=uri, token=token, alias="fallback_search")
-                    collection_obj = Collection(collection, using="fallback_search")
+                    # Use first collection from search list for fallback
+                    fallback_collection = collections_to_search[0] if collections_to_search else "default_knowledge"
+                    collection_obj = Collection(fallback_collection, using="fallback_search")
                     collection_obj.load()
                     
                     # Try with the first fallback term
@@ -1173,7 +1324,8 @@ def handle_rag_query(question: str, thinking: bool = False) -> tuple:
                                     "source": r.get("source", ""),
                                     "page": r.get("page", 0),
                                     "hash": r.get("hash", ""),
-                                    "doc_id": r.get("doc_id", "")
+                                    "doc_id": r.get("doc_id", ""),
+                                    "source_collection": fallback_collection
                                 }
                             )
                             all_docs.append((doc, 1.0))
@@ -1330,6 +1482,16 @@ Documents to score:
     
     context = "\n\n".join([doc.page_content for doc in filtered_docs])
     
+    # Extract sources with collection information
+    sources = []
+    for doc in filtered_docs:
+        source_info = {
+            "file": doc.metadata.get("source", "Unknown"),
+            "page": doc.metadata.get("page", 0),
+            "collection": doc.metadata.get("source_collection", "default_knowledge")
+        }
+        sources.append(source_info)
+    
     # Enhanced relevance detection
     if context.strip():
         print(f"[RAG DEBUG] Query: {question}")
@@ -1361,19 +1523,39 @@ Documents to score:
         min_relevance = 0.15 if len(query_keywords) > 2 else 0.25
         if relevance_score < min_relevance:
             print(f"[RAG DEBUG] Low relevance detected ({relevance_score:.2f} < {min_relevance}), no context returned")
-            return "", ""
+            result = ("", "")
+            # Cache the result for performance
+            _cache_rag_result(query_hash, result, current_time)
+            return result
         
         # Context is relevant, return it for hybrid processing
         print(f"[RAG DEBUG] Good relevance ({relevance_score:.2f}), returning context for hybrid approach")
-        return context, ""  # Return empty string for prompt since we handle prompting in main function
+        result = (context, "")  # Return empty string for prompt since we handle prompting in main function
+        # Cache the result for performance
+        _cache_rag_result(query_hash, result, current_time)
+        return result
     else:
         print(f"[RAG DEBUG] No relevant documents found")
-        return "", ""
+        result = ("", "")
+        # Cache the result for performance
+        _cache_rag_result(query_hash, result, current_time)
+        return result
 
-def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True):
-    """Main function with hybrid RAG+LLM approach prioritizing answer quality"""
+def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True, collections: List[str] = None, collection_strategy: str = "auto"):
+    """Main function with hybrid RAG+LLM approach prioritizing answer quality
+    
+    Args:
+        question: The user's question
+        thinking: Whether to enable extended thinking
+        stream: Whether to stream the response
+        conversation_id: Conversation ID for context
+        use_langgraph: Whether to use LangGraph agents
+        collections: List of collection names to search (None = auto-detect)
+        collection_strategy: "auto", "specific", or "all"
+    """
     print(f"[DEBUG] rag_answer: incoming question = {question}")
     print(f"[DEBUG] rag_answer: conversation_id = {conversation_id}")
+    print(f"[DEBUG] rag_answer: collections = {collections}, strategy = {collection_strategy}")
     
     # Store the user's question in conversation history
     if conversation_id:
@@ -1437,7 +1619,11 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
     else:
         # STEP 2a: For non-large generation, do full RAG retrieval
         print(f"[DEBUG] rag_answer: Step 2a - Attempting full RAG retrieval")
-        rag_context, _ = handle_rag_query(question, thinking)
+        import time
+        rag_start_time = time.time()
+        rag_context, _ = handle_rag_query(question, thinking, collections, collection_strategy)
+        rag_end_time = time.time()
+        print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
         print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
     
     # STEP 3: Handle large generation immediately if detected
@@ -1868,8 +2054,10 @@ Generate exactly {target_num} questions:"""
             # Capture max_tokens in local scope
             tokens_limit = max_tokens
             text = ""
+            streaming_start_time = time.time()
+            print(f"[DEBUG] Starting LLM streaming at {streaming_start_time}")
             try:
-                with httpx.Client(timeout=300) as client:  # 5 minute timeout
+                with httpx.Client(timeout=60.0) as client:  # 1 minute timeout, more reasonable
                     with client.stream("POST", llm_api_url, json=payload) as response:
                         response.raise_for_status()  # Raise exception for HTTP errors
                         for line in response.iter_lines():
@@ -1884,10 +2072,11 @@ Generate exactly {target_num} questions:"""
                                     yield json.dumps({"token": token}) + "\n"
                         
                         # Ensure response is fully consumed
-                        print(f"[DEBUG] HTTP streaming completed, total text length: {len(text)}")
+                        streaming_end_time = time.time()
+                        print(f"[DEBUG] HTTP streaming completed in {streaming_end_time - streaming_start_time:.2f} seconds, total text length: {len(text)}")
                         print(f"[DEBUG] Starting post-processing of response")
             except httpx.TimeoutException:
-                print(f"[ERROR] HTTP timeout after 300 seconds")
+                print(f"[ERROR] HTTP timeout after 60 seconds")
                 # Send completion event to stop cursor
                 yield json.dumps({
                     "answer": "Request timed out. Please try again.",
@@ -1936,11 +2125,7 @@ Generate exactly {target_num} questions:"""
                 else:
                     answer = ""
                 
-                # Store assistant's response in conversation history
-                if conversation_id and answer:
-                    store_conversation_message(conversation_id, "assistant", answer)
-                
-                # Send completion event with the exact format the frontend expects
+                # Send completion event with the exact format the frontend expects first for immediate UI response
                 completion_event = {
                     "answer": answer,  # This is the key field the frontend looks for
                     "source": source,
@@ -1961,6 +2146,14 @@ Generate exactly {target_num} questions:"""
                     completion_json = json.dumps(completion_event, ensure_ascii=False)
                     print(f"[DEBUG] Completion JSON length: {len(completion_json)}")
                     yield completion_json + "\n"
+                    
+                    # Store conversation message after sending response for better performance
+                    if conversation_id and answer:
+                        try:
+                            store_conversation_message(conversation_id, "assistant", answer)
+                        except Exception as storage_error:
+                            print(f"[ERROR] Failed to store conversation message: {storage_error}")
+                    
                 except Exception as json_error:
                     print(f"[ERROR] Failed to serialize completion event: {json_error}")
                     # Send a minimal completion event as fallback
@@ -1981,7 +2174,7 @@ Generate exactly {target_num} questions:"""
     
     else:
         text = ""
-        with httpx.Client(timeout=None) as client:
+        with httpx.Client(timeout=30.0) as client:  # Add timeout to prevent hanging
             with client.stream("POST", llm_api_url, json=payload) as response:
                 for line in response.iter_lines():
                     if not line:
