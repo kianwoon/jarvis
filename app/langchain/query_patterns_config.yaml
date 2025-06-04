@@ -1,0 +1,250 @@
+# Query Patterns Configuration
+# This file defines patterns for query classification
+# Patterns support regex and can be dynamically loaded and modified
+
+# Tool-related patterns
+tool_patterns:
+  web_search:
+    patterns:
+      - '\b(search|browse|web|internet|google|website|url|http|https)\b'
+      - '\b(look up|find online|search for|google)\b'
+    confidence_boost: 0.3
+    suggested_tools: ["web_search", "browser"]
+    
+  weather:
+    patterns:
+      - '\b(weather|temperature|forecast|climate|rain|snow|sunny)\b'
+      - '\b(hot|cold|warm|humid|degrees)\s+(today|tomorrow|this week)\b'
+    confidence_boost: 0.35
+    suggested_tools: ["weather_api"]
+    
+  calculation:
+    patterns:
+      - '\b(calculate|compute|math|arithmetic|sum|multiply|divide)\b'
+      - '\b(\d+\s*[\+\-\*/]\s*\d+)\b'  # Math expressions
+      - '\b(percentage|average|median|standard deviation)\b'
+    confidence_boost: 0.3
+    suggested_tools: ["calculator", "math_solver"]
+    
+  api_interaction:
+    patterns:
+      - '\b(api|endpoint|request|fetch|call|POST|GET|REST)\b'
+      - '\b(webhook|http request|api call)\b'
+    confidence_boost: 0.3
+    suggested_tools: ["api_client", "http_tool"]
+    
+  database:
+    patterns:
+      - '\b(database|query|sql|mongo|postgres|mysql|redis)\b'
+      - '\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)\b'
+    confidence_boost: 0.35
+    suggested_tools: ["database_query", "sql_executor"]
+    
+  file_operations:
+    patterns:
+      - '\b(file|read|write|save|load|download|upload|open|create)\b'
+      - '\b(document|pdf|csv|txt|json|xml)\s+(file|document)\b'
+    confidence_boost: 0.3
+    suggested_tools: ["file_system", "document_processor"]
+    
+  communication:
+    patterns:
+      - '\b(email|send|notify|message|slack|discord|sms)\b'
+      - '\b(alert|notification|remind)\b'
+    confidence_boost: 0.3
+    suggested_tools: ["email_sender", "notification_service"]
+    
+  translation:
+    patterns:
+      - '\b(translate|translation|language|convert to)\b'
+      - '\b(english|spanish|french|german|chinese|japanese)\s+to\s+\b'
+    confidence_boost: 0.35
+    suggested_tools: ["translator", "language_service"]
+    
+  realtime_data:
+    patterns:
+      - '\b(current|today|now|latest|real-time|live|up-to-date)\b'
+      - '\b(stock price|exchange rate|news|trending)\b'
+      - '\b(latest|current|recent)\b.*\b(online|web|internet)\b.*\b(info|information|data|updates)\b'
+      - '\b(online|web|internet)\b.*\b(info|information|search|data)\b.*\b(about|for|regarding)\b'
+    confidence_boost: 0.3
+    suggested_tools: ["web_search", "news_api", "realtime_data"]
+
+# RAG/knowledge search patterns
+rag_patterns:
+  question_answering:
+    patterns:
+      - '\b(what|who|when|where|why|how)\b.*\b(is|are|was|were|does|do|did)\b'
+      - '\b(tell me about|explain|describe|what do you know about)\b'
+      - '\b(can you explain|could you describe|please tell me)\b'
+    confidence_boost: 0.25
+    
+  document_search:
+    patterns:
+      - '\b(find|search|look for|locate|retrieve)\b.*\b(document|file|information|data|content|info|details)\b'
+      - '\b(find out|look up|search for|get)\b.*\b(info|information|details|data|about)\b'
+      - '\b(in the|from the|within the)\b.*\b(document|file|data|report|paper)\b'
+      - '\b(uploaded|provided|given|shared)\b.*\b(document|file|data)\b'
+    confidence_boost: 0.3
+    
+  reference_lookup:
+    patterns:
+      - '\b(according to|based on|from the|in the|as per)\b.*\b(document|file|data|information|report)\b'
+      - '\b(document says|file contains|data shows|report mentions)\b'
+      - '\b(mentioned in|stated in|written in|found in)\b'
+    confidence_boost: 0.35
+    
+  summarization:
+    patterns:
+      - '\b(summarize|summary|overview|brief|key points|main points)\b'
+      - '\b(tldr|gist|essence|highlights)\b'
+      - '\b(brief me on|give me an overview)\b'
+    confidence_boost: 0.3
+    
+  knowledge_base:
+    patterns:
+      - '\b(documentation|manual|guide|reference|handbook)\b'
+      - '\b(policy|procedure|guideline|standard|protocol)\b'
+      - '\b(knowledge base|wiki|faq|help)\b'
+    confidence_boost: 0.25
+    
+  entity_specific:
+    patterns:
+      - '\b(company|organization|bank|institution|agency)\b.*\b(info|information|details|data|about)\b'
+      - '\b(outage|outages|issue|issues|problem|problems|incident|incidents|downtime|service disruption)\b'
+      - '\b[A-Z]{2,}\b.*\b(bank|company|corporation|inc|ltd|limited)\b'  # Acronyms like DBS, OCBC, etc.
+    confidence_boost: 0.3
+
+# Code generation patterns
+code_patterns:
+  programming_languages:
+    patterns:
+      - '\b(python|javascript|java|c\+\+|typescript|golang|rust|ruby|php|swift)\b'
+      - '\b(html|css|sql|bash|shell|powershell)\b'
+    confidence_boost: 0.25
+    
+  code_tasks:
+    patterns:
+      - '\b(code|program|script|function|class|method|variable)\b'
+      - '\b(implement|create|write|develop|build)\b.*\b(code|function|program|app|script)\b'
+      - '\b(coding|programming|scripting)\b'
+    confidence_boost: 0.3
+    
+  debugging:
+    patterns:
+      - '\b(debug|fix|error|bug|issue|problem)\b.*\b(code|program|script)\b'
+      - '\b(troubleshoot|diagnose|resolve)\b.*\b(error|issue|problem)\b'
+      - '\b(stack trace|exception|traceback)\b'
+    confidence_boost: 0.35
+    
+  algorithms:
+    patterns:
+      - '\b(algorithm|data structure|design pattern|architecture)\b'
+      - '\b(optimize|refactor|improve|enhance)\b.*\b(code|performance)\b'
+      - '\b(complexity|big o|optimization)\b'
+    confidence_boost: 0.3
+    
+  frameworks:
+    patterns:
+      - '\b(api|library|framework|package|module|dependency)\b'
+      - '\b(react|angular|vue|django|flask|express|spring)\b'
+      - '\b(tensorflow|pytorch|scikit-learn|pandas|numpy)\b'
+    confidence_boost: 0.25
+
+# Multi-agent patterns (complex tasks)
+multi_agent_patterns:
+  complex_analysis:
+    patterns:
+      - '\b(analyze|research|investigate)\b.*\b(and|then|also|plus)\b.*\b(create|write|develop|build)\b'
+      - '\b(comprehensive|complete|full|entire|whole|thorough)\b.*\b(analysis|report|solution|review)\b'
+      - '\b(deep dive|in-depth|detailed|extensive)\b'
+    confidence_boost: 0.35
+    suggested_agents: ["research_analyst", "report_writer"]
+    
+  multi_step:
+    patterns:
+      - '\b(multiple|several|various|different)\b.*\b(tasks|steps|things|aspects|components)\b'
+      - '\b(step by step|step-by-step|iterative|sequential|phased)\b'
+      - '\b(first.*then.*finally|begin with.*followed by)\b'
+    confidence_boost: 0.3
+    suggested_agents: ["task_planner", "task_executor"]
+    
+  complexity_indicators:
+    patterns:
+      - '\b(complex|complicated|sophisticated|advanced|intricate)\b'
+      - '\b(multi-faceted|multifaceted|multi-dimensional|multidimensional)\b'
+      - '\b(requires.*expertise|needs.*analysis|involves.*planning)\b'
+    confidence_boost: 0.25
+    suggested_agents: ["domain_expert", "strategist"]
+
+# Direct LLM patterns (simple conversations)
+direct_llm_patterns:
+  greetings:
+    patterns:
+      - '^(hi|hello|hey|greetings|good morning|good afternoon|good evening)\b'
+      - '^(howdy|sup|yo|hola)\b'
+    confidence_boost: 0.4
+    
+  opinions:
+    patterns:
+      - '\b(think|believe|opinion|feel|perspective)\b.*\b(about|on|regarding)\b'
+      - '\b(what do you think|what''s your opinion|how do you feel)\b'
+    confidence_boost: 0.35
+    
+  creative_writing:
+    patterns:
+      - '\b(write|compose|create)\b.*\b(story|poem|song|joke|riddle)\b'
+      - '\b(creative|imagination|fictional|fantasy)\b'
+    confidence_boost: 0.3
+    
+  general_knowledge:
+    patterns:
+      - '\b(define|definition|meaning|what is a|what are)\b'
+      - '\b(explain the concept|tell me what|help me understand)\b'
+    confidence_boost: 0.2
+
+# Hybrid query indicators
+hybrid_indicators:
+  tool_rag:
+    patterns:
+      - '\b(search|find|look up)\b.*\b(in|from|within)\b.*\b(document|file|uploaded)\b'
+      - '\b(compare|check)\b.*\b(online|web|internet)\b.*\b(with|against)\b.*\b(document|file)\b'
+      - '\b(latest|current|real-time)\b.*\b(mentioned in|found in|from)\b.*\b(document|report)\b'
+      - '\b(search online|look online|find online)\b.*\b(about|for|regarding)\b.*\b(compare|check|verify)\b.*\b(knowledge base|document|data)\b'
+      - '\b(what does)\b.*\b(internet|web|online)\b.*\b(say about)\b.*\b(our|the|this)\b.*\b(policy|document|data)\b'
+    primary_types: ["TOOL", "RAG"]
+    confidence_threshold: 0.6
+    
+  tool_llm:
+    patterns:
+      - '\b(calculate|compute)\b.*\b(and|then)\b.*\b(explain|analyze|interpret)\b'
+      - '\b(fetch|get|retrieve)\b.*\b(data|information)\b.*\b(and|then)\b.*\b(summarize|explain)\b'
+      - '\b(tell me|explain|describe)\b.*\b(with|using|including)\b.*\b(latest|current|recent)\b.*\b(online|web|internet)\b.*\b(info|information|data)\b'
+      - '\b(latest|current|recent)\b.*\b(online|web|internet)\b.*\b(info|information|updates)\b.*\b(about|regarding|for)\b'
+    primary_types: ["TOOL", "LLM"]
+    confidence_threshold: 0.5
+    
+  rag_llm:
+    patterns:
+      - '\b(based on|using|from)\b.*\b(document|file)\b.*\b(create|write|generate|compose)\b'
+      - '\b(information|data|content)\b.*\b(from|in)\b.*\b(document)\b.*\b(to|for)\b.*\b(create|develop)\b'
+    primary_types: ["RAG", "LLM"]
+    confidence_threshold: 0.5
+    
+  tool_rag_llm:
+    patterns:
+      - '\b(search|fetch|get)\b.*\b(compare|combine)\b.*\b(document|file)\b.*\b(analyze|create|generate)\b'
+      - '\b(real-time|current|live)\b.*\b(data|information)\b.*\b(document|report)\b.*\b(comprehensive|detailed)\b'
+      - '\b(find|search)\b.*\b(latest|current|recent)\b.*\b(news|updates|information)\b.*\b(compare|combine|integrate)\b.*\b(our|existing|knowledge base)\b'
+      - '\b(what)\b.*\b(internet|online|web)\b.*\b(says)\b.*\b(compare|versus|against)\b.*\b(our)\b.*\b(data|documents|knowledge)\b.*\b(analyze|summarize|explain)\b'
+      - '\b(gather|collect)\b.*\b(online|web|internet)\b.*\b(information|data)\b.*\b(combine|merge)\b.*\b(documents|knowledge base)\b.*\b(create|generate|produce)\b'
+    primary_types: ["TOOL", "RAG", "LLM"]
+    confidence_threshold: 0.7
+
+# Configuration settings
+settings:
+  min_confidence_threshold: 0.1
+  max_classifications: 3  # Return top 3 classifications
+  enable_hybrid_detection: true
+  confidence_decay_factor: 0.8  # For secondary classifications
+  pattern_combination_bonus: 0.15  # Bonus when multiple patterns from same category match

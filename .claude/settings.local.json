@@ -21,7 +21,8 @@
       "Bash(cp:*)",
       "Bash(curl:*)",
       "Bash(docker restart:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(sed:*)"
     ],
     "deny": []
   },

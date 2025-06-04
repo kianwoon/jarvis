@@ -61,9 +61,54 @@ class GenerateResponse(BaseModel):
 @router.get("/current_model")
 async def get_current_model():
     inference = get_inference()
+    model_name = inference.model_name
+    
+    # Try to get model details from Ollama
+    display_name = model_name  # Default to model name
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{ollama_base_url}/api/show",
+                json={"name": model_name}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                # Extract display name from model details if available
+                if "details" in data and "family" in data["details"]:
+                    family = data["details"]["family"]
+                    # Format the display name based on model info
+                    if "parameter_size" in data["details"]:
+                        param_size = data["details"]["parameter_size"]
+                        display_name = f"{family.title()} {param_size}"
+                    else:
+                        display_name = family.title()
+                elif "modelfile" in data:
+                    # Try to extract from modelfile
+                    display_name = model_name.replace(":", " ").replace("-", " ").title()
+                
+                # Special handling for deepseek models
+                if "deepseek" in model_name.lower():
+                    # Parse deepseek-r1:8b format
+                    parts = model_name.split(":")
+                    if len(parts) == 2:
+                        model_type = parts[0].replace("-", " ").title()
+                        size = parts[1].upper()
+                        display_name = f"{model_type} {size}"
+                    else:
+                        display_name = model_name.replace("-", " ").title()
+    except Exception as e:
+        print(f"Failed to get model details from Ollama: {e}")
+        # Fallback parsing for common patterns
+        if ":" in model_name:
+            parts = model_name.split(":")
+            if len(parts) == 2:
+                base = parts[0].replace("-", " ").title()
+                size = parts[1].upper()
+                display_name = f"{base} {size}"
+    
     return {
-        "model_name": inference.model_name,
-        "display_name": "Qwen3-30B-A3B (MoE)"
+        "model_name": model_name,
+        "display_name": display_name
     }
 
 @router.post("/generate", response_model=GenerateResponse)

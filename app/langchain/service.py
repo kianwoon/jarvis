@@ -533,6 +533,28 @@ def classify_query_type(question: str, llm_cfg) -> str:
         print(f"[DEBUG] classify_query_type: Detected large generation requirement")
         return "LARGE_GENERATION"
     
+    # Use smart pattern-based classifier first for high-confidence cases
+    try:
+        from app.langchain.smart_query_classifier import classify_without_context, classifier
+        query_type, confidence = classify_without_context(question)
+        print(f"[DEBUG] Smart classifier result: {query_type} (confidence: {confidence})")
+        
+        # If high confidence, use smart classifier result
+        # Use lower threshold (0.7) to catch more patterns without LLM
+        if confidence >= 0.7:
+            # Map smart classifier types to expected return values
+            type_mapping = {
+                "tools": "TOOLS",
+                "llm": "LLM",
+                "rag": "RAG",
+                "multi_agent": "RAG"  # Multi-agent queries often need RAG
+            }
+            mapped_type = type_mapping.get(query_type, "LLM")
+            print(f"[DEBUG] Using smart classifier result: {mapped_type}")
+            return mapped_type
+    except Exception as e:
+        print(f"[DEBUG] Smart classifier failed: {e}, falling back to LLM classification")
+    
     # Get available tools for better classification
     available_tools = get_enabled_mcp_tools()
     tool_descriptions = []
@@ -651,20 +673,24 @@ def execute_tools_first(question: str, thinking: bool = False) -> tuple:
     mcp_tools_context = get_mcp_tools_context()
     
     # First, ask LLM to identify which tools to use
-    tool_selection_prompt = f"""NO_THINK
+    tool_selection_prompt = f"""IMPORTANT: Output ONLY the tool call format shown below, no other text or explanation.
+
 Question: {question}
 
 {mcp_tools_context}
 
-Based on the question, which tools should be called? Respond with tool calls in this exact format:
+Output the exact tool call:
 <tool>tool_name(parameters)</tool>
-
-If no tools are needed, respond with: NO_TOOLS_NEEDED
 
 Examples:
 - For "What time is it?": <tool>get_datetime({{}})</tool>
+- For "What is today date & time?": <tool>get_datetime({{}})</tool>
 - For "Weather in Paris": <tool>get_weather({{"location": "Paris"}})</tool>
-"""
+- For "Send email": <tool>outlook_send_message({{"to": "email@example.com", "subject": "...", "body": "..."}})</tool>
+
+If no tools needed: NO_TOOLS_NEEDED
+
+RESPOND WITH ONLY THE TOOL CALL, NOTHING ELSE."""
 
     llm_cfg = get_llm_settings()
     prompt = build_prompt(tool_selection_prompt, thinking=False)
@@ -1541,6 +1567,149 @@ Documents to score:
         _cache_rag_result(query_hash, result, current_time)
         return result
 
+def make_llm_call(prompt: str, thinking: bool, context: str, llm_cfg: dict) -> str:
+    """Make a synchronous LLM API call and return the complete response"""
+    llm_api_url = "http://localhost:8000/api/v1/generate_stream"
+    mode_config = llm_cfg["thinking_mode"] if thinking else llm_cfg["non_thinking_mode"]
+    
+    # Get max_tokens from config
+    max_tokens_raw = llm_cfg.get("max_tokens", 16384)
+    try:
+        max_tokens = int(max_tokens_raw)
+        if max_tokens > 32768:
+            max_tokens = 16384
+    except (ValueError, TypeError):
+        max_tokens = 16384
+    
+    payload = {
+        "prompt": prompt,
+        "temperature": mode_config.get("temperature", 0.7),
+        "top_p": mode_config.get("top_p", 1.0),
+        "max_tokens": max_tokens
+    }
+    
+    # Make synchronous request and collect all tokens
+    text = ""
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            with client.stream("POST", llm_api_url, json=payload) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    if line.startswith("data: "):
+                        token = line.replace("data: ", "")
+                        if token.strip():
+                            text += token
+    except Exception as e:
+        print(f"[ERROR] LLM call failed: {e}")
+        return f"Error: {str(e)}"
+    
+    return text
+
+def streaming_llm_call(prompt: str, thinking: bool, context: str, conversation_id: str, llm_cfg: dict):
+    """Generator for streaming LLM responses"""
+    llm_api_url = "http://localhost:8000/api/v1/generate_stream"
+    mode_config = llm_cfg["thinking_mode"] if thinking else llm_cfg["non_thinking_mode"]
+    
+    # Get max_tokens from config
+    max_tokens_raw = llm_cfg.get("max_tokens", 16384)
+    try:
+        max_tokens = int(max_tokens_raw)
+        if max_tokens > 32768:
+            max_tokens = 16384
+    except (ValueError, TypeError):
+        max_tokens = 16384
+    
+    payload = {
+        "prompt": prompt,
+        "temperature": mode_config.get("temperature", 0.7),
+        "top_p": mode_config.get("top_p", 1.0),
+        "max_tokens": max_tokens
+    }
+    
+    def token_stream():
+        text = ""
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                with client.stream("POST", llm_api_url, json=payload) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        if isinstance(line, bytes):
+                            line = line.decode("utf-8")
+                        if line.startswith("data: "):
+                            token = line.replace("data: ", "")
+                            if token.strip():
+                                text += token
+                                yield json.dumps({"token": token}) + "\n"
+                    
+                    # Send completion event with full response
+                    yield json.dumps({
+                        "answer": text,
+                        "source": "LLM",
+                        "conversation_id": conversation_id
+                    }) + "\n"
+                    
+                    # Store assistant response in conversation history
+                    if conversation_id and text:
+                        store_conversation_message(conversation_id, "assistant", text)
+                        
+        except Exception as e:
+            print(f"[ERROR] Streaming LLM call failed: {e}")
+            yield json.dumps({
+                "error": f"LLM streaming failed: {str(e)}",
+                "source": "ERROR"
+            }) + "\n"
+    
+    return token_stream()
+
+def get_llm_response_direct(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None):
+    """Get direct LLM response without RAG retrieval
+    
+    Args:
+        question: The user's question
+        thinking: Whether to enable extended thinking
+        stream: Whether to stream the response
+        conversation_id: Conversation ID for context
+    """
+    print(f"[DEBUG] get_llm_response_direct: question = {question}")
+    print(f"[DEBUG] get_llm_response_direct: conversation_id = {conversation_id}")
+    
+    # Store the user's question in conversation history
+    if conversation_id:
+        store_conversation_message(conversation_id, "user", question)
+    
+    # Get LLM settings
+    llm_cfg = get_llm_settings()
+    required_fields = ["model", "thinking_mode", "non_thinking_mode", "max_tokens"]
+    missing = [f for f in required_fields if f not in llm_cfg or llm_cfg[f] is None]
+    if missing:
+        raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
+    
+    # Get conversation history
+    conversation_history = get_conversation_history(conversation_id) if conversation_id else ""
+    
+    # Build prompt without RAG context
+    prompt = build_prompt(question, thinking)
+    if conversation_history:
+        prompt = f"Previous conversation:\n{conversation_history}\n\nCurrent question: {prompt}"
+    
+    # Make LLM call
+    if stream:
+        return streaming_llm_call(prompt, thinking, "", conversation_id, llm_cfg)
+    else:
+        response = make_llm_call(prompt, thinking, "", llm_cfg)
+        
+        # Store assistant response
+        if conversation_id:
+            store_conversation_message(conversation_id, "assistant", response)
+        
+        return response
+
 def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True, collections: List[str] = None, collection_strategy: str = "auto"):
     """Main function with hybrid RAG+LLM approach prioritizing answer quality
     
@@ -1617,14 +1786,19 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
             rag_context = ""  # Skip RAG entirely for large generation to avoid delays
             print(f"[DEBUG] rag_answer: Proceeding without RAG context for chunked processing")
     else:
-        # STEP 2a: For non-large generation, do full RAG retrieval
-        print(f"[DEBUG] rag_answer: Step 2a - Attempting full RAG retrieval")
-        import time
-        rag_start_time = time.time()
-        rag_context, _ = handle_rag_query(question, thinking, collections, collection_strategy)
-        rag_end_time = time.time()
-        print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
-        print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
+        # STEP 2a: For TOOLS queries, skip RAG and execute tools immediately
+        if query_type == "TOOLS":
+            print(f"[DEBUG] rag_answer: TOOLS query detected - skipping RAG retrieval")
+            rag_context = ""  # No RAG needed for tool queries
+        else:
+            # For non-large generation and non-tools queries, do full RAG retrieval
+            print(f"[DEBUG] rag_answer: Step 2a - Attempting full RAG retrieval")
+            import time
+            rag_start_time = time.time()
+            rag_context, _ = handle_rag_query(question, thinking, collections, collection_strategy)
+            rag_end_time = time.time()
+            print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
+            print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
     
     # STEP 3: Handle large generation immediately if detected
     if query_type == "LARGE_GENERATION":
@@ -1916,6 +2090,8 @@ Please generate the requested items incorporating relevant information from the 
         tool_calls, _, tool_context = execute_tools_first(question, thinking)
         if not tool_calls:
             print(f"[DEBUG] rag_answer: No tools actually executed despite TOOLS classification")
+            # For TOOLS queries, we should still prioritize tool-based response
+            # even if tool execution failed
     
     # Get conversation history with smart filtering for ALL query types
     conversation_history = ""
@@ -1980,6 +2156,23 @@ Question: {question}
 Please provide a direct, helpful answer using the tool results above."""
         print(f"[DEBUG] rag_answer: Using TOOLS+LLM approach")
         
+    elif query_type == "TOOLS":
+        # TOOLS query but no tools executed - still treat as tool query
+        source = "TOOLS"
+        context = ""
+        
+        # Get available tools for the prompt
+        mcp_tools_context = get_mcp_tools_context()
+        
+        prompt = f"""{history_prompt}The user is asking for information that requires using tools.
+
+Question: {question}
+
+{mcp_tools_context}
+
+Based on the available tools above, please answer the question. For date/time queries, provide the current date and time in Singapore timezone (Asia/Singapore)."""
+        print(f"[DEBUG] rag_answer: Using TOOLS approach (direct answer)")
+        
     elif query_type == "RAG":
         # RAG was attempted but no documents found - still use RAG+LLM to indicate RAG was checked
         source = "RAG+LLM"
@@ -2037,10 +2230,28 @@ Generate exactly {target_num} questions:"""
         target_num = max([int(n) for n in numbers], default=10) if numbers else 10
         # Estimate ~100 tokens per question + 500 buffer for instructions
         estimated_tokens = target_num * 100 + 500
-        max_tokens = min(estimated_tokens, 8192)  # Cap at 8K tokens
-        print(f"[DEBUG] rag_answer: Using dynamic max_tokens={max_tokens} for {target_num} items")
+        # Use higher cap for models with larger context windows
+        llm_model = llm_cfg.get("model", "").lower()
+        token_cap = 32768 if "deepseek" in llm_model else 8192
+        max_tokens = min(estimated_tokens, token_cap)
+        print(f"[DEBUG] rag_answer: Using dynamic max_tokens={max_tokens} for {target_num} items (cap: {token_cap})")
     else:
-        max_tokens = llm_cfg.get("max_tokens", 2048)
+        # Use configured max_tokens
+        max_tokens_raw = llm_cfg.get("max_tokens", 16384)
+        # Handle both string and int values
+        try:
+            max_tokens = int(max_tokens_raw)
+            # Sanity check - if someone set max_tokens to context window size, fix it
+            if max_tokens > 32768:
+                print(f"[WARNING] max_tokens {max_tokens} is too high (likely set to context window). Using 16384 for output.")
+                max_tokens = 16384
+        except (ValueError, TypeError):
+            print(f"[WARNING] Invalid max_tokens value: {max_tokens_raw}, using 16384")
+            max_tokens = 16384
+    
+    print(f"[DEBUG] rag_answer: Final max_tokens being sent: {max_tokens}")
+    print(f"[DEBUG] rag_answer: Model: {llm_cfg.get('model', 'unknown')}")
+    print(f"[DEBUG] rag_answer: Temperature: {mode_config.get('temperature', 0.7)}")
     
     payload = {
         "prompt": prompt,
@@ -2051,6 +2262,8 @@ Generate exactly {target_num} questions:"""
     
     if stream:
         def token_stream():
+            # Import time locally to avoid scope issues
+            import time
             # Capture max_tokens in local scope
             tokens_limit = max_tokens
             text = ""
@@ -2367,6 +2580,20 @@ def extract_and_execute_tool_calls(text):
         
     tool_calls_pattern = r'<tool>(.*?)\((.*?)\)</tool>'
     tool_calls = re.findall(tool_calls_pattern, text, re.DOTALL)
+    
+    # Fallback: If no tool calls found in proper format, try to extract from thinking
+    if not tool_calls and "<think>" in text:
+        print("[DEBUG] No tool calls in proper format, attempting fallback extraction")
+        # Look for tool mentions in thinking
+        if "get_datetime" in text and ("date" in text.lower() or "time" in text.lower()):
+            print("[DEBUG] Detected get_datetime mention in thinking, executing it")
+            tool_calls = [("get_datetime", "{}")]
+        elif "outlook_send_message" in text and "email" in text.lower():
+            # Would need more sophisticated parsing for email parameters
+            pass
+        elif "jira" in text and ("ticket" in text.lower() or "issue" in text.lower()):
+            # Would need more sophisticated parsing for JIRA parameters
+            pass
     
     results = []
     for tool_name, params_str in tool_calls:

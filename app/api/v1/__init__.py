@@ -7,6 +7,7 @@ from app.api.v1.endpoints import mcp_servers
 from app.api.v1.endpoints import langchain
 from app.api.v1.endpoints import langgraph_agents
 from app.api.v1.endpoints import collections
+from app.api.v1.endpoints import model_presets
 import logging
 
 logger = logging.getLogger(__name__)
@@ -92,4 +93,10 @@ api_router.include_router(
     prefix="/collections",
     tags=["collections"]
 )
-logger.info("Collections router included successfully") 
+logger.info("Collections router included successfully")
+
+api_router.include_router(
+    model_presets.router,
+    prefix="/model-presets",
+    tags=["model-presets"]
+) 

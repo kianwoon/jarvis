@@ -458,10 +458,36 @@ Please provide a comprehensive response based on your role and expertise."""
             print(f"[WARNING] Agent {agent_name} timed out after {timeout}s")
             # Yield a completion event with timeout message instead of error
             # This allows the multi-agent system to continue with other agents
+            
+            # Generate a context-aware timeout message
+            agent_role = agent_name.replace('_', ' ').title()
+            timeout_content = f"⏰ **{agent_role} Response**\n\n"
+            timeout_content += "I apologize, but my analysis is taking longer than expected. "
+            timeout_content += "Due to the complexity of your request, I need more time to provide a comprehensive response.\n\n"
+            
+            # Provide a brief, generic acknowledgment based on the agent type
+            if "researcher" in agent_name.lower() or "document" in agent_name.lower():
+                timeout_content += "I'm currently searching through the knowledge base for relevant information. "
+                timeout_content += "The search process may take additional time depending on the volume of documents to analyze."
+            elif "analyst" in agent_name.lower() or "financial" in agent_name.lower():
+                timeout_content += "I'm performing detailed analysis to ensure accuracy and completeness. "
+                timeout_content += "Complex calculations and data processing require additional time."
+            elif "strategist" in agent_name.lower() or "architect" in agent_name.lower():
+                timeout_content += "I'm developing comprehensive strategies and recommendations. "
+                timeout_content += "Strategic planning requires careful consideration of multiple factors."
+            elif "manager" in agent_name.lower() or "delivery" in agent_name.lower():
+                timeout_content += "I'm creating detailed plans and frameworks for your requirements. "
+                timeout_content += "Service delivery planning involves multiple considerations and dependencies."
+            else:
+                timeout_content += "I'm processing your request and gathering the necessary information. "
+                timeout_content += "Complex queries may require additional processing time."
+            
+            timeout_content += "\n\nThe system will continue with other agents to provide you with available insights."
+            
             yield {
                 "type": "agent_complete",
                 "agent": agent_name,
-                "content": f"⏰ **{agent_name} Response**\n\nI apologize, but my analysis is taking longer than expected. To ensure timely delivery, I'm providing this update while continuing to work on your request in the background.\n\nFor immediate insights on improving LinkedIn post impressions, I recommend focusing on:\n- Creating engaging, value-driven content\n- Posting at optimal times for your audience\n- Using relevant hashtags and industry keywords\n- Encouraging meaningful engagement through questions\n- Sharing authentic professional stories and insights\n\nA more detailed analysis will be available shortly.",
+                "content": timeout_content,
                 "timeout": True,
                 "timeout_duration": timeout
             }
