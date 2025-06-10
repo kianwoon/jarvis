@@ -1,0 +1,191 @@
+# Self-Reflective RAG Configuration
+# This file defines settings for the self-reflection pipeline
+
+# Global reflection settings
+reflection:
+  # Whether to enable self-reflection by default
+  enabled: true
+  
+  # Default reflection mode (fast/balanced/thorough)
+  default_mode: balanced
+  
+  # Minimum query length to trigger reflection
+  min_query_length: 10
+  
+  # Cache settings
+  cache:
+    enabled: true
+    ttl_seconds: 3600
+    max_size: 1000
+  
+  # Timeout for reflection process
+  timeout_seconds: 30
+
+# Quality evaluation settings
+quality_evaluation:
+  # Weights for different quality dimensions
+  dimension_weights:
+    completeness: 0.25
+    relevance: 0.25
+    accuracy: 0.20
+    coherence: 0.10
+    specificity: 0.10
+    confidence: 0.10
+  
+  # Minimum acceptable scores
+  thresholds:
+    min_acceptable_score: 0.7
+    refinement_threshold: 0.8
+  
+  # Evaluation prompts for LLM-based assessment
+  evaluation_prompts:
+    completeness: "Evaluate if this response fully addresses all aspects of the query: {query}\nResponse: {response}"
+    relevance: "Assess if this response directly answers the question and stays on topic: {query}\nResponse: {response}"
+    accuracy: "Check if the information in this response is factually correct based on the context: {response}\nContext: {context}"
+    coherence: "Evaluate the logical flow and clarity of this response: {response}"
+    specificity: "Assess if this response provides specific, detailed information: {response}"
+    confidence: "Evaluate the confidence level and identify uncertainties in: {response}"
+
+# Retrieval quality monitoring
+retrieval_monitoring:
+  # Relevance thresholds
+  min_relevance_threshold: 0.7
+  min_coverage_threshold: 0.8
+  
+  # Redundancy detection
+  redundancy_threshold: 0.85
+  
+  # Re-retrieval trigger
+  reretrieval_threshold: 0.6
+  
+  # Maximum documents to consider
+  max_documents: 10
+  
+  # Diversity weight in quality scoring
+  diversity_weight: 0.2
+
+# Iterative refinement settings
+refinement:
+  # Maximum refinement iterations
+  max_iterations: 3
+  
+  # Quality improvement thresholds
+  quality_threshold: 0.85
+  min_improvement_threshold: 0.05
+  
+  # Strategy selection mode
+  strategy_selection: adaptive  # adaptive/sequential/parallel
+  
+  # Enable result caching
+  enable_caching: true
+  
+  # Refinement strategies configuration
+  strategies:
+    query_expansion:
+      enabled: true
+      max_terms_to_add: 3
+      confidence_boost: 0.1
+    
+    query_decomposition:
+      enabled: true
+      max_subqueries: 3
+      focus_on_missing: true
+    
+    context_enrichment:
+      enabled: true
+      entity_extraction: true
+      max_entities: 5
+    
+    answer_augmentation:
+      enabled: true
+      focus_on_gaps: true
+    
+    focused_retrieval:
+      enabled: true
+      use_missing_aspects: true
+    
+    alternative_phrasing:
+      enabled: true
+      use_llm: true
+
+# Reflection modes configuration
+reflection_modes:
+  fast:
+    max_iterations: 1
+    quality_threshold: 0.7
+    enable_parallel: false
+    strategies:
+      - query_expansion
+      - answer_augmentation
+  
+  balanced:
+    max_iterations: 2
+    quality_threshold: 0.8
+    enable_parallel: true
+    strategies:
+      - query_expansion
+      - context_enrichment
+      - answer_augmentation
+      - focused_retrieval
+  
+  thorough:
+    max_iterations: 3
+    quality_threshold: 0.9
+    enable_parallel: true
+    strategies:
+      - query_expansion
+      - query_decomposition
+      - context_enrichment
+      - answer_augmentation
+      - focused_retrieval
+      - alternative_phrasing
+
+# Model-specific settings
+model_settings:
+  # DeepSeek R1 specific settings
+  "deepseek-r1:8b":
+    reflection_mode: balanced
+    enable_thinking_extraction: true
+    max_refinement_iterations: 2
+    quality_threshold: 0.75
+  
+  # Generic settings for other models
+  default:
+    reflection_mode: balanced
+    enable_thinking_extraction: false
+    max_refinement_iterations: 3
+    quality_threshold: 0.8
+
+# Performance optimization
+optimization:
+  # Parallel processing
+  enable_parallel_evaluation: true
+  max_parallel_tasks: 4
+  
+  # Streaming settings
+  streaming_reflection: false
+  stream_chunk_size: 10
+  
+  # Resource limits
+  max_memory_mb: 512
+  max_cpu_percent: 80
+
+# Logging and monitoring
+monitoring:
+  # Log reflection metrics
+  log_metrics: true
+  log_level: INFO
+  
+  # Metrics to track
+  track_metrics:
+    - total_time_ms
+    - quality_improvement
+    - iterations_performed
+    - strategies_used
+    - final_confidence
+  
+  # Alert thresholds
+  alerts:
+    max_reflection_time_ms: 10000
+    min_success_rate: 0.8
+    max_error_rate: 0.1

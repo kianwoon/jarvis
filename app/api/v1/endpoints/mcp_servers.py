@@ -11,7 +11,7 @@ except ImportError:
     mcp_process_manager = None
 from typing import List, Optional
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import requests
 import logging
 
@@ -38,6 +38,7 @@ class MCPServerBase(BaseModel):
     manifest_url: Optional[str] = None
     hostname: Optional[str] = None
     api_key: Optional[str] = None
+    oauth_credentials: Optional[dict] = None
     
     # Command-based configuration
     command: Optional[str] = None
@@ -60,6 +61,7 @@ class MCPServerUpdate(BaseModel):
     manifest_url: Optional[str] = None
     hostname: Optional[str] = None
     api_key: Optional[str] = None
+    oauth_credentials: Optional[dict] = None
     
     # Command-based configuration
     command: Optional[str] = None
@@ -80,6 +82,7 @@ class MCPServerResponse(BaseModel):
     manifest_url: Optional[str] = None
     hostname: Optional[str] = None
     api_key: Optional[str] = None
+    oauth_credentials: Optional[dict] = None
     
     # Command-based configuration
     command: Optional[str] = None
@@ -107,6 +110,28 @@ class BulkToolToggle(BaseModel):
     tool_ids: List[int]
     is_active: bool
 
+class MCPToolCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    parameters: Optional[dict] = None
+    headers: Optional[dict] = None
+    method: Optional[str] = "POST"
+    endpoint: Optional[str] = None
+    is_active: bool = True
+
+class MCPToolUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    parameters: Optional[dict] = None
+    headers: Optional[dict] = None
+    method: Optional[str] = None
+    endpoint: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class MCPToolsImport(BaseModel):
+    tools: List[MCPToolCreate]
+    replace_existing: bool = False
+
 @router.get("/", response_model=List[MCPServerResponse])
 def list_servers(db: Session = Depends(get_db)):
     """List all MCP servers."""
@@ -118,6 +143,17 @@ def list_servers(db: Session = Depends(get_db)):
             # Count active tools
             tool_count = db.query(MCPTool).filter(MCPTool.server_id == server.id).count()
             
+            # Mask OAuth credentials
+            masked_oauth = None
+            if server.oauth_credentials:
+                masked_oauth = {
+                    "configured": True,
+                    "client_id": server.oauth_credentials.get("client_id", "")[:10] + "..." 
+                        if server.oauth_credentials.get("client_id") else None,
+                    "has_tokens": bool(server.oauth_credentials.get("access_token") or 
+                                     server.oauth_credentials.get("refresh_token"))
+                }
+            
             response_server = MCPServerResponse(
                 id=server.id,
                 name=server.name,
@@ -125,6 +161,7 @@ def list_servers(db: Session = Depends(get_db)):
                 manifest_url=server.manifest_url,
                 hostname=server.hostname,
                 api_key="•••••••••••••••" if server.api_key else None,
+                oauth_credentials=masked_oauth,
                 command=server.command,
                 args=server.args,
                 env=server.env,
@@ -169,6 +206,7 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
             manifest_url=server.manifest_url,
             hostname=server.hostname,
             api_key=server.api_key,
+            oauth_credentials=server.oauth_credentials,
             command=server.command,
             args=server.args,
             env=server.env,
@@ -270,7 +308,7 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to create server: {str(e)}")
 
 @router.get("/{server_id}", response_model=MCPServerResponse)
-def get_server(server_id: int, db: Session = Depends(get_db)):
+def get_server(server_id: int, show_sensitive: bool = False, db: Session = Depends(get_db)):
     """Get a specific MCP server."""
     server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
     if not server:
@@ -278,13 +316,30 @@ def get_server(server_id: int, db: Session = Depends(get_db)):
     
     tool_count = db.query(MCPTool).filter(MCPTool.server_id == server.id).count()
     
+    # Handle OAuth credentials based on show_sensitive flag
+    oauth_creds = None
+    if server.oauth_credentials:
+        if show_sensitive:
+            # Return full credentials
+            oauth_creds = server.oauth_credentials
+        else:
+            # Mask sensitive data
+            oauth_creds = {
+                "configured": True,
+                "client_id": server.oauth_credentials.get("client_id", "")[:10] + "..." 
+                    if server.oauth_credentials.get("client_id") else None,
+                "has_tokens": bool(server.oauth_credentials.get("access_token") or 
+                                 server.oauth_credentials.get("refresh_token"))
+            }
+    
     return MCPServerResponse(
         id=server.id,
         name=server.name,
         config_type=server.config_type,
         manifest_url=server.manifest_url,
         hostname=server.hostname,
-        api_key="•••••••••••••••" if server.api_key else None,
+        api_key=server.api_key if show_sensitive else ("•••••••••••••••" if server.api_key else None),
+        oauth_credentials=oauth_creds,
         command=server.command,
         args=server.args,
         env=server.env,
@@ -302,45 +357,90 @@ def get_server(server_id: int, db: Session = Depends(get_db)):
     )
 
 @router.put("/{server_id}", response_model=MCPServerResponse)
-def update_server(server_id: int, server: MCPServerUpdate, db: Session = Depends(get_db)):
+def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = Depends(get_db)):
     """Update an MCP server."""
-    manifest = db.query(MCPManifest).filter(MCPManifest.id == server_id).first()
-    if not manifest:
+    db_server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+    if not db_server:
         raise HTTPException(status_code=404, detail="Server not found")
     
     try:
-        # Update fields
-        if server.manifest_url and server.manifest_url != manifest.url:
-            # Fetch new manifest
-            manifest_url = server.manifest_url.replace('localhost', 'host.docker.internal')
-            resp = requests.get(manifest_url, timeout=5)
-            resp.raise_for_status()
-            manifest_json = resp.json()
-            manifest.url = server.manifest_url
-            manifest.content = manifest_json
+        # Update basic fields
+        if server_update.name is not None:
+            db_server.name = server_update.name
+        if server_update.hostname is not None:
+            db_server.hostname = server_update.hostname
+        if server_update.api_key is not None and server_update.api_key != "•••••••••••••••":
+            db_server.api_key = server_update.api_key
+        if server_update.oauth_credentials is not None:
+            db_server.oauth_credentials = server_update.oauth_credentials
+        if server_update.is_active is not None:
+            db_server.is_active = server_update.is_active
         
-        if server.hostname is not None:
-            manifest.hostname = server.hostname
+        # Update config-specific fields
+        if db_server.config_type == "manifest":
+            if server_update.manifest_url is not None:
+                db_server.manifest_url = server_update.manifest_url
+                # Update associated manifest
+                manifest = db.query(MCPManifest).filter(MCPManifest.server_id == server_id).first()
+                if manifest:
+                    manifest.url = server_update.manifest_url
+                    if server_update.hostname is not None:
+                        manifest.hostname = server_update.hostname
+                    if server_update.api_key is not None and server_update.api_key != "•••••••••••••••":
+                        manifest.api_key = server_update.api_key
         
-        if server.api_key is not None:
-            manifest.api_key = server.api_key if server.api_key != "•••••••••••••••" else manifest.api_key
+        elif db_server.config_type == "command":
+            if server_update.command is not None:
+                db_server.command = server_update.command
+            if server_update.args is not None:
+                db_server.args = server_update.args
+            if server_update.env is not None:
+                db_server.env = server_update.env
+            if server_update.working_directory is not None:
+                db_server.working_directory = server_update.working_directory
+            if server_update.restart_policy is not None:
+                db_server.restart_policy = server_update.restart_policy
+            if server_update.max_restarts is not None:
+                db_server.max_restarts = server_update.max_restarts
         
         db.commit()
-        db.refresh(manifest)
+        db.refresh(db_server)
         
+        # Prepare response
         tool_count = db.query(MCPTool).filter(MCPTool.server_id == server_id).count()
-        server_name = server.name or manifest.content.get("name", manifest.hostname or f"Server {manifest.id}")
+        
+        # Mask OAuth credentials
+        masked_oauth = None
+        if db_server.oauth_credentials:
+            masked_oauth = {
+                "configured": True,
+                "client_id": db_server.oauth_credentials.get("client_id", "")[:10] + "..." 
+                    if db_server.oauth_credentials.get("client_id") else None,
+                "has_tokens": bool(db_server.oauth_credentials.get("access_token") or 
+                                 db_server.oauth_credentials.get("refresh_token"))
+            }
         
         return MCPServerResponse(
-            id=manifest.id,
-            name=server_name,
-            manifest_url=manifest.url,
-            hostname=manifest.hostname,
-            endpoint_prefix="/invoke",
-            api_key="•••••••••••••••" if manifest.api_key else None,
-            is_active=True,
-            status='connected',
-            last_check=manifest.updated_at.isoformat() if manifest.updated_at else None,
+            id=db_server.id,
+            name=db_server.name,
+            config_type=db_server.config_type,
+            manifest_url=db_server.manifest_url,
+            hostname=db_server.hostname,
+            api_key="•••••••••••••••" if db_server.api_key else None,
+            oauth_credentials=masked_oauth,
+            command=db_server.command,
+            args=db_server.args,
+            env=db_server.env,
+            working_directory=db_server.working_directory,
+            restart_policy=db_server.restart_policy,
+            max_restarts=db_server.max_restarts,
+            process_id=db_server.process_id,
+            is_running=db_server.is_running,
+            restart_count=db_server.restart_count,
+            health_status=db_server.health_status,
+            is_active=db_server.is_active,
+            status=db_server.health_status,
+            last_check=db_server.last_health_check.isoformat() if db_server.last_health_check else None,
             tool_count=tool_count
         )
     except Exception as e:
@@ -356,7 +456,16 @@ def delete_server(server_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Server not found")
     
     try:
-        # Delete associated tools first
+        # Delete associated OAuth credentials first (if table exists)
+        try:
+            from sqlalchemy import text
+            delete_oauth_query = text("DELETE FROM oauth_credentials WHERE mcp_server_id = :server_id")
+            db.execute(delete_oauth_query, {"server_id": server_id})
+        except Exception as oauth_error:
+            # OAuth credentials table might not exist, which is fine
+            logger.debug(f"OAuth credentials deletion skipped: {str(oauth_error)}")
+        
+        # Delete associated tools
         db.query(MCPTool).filter(MCPTool.server_id == server_id).delete()
         
         # Delete associated manifest if it exists
@@ -368,7 +477,7 @@ def delete_server(server_id: int, db: Session = Depends(get_db)):
         # Delete the server
         db.delete(server)
         db.commit()
-        return {"detail": "Server and associated tools deleted"}
+        return {"detail": "Server and associated data deleted successfully"}
     except Exception as e:
         db.rollback()
         logger.error(f"Error deleting server: {str(e)}")
@@ -511,7 +620,7 @@ def list_server_tools(server_id: int, db: Session = Depends(get_db)):
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     
-    tools = db.query(MCPTool).filter(MCPTool.server_id == server_id).all()
+    tools = db.query(MCPTool).filter(MCPTool.server_id == server_id).order_by(MCPTool.name).all()
     
     return [{
         "id": tool.id,
@@ -523,7 +632,8 @@ def list_server_tools(server_id: int, db: Session = Depends(get_db)):
         "method": tool.method,
         "parameters": tool.parameters,
         "headers": tool.headers,
-        "is_active": tool.is_active
+        "is_active": tool.is_active,
+        "is_manual": getattr(tool, 'is_manual', False)  # Show if manually added
     } for tool in tools]
 
 @router.put("/tools/{tool_id}/toggle")
@@ -636,7 +746,64 @@ async def check_server_health(server_id: int, db: Session = Depends(get_db)):
     
     try:
         if server.config_type == "command":
-            if mcp_process_manager is None:
+            # Special handling for Docker-based command servers
+            if server.command == "docker" and server.args and "exec" in server.args:
+                # For Docker exec commands running from within Docker, assume healthy
+                # since we can't check Docker from inside a container
+                import os
+                in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+                
+                if in_docker:
+                    # When running inside Docker, we can't check other containers
+                    # Assume healthy if the server has been used recently
+                    if server.last_health_check:
+                        last_check = server.last_health_check
+                        if isinstance(last_check, str):
+                            last_check = datetime.fromisoformat(last_check.replace('Z', '+00:00'))
+                        
+                        # Ensure both datetimes are timezone-aware
+                        now = datetime.now(timezone.utc)
+                        if last_check.tzinfo is None:
+                            # Make last_check timezone-aware if it isn't
+                            last_check = last_check.replace(tzinfo=timezone.utc)
+                        
+                        # Consider healthy if checked within last 5 minutes
+                        if now - last_check < timedelta(minutes=5):
+                            status = "healthy"
+                            message = "Command-based server (Docker exec mode)"
+                        else:
+                            status = "unknown"
+                            message = "Command-based server (status unknown)"
+                    else:
+                        status = "unknown"
+                        message = "Command-based server (not yet checked)"
+                else:
+                    # Only try Docker commands if not running inside Docker
+                    try:
+                        import subprocess
+                        container_idx = server.args.index("-i") + 1
+                        if container_idx < len(server.args):
+                            container_name = server.args[container_idx]
+                            # Check if container is running
+                            result = subprocess.run(
+                                ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+                            if result.returncode == 0 and result.stdout.strip() == "true":
+                                status = "healthy"
+                                message = f"Docker container {container_name} is running"
+                            else:
+                                status = "unhealthy"
+                                message = f"Docker container {container_name} is not running"
+                        else:
+                            status = "unknown"
+                            message = "Invalid Docker command format"
+                    except Exception as e:
+                        status = "unknown"
+                        message = f"Could not check Docker container: {str(e)}"
+            elif mcp_process_manager is None:
                 status = "unknown"
                 message = "Process management not available"
             else:
@@ -680,7 +847,7 @@ async def check_server_health(server_id: int, db: Session = Depends(get_db)):
         
         # Update health status
         server.health_status = status
-        server.last_health_check = func.now() if hasattr(func, 'now') else None
+        server.last_health_check = datetime.utcnow()
         db.commit()
         
         return {"status": status, "message": message}
@@ -688,3 +855,392 @@ async def check_server_health(server_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Health check failed for server {server_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Health check error: {str(e)}")
+
+@router.get("/{server_id}/oauth")
+def get_server_oauth(server_id: int, db: Session = Depends(get_db)):
+    """Get OAuth credentials for a server (unmasked for editing)."""
+    server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    return {
+        "oauth_credentials": server.oauth_credentials or {}
+    }
+
+@router.post("/{server_id}/discover-tools")
+async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
+    """Discover tools from a stdio-based MCP server."""
+    server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    if server.config_type != "command":
+        raise HTTPException(status_code=400, detail="Tool discovery is only for command-based servers")
+    
+    try:
+        # Use the stdio bridge to discover tools
+        import asyncio
+        import os
+        from app.core.mcp_stdio_bridge import MCPDockerBridge, MCPStdioBridge
+        
+        # Check if we're running inside Docker
+        in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+        
+        # Determine the type of bridge to use
+        if server.command == "docker" and server.args and "exec" in server.args:
+            container_idx = server.args.index("-i") + 1
+            if container_idx < len(server.args):
+                container_name = server.args[container_idx]
+                mcp_command = server.args[container_idx + 1:]
+                
+                if in_docker:
+                    # Use network bridge when running inside Docker
+                    from app.core.mcp_network_bridge import MCPNetworkBridge
+                    bridge = MCPNetworkBridge(container_name, mcp_command)
+                else:
+                    # Use Docker bridge when running on host
+                    bridge = MCPDockerBridge(container_name, mcp_command)
+            else:
+                raise ValueError("Invalid Docker exec command format")
+        else:
+            # Generic stdio server
+            bridge = MCPStdioBridge(server.command, server.args or [])
+        
+        # Start the bridge and discover tools
+        await bridge.start()
+        try:
+            tools = await bridge.list_tools()
+            
+            # Update server status
+            server.health_status = "healthy"
+            server.is_running = True
+            server.last_health_check = datetime.utcnow()
+            
+            # Store discovered tools in database
+            tools_added = 0
+            tools_updated = 0
+            
+            for tool_def in tools:
+                # Check if tool already exists
+                existing_tool = db.query(MCPTool).filter(
+                    MCPTool.name == tool_def["name"],
+                    MCPTool.server_id == server_id
+                ).first()
+                
+                if existing_tool:
+                    # Update existing tool
+                    existing_tool.description = tool_def.get("description", "")
+                    existing_tool.parameters = tool_def.get("inputSchema", {})
+                    existing_tool.endpoint = f"stdio://{server.name}/{tool_def['name']}"
+                    existing_tool.updated_at = datetime.utcnow()
+                    tools_updated += 1
+                else:
+                    # Create new tool
+                    new_tool = MCPTool(
+                        name=tool_def["name"],
+                        description=tool_def.get("description", ""),
+                        endpoint=f"stdio://{server.name}/{tool_def['name']}",
+                        method="POST",
+                        parameters=tool_def.get("inputSchema", {}),
+                        server_id=server_id,
+                        is_active=True
+                    )
+                    db.add(new_tool)
+                    tools_added += 1
+            
+            db.commit()
+            
+            # Reload MCP tools cache
+            from app.core.mcp_tools_cache import reload_enabled_mcp_tools
+            reload_enabled_mcp_tools()
+            
+            return {
+                "status": "success",
+                "tools_discovered": len(tools),
+                "tools_added": tools_added,
+                "tools_updated": tools_updated,
+                "tools": [{"name": t["name"], "description": t.get("description", "")} for t in tools]
+            }
+            
+        finally:
+            await bridge.stop()
+            
+    except Exception as e:
+        # Update server status on error
+        server.health_status = "unhealthy"
+        server.is_running = False
+        db.commit()
+        
+        logger.error(f"Failed to discover tools for server {server_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Tool discovery failed: {str(e)}")
+
+@router.post("/{server_id}/tools")
+async def add_tool_manually(server_id: int, tool: MCPToolCreate, db: Session = Depends(get_db)):
+    """Manually add a tool to an MCP server."""
+    server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    # Check if tool with same name already exists for this server
+    existing_tool = db.query(MCPTool).filter(
+        MCPTool.name == tool.name,
+        MCPTool.server_id == server_id
+    ).first()
+    
+    if existing_tool:
+        raise HTTPException(status_code=400, detail=f"Tool '{tool.name}' already exists for this server")
+    
+    try:
+        # Generate endpoint if not provided
+        if not tool.endpoint:
+            if server.config_type == "command":
+                tool.endpoint = f"stdio://{server.name}/{tool.name}"
+            else:
+                # For manifest servers, construct from hostname/port
+                import re
+                port = "9000"  # default
+                if server.manifest_url:
+                    port_match = re.search(r':(\d+)', server.manifest_url)
+                    if port_match:
+                        port = port_match.group(1)
+                tool.endpoint = f"http://{server.hostname or 'localhost'}:{port}/invoke/{tool.name}"
+        
+        # Create new tool
+        new_tool = MCPTool(
+            name=tool.name,
+            description=tool.description,
+            endpoint=tool.endpoint,
+            method=tool.method,
+            parameters=tool.parameters,
+            headers=tool.headers,
+            is_active=tool.is_active,
+            is_manual=True,  # Mark as manually added
+            server_id=server_id
+        )
+        
+        db.add(new_tool)
+        db.commit()
+        db.refresh(new_tool)
+        
+        # Reload cache
+        reload_enabled_mcp_tools()
+        
+        return {
+            "id": new_tool.id,
+            "name": new_tool.name,
+            "description": new_tool.description,
+            "endpoint": new_tool.endpoint,
+            "method": new_tool.method,
+            "parameters": new_tool.parameters,
+            "headers": new_tool.headers,
+            "is_active": new_tool.is_active,
+            "server_id": new_tool.server_id
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error adding tool manually: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to add tool: {str(e)}")
+
+@router.put("/{server_id}/tools/{tool_id}")
+async def update_tool_manually(server_id: int, tool_id: int, tool_update: MCPToolUpdate, db: Session = Depends(get_db)):
+    """Update a tool's configuration manually."""
+    tool = db.query(MCPTool).filter(
+        MCPTool.id == tool_id,
+        MCPTool.server_id == server_id
+    ).first()
+    
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    
+    try:
+        # Update fields if provided
+        if tool_update.name is not None:
+            # Check if name conflicts with another tool
+            existing = db.query(MCPTool).filter(
+                MCPTool.name == tool_update.name,
+                MCPTool.server_id == server_id,
+                MCPTool.id != tool_id
+            ).first()
+            if existing:
+                raise HTTPException(status_code=400, detail=f"Tool name '{tool_update.name}' already exists")
+            tool.name = tool_update.name
+            
+        if tool_update.description is not None:
+            tool.description = tool_update.description
+        if tool_update.parameters is not None:
+            tool.parameters = tool_update.parameters
+        if tool_update.headers is not None:
+            tool.headers = tool_update.headers
+        if tool_update.method is not None:
+            tool.method = tool_update.method
+        if tool_update.endpoint is not None:
+            tool.endpoint = tool_update.endpoint
+        if tool_update.is_active is not None:
+            tool.is_active = tool_update.is_active
+            
+        tool.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(tool)
+        
+        # Reload cache
+        reload_enabled_mcp_tools()
+        
+        return {
+            "id": tool.id,
+            "name": tool.name,
+            "description": tool.description,
+            "endpoint": tool.endpoint,
+            "method": tool.method,
+            "parameters": tool.parameters,
+            "headers": tool.headers,
+            "is_active": tool.is_active,
+            "server_id": tool.server_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating tool: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update tool: {str(e)}")
+
+@router.delete("/{server_id}/tools/{tool_id}")
+async def delete_tool_manually(server_id: int, tool_id: int, db: Session = Depends(get_db)):
+    """Delete a tool from an MCP server."""
+    tool = db.query(MCPTool).filter(
+        MCPTool.id == tool_id,
+        MCPTool.server_id == server_id
+    ).first()
+    
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    
+    try:
+        db.delete(tool)
+        db.commit()
+        
+        # Reload cache
+        reload_enabled_mcp_tools()
+        
+        return {"detail": f"Tool '{tool.name}' deleted successfully"}
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting tool: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete tool: {str(e)}")
+
+@router.post("/{server_id}/tools/import")
+async def import_tools(server_id: int, import_data: MCPToolsImport, db: Session = Depends(get_db)):
+    """Import multiple tools at once for an MCP server."""
+    server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    try:
+        imported_count = 0
+        updated_count = 0
+        errors = []
+        
+        for tool_data in import_data.tools:
+            try:
+                # Check if tool exists
+                existing_tool = db.query(MCPTool).filter(
+                    MCPTool.name == tool_data.name,
+                    MCPTool.server_id == server_id
+                ).first()
+                
+                if existing_tool:
+                    if import_data.replace_existing:
+                        # Update existing tool
+                        existing_tool.description = tool_data.description
+                        existing_tool.parameters = tool_data.parameters
+                        existing_tool.headers = tool_data.headers
+                        existing_tool.method = tool_data.method
+                        if tool_data.endpoint:
+                            existing_tool.endpoint = tool_data.endpoint
+                        existing_tool.is_active = tool_data.is_active
+                        existing_tool.updated_at = datetime.utcnow()
+                        updated_count += 1
+                    else:
+                        errors.append(f"Tool '{tool_data.name}' already exists (skipped)")
+                        continue
+                else:
+                    # Generate endpoint if not provided
+                    endpoint = tool_data.endpoint
+                    if not endpoint:
+                        if server.config_type == "command":
+                            endpoint = f"stdio://{server.name}/{tool_data.name}"
+                        else:
+                            import re
+                            port = "9000"
+                            if server.manifest_url:
+                                port_match = re.search(r':(\d+)', server.manifest_url)
+                                if port_match:
+                                    port = port_match.group(1)
+                            endpoint = f"http://{server.hostname or 'localhost'}:{port}/invoke/{tool_data.name}"
+                    
+                    # Create new tool
+                    new_tool = MCPTool(
+                        name=tool_data.name,
+                        description=tool_data.description,
+                        endpoint=endpoint,
+                        method=tool_data.method,
+                        parameters=tool_data.parameters,
+                        headers=tool_data.headers,
+                        is_active=tool_data.is_active,
+                        is_manual=True,  # Mark as manually imported
+                        server_id=server_id
+                    )
+                    db.add(new_tool)
+                    imported_count += 1
+                    
+            except Exception as e:
+                errors.append(f"Error importing '{tool_data.name}': {str(e)}")
+        
+        db.commit()
+        
+        # Reload cache
+        reload_enabled_mcp_tools()
+        
+        return {
+            "status": "success",
+            "imported": imported_count,
+            "updated": updated_count,
+            "total": len(import_data.tools),
+            "errors": errors
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error importing tools: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to import tools: {str(e)}")
+
+@router.get("/{server_id}/tools/export")
+async def export_tools(server_id: int, db: Session = Depends(get_db)):
+    """Export all tools for an MCP server in a format suitable for import."""
+    server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    tools = db.query(MCPTool).filter(MCPTool.server_id == server_id).order_by(MCPTool.name).all()
+    
+    export_data = {
+        "server_name": server.name,
+        "server_type": server.config_type,
+        "exported_at": datetime.utcnow().isoformat(),
+        "tools": [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+                "headers": tool.headers,
+                "method": tool.method,
+                "endpoint": tool.endpoint,
+                "is_active": tool.is_active
+            }
+            for tool in tools
+        ]
+    }
+    
+    return export_data

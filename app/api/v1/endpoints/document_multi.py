@@ -211,7 +211,7 @@ async def store_chunks_in_vectordb(
     milvus_cfg = vector_db_cfg["milvus"]
     uri = milvus_cfg.get("MILVUS_URI")
     token = milvus_cfg.get("MILVUS_TOKEN")
-    vector_dim = int(milvus_cfg.get("dimension", 1536))
+    vector_dim = int(milvus_cfg.get("dimension", 2560))
     
     # Determine target collection
     classified_type = None

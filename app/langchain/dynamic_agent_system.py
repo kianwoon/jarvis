@@ -290,32 +290,119 @@ Respond in JSON:
         print(f"[DEBUG] {agent_name}: Dynamic timeout set to {timeout}s (base={base_timeout}s, query_len={query_length})")
         
         # Build prompt with agent's system prompt and query
-        system_prompt = agent_data.get("system_prompt", "You are a helpful assistant.")
+        # Check if there's a pipeline-specific system prompt in the config
+        if agent_config.get("system_prompt"):
+            system_prompt = agent_config["system_prompt"]
+            print(f"[DEBUG] Using pipeline-specific system prompt for {agent_name}")
+        else:
+            system_prompt = agent_data.get("system_prompt", "You are a helpful assistant.")
+            print(f"[DEBUG] Using default system prompt for {agent_name}")
         
         # Add context if available
         context_str = ""
         if context:
+            # Special handling for previous agent outputs in sequential execution
+            if "previous_outputs" in context:
+                context_str = f"\n\nCONTEXT FROM PREVIOUS AGENTS:\n"
+                for prev_output in context.get("previous_outputs", []):
+                    agent_name_prev = prev_output.get("agent", "Previous Agent")
+                    content = prev_output.get("content") or prev_output.get("output", "")
+                    
+                    # Extract content from thinking tags if present
+                    import re
+                    thinking_match = re.search(r'<think>(.*?)</think>', content, re.DOTALL)
+                    if thinking_match and len(thinking_match.group(1).strip()) > len(content.replace(thinking_match.group(0), '').strip()):
+                        # Most content is in thinking tags, extract it
+                        thinking_content = thinking_match.group(1).strip()
+                        other_content = content.replace(thinking_match.group(0), '').strip()
+                        if other_content:
+                            # There's content outside thinking tags, show both
+                            content = f"{other_content}\n\n[Agent's Analysis Process:]\n{thinking_content}"
+                        else:
+                            # Only thinking content exists, use it directly
+                            content = thinking_content
+                        print(f"[DEBUG] Extracted content from thinking tags for {agent_name_prev}")
+                    
+                    # Show substantial context from previous agents
+                    context_str += f"\n{agent_name_prev}:\n{content}\n"
+                    context_str += "-" * 50 + "\n"
+                
+                # Add instruction to build upon previous work
+                agent_position = len(context.get("previous_outputs", [])) + 1
+                context_str += "\n\n🚨 CRITICAL WORKFLOW INSTRUCTION 🚨\n"
+                context_str += f"You are agent #{agent_position} in a SEQUENTIAL workflow. DO NOT start by analyzing what the user wants - that's already been done!\n\n"
+                context_str += "YOUR SPECIFIC TASKS:\n"
+                context_str += "1. READ the previous agent's work above carefully\n"
+                context_str += "2. CONTINUE building on their analysis - don't start over\n"
+                context_str += "3. ADD your unique expertise without repeating their points\n"
+                context_str += "4. FOCUS on your specific role: provide insights the previous agent couldn't\n\n"
+                context_str += "❌ DO NOT say 'The user is asking...' or 'Let me understand the request...'\n"
+                context_str += "✅ DO say 'Building on the previous analysis...' or 'Adding to what was identified...'\n\n"
+                context_str += "IMPORTANT: Provide your response directly without <think> tags. Your actual analysis should be outside any thinking tags.\n"
+            
             # Special handling for conversation history
             if "conversation_history" in context:
-                context_str = f"\n\nCONTEXT:\nPrevious conversation:\n"
+                if not context_str:  # Only add header if we haven't already
+                    context_str = f"\n\nCONTEXT:\n"
+                context_str += "Previous conversation:\n"
                 for msg in context.get("conversation_history", [])[-6:]:  # Last 6 messages
                     role = "User" if msg.get("role") == "user" else "Assistant"
                     content = msg.get("content", "")[:200]  # Truncate long messages
                     context_str += f"{role}: {content}\n"
+            
+            # Add other context fields (excluding already processed ones)
+            other_context = {k: v for k, v in context.items() if k not in ["conversation_history", "previous_outputs"]}
+            if other_context:
+                if not context_str:
+                    context_str = f"\n\nCONTEXT:\n"
+                else:
+                    context_str += f"\nAdditional context:\n"
+                context_str += json.dumps(other_context, indent=2)
                 
-                # Add other context fields
-                other_context = {k: v for k, v in context.items() if k != "conversation_history"}
-                if other_context:
-                    context_str += f"\nAdditional context:\n{json.dumps(other_context, indent=2)}"
-            else:
-                context_str = f"\n\nCONTEXT:\n{json.dumps(context, indent=2)}"
+        # Add available tools to context
+        available_tools = []
+        if context and "available_tools" in context:
+            available_tools = context["available_tools"]
+        elif agent_config.get("tools"):
+            available_tools = agent_config["tools"]
+        elif agent_data.get("tools"):
+            available_tools = agent_data["tools"]
+            
+        if available_tools:
+            if not context_str:
+                context_str = f"\n\nCONTEXT:\n"
+            context_str += f"\n\nAVAILABLE TOOLS:\n"
+            context_str += f"You have access to the following tools: {available_tools}\n"
+            context_str += "To use a tool, output JSON in this format:\n"
+            context_str += '{"tool": "tool_name", "parameters": {"param1": "value1"}}'
         
         # Enhance prompt for completion tasks
         task_enhancement = ""
         if any(keyword in query.lower() for keyword in ["50", "interview", "questions", "generate", "create"]):
             task_enhancement = "\n\nIMPORTANT: If the user is asking you to generate a specific number of items (like 50 interview questions), you MUST generate the complete requested amount. Do not stop early or provide fewer items than requested."
         
-        full_prompt = f"""{system_prompt}
+        # Adjust prompt based on whether this is part of a sequential workflow
+        if context and "previous_outputs" in context and context["previous_outputs"]:
+            # This is a continuation in a sequential workflow
+            agent_position = len(context["previous_outputs"]) + 1
+            full_prompt = f"""{system_prompt}
+
+YOU ARE AGENT #{agent_position} IN A SEQUENTIAL WORKFLOW. 
+
+The previous agent(s) have already analyzed the user's request and provided their insights above. DO NOT re-analyze what the user wants.
+{context_str}
+
+ORIGINAL USER REQUEST (for reference only): {query}
+
+YOUR SPECIFIC TASK: 
+- Build directly on the previous agent's work
+- Add your unique expertise and insights
+- DO NOT repeat their analysis or findings
+- Start with phrases like "Building on the previous analysis..." or "To add to what was identified..."
+- Provide your response WITHOUT thinking tags - give your analysis directly{task_enhancement}"""
+        else:
+            # This is a standalone agent or first in sequence
+            full_prompt = f"""{system_prompt}
 
 USER QUERY: {query}{context_str}{task_enhancement}
 
@@ -360,7 +447,6 @@ Please provide a comprehensive response based on your role and expertise."""
                     yield chunk
                 else:
                     # Forward any other event types
-                    yield chunk
                     yield chunk
             
         except Exception as e:
@@ -446,13 +532,22 @@ Please provide a comprehensive response based on your role and expertise."""
             print(f"[DEBUG] {agent_name}: After cleaning: {len(cleaned_content)} chars")
             print(f"[DEBUG] {agent_name}: Cleaned preview (first 200 chars): {cleaned_content[:200]!r}")
             
+            # Check for and execute any tool calls
+            enhanced_content, tool_results = await self._process_tool_calls(agent_name, cleaned_content)
+            
             # ALWAYS yield completion event, even if content is empty
-            print(f"[DEBUG] {agent_name}: Yielding completion event with content_length={len(cleaned_content)}")
-            yield {
+            print(f"[DEBUG] {agent_name}: Yielding completion event with content_length={len(enhanced_content)}")
+            completion_data = {
                 "type": "agent_complete",
                 "agent": agent_name,
-                "content": cleaned_content
+                "content": enhanced_content
             }
+            
+            # Add tool results if any were executed
+            if tool_results:
+                completion_data["tools_used"] = tool_results
+            
+            yield completion_data
                 
         except asyncio.TimeoutError:
             print(f"[WARNING] Agent {agent_name} timed out after {timeout}s")
@@ -498,6 +593,139 @@ Please provide a comprehensive response based on your role and expertise."""
                 "agent": agent_name,
                 "error": str(e)
             }
+    
+    async def _process_tool_calls(self, agent_name: str, agent_response: str) -> tuple[str, list]:
+        """Process agent response for tool calls and execute them"""
+        try:
+            # Import tool executor at runtime to avoid circular imports
+            from app.langchain.tool_executor import tool_executor
+            
+            print(f"[DEBUG] {agent_name}: _process_tool_calls called with response length: {len(agent_response)}")
+            print(f"[DEBUG] {agent_name}: Response preview: {agent_response[:200]}")
+            
+            # Check if response contains potential tool calls (generic patterns)
+            tool_patterns = [
+                r'\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{.*?\}\s*\}',  # JSON format - improved
+                r'"tool"\s*:\s*"[^"]+"',  # Simple tool mention
+                r'<tool>[^<]+</tool>',  # XML format
+                r'\w+\([^)]*\)'  # Function call format
+            ]
+            
+            import re
+            import json
+            has_tool_mention = any(re.search(pattern, agent_response, re.DOTALL) for pattern in tool_patterns)
+            
+            print(f"[DEBUG] {agent_name}: Tool patterns found: {has_tool_mention}")
+            if has_tool_mention:
+                for i, pattern in enumerate(tool_patterns):
+                    matches = re.findall(pattern, agent_response)
+                    if matches:
+                        print(f"[DEBUG] {agent_name}: Pattern {i} matches: {matches}")
+            
+            if not has_tool_mention:
+                print(f"[DEBUG] {agent_name}: No tool patterns found, returning original response")
+                return agent_response, []
+            
+            print(f"[DEBUG] {agent_name}: Tool patterns detected, extracting tool calls")
+            
+            # Extract tool calls first to debug
+            tool_calls = tool_executor.extract_tool_calls(agent_response)
+            print(f"[DEBUG] {agent_name}: Extracted {len(tool_calls)} tool calls: {tool_calls}")
+            
+            if not tool_calls:
+                print(f"[DEBUG] {agent_name}: No valid tool calls extracted")
+                return agent_response, []
+            
+            # Execute tool calls - call synchronously since call_mcp_tool is sync
+            print(f"[DEBUG] {agent_name}: Executing {len(tool_calls)} tool calls")
+            
+            # Execute tools in a separate thread to avoid event loop conflicts
+            tool_results = []
+            
+            # Import for thread execution
+            import concurrent.futures
+            import threading
+            
+            def execute_tool_sync(tool_name, parameters):
+                """Execute tool in a separate thread to avoid event loop conflicts"""
+                try:
+                    print(f"[DEBUG] Thread execution: {tool_name} with parameters: {parameters}")
+                    
+                    # Import and call MCP tool in thread context
+                    from app.langchain.service import call_mcp_tool
+                    result = call_mcp_tool(tool_name, parameters)
+                    
+                    return {
+                        "tool": tool_name,
+                        "parameters": parameters,
+                        "result": result,
+                        "success": "error" not in result if isinstance(result, dict) else True
+                    }
+                    
+                except Exception as e:
+                    print(f"[ERROR] Thread execution failed for {tool_name}: {e}")
+                    return {
+                        "tool": tool_name,
+                        "parameters": parameters,
+                        "error": str(e),
+                        "success": False
+                    }
+            
+            # Execute tools using thread pool to avoid event loop conflicts
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                # Submit all tool calls
+                future_to_tool = {
+                    executor.submit(execute_tool_sync, tool_call.get("tool"), tool_call.get("parameters", {})): tool_call
+                    for tool_call in tool_calls if tool_call.get("tool")
+                }
+                
+                # Wait for all results
+                for future in concurrent.futures.as_completed(future_to_tool):
+                    tool_call = future_to_tool[future]
+                    try:
+                        result = future.result(timeout=30)  # 30 second timeout per tool
+                        tool_results.append(result)
+                        print(f"[DEBUG] {agent_name}: Tool {result['tool']} -> {'Success' if result['success'] else 'Failed'}")
+                    except concurrent.futures.TimeoutError:
+                        print(f"[ERROR] {agent_name}: Tool {tool_call.get('tool')} timed out")
+                        tool_results.append({
+                            "tool": tool_call.get("tool"),
+                            "parameters": tool_call.get("parameters", {}),
+                            "error": "Tool execution timeout (30s)",
+                            "success": False
+                        })
+                    except Exception as e:
+                        print(f"[ERROR] {agent_name}: Tool {tool_call.get('tool')} execution error: {e}")
+                        tool_results.append({
+                            "tool": tool_call.get("tool"),
+                            "parameters": tool_call.get("parameters", {}),
+                            "error": str(e),
+                            "success": False
+                        })
+            
+            print(f"[DEBUG] {agent_name}: All tools executed. Results: {len(tool_results)} tools")
+            
+            # Create enhanced response
+            enhanced_response = agent_response
+            if tool_results:
+                enhanced_response += "\n\n**Tool Execution Results:**\n"
+                for result in tool_results:
+                    if result["success"]:
+                        enhanced_response += f"✅ {result['tool']}: {json.dumps(result['result'], indent=2)}\n"
+                    else:
+                        enhanced_response += f"❌ {result['tool']}: {result.get('error', 'Unknown error')}\n"
+                
+                print(f"[DEBUG] {agent_name}: Executed {len(tool_results)} tool(s)")
+                for result in tool_results:
+                    print(f"[DEBUG] {agent_name}: Tool {result['tool']} -> {'Success' if result['success'] else 'Failed'}")
+            
+            return enhanced_response, tool_results
+            
+        except Exception as e:
+            print(f"[ERROR] {agent_name}: Tool processing failed: {e}")
+            import traceback
+            print(f"[ERROR] {agent_name}: Tool processing traceback: {traceback.format_exc()}")
+            return agent_response, []
     
     def _parse_json_response(self, response: str) -> Dict:
         """Parse JSON from LLM response"""

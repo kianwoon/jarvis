@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Gmail Authorization - Jarvis</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            max-width: 500px;
+            width: 90%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+        .step {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid #4285f4;
+        }
+        .step-number {
+            display: inline-block;
+            background: #4285f4;
+            color: white;
+            width: 28px;
+            height: 28px;
+            text-align: center;
+            line-height: 28px;
+            border-radius: 50%;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        .auth-button {
+            display: inline-block;
+            background: #4285f4;
+            color: white;
+            padding: 14px 32px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 18px;
+            font-weight: 500;
+            margin: 20px 0;
+            transition: background 0.3s;
+        }
+        .auth-button:hover {
+            background: #357ae8;
+        }
+        .url-box {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 12px;
+            word-break: break-all;
+            margin: 10px 0;
+            border: 1px solid #e0e0e0;
+        }
+        .warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 20px;
+            color: #856404;
+        }
+        .success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 20px;
+            color: #155724;
+            display: none;
+        }
+        .error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 20px;
+            color: #721c24;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Gmail Authorization</h1>
+        <p class="subtitle">Re-authorize Jarvis to access your Gmail account</p>
+        
+        <div class="step">
+            <span class="step-number">1</span>
+            <strong>Click the button below to authorize Gmail access</strong>
+            <p>You'll be redirected to Google to sign in and grant permissions.</p>
+        </div>
+        
+        <center>
+            <a href="https://accounts.google.com/o/oauth2/v2/auth?client_id=6591998644-5sii79trd4tehivumdq265buh2r3lecq.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Foauth%2Fcallback&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.readonly+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.send&access_type=offline&prompt=consent" 
+               class="auth-button" target="_blank">
+                Authorize Gmail Access
+            </a>
+        </center>
+        
+        <div class="step">
+            <span class="step-number">2</span>
+            <strong>After authorization, handle the callback</strong>
+            <p>Since the frontend isn't running, you'll need to manually extract the authorization code from the URL and exchange it for tokens.</p>
+        </div>
+        
+        <div class="warning">
+            <strong>⚠️ Note:</strong> The authorization will redirect to http://localhost:3000/oauth/callback which may show an error if the frontend isn't running. This is normal - just copy the authorization code from the URL.
+        </div>
+        
+        <div class="step">
+            <span class="step-number">3</span>
+            <strong>Alternative: Direct API Authorization</strong>
+            <p>You can also use the OAuth flow endpoint directly:</p>
+            <div class="url-box">
+                POST http://localhost:8000/api/v1/oauth/flow/callback<br>
+                {<br>
+                &nbsp;&nbsp;"code": "YOUR_AUTH_CODE_HERE",<br>
+                &nbsp;&nbsp;"server_id": 2<br>
+                }
+            </div>
+        </div>
+        
+        <div id="success" class="success">
+            ✅ Authorization successful! You can now close this window and return to Jarvis.
+        </div>
+        
+        <div id="error" class="error">
+            ❌ Authorization failed. Please check the console for details.
+        </div>
+    </div>
+</body>
+</html>

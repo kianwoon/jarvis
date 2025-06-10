@@ -7,6 +7,8 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.cache/huggingface:/root/.cache/huggingface
     env_file:
       - .env.docker
     environment:
@@ -14,6 +16,10 @@ services:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - REDIS_HOST=redis
       - POSTGRES_HOST=postgres
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - ENABLE_QWEN_RERANKER=false
+      - PRELOAD_QWEN_RERANKER=false
+    user: root
     depends_on:
       - postgres
       - qdrant
@@ -70,12 +76,22 @@ services:
       - ../MCP/MCP:/app
     working_dir: /app
 
+  mcp-gmail:
+    build:
+      context: ./simple_gmail_mcp
+      dockerfile: Dockerfile
+    container_name: mcp-gmail
+    stdin_open: true
+    tty: false
+    restart: unless-stopped
+
 
 volumes:
   postgres_data:
   qdrant_data:
   ollama_data:
   redis_data:
+  mcp-gmail:
 
 networks:
   default:

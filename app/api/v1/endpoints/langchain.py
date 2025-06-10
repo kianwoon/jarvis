@@ -507,20 +507,21 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
                 }) + "\n"
                 
                 # Get RAG results using the service
-                from app.langchain.service import hybrid_retrieval_with_rerank
-                from app.rag.qdrant_retriever import QdrantRetriever
+                from app.langchain.service import handle_rag_query
                 
                 try:
-                    # Initialize retriever
-                    retriever = QdrantRetriever()
-                    
                     # Get RAG results
-                    results = hybrid_retrieval_with_rerank(
-                        retriever,
-                        request.question,
-                        collection_name="documents",  # Default collection
-                        k=5
+                    context, _ = handle_rag_query(
+                        question=request.question,
+                        thinking=request.thinking,
+                        collections=request.collections or ["documents"],
+                        collection_strategy=request.collection_strategy or "auto"
                     )
+                    
+                    results = {
+                        "documents": context if isinstance(context, list) else [],
+                        "context": context if isinstance(context, str) else ""
+                    }
                     
                     # Format context
                     rag_context = "\n\n".join([

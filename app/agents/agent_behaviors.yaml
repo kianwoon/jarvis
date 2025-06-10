@@ -1,0 +1,175 @@
+# Agent Behavior Definitions
+# Defines standard behaviors and communication patterns for agents
+
+agent_behaviors:
+  email_reader:
+    description: "Reads and extracts email content"
+    capabilities:
+      - search_emails
+      - read_email_content
+      - extract_metadata
+    output_format:
+      email_id: "ID of the email"
+      subject: "Email subject"
+      from: "Sender email address"
+      to: "Recipient email addresses"
+      body: "Full email body"
+      timestamp: "When email was received"
+      attachments: "List of attachments if any"
+      requires_response: "Boolean indicating if response needed"
+      key_topics: "Main topics discussed"
+    instructions: |
+      1. Search for relevant emails based on query
+      2. Extract the email ID from search results
+      3. Read the full email content using the ID
+      4. Parse and structure the email data
+      5. Identify if a response is required
+      6. Extract key topics for downstream agents
+
+  email_analyzer:
+    description: "Analyzes email content and determines appropriate response"
+    capabilities:
+      - sentiment_analysis
+      - intent_detection
+      - priority_assessment
+    expected_input:
+      - email_content
+      - email_metadata
+    output_format:
+      sentiment: "positive/negative/neutral"
+      intent: "inquiry/complaint/request/information"
+      priority: "high/medium/low"
+      key_points: "List of main points to address"
+      suggested_response_tone: "professional/friendly/formal"
+      response_elements: "Key elements to include in response"
+    instructions: |
+      1. Analyze the email sentiment and intent
+      2. Determine priority based on content and sender
+      3. Identify key points that need addressing
+      4. Suggest appropriate response tone
+      5. Prepare response elements for the next agent
+
+  email_responder:
+    description: "Composes and sends email responses"
+    capabilities:
+      - compose_email
+      - send_email
+      - create_draft
+    expected_input:
+      - original_email
+      - analysis_results
+      - response_elements
+    output_format:
+      email_sent: "Boolean"
+      message_id: "ID of sent message"
+      recipient: "Who the email was sent to"
+      subject: "Email subject used"
+      summary: "Brief summary of response"
+    instructions: |
+      1. Use the analysis to compose appropriate response
+      2. Address all key points identified
+      3. Match the suggested tone
+      4. Include all required response elements
+      5. Send the email and confirm delivery
+
+  researcher:
+    description: "Conducts research on topics"
+    capabilities:
+      - web_search
+      - document_search
+      - information_extraction
+    output_format:
+      query: "What was researched"
+      findings: "List of key findings"
+      sources: "List of sources used"
+      confidence: "Confidence level in findings"
+      summary: "Executive summary"
+    instructions: |
+      1. Understand the research query
+      2. Search multiple sources
+      3. Extract relevant information
+      4. Validate and cross-reference
+      5. Summarize findings clearly
+
+  decision_maker:
+    description: "Makes decisions based on available information"
+    capabilities:
+      - evaluate_options
+      - risk_assessment
+      - recommendation
+    expected_input:
+      - analysis_data
+      - context_information
+      - constraints
+    output_format:
+      decision: "The decision made"
+      reasoning: "Why this decision"
+      alternatives: "Other options considered"
+      risks: "Potential risks"
+      next_actions: "Recommended next steps"
+
+# Communication patterns between common agent pairs
+communication_patterns:
+  email_reader_to_analyzer:
+    handoff_data:
+      - email_id
+      - email_content
+      - sender_info
+      - timestamp
+    instructions_template: |
+      Please analyze this email:
+      - Subject: {subject}
+      - From: {from}
+      - Content: {body}
+      Focus on determining the appropriate response strategy.
+
+  analyzer_to_responder:
+    handoff_data:
+      - original_email
+      - analysis_results
+      - key_points_to_address
+      - suggested_tone
+    instructions_template: |
+      Based on the analysis:
+      - Sentiment: {sentiment}
+      - Priority: {priority}
+      - Key points to address: {key_points}
+      Please compose and send an appropriate response.
+
+  researcher_to_decision_maker:
+    handoff_data:
+      - research_findings
+      - data_sources
+      - confidence_levels
+    instructions_template: |
+      Research findings:
+      {findings}
+      Please make a decision based on this information.
+
+# Pipeline templates with predefined flows
+pipeline_templates:
+  customer_service_email:
+    description: "Handle customer service emails"
+    agents:
+      - name: email_reader
+        role: "Read and extract customer email"
+        tools: ["search_emails", "read_email"]
+      - name: email_analyzer
+        role: "Analyze email and determine response"
+        tools: []
+      - name: email_responder
+        role: "Compose and send response"
+        tools: ["gmail_send"]
+    
+  research_and_report:
+    description: "Research topic and create report"
+    agents:
+      - name: researcher
+        role: "Conduct research on topic"
+        tools: ["web_search", "document_search"]
+      - name: analyzer
+        role: "Analyze research findings"
+        tools: []
+      - name: report_writer
+        role: "Create comprehensive report"
+        tools: ["create_document"]

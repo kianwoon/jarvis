@@ -679,18 +679,23 @@ Question: {question}
 
 {mcp_tools_context}
 
-Output the exact tool call:
+Based on the question and available tools, output the exact tool call in this format:
 <tool>tool_name(parameters)</tool>
 
 Examples:
 - For "What time is it?": <tool>get_datetime({{}})</tool>
 - For "What is today date & time?": <tool>get_datetime({{}})</tool>
-- For "Weather in Paris": <tool>get_weather({{"location": "Paris"}})</tool>
-- For "Send email": <tool>outlook_send_message({{"to": "email@example.com", "subject": "...", "body": "..."}})</tool>
+- For "find emails from amazon": <tool>search_emails({{"query": "from:amazon"}})</tool>
+- For "search gmail for amazon": <tool>search_emails({{"query": "amazon"}})</tool>
+- For "find latest gmail": <tool>search_emails({{"query": ""}})</tool>
+- For "search gmail for unread": <tool>search_emails({{"query": "is:unread"}})</tool>
+- For "show today's emails": <tool>search_emails({{"query": "newer_than:1d"}})</tool>
+- For "send email": <tool>send_email({{"to": ["email@example.com"], "subject": "...", "body": "..."}})</tool>
 
-If no tools needed: NO_TOOLS_NEEDED
+If the question is asking about emails or Gmail, you MUST use search_emails.
+If no tools are needed to answer the question: NO_TOOLS_NEEDED
 
-RESPOND WITH ONLY THE TOOL CALL, NOTHING ELSE."""
+CRITICAL: You MUST output ONLY the tool call or NO_TOOLS_NEEDED, nothing else."""
 
     llm_cfg = get_llm_settings()
     prompt = build_prompt(tool_selection_prompt, thinking=False)
@@ -699,8 +704,8 @@ RESPOND WITH ONLY THE TOOL CALL, NOTHING ELSE."""
     llm_api_url = "http://localhost:8000/api/v1/generate_stream"
     payload = {
         "prompt": prompt,
-        "temperature": 0.3,
-        "top_p": 0.7,
+        "temperature": 0.5,  # Slightly higher to encourage tool output
+        "top_p": 0.8,
         "max_tokens": 200
     }
     
@@ -1408,81 +1413,145 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
     # Sort by combined score (higher is better)
     filtered_and_ranked.sort(key=lambda x: x[4], reverse=True)
     
-    # LLM-based re-ranking for top candidates
+    # Qwen3-Reranker-4B based re-ranking for top candidates
     if filtered_and_ranked and llm_cfg:
-        # Re-rank top 15 candidates (balance between quality and cost)
-        num_to_rerank = min(15, len(filtered_and_ranked))
-        print(f"[DEBUG] Starting LLM re-ranking of top {num_to_rerank} documents")
-        top_candidates = filtered_and_ranked[:num_to_rerank]
-        
-        rerank_prompt = f"""Score how relevant each document is to the question on a scale of 0-10.
+        try:
+            # Check if reranker is enabled
+            from app.core.reranker_config import RerankerConfig
+            
+            if not RerankerConfig.is_enabled():
+                raise ImportError("Reranker is disabled in this environment")
+            
+            # Try to use Qwen3-Reranker-4B if available
+            from app.rag.qwen_reranker import get_qwen_reranker
+            
+            # Re-rank top 20 candidates (we can handle more with dedicated model)
+            num_to_rerank = min(20, len(filtered_and_ranked))
+            print(f"[DEBUG] Starting Qwen3-Reranker-4B re-ranking of top {num_to_rerank} documents")
+            
+            # Get reranker instance
+            reranker = get_qwen_reranker()
+            
+            # If reranker is not available, fall back to LLM reranking
+            if reranker is None:
+                raise ImportError("Reranker not available")
+            
+            # Prepare documents for reranking
+            docs_to_rerank = [(item[0], item[4]) for item in filtered_and_ranked[:num_to_rerank]]
+            
+            # Determine task type based on query
+            task_type = "general"
+            if any(keyword in question.lower() for keyword in ["code", "function", "class", "method", "api"]):
+                task_type = "code"
+            elif any(keyword in question.lower() for keyword in ["technical", "documentation", "specification"]):
+                task_type = "technical"
+            
+            instruction = reranker.create_task_specific_instruction(task_type)
+            
+            # Perform reranking with hybrid scoring
+            rerank_results = reranker.rerank_with_hybrid_score(
+                query=question,
+                documents=docs_to_rerank,
+                rerank_weight=0.7,  # Give 70% weight to Qwen reranker
+                instruction=instruction
+            )
+            
+            # Update the filtered_and_ranked list with new scores
+            for i, result in enumerate(rerank_results):
+                if i < len(filtered_and_ranked):
+                    # Find the original item
+                    for j, item in enumerate(filtered_and_ranked):
+                        if item[0] == result.document:
+                            # Update with hybrid score
+                            filtered_and_ranked[j] = (
+                                item[0], item[1], item[2], item[3], 
+                                result.metadata["hybrid_score"]
+                            )
+                            break
+            
+            # Re-sort with updated scores
+            filtered_and_ranked.sort(key=lambda x: x[4], reverse=True)
+            print(f"[DEBUG] Qwen3-Reranker-4B re-ranking complete")
+            
+        except ImportError:
+            print(f"[DEBUG] Qwen3-Reranker-4B not available, falling back to LLM re-ranking")
+            # Fallback to original LLM-based re-ranking
+            # Re-rank top 15 candidates (balance between quality and cost)
+            num_to_rerank = min(15, len(filtered_and_ranked))
+            print(f"[DEBUG] Starting LLM re-ranking of top {num_to_rerank} documents")
+            top_candidates = filtered_and_ranked[:num_to_rerank]
+            
+            rerank_prompt = f"""Score how relevant each document is to the question on a scale of 0-10.
 Question: {question}
 
 Documents to score:
 """
-        for i, (doc, _, _, _, _) in enumerate(top_candidates):
-            # Take first 300 chars of each doc for context
-            content_preview = doc.page_content[:300].replace('\n', ' ')
-            rerank_prompt += f"\nDoc {i+1}: {content_preview}...\n"
-        
-        rerank_prompt += "\nProvide ONLY the scores in format: Doc1:X, Doc2:Y, Doc3:Z, etc. No explanations."
-        
-        try:
-            llm_api_url = "http://localhost:8000/api/v1/generate_stream"
-            payload = {
-                "prompt": rerank_prompt,
-                "temperature": 0.1,
-                "top_p": 0.9,
-                "max_tokens": 100
-            }
+            for i, (doc, _, _, _, _) in enumerate(top_candidates):
+                # Take first 300 chars of each doc for context
+                content_preview = doc.page_content[:300].replace('\n', ' ')
+                rerank_prompt += f"\nDoc {i+1}: {content_preview}...\n"
             
-            scores_text = ""
-            with httpx.Client(timeout=15) as client:
-                with client.stream("POST", llm_api_url, json=payload) as response:
-                    for line in response.iter_lines():
-                        if not line:
-                            continue
-                        if isinstance(line, bytes):
-                            line = line.decode("utf-8")
-                        if line.startswith("data: "):
-                            token = line.replace("data: ", "")
-                            scores_text += token
+            rerank_prompt += "\nProvide ONLY the scores in format: Doc1:X, Doc2:Y, Doc3:Z, etc. No explanations."
             
-            # Parse scores
-            llm_scores = {}
-            for part in scores_text.split(','):
-                if ':' in part:
-                    doc_part, score_part = part.split(':', 1)
-                    doc_digits = ''.join(filter(str.isdigit, doc_part))
-                    if doc_digits:  # Only process if we have digits
-                        try:
-                            doc_num = int(doc_digits)
-                            score_digits = ''.join(filter(lambda x: x.isdigit() or x == '.', score_part))
-                            if score_digits:  # Only process if we have a score
-                                score = float(score_digits)
-                                llm_scores[doc_num] = score / 10.0  # Normalize to 0-1
-                        except (ValueError, ZeroDivisionError):
-                            continue  # Skip invalid entries
-            
-            print(f"[DEBUG] LLM scores: {llm_scores}")
-            
-            # Update scores with LLM re-ranking
-            if llm_scores:
-                for i, item in enumerate(top_candidates):
-                    if (i + 1) in llm_scores:
-                        # Combine original score with LLM score (50/50 weight)
-                        original_score = item[4]
-                        llm_score = llm_scores[i + 1]
-                        new_score = (original_score * 0.4) + (llm_score * 0.6)
-                        # Update the tuple with new score
-                        filtered_and_ranked[i] = (item[0], item[1], item[2], item[3], new_score)
+            try:
+                llm_api_url = "http://localhost:8000/api/v1/generate_stream"
+                payload = {
+                    "prompt": rerank_prompt,
+                    "temperature": 0.1,
+                    "top_p": 0.9,
+                    "max_tokens": 100
+                }
                 
-                # Re-sort with updated scores
-                filtered_and_ranked.sort(key=lambda x: x[4], reverse=True)
-                print(f"[DEBUG] Re-ranking complete")
+                scores_text = ""
+                with httpx.Client(timeout=15) as client:
+                    with client.stream("POST", llm_api_url, json=payload) as response:
+                        for line in response.iter_lines():
+                            if not line:
+                                continue
+                            if isinstance(line, bytes):
+                                line = line.decode("utf-8")
+                            if line.startswith("data: "):
+                                token = line.replace("data: ", "")
+                                scores_text += token
+                
+                # Parse scores
+                llm_scores = {}
+                for part in scores_text.split(','):
+                    if ':' in part:
+                        doc_part, score_part = part.split(':', 1)
+                        doc_digits = ''.join(filter(str.isdigit, doc_part))
+                        if doc_digits:  # Only process if we have digits
+                            try:
+                                doc_num = int(doc_digits)
+                                score_digits = ''.join(filter(lambda x: x.isdigit() or x == '.', score_part))
+                                if score_digits:  # Only process if we have a score
+                                    score = float(score_digits)
+                                    llm_scores[doc_num] = score / 10.0  # Normalize to 0-1
+                            except (ValueError, ZeroDivisionError):
+                                continue  # Skip invalid entries
+                
+                print(f"[DEBUG] LLM scores: {llm_scores}")
+                
+                # Update scores with LLM re-ranking
+                if llm_scores:
+                    for i, item in enumerate(top_candidates):
+                        if (i + 1) in llm_scores:
+                            # Combine original score with LLM score (50/50 weight)
+                            original_score = item[4]
+                            llm_score = llm_scores[i + 1]
+                            new_score = (original_score * 0.4) + (llm_score * 0.6)
+                            # Update the tuple with new score
+                            filtered_and_ranked[i] = (item[0], item[1], item[2], item[3], new_score)
+                    
+                    # Re-sort with updated scores
+                    filtered_and_ranked.sort(key=lambda x: x[4], reverse=True)
+                    print(f"[DEBUG] Re-ranking complete")
+                    
+            except Exception as e:
+                print(f"[DEBUG] LLM re-ranking failed: {str(e)}")
                 
         except Exception as e:
-            print(f"[DEBUG] LLM re-ranking failed: {str(e)}")
+            print(f"[DEBUG] Qwen3-Reranker-4B re-ranking failed: {str(e)}")
     
     # Sort by final score
     filtered_and_ranked.sort(key=lambda x: x[4], reverse=True)
@@ -2443,21 +2512,59 @@ def get_mcp_tools_context():
     
     return "\nAvailable tools:\n" + "\n".join(tools_context)
 
+def refresh_gmail_token(server_id):
+    """Refresh Gmail OAuth token"""
+    try:
+        from app.core.oauth_token_manager import oauth_token_manager
+        
+        # Invalidate the cached token to force refresh
+        oauth_token_manager.invalidate_token(server_id, "gmail")
+        
+        # Get fresh token (this will trigger refresh if needed)
+        oauth_creds = oauth_token_manager.get_valid_token(
+            server_id=server_id,
+            service_name="gmail"
+        )
+        
+        if oauth_creds and oauth_creds.get("access_token"):
+            return {
+                "message": "Token refreshed successfully",
+                "access_token": oauth_creds.get("access_token"),
+                "expires_at": oauth_creds.get("expires_at")
+            }
+        else:
+            return {"error": "Failed to refresh token: No valid credentials available"}
+    except Exception as e:
+        return {"error": f"Exception refreshing token: {str(e)}"}
+
 def call_mcp_tool(tool_name, parameters):
     """Call an MCP tool and return the result using info from Redis cache"""
+    print(f"[DEBUG] call_mcp_tool called with tool_name='{tool_name}', parameters={parameters}")
     enabled_tools = get_enabled_mcp_tools()
     if tool_name not in enabled_tools:
         return {"error": f"Tool {tool_name} not found in enabled tools"}
     
     tool_info = enabled_tools[tool_name]
     endpoint = tool_info["endpoint"]
+    print(f"[DEBUG] Tool info keys: {list(tool_info.keys())}")
+    print(f"[DEBUG] Endpoint: {endpoint}")
     
     # Replace localhost with the actual hostname from manifest if available
     # This handles the case where endpoints are stored with localhost but need to use Docker hostname
-    manifest_hostname = tool_info.get("manifest_hostname")
-    if manifest_hostname and "localhost" in endpoint:
-        endpoint = endpoint.replace("localhost", manifest_hostname)
-        print(f"[DEBUG] Replaced localhost with manifest hostname '{manifest_hostname}' in endpoint")
+    server_hostname = tool_info.get("server_hostname")
+    
+    # Check if we're running inside Docker
+    import os
+    in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+    
+    if in_docker and server_hostname and "localhost" in endpoint:
+        # When calling from inside Docker, use the Docker hostname
+        endpoint = endpoint.replace("localhost", server_hostname)
+        print(f"[DEBUG] Replaced localhost with server hostname '{server_hostname}' in endpoint (Docker environment)")
+    elif not in_docker and server_hostname and server_hostname in endpoint:
+        # When calling from host (e.g., user's browser), replace Docker hostname with localhost
+        endpoint = endpoint.replace(server_hostname, "localhost")
+        print(f"[DEBUG] Replaced server hostname '{server_hostname}' with localhost in endpoint (Host environment)")
     
     method = tool_info.get("method", "POST")
     headers = tool_info.get("headers") or {}
@@ -2478,6 +2585,140 @@ def call_mcp_tool(tool_name, parameters):
         headers["Authorization"] = f"Bearer {api_key}"
         print(f"[DEBUG] Added API key authentication for {tool_name}")
     
+    # Inject OAuth credentials for Gmail tools
+    # Check if this is a Gmail tool by looking at the endpoint or tool name
+    is_gmail_tool = ("gmail" in tool_name.lower() or 
+                     "email" in tool_name.lower() or 
+                     "Gmail MCP" in endpoint)
+    print(f"[DEBUG] Checking OAuth injection: is_gmail_tool={is_gmail_tool}, server_id={tool_info.get('server_id')}")
+    if is_gmail_tool and tool_info.get("server_id"):
+        try:
+            from app.core.oauth_token_manager import oauth_token_manager
+            
+            # Get valid token (will refresh automatically if needed)
+            oauth_creds = oauth_token_manager.get_valid_token(
+                server_id=tool_info["server_id"],
+                service_name="gmail"
+            )
+            
+            if oauth_creds and "google_access_token" not in parameters:
+                # Gmail MCP server expects these exact parameter names
+                parameters.update({
+                    "google_access_token": oauth_creds.get("access_token", ""),
+                    "google_refresh_token": oauth_creds.get("refresh_token", ""),
+                    "google_client_id": oauth_creds.get("client_id", ""),
+                    "google_client_secret": oauth_creds.get("client_secret", "")
+                    # Note: token_uri is NOT passed as the Gmail MCP server has it hardcoded
+                })
+                print(f"[DEBUG] Injected OAuth credentials for {tool_name} from cache/refresh")
+                print(f"[DEBUG] Token expires at: {oauth_creds.get('expires_at', 'Unknown')}")
+            else:
+                print(f"[WARNING] No valid OAuth credentials available for {tool_name}")
+        except Exception as e:
+            print(f"[ERROR] Failed to inject OAuth credentials: {e}")
+    
+    # Check if this is a stdio-based tool
+    if endpoint.startswith("stdio://"):
+        print(f"[DEBUG] Using stdio bridge for {tool_name}")
+        # For stdio tools, we need to get the server configuration
+        if tool_info.get("server_id"):
+            from app.core.db import SessionLocal, MCPServer
+            db = SessionLocal()
+            try:
+                server = db.query(MCPServer).filter(MCPServer.id == tool_info["server_id"]).first()
+                if server and server.config_type == "command":
+                    # Use stdio bridge for command-based servers
+                    import asyncio
+                    from app.core.mcp_stdio_bridge import call_mcp_tool_via_stdio
+                    
+                    server_config = {
+                        "command": server.command,
+                        "args": server.args or []
+                    }
+                    
+                    # Run the async function
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        result = loop.run_until_complete(
+                            call_mcp_tool_via_stdio(server_config, tool_name, parameters)
+                        )
+                        
+                        # Check if this is a Gmail token error in stdio response
+                        error_str = str(result.get("error", "")) if isinstance(result, dict) else ""
+                        
+                        # Extract the actual error message from the response content
+                        if isinstance(result, dict) and "content" in result:
+                            content = result.get("content", [])
+                            if content and isinstance(content, list) and len(content) > 0:
+                                text_content = content[0].get("text", "")
+                                if text_content:
+                                    error_str = text_content
+                        
+                        if ("gmail" in tool_name.lower() and
+                            ("credentials do not contain" in error_str.lower() or
+                             "token" in error_str.lower() or
+                             "expired" in error_str.lower() or
+                             "invalid_grant" in error_str.lower())):
+                            print(f"[DEBUG] Detected Gmail token error in stdio response: {error_str[:200]}")
+                            
+                            # Check for invalid_grant (token revoked)
+                            if "invalid_grant" in error_str.lower():
+                                print(f"[ERROR] Gmail refresh token has been revoked")
+                                result = {
+                                    "error": "Gmail authorization has been revoked. Please re-authorize Gmail access in the MCP Servers settings.",
+                                    "error_type": "auth_revoked",
+                                    "server_id": tool_info["server_id"]
+                                }
+                            else:
+                                print(f"[DEBUG] Attempting to refresh token...")
+                                
+                                refresh_result = refresh_gmail_token(tool_info["server_id"])
+                                if refresh_result and not refresh_result.get("error"):
+                                    print(f"[DEBUG] Token refreshed successfully, retrying stdio tool call...")
+                                    # Invalidate the tool cache to ensure fresh OAuth credentials are loaded
+                                    from app.core.mcp_tools_cache import reload_enabled_mcp_tools
+                                    reload_enabled_mcp_tools()
+                                    
+                                    # Re-inject OAuth credentials with fresh token
+                                    oauth_creds = oauth_token_manager.get_valid_token(
+                                        server_id=tool_info["server_id"],
+                                        service_name="gmail"
+                                    )
+                                    if oauth_creds:
+                                        parameters.update({
+                                            "google_access_token": oauth_creds.get("access_token", ""),
+                                            "google_refresh_token": oauth_creds.get("refresh_token", ""),
+                                            "google_client_id": oauth_creds.get("client_id", ""),
+                                            "google_client_secret": oauth_creds.get("client_secret", "")
+                                            # Note: token_uri is NOT passed as the Gmail MCP server has it hardcoded
+                                        })
+                                    
+                                    # Retry the tool call with refreshed token
+                                    result = loop.run_until_complete(
+                                        call_mcp_tool_via_stdio(server_config, tool_name, parameters)
+                                    )
+                                else:
+                                    print(f"[ERROR] Failed to refresh token: {refresh_result}")
+                                    # Check if refresh also failed due to invalid_grant
+                                    if "invalid_grant" in str(refresh_result.get("error", "")):
+                                        result = {
+                                            "error": "Gmail authorization has been revoked. Please re-authorize Gmail access in the MCP Servers settings.",
+                                            "error_type": "auth_revoked",
+                                            "server_id": tool_info["server_id"]
+                                        }
+                        
+                        return result
+                    finally:
+                        loop.close()
+                else:
+                    return {"error": "Server configuration not found for stdio tool"}
+            finally:
+                db.close()
+        else:
+            return {"error": "No server_id for stdio tool"}
+    
+    # Original HTTP-based logic
     # MCP server pattern: always use generic invoke format
     if "/invoke" in endpoint and (endpoint.endswith("/invoke") or endpoint_prefix):
         # Standard MCP format: {"name": "tool_name", "arguments": {parameters}}
@@ -2530,6 +2771,34 @@ def call_mcp_tool(tool_name, parameters):
         error_msg = f"HTTP {e.response.status_code} error calling tool {tool_name}: {error_detail}"
         print(f"[ERROR] {error_msg}")
         
+        # Check if this is a Gmail token expiration error
+        if ("gmail" in tool_name.lower() and 
+            ("credentials do not contain" in error_detail.lower() or 
+             "token" in error_detail.lower() or
+             "401" in error_detail or
+             e.response.status_code == 401)):
+            print(f"[DEBUG] Detected Gmail token error, attempting to refresh token...")
+            
+            # Try to refresh the token
+            if tool_info.get("server_id"):
+                refresh_result = refresh_gmail_token(tool_info["server_id"])
+                if refresh_result and not refresh_result.get("error"):
+                    print(f"[DEBUG] Token refreshed successfully, retrying tool call...")
+                    # Invalidate the tool cache to ensure fresh OAuth credentials are loaded
+                    from app.core.mcp_tools_cache import reload_enabled_mcp_tools
+                    reload_enabled_mcp_tools()
+                    # Retry the tool call with refreshed token
+                    return call_mcp_tool(tool_name, parameters)
+                else:
+                    print(f"[ERROR] Failed to refresh token: {refresh_result}")
+                    # Check if it's an invalid_grant error (token revoked)
+                    if "invalid_grant" in str(refresh_result.get("error", "")):
+                        return {
+                            "error": "Gmail authorization has been revoked. Please re-authorize Gmail access in the MCP Servers settings.",
+                            "error_type": "auth_revoked",
+                            "server_id": tool_info.get("server_id")
+                        }
+        
         # If we get 404 and were using tool-specific endpoint, try generic endpoint
         if e.response.status_code == 404 and endpoint_prefix and not endpoint.endswith("/invoke"):
             print(f"[DEBUG] Retrying with generic endpoint due to 404...")
@@ -2575,6 +2844,8 @@ def call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info):
 
 def extract_and_execute_tool_calls(text):
     """Extract tool calls from LLM output and execute them"""
+    import re  # Import at function level to avoid scope issues
+    
     if "NO_TOOLS_NEEDED" in text:
         return []
         
@@ -2582,16 +2853,47 @@ def extract_and_execute_tool_calls(text):
     tool_calls = re.findall(tool_calls_pattern, text, re.DOTALL)
     
     # Fallback: If no tool calls found in proper format, try to extract from thinking
-    if not tool_calls and "<think>" in text:
+    if not tool_calls:
         print("[DEBUG] No tool calls in proper format, attempting fallback extraction")
-        # Look for tool mentions in thinking
-        if "get_datetime" in text and ("date" in text.lower() or "time" in text.lower()):
-            print("[DEBUG] Detected get_datetime mention in thinking, executing it")
+        text_lower = text.lower()
+        
+        # Look for tool mentions in thinking or anywhere in the text
+        if ("get_datetime" in text or "date" in text_lower or "time" in text_lower) and not ("gmail" in text_lower or "email" in text_lower):
+            print("[DEBUG] Detected date/time query, executing get_datetime")
             tool_calls = [("get_datetime", "{}")]
-        elif "outlook_send_message" in text and "email" in text.lower():
+        elif any(indicator in text_lower for indicator in ["gmail", "email", "mail", "amazon", "from:", "subject:", "unread"]):
+            print("[DEBUG] Detected email/Gmail query, executing search_emails")
+            
+            # Try to extract query parameters from the original question
+            query_params = {}
+            
+            # Check for specific patterns
+            if "amazon" in text_lower:
+                query_params["query"] = "from:amazon"
+            elif "unread" in text_lower:
+                query_params["query"] = "is:unread"
+            elif "today" in text_lower:
+                query_params["query"] = "newer_than:1d"
+            elif "from:" in text_lower:
+                # Extract from: pattern
+                import re
+                from_match = re.search(r'from:\s*(\S+)', text_lower)
+                if from_match:
+                    query_params["query"] = f"from:{from_match.group(1)}"
+                else:
+                    query_params["query"] = ""
+            else:
+                # Default to empty query (gets recent emails)
+                query_params["query"] = ""
+            
+            tool_calls = [("search_emails", json.dumps(query_params))]
+        elif "send_email" in text and "send" in text_lower:
             # Would need more sophisticated parsing for email parameters
             pass
-        elif "jira" in text and ("ticket" in text.lower() or "issue" in text.lower()):
+        elif "outlook_send_message" in text and "email" in text_lower:
+            # Would need more sophisticated parsing for email parameters
+            pass
+        elif "jira" in text and ("ticket" in text_lower or "issue" in text_lower):
             # Would need more sophisticated parsing for JIRA parameters
             pass
     

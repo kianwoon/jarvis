@@ -155,6 +155,9 @@ async def create_agent(agent: LangGraphAgentCreate, db: Session = Depends(get_db
 @router.put("/agents/{agent_id}", response_model=LangGraphAgent)
 async def update_agent(agent_id: int, agent_update: LangGraphAgentUpdate, db: Session = Depends(get_db)):
     """Update a LangGraph agent"""
+    print(f"[DEBUG] Updating agent {agent_id}")
+    print(f"[DEBUG] Update data: {agent_update.model_dump()}")
+    
     db_agent = db.query(LangGraphAgentDB).filter(LangGraphAgentDB.id == agent_id).first()
     if not db_agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -178,8 +181,18 @@ async def update_agent(agent_id: int, agent_update: LangGraphAgentUpdate, db: Se
         setattr(db_agent, field, value)
     
     db_agent.updated_at = datetime.now()
+    
+    print(f"[DEBUG] Before commit - system_prompt: {db_agent.system_prompt[:50]}...")
+    print(f"[DEBUG] Before commit - updated_at: {db_agent.updated_at}")
+    
     db.commit()
+    
+    print(f"[DEBUG] After commit - committed successfully")
+    
     db.refresh(db_agent)
+    
+    print(f"[DEBUG] After refresh - system_prompt: {db_agent.system_prompt[:50]}...")
+    print(f"[DEBUG] After refresh - updated_at: {db_agent.updated_at}")
     
     # Update Redis cache
     update_redis_cache(db)

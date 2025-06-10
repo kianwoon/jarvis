@@ -4,8 +4,11 @@ Handles simple queries efficiently without triggering unnecessary RAG searches
 """
 
 import re
+import yaml
+import os
 from enum import Enum
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
+from pathlib import Path
 
 
 class QueryType(Enum):
@@ -18,63 +21,59 @@ class QueryType(Enum):
 class SmartQueryClassifier:
     """Pattern-based query classifier for fast, accurate classification"""
     
-    def __init__(self):
-        # High-confidence patterns for TOOLS queries
-        self.tools_patterns = [
-            r"\b(what|tell me|show me|get).*(today|current|now).*(date|time|datetime)\b",
-            r"\b(date|time|datetime).*(today|current|now)\b",
-            r"\bwhat.*(date|time) is it\b",
-            r"\b(system|computer|machine).*(info|information|details|specs)\b",
-            r"\b(weather|temperature|forecast)\b",
-            r"\b(calculate|compute|math)\b.*\d+",
-            # MCP tool patterns
-            r"\b(send|compose|draft).*(email|message|mail)\b",
-            r"\b(create|update|close).*(ticket|issue|jira)\b",
-            r"\b(schedule|book|create).*(meeting|appointment|calendar)\b",
-            r"\b(search|find|look).*(email|message|mail)\b",
-            r"\b(get|fetch|retrieve).*(calendar|schedule|appointments)\b",
-        ]
+    def __init__(self, config_path: Optional[str] = None):
+        """Initialize classifier with patterns from config file"""
+        if config_path is None:
+            # Look for config file in same directory as this module
+            module_dir = Path(__file__).parent
+            config_path = module_dir / "smart_query_patterns.yaml"
         
-        # High-confidence patterns for simple LLM queries
-        self.llm_patterns = [
-            r"^(hi|hello|hey|good morning|good afternoon|good evening)\b",
-            r"^(thanks|thank you|appreciate|grateful)\b",
-            r"^(bye|goodbye|see you|farewell)\b",
-            r"\bhow are you\b",
-            r"\bwhat is your name\b",
-            r"\bwho are you\b",
-            r"^(yes|no|okay|ok|sure|alright)\b",
-            r"\b(explain|describe|tell me about) (how|what|why|when|where)\b(?!.*\b(document|file|report|data|information|knowledge)\b)",
-            r"\bwhat is a?\s+\w+\b(?!.*\b(document|file|report)\b)",  # "what is a cat" but not "what is in document"
-            r"\b(joke|funny|humor)\b",
-            r"\b(translate|translation)\b",
-        ]
+        self.config_path = config_path
+        self.patterns = self._load_patterns()
+        self.settings = self.patterns.get('settings', {})
         
-        # High-confidence patterns for RAG queries
-        self.rag_patterns = [
-            r"\b(search|find|look for|locate).*(document|file|report|paper|article)\b",
-            r"\b(document|file|report|paper|article).*(about|contain|mention|discuss)\b",
-            r"\bwhat.*(document|file|report|information|data|knowledge).*(say|contain|mention)\b",
-            r"\b(retrieve|fetch|get).*(information|data|details).*(from|about)\b",
-            r"\b(query|search).*(database|knowledge base|collection)\b",
-            r"\bshow me.*(document|file|report|data)\b",
-            r"\b(latest|recent|updated).*(report|document|information)\b",
-            r"\bfind.*information about\b",
-            r"\bsearch.*for.*in\b",
-            # Company-specific patterns
-            r"\b(our|company|internal).*(product|service|strategy|roadmap|plan)\b",
-            r"\bwhat.*(migration|implementation|deployment).*(timeline|schedule|plan)\b",
-            r"\bhow long.*(migration|implementation|deployment|project)\b",
-            r"\b(benefits|features|advantages).*(our|company).*(product|service)\b",
-        ]
-        
-        # High-confidence patterns for multi-agent queries
-        self.multi_agent_patterns = [
-            r"\b(analyze|compare|contrast).*(multiple|several|different).*(document|source|report)\b",
-            r"\b(complex|complicated).*(analysis|task|problem)\b",
-            r"\b(coordinate|orchestrate).*(multiple|several).*(task|action)\b",
-            r"\bcombine.*(information|data).*(from|across).*(source|document)\b",
-        ]
+    def _load_patterns(self) -> Dict:
+        """Load patterns from YAML configuration file"""
+        try:
+            with open(self.config_path, 'r') as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            print(f"[WARNING] Failed to load patterns from {self.config_path}: {e}")
+            # Return minimal default patterns if file not found
+            return {
+                "tool_patterns": {
+                    "datetime": {
+                        "patterns": [r"\b(date|time).*\b(today|now|current)\b"],
+                        "confidence": 0.9
+                    }
+                },
+                "llm_patterns": {
+                    "general": {
+                        "patterns": [r".*"],  # Catch all
+                        "confidence": 0.5
+                    }
+                },
+                "settings": {
+                    "confidence_threshold": 0.8,
+                    "default_classification": "llm",
+                    "default_confidence": 0.5
+                }
+            }
+    
+    def _compile_patterns(self, pattern_dict: Dict) -> List[Tuple[re.Pattern, float, str]]:
+        """Compile patterns from a pattern dictionary"""
+        compiled = []
+        for category, config in pattern_dict.items():
+            if category == 'settings':
+                continue
+            patterns = config.get('patterns', [])
+            confidence = config.get('confidence', 0.8)
+            for pattern in patterns:
+                try:
+                    compiled.append((re.compile(pattern, re.IGNORECASE), confidence, category))
+                except re.error as e:
+                    print(f"[WARNING] Invalid regex pattern '{pattern}': {e}")
+        return compiled
 
     def classify(self, query: str) -> Tuple[QueryType, float]:
         """
@@ -86,21 +85,37 @@ class SmartQueryClassifier:
         """
         query_lower = query.lower().strip()
         
-        # Check patterns in priority order
-        pattern_checks = [
-            (self.tools_patterns, QueryType.TOOLS),
-            (self.multi_agent_patterns, QueryType.MULTI_AGENT),
-            (self.rag_patterns, QueryType.RAG),
-            (self.llm_patterns, QueryType.LLM),
-        ]
+        # Priority order from settings or default
+        priority_order = self.settings.get('priority_order', [
+            'tool_patterns', 'rag_patterns', 'multi_agent_patterns', 'llm_patterns'
+        ])
         
-        for patterns, query_type in pattern_checks:
-            for pattern in patterns:
-                if re.search(pattern, query_lower):
-                    # High confidence for pattern matches
-                    return query_type, 0.9
+        # Map pattern types to QueryType enum
+        type_mapping = {
+            'tool_patterns': QueryType.TOOLS,
+            'rag_patterns': QueryType.RAG,
+            'multi_agent_patterns': QueryType.MULTI_AGENT,
+            'llm_patterns': QueryType.LLM
+        }
+        
+        # Check patterns in priority order
+        for pattern_type in priority_order:
+            if pattern_type not in self.patterns:
+                continue
+                
+            # Compile patterns for this type
+            compiled_patterns = self._compile_patterns({pattern_type: self.patterns[pattern_type]})
+            
+            # Check each pattern
+            for pattern, confidence, category in compiled_patterns:
+                if pattern.search(query_lower):
+                    query_type = type_mapping.get(pattern_type, QueryType.LLM)
+                    return query_type, confidence
         
         # Default classification based on query characteristics
+        default_type = self.settings.get('default_classification', 'llm')
+        default_confidence = self.settings.get('default_confidence', 0.5)
+        
         # Short queries without document keywords are usually LLM
         if len(query_lower.split()) < 10 and not any(
             keyword in query_lower 
@@ -108,8 +123,14 @@ class SmartQueryClassifier:
         ):
             return QueryType.LLM, 0.7
         
-        # Longer queries might need RAG
-        return QueryType.RAG, 0.5
+        # Map default type string to enum
+        default_query_type = QueryType.LLM
+        if default_type == 'rag':
+            default_query_type = QueryType.RAG
+        elif default_type == 'tools':
+            default_query_type = QueryType.TOOLS
+        
+        return default_query_type, default_confidence
 
     def should_use_llm_classification(self, confidence: float) -> bool:
         """Determine if we should fall back to LLM classification"""

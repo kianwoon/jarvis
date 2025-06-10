@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.db import Base, engine
 from app.core.healthcheck import check_all_services
 from app.core.mcp_process_manager import start_process_monitor
+# from app.core.pipeline_scheduler import pipeline_scheduler  # Temporarily disabled
 import asyncio
 import logging
 
@@ -29,9 +30,25 @@ app = FastAPI(
 @app.on_event("startup")
 async def startup_event():
     """Initialize background tasks on startup"""
+    # Initialize models first
+    logger.info("Running startup initialization tasks...")
+    from app.core.startup import initialize_models
+    asyncio.create_task(initialize_models())
+    
     logger.info("Starting MCP process monitor...")
     asyncio.create_task(start_process_monitor())
     logger.info("MCP process monitor started")
+    
+    logger.info("Starting pipeline scheduler service...")
+    # await pipeline_scheduler.start()  # Temporarily disabled
+    logger.info("Pipeline scheduler service started")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    logger.info("Stopping pipeline scheduler service...")
+    # await pipeline_scheduler.stop()  # Temporarily disabled
+    logger.info("Application shutdown complete")
 
 # CORS middleware configuration
 app.add_middleware(
@@ -52,4 +69,8 @@ async def health_check():
 
 # Import and include routers
 from app.api.v1 import api_router
-app.include_router(api_router, prefix="/api/v1") 
+app.include_router(api_router, prefix="/api/v1")
+
+# Import and include WebSocket router
+from app.api.v1.endpoints import pipeline_execution_ws
+app.include_router(pipeline_execution_ws.router) 

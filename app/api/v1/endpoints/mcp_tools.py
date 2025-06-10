@@ -213,7 +213,7 @@ def create_mcp_tool(tool: MCPToolCreate, db: Session = Depends(get_db)):
 
 @router.get("/", response_model=List[MCPToolResponse])
 def get_mcp_tools(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    tools = db.query(MCPTool).offset(skip).limit(limit).all()
+    tools = db.query(MCPTool).order_by(MCPTool.name).offset(skip).limit(limit).all()
     return tools
 
 @router.put("/enabled")
@@ -269,6 +269,30 @@ def debug_tool_endpoints(db: Session = Depends(get_db)):
     
     return result 
 
+@router.post("/cache/reload")
+async def reload_mcp_tools_cache():
+    """Force reload MCP tools cache from database"""
+    try:
+        # Reload MCP tools cache 
+        from app.core.mcp_tools_cache import reload_enabled_mcp_tools
+        enabled_tools = reload_enabled_mcp_tools()
+        
+        # Also reload the langgraph agents cache to ensure consistency
+        try:
+            from app.core.langgraph_agents_cache import reload_cache_from_db
+            reload_cache_from_db()
+        except Exception as e:
+            logger.warning(f"Failed to reload langgraph agents cache: {e}")
+        
+        return {
+            "status": "success",
+            "message": f"MCP tools cache reloaded with {len(enabled_tools)} tools",
+            "tools_count": len(enabled_tools),
+            "tools": list(enabled_tools.keys())
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload MCP tools cache: {str(e)}")
+
 @router.get("/from-db")
 def get_mcp_tools_from_db(db: Session = Depends(get_db)):
     """Get all MCP tools from the database with their manifest info."""
@@ -276,8 +300,8 @@ def get_mcp_tools_from_db(db: Session = Depends(get_db)):
         # Get all manifests first for efficient lookup
         manifests = {m.id: m for m in db.query(MCPManifest).all()}
         
-        # Get all tools
-        tools = db.query(MCPTool).all()
+        # Get all tools ordered by name
+        tools = db.query(MCPTool).order_by(MCPTool.name).all()
         
         # Format the response
         formatted_tools = []

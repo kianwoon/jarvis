@@ -127,6 +127,10 @@ def reload_cache_from_db():
         return agents_dict
     return {}
 
+def reload_langgraph_agents():
+    """Alias for reload_cache_from_db for backward compatibility"""
+    return reload_cache_from_db()
+
 def validate_and_warm_cache():
     """Ensure Redis cache is properly populated with agents"""
     redis_client = _get_redis_client()

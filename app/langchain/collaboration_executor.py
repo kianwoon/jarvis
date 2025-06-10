@@ -117,6 +117,31 @@ class CollaborationExecutor:
                     "completed": agent_completed,
                     "had_error": agent_had_error
                 }
+                
+                # Emit communication event for UI flow diagram
+                # Find current agent index and check if there's a next one
+                current_index = -1
+                for i, (task_name, _) in enumerate(agent_tasks):
+                    if task_name == agent_name:
+                        current_index = i
+                        break
+                
+                if current_index >= 0 and current_index < len(agent_tasks) - 1:
+                    next_agent = agent_tasks[current_index + 1][0]
+                    # Extract key info from response for communication message
+                    response_preview = agent_response[:200] + "..." if len(agent_response) > 200 else agent_response
+                    # Clean thinking tags for preview
+                    import re
+                    response_preview = re.sub(r'<think>.*?</think>', '', response_preview, flags=re.DOTALL).strip()
+                    if not response_preview:
+                        response_preview = "Analysis and findings passed to next agent"
+                    
+                    yield {
+                        "type": "agent_communication",
+                        "from_agent": agent_name,
+                        "to_agent": next_agent,
+                        "message": f"Passing analysis: {response_preview[:100]}..."
+                    }
             
             status = "completed" if agent_completed else ("error" if agent_had_error else "unknown")
             logger.info(f"[SEQUENTIAL] Finished agent: {agent_name} (status: {status}, events: {event_count})")

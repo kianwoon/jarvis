@@ -1,0 +1,21 @@
+Gmail OAuth Authorization URLs
+==============================
+
+Client ID: 692359932420-fjt0k334fr82d8e6as8nh2d1t9hqil6g.apps.googleusercontent.com
+Client Secret: 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
+
+Choose the URL that matches your Google Cloud Console redirect URI configuration:
+
+Option 1 - http://localhost:8080 (Try this first):
+https://accounts.google.com/o/oauth2/v2/auth?client_id=692359932420-fjt0k334fr82d8e6as8nh2d1t9hqil6g.apps.googleusercontent.com&redirect_uri=http://localhost:8080&response_type=code&scope=https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send&access_type=offline&prompt=consent
+
+Option 2 - http://localhost:3000/oauth/callback:
+https://accounts.google.com/o/oauth2/v2/auth?client_id=692359932420-fjt0k334fr82d8e6as8nh2d1t9hqil6g.apps.googleusercontent.com&redirect_uri=http://localhost:3000/oauth/callback&response_type=code&scope=https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send&access_type=offline&prompt=consent
+
+Option 3 - http://localhost:
+https://accounts.google.com/o/oauth2/v2/auth?client_id=692359932420-fjt0k334fr82d8e6as8nh2d1t9hqil6g.apps.googleusercontent.com&redirect_uri=http://localhost&response_type=code&scope=https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send&access_type=offline&prompt=consent
+
+Option 4 - urn:ietf:wg:oauth:2.0:oob (For manual copy):
+https://accounts.google.com/o/oauth2/v2/auth?client_id=692359932420-fjt0k334fr82d8e6as8nh2d1t9hqil6g.apps.googleusercontent.com&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code&scope=https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send&access_type=offline&prompt=consent
+
+After authorization, you'll get a code. Use the manual update script below.

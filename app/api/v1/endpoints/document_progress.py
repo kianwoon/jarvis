@@ -169,7 +169,7 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
         uri = milvus_cfg.get("MILVUS_URI")
         token = milvus_cfg.get("MILVUS_TOKEN")
         collection_name = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
-        vector_dim = int(milvus_cfg.get("dimension", 1536))
+        vector_dim = int(milvus_cfg.get("dimension", 2560))
         
         ensure_milvus_collection(collection_name, vector_dim=vector_dim, uri=uri, token=token)
         

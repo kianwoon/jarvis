@@ -13,7 +13,8 @@ import json
 import asyncio
 import hashlib
 from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime
+from app.core.config import get_settings, timedelta
 from dataclasses import dataclass, asdict
 from abc import ABC, abstractmethod
 

@@ -281,7 +281,7 @@ async def upload_pdf(
         uri = milvus_cfg.get("MILVUS_URI")
         token = milvus_cfg.get("MILVUS_TOKEN")
         collection = target_collection  # Use the determined target collection
-        vector_dim = int(milvus_cfg.get("dimension", 1536))
+        vector_dim = int(milvus_cfg.get("dimension", 2560))
         
         # Ensure collection exists
         ensure_milvus_collection(collection, vector_dim=vector_dim, uri=uri, token=token)
@@ -748,7 +748,7 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
         uri = milvus_cfg.get("MILVUS_URI")
         token = milvus_cfg.get("MILVUS_TOKEN")
         collection_name = target_collection  # Use the determined target collection
-        vector_dim = int(milvus_cfg.get("dimension", 1536))
+        vector_dim = int(milvus_cfg.get("dimension", 2560))
         
         ensure_milvus_collection(collection_name, vector_dim=vector_dim, uri=uri, token=token)
         

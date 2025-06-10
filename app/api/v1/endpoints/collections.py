@@ -77,7 +77,7 @@ def create_milvus_collection(collection_name: str, metadata_schema: Dict[str, An
         # Define the schema fields
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=255),
-            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=1536),
+            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=2560),
             FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=65535),
             FieldSchema(name="source", dtype=DataType.VARCHAR, max_length=255),
             FieldSchema(name="page", dtype=DataType.INT64),

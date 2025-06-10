@@ -6,32 +6,26 @@ import os
 
 settings = get_settings()
 
-# Use SQLite for local development if PostgreSQL connection fails
+# PostgreSQL ONLY - NO SQLITE!
+DATABASE_URL = (
+    f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+    f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+)
+engine = create_engine(DATABASE_URL)
+# Test connection
 try:
-    DATABASE_URL = (
-        f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
-        f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
-    )
-    engine = create_engine(DATABASE_URL)
-    # Test connection
     with engine.connect() as conn:
         pass
     print("Successfully connected to PostgreSQL database")
-    is_sqlite = False
 except Exception as e:
     print(f"PostgreSQL connection failed: {str(e)}")
-    print("Falling back to SQLite database")
-    # Use SQLite as fallback
-    DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "sqlite.db")
-    DATABASE_URL = f"sqlite:///{DB_PATH}"
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-    is_sqlite = True
-
+    raise Exception("PostgreSQL connection required - NO SQLITE FALLBACK!")
+    
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Use appropriate timestamp defaults based on database
-server_default_now = func.current_timestamp() if is_sqlite else text('now()')
+# PostgreSQL timestamp default
+server_default_now = text('now()')
 
 class Settings(Base):
     __tablename__ = "settings"
@@ -51,7 +45,8 @@ class MCPTool(Base):
     method = Column(String(10), nullable=False, server_default="POST")
     parameters = Column(JSON, nullable=True)
     headers = Column(JSON, nullable=True)
-    is_active = Column(Boolean, nullable=False, server_default=text("1") if is_sqlite else text("true"))
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    is_manual = Column(Boolean, nullable=False, server_default=text("false"))  # Track manually added tools
     manifest_id = Column(Integer, ForeignKey('mcp_manifests.id'), nullable=True)  # Legacy column for backward compatibility
     server_id = Column(Integer, ForeignKey('mcp_servers.id'), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
@@ -72,6 +67,7 @@ class MCPServer(Base):
     manifest_url = Column(String(255), nullable=True)
     hostname = Column(String(255), nullable=True)
     api_key = Column(String(255), nullable=True)
+    oauth_credentials = Column(JSON, nullable=True)  # OAuth2 credentials
     
     # Command-based configuration
     command = Column(String(500), nullable=True)
@@ -87,7 +83,7 @@ class MCPServer(Base):
     restart_count = Column(Integer, default=0)
     
     # Common fields
-    is_active = Column(Boolean, nullable=False, server_default=text("1") if is_sqlite else text("true"))
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
     last_health_check = Column(TIMESTAMP(timezone=True), nullable=True)
     health_status = Column(String(20), default="unknown")  # 'healthy', 'unhealthy', 'unknown'
     

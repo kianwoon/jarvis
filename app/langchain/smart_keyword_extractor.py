@@ -3,16 +3,22 @@ Smart keyword extraction for enhanced RAG search
 """
 import re
 from typing import List, Dict, Set, Tuple
-import spacy
 from collections import Counter
+
+try:
+    import spacy
+except ImportError:
+    spacy = None
 
 class SmartKeywordExtractor:
     def __init__(self):
-        try:
-            self.nlp = spacy.load("en_core_web_sm")
-        except:
-            # Fallback to rule-based if spaCy not available
-            self.nlp = None
+        self.nlp = None
+        if spacy is not None:
+            try:
+                self.nlp = spacy.load("en_core_web_sm")
+            except:
+                # Model not downloaded, will use rule-based extraction
+                pass
             
         # Common question patterns that indicate the focus
         self.question_patterns = [
@@ -196,3 +202,8 @@ class SmartKeywordExtractor:
                 result.append(term)
                 
         return result
+    
+    def extract_keywords(self, text: str) -> List[str]:
+        """Extract keywords from text (compatibility method)"""
+        key_terms = self.extract_key_terms(text)
+        return self.prioritize_terms(key_terms)

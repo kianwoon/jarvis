@@ -5,7 +5,7 @@ Implements router-based communication between specialized agents
 
 from typing import Dict, List, Any, Optional, TypedDict, AsyncGenerator
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
-from app.core.langgraph_agents_cache import get_langgraph_agents, get_agent_by_role, get_active_agents
+from app.core.langgraph_agents_cache import get_langgraph_agents, get_agent_by_role, get_active_agents, get_agent_by_name
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
 from app.core.llm_settings_cache import get_llm_settings
 from app.agents.task_decomposer import TaskDecomposer, TaskChunk
@@ -17,7 +17,10 @@ from datetime import datetime
 import asyncio
 import httpx
 import hashlib
+import logging
 # Import rag_answer lazily to avoid circular import
+
+logger = logging.getLogger(__name__)
 
 class AgentState(TypedDict):
     """State shared between agents"""
@@ -96,9 +99,34 @@ class MultiAgentSystem:
             "synthesizer": "Combines insights from all agents into a comprehensive, coherent response"
         }
     
+    def _get_agent_prompt_with_template(self, agent_name: str, state: AgentState, default_prompt: str) -> str:
+        """Get agent prompt, using template instructions if available"""
+        # Check for agent template configuration
+        agent_config = state.get("metadata", {}).get("pipeline_agent_config", {})
+        template_instructions = agent_config.get("default_instructions", "")
+        
+        if template_instructions:
+            # Extract the agent description from default prompt
+            agent_description = default_prompt.split('\n')[0] if '\n' in default_prompt else default_prompt
+            
+            # Build prompt with template instructions
+            return f"{agent_description}\n\n{template_instructions}"
+        
+        return default_prompt
+    
     def _remove_thinking_tags(self, text: str) -> str:
         """Remove thinking tags from LLM response"""
         import re
+        # First check if there's any content outside thinking tags
+        # This prevents completely empty responses
+        non_think_content = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        non_think_content = re.sub(r'</?think>', '', non_think_content).strip()
+        
+        if not non_think_content and text.strip():
+            # If everything is in thinking tags, return a message
+            print(f"[WARNING] Response only contains thinking tags, original length: {len(text)}")
+            return "I need to analyze this request and provide a proper response. Let me process the information provided."
+        
         # Remove <think>...</think> tags and their content
         pattern = r'<think>.*?</think>'
         cleaned = re.sub(pattern, '', text, flags=re.DOTALL)
@@ -284,7 +312,7 @@ class MultiAgentSystem:
             
         return context
     
-    async def _call_llm_stream(self, prompt: str, agent_name: str, temperature: float = 0.7, timeout: int = 30):
+    async def _call_llm_stream(self, prompt: str, agent_name: str, temperature: float = 0.7, timeout: int = 30, agent_config: dict = None):
         """Call LLM and return only the final cleaned response as JSON event"""
         try:
             print(f"[DEBUG] *** {agent_name}: GENERATING RESPONSE ***")
@@ -296,8 +324,10 @@ class MultiAgentSystem:
             import os
             
             # Get agent-specific configuration
-            agent_data = get_agent_by_role(agent_name)
-            agent_config = agent_data.get("config", {}) if agent_data else {}
+            # If agent_config is passed (from pipeline), use it; otherwise get from langgraph cache
+            if not agent_config:
+                agent_data = get_agent_by_role(agent_name)
+                agent_config = agent_data.get("config", {}) if agent_data else {}
             
             # Use agent config with fallbacks to thinking mode settings
             model_config = self.llm_settings.get("thinking_mode", {})
@@ -305,6 +335,7 @@ class MultiAgentSystem:
             # Dynamic configuration based on agent settings
             actual_temperature = agent_config.get("temperature", temperature)
             actual_timeout = agent_config.get("timeout", timeout)
+            # Ensure adequate max_tokens for agents, especially for complex tasks
             actual_max_tokens = agent_config.get("max_tokens", model_config.get("max_tokens", 4000))
             
             print(f"[DEBUG] {agent_name}: Using config - max_tokens={actual_max_tokens}, timeout={actual_timeout}, temp={actual_temperature}")
@@ -354,8 +385,11 @@ class MultiAgentSystem:
             
             # Clean the response and yield final completion event
             cleaned_content = self._remove_thinking_tags(response_text)
-            cleaned_content = self._clean_markdown_formatting(cleaned_content)
+            # Keep markdown formatting for better display
+            # cleaned_content = self._clean_markdown_formatting(cleaned_content)
             display_content = cleaned_content.strip()
+            
+            print(f"[DEBUG] {agent_name}: Raw response length = {len(response_text)}, cleaned length = {len(display_content)}")
             
             # Always yield a completion event, even if content is empty
             print(f"[DEBUG] {agent_name}: Yielding final completion event")
@@ -686,6 +720,10 @@ Important: Only use agent names that exist in the available agents list above.""
         # Extract context from query
         context = self._extract_query_context(state["query"])
         
+        # Check for agent template configuration
+        agent_config = state.get("metadata", {}).get("pipeline_agent_config", {})
+        template_instructions = agent_config.get("default_instructions", "")
+        
         # Check for messages from other agents
         messages = self.check_agent_messages("sales_strategist", state)
         financial_insights = ""
@@ -708,7 +746,20 @@ Important: Only use agent names that exist in the available agents list above.""
             ):
                 yield event
         
-        prompt = f"""You are an experienced Sales Strategist specializing in IT services and managed service proposals.
+        # Use template instructions if available, otherwise use default prompt
+        if template_instructions:
+            prompt = f"""You are an experienced Sales Strategist specializing in IT services and managed service proposals.
+
+{template_instructions}
+
+Context:
+- Client: {context['client']}
+- Current Requirement: {context['requirement']}
+- Current Model: {context['current_model']}
+- Proposed Model: {context['proposed_model']}
+- Details: {context['details']}{financial_insights}"""
+        else:
+            prompt = f"""You are an experienced Sales Strategist specializing in IT services and managed service proposals.
 
 Context:
 - Client: {context['client']}
@@ -1305,6 +1356,46 @@ Remember {context['client']} is a major bank requiring highest service standards
                         if conversation_history:
                             agent_context["conversation_history"] = conversation_history
                         
+                        # CRITICAL FIX: Check state at execution time, not at wrapper creation time
+                        # This ensures we get the previous agent response that was set during sequential execution
+                        print(f"[DEBUG] Checking for previous_agent_response in state for {agent_name_local}")
+                        print(f"[DEBUG] State keys at execution time: {list(state.keys())}")
+                        
+                        # Add previous agent outputs for sequential execution
+                        if "previous_agent_response" in state:
+                            # Convert single response to list format for compatibility
+                            agent_context["previous_outputs"] = [{
+                                "agent": state["previous_agent_response"]["agent"],
+                                "content": state["previous_agent_response"]["response"],
+                                "output": state["previous_agent_response"]["response"]  # For compatibility
+                            }]
+                            print(f"[DEBUG] SUCCESS! Added previous agent response to context for {agent_name_local}")
+                            print(f"[DEBUG] Previous agent: {state['previous_agent_response']['agent']}")
+                            print(f"[DEBUG] Previous response preview: {state['previous_agent_response']['response'][:200]}...")
+                        else:
+                            print(f"[DEBUG] No previous_agent_response found in state for {agent_name_local}")
+                        
+                        # Also check if there are multiple previous outputs stored elsewhere
+                        if "agent_outputs" in state and len(state["agent_outputs"]) > 0:
+                            # Collect all previous agent outputs for this sequential execution
+                            prev_outputs = []
+                            for prev_agent, prev_output in state["agent_outputs"].items():
+                                if prev_agent != agent_name_local and prev_output.get("response"):
+                                    response_content = prev_output["response"]
+                                    # Handle thinking tags in stored outputs
+                                    import re
+                                    if "<think>" in response_content:
+                                        print(f"[DEBUG] Found thinking tags in {prev_agent}'s stored output")
+                                    
+                                    prev_outputs.append({
+                                        "agent": prev_agent,
+                                        "content": response_content,
+                                        "output": response_content
+                                    })
+                            if prev_outputs and "previous_outputs" not in agent_context:
+                                agent_context["previous_outputs"] = prev_outputs
+                                print(f"[DEBUG] Added {len(prev_outputs)} previous agent outputs to context for {agent_name_local}")
+                        
                         print(f"[DEBUG] dynamic_agent_wrapper: About to call execute_agent for {agent_name_local}")
                         event_count = 0
                         async for event in dynamic_system.execute_agent(
@@ -1713,3 +1804,723 @@ Remember {context['client']} is a major bank requiring highest service standards
             "type": "resume_not_implemented",
             "message": "Resume functionality will be implemented in the progress recovery system"
         }
+    
+    async def execute_single_agent(
+        self,
+        agent_name: str,
+        query: str,
+        conversation_history: Optional[List[Dict]] = None,
+        previous_outputs: Optional[List[Dict]] = None,
+        agent_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Execute a single agent and return its output"""
+        import time
+        start_time = time.time()
+        
+        # Initialize state for single agent execution
+        state = AgentState(
+            query=query,
+            conversation_id=self.conversation_id,
+            messages=[HumanMessage(content=query)],
+            routing_decision={"agents": [agent_name]},
+            agent_outputs={},
+            tools_used=[],
+            documents_retrieved=[],
+            final_response="",
+            metadata={
+                "start_time": datetime.now().isoformat(),
+                "mode": "single_agent",
+                "previous_outputs": previous_outputs or [],
+                "pipeline_goal": agent_config.get("pipeline_goal", "") if agent_config else "",
+                "pipeline_agent_config": agent_config  # Pass the full pipeline config
+            },
+            error=None,
+            agent_messages=[],
+            pending_requests={},
+            agent_conversations=[],
+            execution_pattern="single",
+            agent_dependencies={},
+            execution_order=[agent_name],
+            agent_metrics={}
+        )
+        
+        # Add conversation history if provided
+        if conversation_history:
+            for msg in conversation_history:
+                if msg.get("role") == "user":
+                    state["messages"].append(HumanMessage(content=msg["content"]))
+                elif msg.get("role") == "assistant":
+                    state["messages"].append(AIMessage(content=msg["content"]))
+        
+        # Execute the agent
+        try:
+            # Get agent function
+            agent_func = self._get_agent_function(agent_name)
+            if not agent_func:
+                raise ValueError(f"Agent {agent_name} not found")
+            
+            # Execute agent
+            if asyncio.iscoroutinefunction(agent_func):
+                result = await agent_func(state)
+            else:
+                result = agent_func(state)
+            
+            # Handle streaming vs dict response
+            if hasattr(result, '__aiter__'):
+                # Collect streaming response
+                content = ""
+                reasoning = ""
+                async for chunk in result:
+                    if isinstance(chunk, dict):
+                        if "content" in chunk:
+                            content += chunk["content"]
+                        if "reasoning" in chunk:
+                            reasoning = chunk.get("reasoning", reasoning)
+                result = {"response": content, "reasoning": reasoning}
+            
+            execution_time = time.time() - start_time
+            
+            # Debug logging
+            print(f"[DEBUG] execute_single_agent {agent_name} - result type: {type(result)}")
+            print(f"[DEBUG] execute_single_agent {agent_name} - result keys: {result.keys() if isinstance(result, dict) else 'not a dict'}")
+            print(f"[DEBUG] execute_single_agent {agent_name} - response length: {len(result.get('response', '')) if isinstance(result, dict) else 0}")
+            print(f"[DEBUG] execute_single_agent {agent_name} - tools_used from result: {result.get('tools_used', []) if isinstance(result, dict) else []}")
+            print(f"[DEBUG] execute_single_agent {agent_name} - tools_used from state: {state.get('tools_used', [])}")
+            
+            return_value = {
+                "agent": agent_name,
+                "content": result.get("response", ""),
+                "reasoning": result.get("reasoning", ""),
+                "execution_time": execution_time,
+                "documents": result.get("documents", []),
+                "tools_used": result.get("tools_used", state.get("tools_used", []))
+            }
+            
+            print(f"[DEBUG] execute_single_agent {agent_name} returning content length: {len(return_value['content'])}")
+            return return_value
+            
+        except Exception as e:
+            logger.error(f"Error executing agent {agent_name}: {str(e)}")
+            return {
+                "agent": agent_name,
+                "content": f"Error: {str(e)}",
+                "reasoning": "Agent execution failed",
+                "execution_time": time.time() - start_time,
+                "error": str(e)
+            }
+    
+    async def execute_agents(
+        self,
+        query: str,
+        selected_agents: List[str],
+        conversation_history: Optional[List[Dict]] = None,
+        execution_pattern: str = "parallel",
+        agent_configs: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """Execute multiple agents with specified pattern"""
+        # Collect all outputs
+        all_outputs = []
+        
+        async for event in self.stream_events(
+            query=query,
+            selected_agents=selected_agents,
+            conversation_history=conversation_history
+        ):
+            # Process streaming events
+            if event.get("type") == "agent_complete":
+                all_outputs.append({
+                    "agent": event["agent"],
+                    "output": event.get("content", ""),
+                    "reasoning": event.get("reasoning", ""),
+                    "execution_time": event.get("execution_time", 0)
+                })
+            elif event.get("type") == "synthesis_complete":
+                final_output = event.get("content", "")
+        
+        return {
+            "agent_outputs": all_outputs,
+            "final_output": final_output if 'final_output' in locals() else "",
+            "execution_pattern": execution_pattern
+        }
+    
+    async def execute_hierarchical(
+        self,
+        query: str,
+        lead_agent: str,
+        subordinate_agents: List[str],
+        conversation_history: Optional[List[Dict]] = None,
+        lead_config: Optional[Dict[str, Any]] = None,
+        subordinate_configs: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """Execute agents in hierarchical pattern with lead agent coordinating"""
+        # First execute the lead agent
+        lead_result = await self.execute_single_agent(
+            agent_name=lead_agent,
+            query=query,
+            conversation_history=conversation_history,
+            agent_config=lead_config
+        )
+        
+        # Lead agent can delegate to subordinates
+        all_outputs = [lead_result]
+        
+        # Execute subordinate agents based on lead's decision
+        if subordinate_agents:
+            # For simplicity, execute all subordinates with lead's output as context
+            subordinate_query = f"Based on the lead agent's analysis: {lead_result['content']}\n\nOriginal query: {query}"
+            
+            for sub_agent in subordinate_agents:
+                sub_config = subordinate_configs.get(sub_agent, {}) if subordinate_configs else {}
+                sub_result = await self.execute_single_agent(
+                    agent_name=sub_agent,
+                    query=subordinate_query,
+                    conversation_history=conversation_history,
+                    previous_outputs=[lead_result],
+                    agent_config=sub_config
+                )
+                all_outputs.append(sub_result)
+        
+        # Synthesize hierarchical results
+        final_output = f"Lead Agent ({lead_agent}): {lead_result['content']}\n\n"
+        
+        if len(all_outputs) > 1:
+            final_output += "Subordinate Agent Insights:\n"
+            for output in all_outputs[1:]:
+                final_output += f"\n{output['agent']}: {output['content']}\n"
+        
+        return {
+            "agent_outputs": all_outputs,
+            "final_output": final_output,
+            "hierarchy": {
+                "lead": lead_agent,
+                "subordinates": subordinate_agents
+            }
+        }
+    
+    def _get_agent_function(self, agent_name: str):
+        """Get the agent function by name"""
+        # Map agent names to their functions
+        agent_functions = {
+            "document_researcher": self._document_researcher_agent,
+            "tool_executor": self._tool_executor_agent,
+            "context_manager": self._context_manager_agent,
+            "sales_strategist": self._sales_strategist_agent,
+            "technical_architect": self._technical_architect_agent,
+            "financial_analyst": self._financial_analyst_agent,
+            "service_delivery_manager": self._service_delivery_manager_agent,
+        }
+        
+        # Check predefined agents first
+        if agent_name in agent_functions:
+            return agent_functions[agent_name]
+        
+        # For dynamic agents, create a generic agent function
+        from app.core.langgraph_agents_cache import get_agent_by_name
+        agent_info = get_agent_by_name(agent_name)
+        
+        if agent_info:
+            # Return an async lambda that creates a dynamic agent
+            async def dynamic_agent_wrapper(state):
+                return await self._dynamic_agent(agent_name, agent_info, state)
+            return dynamic_agent_wrapper
+        
+        return None
+    
+    async def _execute_mcp_tool(self, tool_name: str, params: Dict[str, Any], agent_name: str) -> str:
+        """Execute actual MCP tool"""
+        try:
+            from app.core.mcp_tools_cache import get_enabled_mcp_tools
+            from app.core.oauth_token_manager import OAuthTokenManager
+            import json
+            
+            logger.info(f"Executing MCP tool '{tool_name}' for agent '{agent_name}' with params: {params}")
+            
+            # Get tool info
+            enabled_tools = get_enabled_mcp_tools()
+            tool_info = enabled_tools.get(tool_name)
+            
+            if not tool_info:
+                return f"Error: Tool '{tool_name}' not found in enabled tools"
+            
+            # Check if this is a Gmail tool and inject OAuth credentials
+            if "gmail" in tool_name.lower() or "email" in tool_name.lower():
+                server_id = tool_info.get("server_id")
+                logger.info(f"[OAUTH DEBUG] Tool '{tool_name}' server_id: {server_id}")
+                
+                if server_id:
+                    oauth_token_manager = OAuthTokenManager()
+                    oauth_creds = oauth_token_manager.get_valid_token(
+                        server_id=server_id,
+                        service_name="gmail"
+                    )
+                    
+                    if oauth_creds and "google_access_token" not in params:
+                        # Debug: Check what we have
+                        logger.info(f"[OAUTH DEBUG] OAuth credentials found for {tool_name}")
+                        logger.debug(f"[OAUTH DEBUG] Token expires at: {oauth_creds.get('expires_at', 'Unknown')}")
+                        logger.debug(f"[OAUTH DEBUG] Has access_token: {bool(oauth_creds.get('access_token'))}")
+                        logger.debug(f"[OAUTH DEBUG] Has refresh_token: {bool(oauth_creds.get('refresh_token'))}")
+                        
+                        params.update({
+                            "google_access_token": oauth_creds.get("access_token", ""),
+                            "google_refresh_token": oauth_creds.get("refresh_token", ""),
+                            "google_client_id": oauth_creds.get("client_id", ""),
+                            "google_client_secret": oauth_creds.get("client_secret", "")
+                        })
+                        logger.info(f"[OAUTH DEBUG] Successfully injected OAuth credentials for {tool_name}")
+                    else:
+                        logger.warning(f"[OAUTH DEBUG] No OAuth credentials found for {tool_name} - server_id: {server_id}")
+                        if not oauth_creds:
+                            logger.warning(f"[OAUTH DEBUG] OAuth token manager returned None")
+                        elif "google_access_token" in params:
+                            logger.warning(f"[OAUTH DEBUG] Params already contain google_access_token")
+                else:
+                    logger.warning(f"[OAUTH DEBUG] No server_id found for tool {tool_name}")
+            
+            # Check if this is a stdio-based tool
+            endpoint = tool_info.get("endpoint", "")
+            if endpoint.startswith("stdio://"):
+                # Use stdio bridge for command-based servers
+                from app.core.db import SessionLocal, MCPServer
+                from app.core.mcp_stdio_bridge import call_mcp_tool_via_stdio
+                
+                db = SessionLocal()
+                try:
+                    server = db.query(MCPServer).filter(MCPServer.id == tool_info["server_id"]).first()
+                    if server and server.config_type == "command":
+                        server_config = {
+                            "command": server.command,
+                            "args": server.args or []
+                        }
+                        
+                        # Call the async function directly since we're already in async context
+                        result = await call_mcp_tool_via_stdio(server_config, tool_name, params)
+                        
+                        # Handle the response
+                        if isinstance(result, dict):
+                            # Check for errors in different response formats
+                            error_msg = None
+                            
+                            # Check direct error field
+                            if result.get("error"):
+                                error_msg = result['error']
+                            
+                            # Check content for error messages (MCP protocol format)
+                            elif result.get("content"):
+                                content = result["content"]
+                                if isinstance(content, list) and len(content) > 0:
+                                    first_content = content[0]
+                                    if isinstance(first_content, dict) and first_content.get("text"):
+                                        text = first_content["text"]
+                                        # Check if this is an error message
+                                        if any(err_keyword in text.lower() for err_keyword in ["error", "failed", "no access", "invalid"]):
+                                            error_msg = text
+                            
+                            if error_msg:
+                                logger.error(f"Tool execution error: {error_msg}")
+                                
+                                # If it's an authentication error, provide helpful guidance
+                                if any(auth_keyword in error_msg.lower() for auth_keyword in ["no access", "refresh token", "authentication", "unauthorized"]):
+                                    return (
+                                        f"Authentication Error: Gmail access is not properly configured. "
+                                        f"Please ensure Gmail OAuth is set up in the MCP Servers settings. "
+                                        f"Error details: {error_msg}"
+                                    )
+                                
+                                return f"Error: {error_msg}"
+                            else:
+                                # Success - return the result
+                                return json.dumps(result, indent=2)
+                        else:
+                            return str(result)
+                finally:
+                    db.close()
+            else:
+                # For HTTP-based tools, make the request
+                # This would need to be implemented based on your HTTP tool execution logic
+                return f"HTTP tool execution not implemented for {tool_name}"
+                
+        except Exception as e:
+            logger.error(f"Failed to execute MCP tool {tool_name}: {str(e)}", exc_info=True)
+            return f"Tool execution failed: {str(e)}"
+    
+    async def _dynamic_agent(self, agent_name: str, agent_info: Dict[str, Any], state: AgentState):
+        """Execute a dynamic agent from database"""
+        # First check if there's a pipeline-specific configuration in state metadata
+        pipeline_agent_config = state.get("metadata", {}).get("pipeline_agent_config", {})
+        
+        # If pipeline has specific configuration, use it
+        if pipeline_agent_config and pipeline_agent_config.get("tools"):
+            tools = pipeline_agent_config.get("tools", [])
+            system_prompt = pipeline_agent_config.get("system_prompt", "")
+            logger.info(f"[PIPELINE] Using pipeline-specific config for {agent_name} with tools: {tools}")
+        else:
+            # Otherwise, fetch from langgraph_agents as fallback
+            from app.core.langgraph_agents_cache import get_agent_by_name
+            
+            fresh_agent_info = get_agent_by_name(agent_name)
+            if fresh_agent_info:
+                system_prompt = fresh_agent_info.get("system_prompt", "")
+                tools = fresh_agent_info.get("tools", [])
+                logger.info(f"[LANGGRAPH] Using langgraph config for {agent_name} with tools: {tools}")
+            else:
+                # Final fallback to provided agent_info
+                system_prompt = agent_info.get("system_prompt", "")
+                tools = agent_info.get("tools", [])
+                logger.warning(f"[FALLBACK] Could not load config for {agent_name}, using provided agent_info")
+        
+        # Check if there's a pipeline goal in metadata
+        pipeline_goal = state.get("metadata", {}).get("pipeline_goal", "")
+        
+        # Check if this is a sequential agent with previous outputs
+        previous_outputs = state.get("metadata", {}).get("previous_outputs", [])
+        has_previous_context = len(previous_outputs) > 0
+        
+        # For direct execution without query, use pipeline goal or default instruction
+        if not state['query'] and not has_previous_context:
+            # First agent in pipeline with no query - use pipeline goal or system-based instruction
+            query = pipeline_goal or "Use your available tools to complete your designated task based on your role and the pipeline objective."
+        else:
+            query = state['query'] or pipeline_goal or "Execute your designated task based on your role and available tools."
+        
+        # If this is a sequential agent with previous context but no explicit query,
+        # create a more specific instruction
+        if has_previous_context and not state['query']:
+            # Extract the last agent's output as the primary context
+            last_output = previous_outputs[-1]
+            last_content = last_output.get('content') or last_output.get('output', '')
+            
+            # Create a more specific query based on the agent's role and tools
+            agent_role = agent_info.get('role', 'an agent')
+            
+            # Create a context-aware query based on agent's role and previous output
+            query = f"Based on the input from {last_output['agent']}, continue the workflow by performing your role as {agent_role}."
+        
+        # Prepare prompt with system instructions
+        prompt = f"{system_prompt}"
+        
+        # Add pipeline goal if available
+        if pipeline_goal and pipeline_goal != query:
+            prompt += f"\n\nOverall Pipeline Goal: {pipeline_goal}\nEnsure your response contributes to achieving this goal."
+        
+        # Add context from previous agents if available
+        if previous_outputs:
+            prompt += "\n\nContext from previous agents:"
+            for output in previous_outputs:
+                # Handle both 'content' and 'output' keys for compatibility
+                content = output.get('content') or output.get('output', '')
+                agent_name = output.get('agent', 'Previous agent')
+                # Show more context for better understanding
+                prompt += f"\n\n{agent_name}:\n{content}"
+                
+                # Also include tool results if available
+                if 'tools_used' in output and output['tools_used']:
+                    prompt += f"\n\n**Tools used by {agent_name}:**"
+                    for tool_use in output['tools_used']:
+                        if isinstance(tool_use, dict):
+                            tool_name = tool_use.get('tool', 'Unknown tool')
+                            tool_result = tool_use.get('result', '')
+                            prompt += f"\n- {tool_name}: {tool_result[:500]}..."  # Limit length
+            
+            # Add explicit instruction for sequential agents
+            prompt += "\n\n**Your Task**: Based on the above context from previous agents, continue the workflow by performing your designated role. Provide a comprehensive response that builds upon the previous work."
+        
+        # Add available tools
+        if tools:
+            # Get tool details from MCP system
+            from app.core.mcp_tools_cache import get_enabled_mcp_tools
+            import json
+            
+            mcp_tools = get_enabled_mcp_tools()
+            
+            prompt += f"\n\nYou have access to the following tools: {', '.join(tools)}"
+            
+            # Debug: Log what tools we're providing
+            logger.info(f"Agent {agent_name} has tools: {tools}")
+            
+            # Add tool descriptions and parameters from MCP
+            prompt += "\n\nTool specifications:"
+            for tool_name in tools:
+                if tool_name in mcp_tools:
+                    tool_info = mcp_tools[tool_name]
+                    prompt += f"\n- {tool_name}: {tool_info.get('description', 'No description available')}"
+                    if tool_info.get('parameters'):
+                        prompt += f"\n  Parameters: {json.dumps(tool_info['parameters'], indent=2)}"
+                else:
+                    logger.warning(f"Tool {tool_name} not found in MCP tools for agent {agent_name}")
+            
+            prompt += "\n\nTo use a tool, respond with a JSON object in this format:"
+            prompt += '\n{"tool": "tool_name", "parameters": {...}}'
+            
+            # Add a specific example if the agent has any tools
+            if tools and tools[0] in mcp_tools:
+                example_tool = tools[0]
+                example_info = mcp_tools[example_tool]
+                prompt += f"\n\nExample for {example_tool}:"
+                example_params = {}
+                if example_info.get('parameters'):
+                    # Create example values for each parameter based on schema
+                    for param_name, param_schema in example_info['parameters'].get('properties', {}).items():
+                        param_type = param_schema.get('type', 'string')
+                        
+                        if param_name == "query":
+                            example_params[param_name] = "subject:ENQUIRY"
+                        elif param_name == "maxResults" or param_name == "count":
+                            example_params[param_name] = 10
+                        elif param_name == "to":
+                            # Check the schema to determine if it's an array or string
+                            if param_type == "array":
+                                example_params[param_name] = ["recipient@email.com"]
+                            else:
+                                example_params[param_name] = "recipient@email.com"
+                        elif param_name == "subject":
+                            example_params[param_name] = "Re: Your inquiry"
+                        elif param_name == "body":
+                            example_params[param_name] = "Dear Customer..."
+                        elif param_name in ["cc", "bcc"] and param_type == "array":
+                            example_params[param_name] = ["cc@email.com"]
+                        elif param_type == "array":
+                            example_params[param_name] = ["example_value"]
+                        elif param_type == "number" or param_type == "integer":
+                            example_params[param_name] = 10
+                        elif param_type == "boolean":
+                            example_params[param_name] = True
+                        else:
+                            example_params[param_name] = f"<{param_name} value>"
+                
+                example_json = f'{{"tool": "{example_tool}", "parameters": {json.dumps(example_params)}}}'
+                logger.info(f"Generated example for {agent_name}: {example_json}")
+                prompt += f'\n{example_json}'
+            
+            prompt += "\n\n**CRITICAL**: You MUST use these tools by including the JSON format in your response. Do not just describe what you would do - actually include the tool call JSON to execute the tools."
+            
+            if has_previous_context:
+                prompt += "\n\nBased on the context from previous agents and your role, use your tools to continue the workflow and complete your assigned task."
+            else:
+                prompt += "\n\nBased on your role and the context, use your tools to complete the assigned task."
+        
+        # Add the task/query with clear formatting
+        if has_previous_context and not state['query']:
+            prompt += f"\n\n**Specific Instructions**: {query}"
+            prompt += "\n\n**Expected Response**: Execute the necessary tools first (using the JSON format specified above), then provide your analysis and response based on the results."
+        else:
+            prompt += f"\n\nTask: {query}"
+            if tools:
+                prompt += "\n\n**Expected Response**: Execute the necessary tools first (using the JSON format specified above), then provide your analysis based on the results."
+        
+        # Debug: Show the full prompt for second agent
+        if "2" in agent_name or len(state.get("metadata", {}).get("previous_outputs", [])) > 0:
+            print(f"[DEBUG] Full prompt for {agent_name} (length={len(prompt)}):")
+            print(f"[DEBUG] First 500 chars: {prompt[:500]}...")
+            if len(prompt) > 1000:
+                print(f"[DEBUG] Last 500 chars: ...{prompt[-500:]}")
+        
+        # Call LLM with appropriate configuration
+        response = ""
+        print(f"[DEBUG] Starting to collect response for {agent_name}")
+        event_count = 0
+        # Use temperature and timeout from pipeline agent config if available
+        # Otherwise, use defaults based on context
+        llm_temperature = pipeline_agent_config.get("temperature", 0.8 if has_previous_context else 0.7)
+        llm_timeout = pipeline_agent_config.get("timeout", 60 if has_previous_context else 30)
+        async for event in self._call_llm_stream(prompt, agent_name, temperature=llm_temperature, timeout=llm_timeout, agent_config=pipeline_agent_config):
+            event_count += 1
+            if event.get("type") == "agent_token":
+                # Accumulate tokens
+                token = event.get("token", "")
+                response += token
+            elif event.get("type") == "agent_complete":
+                # Use the final content if available
+                if event.get("content"):
+                    response = event.get("content", "")
+                    print(f"[DEBUG] Got final content for {agent_name}: length={len(response)}")
+        
+        print(f"[DEBUG] Collected {event_count} events for {agent_name}, final response length: {len(response)}")
+        
+        # Check if response contains tool calls
+        tool_results = []
+        if tools and response.strip():
+            # Try to parse tool calls from response
+            import json
+            import re
+            
+            # Look for JSON tool calls in the response with more flexible pattern
+            json_patterns = [
+                r'\{[^}]*"tool"[^}]*\}',  # Standard format
+                r'\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{[^}]*\}\s*\}',  # With nested parameters
+                r'\{[^{}]*"tool"[^{}]*"parameters"[^{}]*\{[^}]*\}[^}]*\}'  # More complex nested
+            ]
+            
+            matches = []
+            for pattern in json_patterns:
+                found = re.findall(pattern, response, re.DOTALL | re.MULTILINE)
+                matches.extend(found)
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_matches = []
+            for match in matches:
+                if match not in seen:
+                    seen.add(match)
+                    unique_matches.append(match)
+            matches = unique_matches
+            
+            print(f"[DEBUG] Found {len(matches)} potential tool calls in response")
+            
+            for match in matches:
+                try:
+                    tool_call = json.loads(match)
+                    if "tool" in tool_call:
+                        tool_name = tool_call["tool"]
+                        tool_params = tool_call.get("parameters", {})
+                        
+                        # Log tool execution attempt
+                        logger.info(f"Agent {agent_name} attempting to use tool: {tool_name}")
+                        
+                        # Execute actual tool (if available) or simulate
+                        tool_result = await self._execute_mcp_tool(tool_name, tool_params, agent_name)
+                        
+                        # Debug: Log tool result for email tools
+                        if tool_name in ['search_emails', 'get_emails', 'read_email', 'send_email']:
+                            logger.info(f"[TOOL RESULT DEBUG] {tool_name} returned: {tool_result[:500]}...")
+                        
+                        tool_results.append({
+                            "tool": tool_name,
+                            "parameters": tool_params,
+                            "result": tool_result
+                        })
+                        
+                        # Add to state's tools_used
+                        state["tools_used"].append({
+                            "agent": agent_name,
+                            "tool": tool_name,
+                            "parameters": tool_params
+                        })
+                except json.JSONDecodeError:
+                    continue
+        
+        
+        # If tools were called, process the results
+        if tool_results:
+            # Build a context-aware response based on tool results
+            tool_context = "\n\nBased on the tool execution results:\n"
+            for result in tool_results:
+                tool_context += f"\n{result['result']}\n"
+            
+            # If the response is just a tool call, generate proper content
+            if len(response) < 500 and '"tool"' in response:
+                # Re-prompt the agent to generate actual content based on tool results
+                follow_up_prompt = f"{prompt}\n\n**Tool Execution Results**:{tool_context}\n\n**Now provide your complete response**: Based on these tool results, provide a comprehensive response that fulfills your role."
+                
+                # Special handling for email-related agents
+                if "email" in agent_name.lower() or "customer" in agent_name.lower():
+                    # Parse tool results to extract email content
+                    try:
+                        for result in tool_results:
+                            if result['tool'] in ['search_emails', 'get_emails', 'read_email']:
+                                # Gmail MCP returns search results directly as a string
+                                result_text = str(result['result'])
+                                
+                                # Extract email content from the text
+                                if any(keyword in result_text for keyword in ["Subject:", "From:", "subject:", "from:", "To:", "to:", "ID:"]):
+                                    follow_up_prompt += "\n\n**Email Content to Analyze**:\n"
+                                    follow_up_prompt += result_text
+                                    
+                                    # Try to extract specific fields
+                                    import re
+                                    
+                                    # Extract email ID first - critical for read_email
+                                    id_match = re.search(r'ID:\s*([a-f0-9]+)', result_text)
+                                    email_id = None
+                                    if id_match:
+                                        email_id = id_match.group(1).strip()
+                                        follow_up_prompt += f"\n**Email ID**: {email_id}"
+                                    
+                                    # Extract sender
+                                    sender_match = re.search(r'(?:From|from):\s*([^\n]+)', result_text)
+                                    if sender_match:
+                                        follow_up_prompt += f"\n**Sender**: {sender_match.group(1).strip()}"
+                                    
+                                    # Extract subject
+                                    subject_match = re.search(r'(?:Subject|subject|ENQUIRY):\s*([^\n]+)', result_text)
+                                    if subject_match:
+                                        follow_up_prompt += f"\n**Subject**: {subject_match.group(1).strip()}"
+                                    
+                                    # If we have an email ID but no body content yet, suggest using read_email
+                                    if email_id and result['tool'] == 'search_emails':
+                                        follow_up_prompt += f"\n\n**Important**: The search found an email with ID '{email_id}'. To read the full email content, use the read_email tool with this exact messageId."
+                                        follow_up_prompt += f'\n\nExample: {{"tool": "read_email", "parameters": {{"messageId": "{email_id}"}}}}'
+                                    
+                                    # Extract body or snippet if available
+                                    body_match = re.search(r'(?:Body|body|Snippet|snippet):\s*(.+)', result_text, re.DOTALL)
+                                    if body_match:
+                                        body_content = body_match.group(1).strip()
+                                        follow_up_prompt += f"\n**Message Content**: {body_content[:500]}..."  # Limit length
+                                        
+                                        # Look for specific questions or topics
+                                        if "agentic AI" in body_content.lower():
+                                            follow_up_prompt += "\n\n**Customer's Question**: The customer is asking about 'agentic AI' - please provide a comprehensive explanation of what agentic AI is, how it works, and its benefits."
+                                        elif "?" in body_content:
+                                            # Extract questions
+                                            questions = re.findall(r'([^.!?]*\?)', body_content)
+                                            if questions:
+                                                follow_up_prompt += f"\n\n**Customer's Questions**: {' '.join(questions[:3])}"
+                                    
+                                    # If we found email content, add clear instructions
+                                    if sender_match or subject_match or body_match:
+                                        follow_up_prompt += "\n\n**Your Task**: Compose a professional email response that:"
+                                        follow_up_prompt += "\n1. Addresses the customer by name if available"
+                                        follow_up_prompt += "\n2. References their original email subject"
+                                        follow_up_prompt += "\n3. Directly answers their question(s) or addresses their concern(s)"
+                                        follow_up_prompt += "\n4. Provides helpful and accurate information"
+                                        follow_up_prompt += "\n5. Ends with an appropriate closing and offer for further assistance"
+                                    else:
+                                        follow_up_prompt += "\n\n**Your Task**: First use read_email to get the full content if you have an email ID, then compose an appropriate response."
+                                elif "No emails found" in result_text or "no results" in result_text.lower():
+                                    follow_up_prompt += "\n\n**Note**: No emails were found matching the search criteria. Consider adjusting your search parameters or checking if the inbox is empty."
+                                else:
+                                    # Fallback - just include the raw result
+                                    follow_up_prompt += f"\n\n**Search Results**:\n{result_text[:1000]}..."
+                                    follow_up_prompt += "\n\n**Your Task**: Analyze the search results and take appropriate action based on your role."
+                    except Exception as e:
+                        logger.warning(f"Error parsing email results: {e}")
+                        pass  # If parsing fails, continue with standard processing
+                
+                follow_up_prompt += " Include analysis, recommendations, and any draft content as needed."
+                
+                print(f"[DEBUG] Agent {agent_name} only returned tool call, requesting full response...")
+                
+                # Get actual content response
+                follow_up_response = ""
+                async for event in self._call_llm_stream(follow_up_prompt, agent_name, temperature=0.8, timeout=30, agent_config=pipeline_agent_config):
+                    if event.get("type") == "agent_token":
+                        follow_up_response += event.get("token", "")
+                    elif event.get("type") == "agent_complete":
+                        if event.get("content"):
+                            follow_up_response = event.get("content", "")
+                
+                response = follow_up_response
+            else:
+                # Append tool results to existing response
+                response += tool_context
+        
+        # Debug logging
+        print(f"[DEBUG] Dynamic agent {agent_name} generated response of length: {len(response)}")
+        if len(response) > 0:
+            print(f"[DEBUG] Response preview: {response[:200]}...")
+        
+        # Include tool results in the output for context passing
+        output = {
+            "response": response,
+            "reasoning": f"Dynamic agent {agent_name} processed task with {len(tool_results)} tool calls",
+            "tools_used": tool_results
+        }
+        
+        # Store tool results in state for next agent
+        if tool_results:
+            state["agent_outputs"][agent_name] = {
+                "response": response,
+                "tools_used": tool_results
+            }
+        
+        return output
