@@ -50,6 +50,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             }
         },
         {
+            name: "find_email",
+            description: "Advanced email search with full email context including from, to, cc, subject, and body",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    sender: { type: "string", description: "Filter by sender email address" },
+                    subject: { type: "string", description: "Filter by subject text (supports partial matches)" },
+                    to: { type: "string", description: "Filter by recipient email address" },
+                    cc: { type: "string", description: "Filter by CC email address" },
+                    body: { type: "string", description: "Filter by email body content" },
+                    hasAttachment: { type: "boolean", description: "Filter by presence of attachments" },
+                    isUnread: { type: "boolean", description: "Filter by read/unread status" },
+                    labelIds: { type: "array", items: { type: "string" }, description: "Filter by specific label IDs" },
+                    dateAfter: { type: "string", description: "Filter emails after this date (YYYY/MM/DD or YYYY-MM-DD format)" },
+                    dateBefore: { type: "string", description: "Filter emails before this date (YYYY/MM/DD or YYYY-MM-DD format)" },
+                    maxResults: { type: "number", description: "Maximum number of results to return (default: 10)" }
+                },
+                required: []
+            }
+        },
+        {
             name: "read_email",
             description: "Read a specific email by its message ID",
             inputSchema: {
@@ -322,6 +343,173 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     text: emailDetails.length > 0 
                         ? `Latest ${emailDetails.length} emails:\n\n${formattedEmails}`
                         : 'No emails found.'
+                }]
+            };
+        }
+        
+        if (name === "find_email") {
+            // Build Gmail search query from parameters
+            const queryParts = [];
+            
+            if (args.sender) {
+                queryParts.push(`from:${args.sender}`);
+            }
+            
+            if (args.subject) {
+                queryParts.push(`subject:${args.subject}`);
+            }
+            
+            if (args.to) {
+                queryParts.push(`to:${args.to}`);
+            }
+            
+            if (args.cc) {
+                queryParts.push(`cc:${args.cc}`);
+            }
+            
+            if (args.body) {
+                queryParts.push(`"${args.body}"`);
+            }
+            
+            if (args.hasAttachment === true) {
+                queryParts.push('has:attachment');
+            } else if (args.hasAttachment === false) {
+                queryParts.push('-has:attachment');
+            }
+            
+            if (args.isUnread === true) {
+                queryParts.push('is:unread');
+            } else if (args.isUnread === false) {
+                queryParts.push('is:read');
+            }
+            
+            if (args.labelIds && args.labelIds.length > 0) {
+                args.labelIds.forEach((labelId) => {
+                    queryParts.push(`label:${labelId}`);
+                });
+            }
+            
+            if (args.dateAfter) {
+                const dateAfter = args.dateAfter.replace(/-/g, '/');
+                queryParts.push(`after:${dateAfter}`);
+            }
+            
+            if (args.dateBefore) {
+                const dateBefore = args.dateBefore.replace(/-/g, '/');
+                queryParts.push(`before:${dateBefore}`);
+            }
+            
+            const query = queryParts.join(' ');
+            
+            if (!query) {
+                return {
+                    content: [{
+                        type: "text",
+                        text: "No search criteria provided. Please specify at least one search parameter."
+                    }]
+                };
+            }
+            
+            // Search for emails using the constructed query
+            const searchResponse = await gmail.users.messages.list({
+                userId: 'me',
+                q: query,
+                maxResults: args.maxResults || 10
+            });
+            
+            const messages = searchResponse.data.messages || [];
+            
+            if (messages.length === 0) {
+                return {
+                    content: [{
+                        type: "text",
+                        text: "No emails found matching the search criteria."
+                    }]
+                };
+            }
+            
+            // Fetch full details for each email
+            const emailDetails = await Promise.all(
+                messages.map(async (msg) => {
+                    const detail = await gmail.users.messages.get({
+                        userId: 'me',
+                        id: msg.id,
+                        format: 'full'
+                    });
+                    
+                    const headers = detail.data.payload?.headers || [];
+                    const subject = headers.find(h => h.name?.toLowerCase() === 'subject')?.value || '';
+                    const from = headers.find(h => h.name?.toLowerCase() === 'from')?.value || '';
+                    const to = headers.find(h => h.name?.toLowerCase() === 'to')?.value || '';
+                    const cc = headers.find(h => h.name?.toLowerCase() === 'cc')?.value || '';
+                    const date = headers.find(h => h.name?.toLowerCase() === 'date')?.value || '';
+                    const threadId = detail.data.threadId || '';
+                    
+                    // Extract email content - simplified version
+                    const extractContent = (payload) => {
+                        if (payload.body?.data) {
+                            return Buffer.from(payload.body.data, 'base64').toString('utf8');
+                        }
+                        if (payload.parts) {
+                            for (const part of payload.parts) {
+                                if (part.mimeType === 'text/plain' && part.body?.data) {
+                                    return Buffer.from(part.body.data, 'base64').toString('utf8');
+                                }
+                            }
+                            // If no plain text, try HTML
+                            for (const part of payload.parts) {
+                                if (part.mimeType === 'text/html' && part.body?.data) {
+                                    return Buffer.from(part.body.data, 'base64').toString('utf8');
+                                }
+                            }
+                        }
+                        return '';
+                    };
+                    
+                    const body = extractContent(detail.data.payload);
+                    
+                    return {
+                        id: msg.id,
+                        threadId,
+                        subject,
+                        from,
+                        to,
+                        cc,
+                        date,
+                        body,
+                        snippet: detail.data.snippet || '',
+                        labels: detail.data.labelIds || [],
+                        isUnread: detail.data.labelIds?.includes('UNREAD') || false
+                    };
+                })
+            );
+            
+            // Format the detailed results
+            const formattedEmails = emailDetails.map((email, index) => {
+                const ccInfo = email.cc ? `\n   CC: ${email.cc}` : '';
+                const labelInfo = email.labels.length > 0 ? `\n   Labels: ${email.labels.join(', ')}` : '';
+                const statusInfo = email.isUnread ? ' [UNREAD]' : '';
+                
+                // Truncate body for display
+                const bodyPreview = email.body.length > 500 
+                    ? email.body.substring(0, 500) + '...\n   [Body truncated - use read_email for full content]'
+                    : email.body;
+                
+                return `${index + 1}. 📧 ${email.subject}${statusInfo}
+   From: ${email.from}
+   To: ${email.to}${ccInfo}
+   Date: ${email.date}${labelInfo}
+   Thread ID: ${email.threadId}
+   Message ID: ${email.id}
+   
+   Body:
+   ${bodyPreview}`;
+            }).join('\n\n' + '='.repeat(80) + '\n\n');
+            
+            return {
+                content: [{
+                    type: "text",
+                    text: `Found ${emailDetails.length} email(s) matching search criteria:\n\n${formattedEmails}`
                 }]
             };
         }

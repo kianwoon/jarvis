@@ -5,6 +5,7 @@ from app.api.v1.endpoints import settings
 from app.api.v1.endpoints import mcp_tools
 from app.api.v1.endpoints import mcp_servers
 from app.api.v1.endpoints import langchain
+from app.api.v1.endpoints import intelligent_chat
 from app.api.v1.endpoints import langgraph_agents
 from app.api.v1.endpoints import collections
 from app.api.v1.endpoints import model_presets
@@ -63,6 +64,13 @@ api_router.include_router(
     langchain.router,
     prefix="/langchain",
     tags=["langchain"]
+)
+
+
+api_router.include_router(
+    intelligent_chat.router,
+    prefix="/chat",
+    tags=["intelligent-chat"]
 )
 
 api_router.include_router(

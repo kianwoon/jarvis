@@ -4,7 +4,7 @@ from app.langchain.service import rag_answer
 from app.langchain.multi_agent_system_simple import MultiAgentSystem
 from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier, QueryType
 from fastapi.responses import StreamingResponse
-import json
+import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import logging
@@ -32,14 +32,14 @@ class RAGResponse(BaseModel):
     conversation_id: Optional[str] = None
 
 @router.post("/rag")
-def rag_endpoint(request: RAGRequest):
+async def rag_endpoint(request: RAGRequest):
     # Use session_id as conversation_id if conversation_id is not provided
     conversation_id = request.conversation_id or request.session_id
     
     # Classify the query unless explicitly skipped
     routing = None
     if not request.skip_classification:
-        routing = query_classifier.get_routing_recommendation(request.question)
+        routing = await query_classifier.get_routing_recommendation(request.question)
         logger.info(f"Query routing: {routing['primary_type']} (confidence: {routing['confidence']:.2f})")
         
         # Handle based on classification (using enhanced classifier types)
@@ -51,8 +51,9 @@ def rag_endpoint(request: RAGRequest):
             # Handle hybrid queries (TOOL_RAG, TOOL_LLM, RAG_LLM, TOOL_RAG_LLM)
             return handle_hybrid_query(request, routing)
         elif primary_type == QueryType.TOOL.value and routing['confidence'] > 0.7:
-            # Route to tool handler
-            return handle_tool_query(request, routing)
+            # Let main rag_answer handle tool queries to maintain streaming integrity
+            # handle_tool_query causes streaming issues due to duplicate tool execution
+            pass  # Fall through to main stream() function
         elif primary_type == QueryType.LLM.value and routing['confidence'] > 0.8:
             # Route to direct LLM only if high confidence
             return handle_direct_llm_query(request, routing)
@@ -61,31 +62,59 @@ def rag_endpoint(request: RAGRequest):
             return handle_multi_agent_query(request, routing)
         # Fall through to RAG for RAG_SEARCH or low confidence cases
     
-    def stream():
+    async def stream():
         try:
             chunk_count = 0
             # Add classification metadata to first chunk if available
             if not request.skip_classification and routing:
-                classification_chunk = json.dumps({
+                classification_chunk = json_module.dumps({
                     "type": "classification",
                     "routing": routing,
                     "handler": "rag"
                 }) + "\n"
                 yield classification_chunk
                 
-            for chunk in rag_answer(
+            print(f"[DEBUG] API endpoint - About to call rag_answer with stream=True")
+            
+            # Map enhanced classifier types to simple optimization types
+            simple_query_type = None
+            if routing:
+                enhanced_type = routing['primary_type']
+                type_mapping = {
+                    "rag": "RAG",
+                    "tool": "TOOLS", 
+                    "llm": "LLM",
+                    "code": "LLM",
+                    "multi_agent": "RAG",
+                    "tool_rag": "TOOLS",
+                    "tool_llm": "TOOLS", 
+                    "rag_llm": "RAG",
+                    "tool_rag_llm": "TOOLS"
+                }
+                simple_query_type = type_mapping.get(enhanced_type, "LLM")
+                print(f"[DEBUG] API endpoint - Mapped '{enhanced_type}' to '{simple_query_type}'")
+            
+            rag_stream = await rag_answer(
                 request.question, 
                 thinking=request.thinking, 
                 stream=True,
                 conversation_id=conversation_id,
                 use_langgraph=request.use_langgraph,
                 collections=request.collections,
-                collection_strategy=request.collection_strategy
-            ):
+                collection_strategy=request.collection_strategy,
+                query_type=simple_query_type
+            )
+            print(f"[DEBUG] API endpoint - Got rag_stream: {type(rag_stream)}")
+            
+            # rag_answer returns async generator
+            async for chunk in rag_stream:
                 try:
                     if chunk:  # Only yield non-empty chunks
                         chunk_count += 1
                         yield chunk
+                        # Add small delay to ensure streaming
+                        import asyncio
+                        await asyncio.sleep(0)
                 except GeneratorExit:
                     # Client disconnected, log and stop gracefully
                     print(f"[INFO] Client disconnected after {chunk_count} chunks")
@@ -94,7 +123,7 @@ def rag_endpoint(request: RAGRequest):
                     print(f"[ERROR] Error yielding chunk {chunk_count}: {chunk_error}")
                     # Try to yield error message, but don't fail the whole stream
                     try:
-                        yield json.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
+                        yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
                     except:
                         break  # If we can't even send error, client is likely gone
         except (ConnectionError, BrokenPipeError) as conn_error:
@@ -105,11 +134,12 @@ def rag_endpoint(request: RAGRequest):
             import traceback
             traceback.print_exc()
             try:
-                yield json.dumps({"error": f"RAG processing failed: {str(e)}"}) + "\n"
+                yield json_module.dumps({"error": f"RAG processing failed: {str(e)}"}) + "\n"
             except:
                 # If we can't send the error, client is likely disconnected
                 print(f"[ERROR] Could not send error response, client likely disconnected")
     
+    print(f"[DEBUG] API endpoint - Returning StreamingResponse")
     return StreamingResponse(stream(), media_type="application/json")
 
 class MultiAgentRequest(BaseModel):
@@ -163,7 +193,7 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                 print(f"[INFO] Multi-agent processing complete ({response_length} chars)")
             
             # Convert to JSON string with newline, same as standard chat
-            yield json.dumps(event, ensure_ascii=False) + "\n"
+            yield json_module.dumps(event, ensure_ascii=False) + "\n"
     
     return StreamingResponse(
         stream_events(),
@@ -189,7 +219,7 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                     chunk_size=request.chunk_size,
                     conversation_history=request.conversation_history
                 ):
-                    yield json.dumps(event, ensure_ascii=False) + "\n"
+                    yield json_module.dumps(event, ensure_ascii=False) + "\n"
             else:
                 # Use in-memory approach for testing
                 async for event in system.stream_large_generation_events(
@@ -198,15 +228,15 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                     chunk_size=request.chunk_size,
                     conversation_history=request.conversation_history
                 ):
-                    yield json.dumps(event, ensure_ascii=False) + "\n"
+                    yield json_module.dumps(event, ensure_ascii=False) + "\n"
                     
         except Exception as e:
             error_event = {
                 "type": "large_generation_error",
                 "error": str(e),
-                "timestamp": json.dumps(datetime.now().isoformat())
+                "timestamp": datetime.now().isoformat()
             }
-            yield json.dumps(error_event, ensure_ascii=False) + "\n"
+            yield json_module.dumps(error_event, ensure_ascii=False) + "\n"
     
     return StreamingResponse(
         stream_events(),
@@ -254,7 +284,7 @@ async def resume_generation(request: dict):
                 session_id=session_id,
                 from_chunk=from_chunk
             ):
-                yield json.dumps(event, ensure_ascii=False) + "\n"
+                yield json_module.dumps(event, ensure_ascii=False) + "\n"
         
         return StreamingResponse(
             stream_resume_events(),
@@ -268,7 +298,7 @@ async def resume_generation(request: dict):
             "session_id": session_id
         }
         return StreamingResponse(
-            iter([json.dumps(error_event, ensure_ascii=False) + "\n"]),
+            iter([json_module.dumps(error_event, ensure_ascii=False) + "\n"]),
             media_type="application/json"
         )
 
@@ -302,49 +332,61 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
     def stream():
         try:
             # Send classification info
-            yield json.dumps({
+            yield json_module.dumps({
                 "type": "classification",
                 "routing": routing,
                 "handler": "tool_handler",
                 "message": "This query requires external tools."
             }) + "\n"
             
-            # Get suggested tools
-            suggested_tools = routing.get("routing", {}).get("suggested_tools", [])
+            # Tool execution will be handled by rag_answer internally
             
-            # For now, provide a response indicating tool functionality
-            yield json.dumps({
+            yield json_module.dumps({
                 "type": "status",
-                "message": f"🔧 Tool search functionality would execute here. Suggested tools: {', '.join(suggested_tools) if suggested_tools else 'web_search'}"
+                "message": f"🔧 Tool execution required. Using dynamic tool selection..."
             }) + "\n"
             
-            # Since we don't have actual tool execution yet, 
-            # fall back to regular LLM response with a note about tools
-            enhanced_question = f"""
-{request.question}
-
-Note: This query would benefit from real-time tool execution (web search, APIs, etc).
-Currently providing a response based on training data. 
-In a full implementation, this would include live web search results.
-"""
-            
-            # Use rag_answer to provide a response
+            # Let rag_answer handle tool execution internally to avoid duplication
+            # This prevents the enhanced question issue that triggers large generation detection
             from app.langchain.service import rag_answer
             
-            for chunk in rag_answer(
-                enhanced_question,
-                thinking=request.thinking,
-                stream=True,
-                conversation_id=conversation_id,
-                use_langgraph=False,
-                collections=request.collections,
-                collection_strategy=request.collection_strategy
-            ):
-                yield chunk
+            try:
+                # Use original question and let rag_answer handle tool execution
+                # The service module already has logic to execute tools when query_type = "TOOLS"
+                for chunk in rag_answer(
+                    request.question,
+                    thinking=request.thinking,
+                    stream=True,
+                    conversation_id=conversation_id,
+                    use_langgraph=False,
+                    collections=request.collections,
+                    collection_strategy=request.collection_strategy
+                ):
+                    yield chunk
+                    
+            except Exception as e:
+                # Fallback to regular RAG if tool execution fails
+                yield json_module.dumps({
+                    "type": "tool_error",
+                    "message": f"Tool execution failed: {str(e)}. Falling back to regular response."
+                }) + "\n"
+                
+                from app.langchain.service import rag_answer
+                
+                for chunk in rag_answer(
+                    request.question,
+                    thinking=request.thinking,
+                    stream=True,
+                    conversation_id=conversation_id,
+                    use_langgraph=False,
+                    collections=request.collections,
+                    collection_strategy=request.collection_strategy
+                ):
+                    yield chunk
                 
         except Exception as e:
             logger.error(f"Tool handler error: {e}")
-            yield json.dumps({"error": f"Tool handling failed: {str(e)}"}) + "\n"
+            yield json_module.dumps({"error": f"Tool handling failed: {str(e)}"}) + "\n"
             
     return StreamingResponse(stream(), media_type="application/json")
 
@@ -355,7 +397,7 @@ def handle_direct_llm_query(request: RAGRequest, routing: Dict):
     def stream():
         try:
             # Send classification info
-            yield json.dumps({
+            yield json_module.dumps({
                 "type": "classification",
                 "routing": routing,
                 "handler": "direct_llm",
@@ -379,7 +421,7 @@ def handle_direct_llm_query(request: RAGRequest, routing: Dict):
                     
         except Exception as e:
             logger.error(f"Direct LLM handler error: {e}")
-            yield json.dumps({"error": f"Direct LLM handling failed: {str(e)}"}) + "\n"
+            yield json_module.dumps({"error": f"Direct LLM handling failed: {str(e)}"}) + "\n"
             
     return StreamingResponse(stream(), media_type="application/json")
 
@@ -390,7 +432,7 @@ def handle_multi_agent_query(request: RAGRequest, routing: Dict):
     def stream():
         try:
             # Send classification info
-            yield json.dumps({
+            yield json_module.dumps({
                 "type": "classification",
                 "routing": routing,
                 "handler": "multi_agent",
@@ -420,7 +462,7 @@ def handle_multi_agent_query(request: RAGRequest, routing: Dict):
                     selected_agents=suggested_agents,
                     max_iterations=10
                 ):
-                    yield json.dumps(event, ensure_ascii=False) + "\n"
+                    yield json_module.dumps(event, ensure_ascii=False) + "\n"
             
             async def async_wrapper():
                 chunks = []
@@ -440,7 +482,7 @@ def handle_multi_agent_query(request: RAGRequest, routing: Dict):
                 
         except Exception as e:
             logger.error(f"Multi-agent handler error: {e}")
-            yield json.dumps({"error": f"Multi-agent handling failed: {str(e)}"}) + "\n"
+            yield json_module.dumps({"error": f"Multi-agent handling failed: {str(e)}"}) + "\n"
             
     return StreamingResponse(stream(), media_type="application/json")
 
@@ -451,7 +493,7 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
     def stream():
         try:
             # Send classification info
-            yield json.dumps({
+            yield json_module.dumps({
                 "type": "classification",
                 "routing": routing,
                 "handler": "hybrid",
@@ -477,7 +519,7 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
             
             # 1. Tool component - Get real-time data
             if "tool" in components:
-                yield json.dumps({
+                yield json_module.dumps({
                     "type": "status",
                     "message": "🔧 Searching for real-time information..."
                 }) + "\n"
@@ -494,14 +536,14 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
                 }
                 results["tool"] = tool_results
                 
-                yield json.dumps({
+                yield json_module.dumps({
                     "type": "tool_result",
                     "data": tool_results
                 }) + "\n"
             
             # 2. RAG component - Search knowledge base
             if "rag" in components:
-                yield json.dumps({
+                yield json_module.dumps({
                     "type": "status",
                     "message": "📚 Searching knowledge base..."
                 }) + "\n"
@@ -536,7 +578,7 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
                 results["rag"] = rag_context
                 
                 if rag_context:
-                    yield json.dumps({
+                    yield json_module.dumps({
                         "type": "rag_result",
                         "data": {
                             "context_found": True,
@@ -545,7 +587,7 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
                     }) + "\n"
             
             # 3. Synthesize with LLM
-            yield json.dumps({
+            yield json_module.dumps({
                 "type": "status",
                 "message": "🤖 Synthesizing comprehensive answer..."
             }) + "\n"
@@ -570,7 +612,7 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
                 
         except Exception as e:
             logger.error(f"Hybrid handler error: {e}")
-            yield json.dumps({"error": f"Hybrid handling failed: {str(e)}"}) + "\n"
+            yield json_module.dumps({"error": f"Hybrid handling failed: {str(e)}"}) + "\n"
     
     return StreamingResponse(stream(), media_type="application/json")
 

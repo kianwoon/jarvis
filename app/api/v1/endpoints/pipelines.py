@@ -61,6 +61,7 @@ class PipelineExecuteRequest(BaseModel):
     trigger_type: Optional[str] = "manual"
     additional_params: Optional[Dict[str, Any]] = Field(default_factory=dict)
     direct_execution: Optional[bool] = False
+    debug_mode: Optional[bool] = Field(default=False, description="Enable detailed I/O logging for debugging")
 
 
 class ScheduleConfig(BaseModel):
@@ -143,19 +144,24 @@ async def get_pipeline(pipeline_id: int):
             langgraph_agents = get_langgraph_agents()
             langgraph_agents_map = {agent['name']: agent for agent in langgraph_agents.values()}
             
-            # Enrich pipeline agents with full details
+            # Enrich pipeline agents with langgraph ID only - DO NOT OVERWRITE CONFIG
             for agent in pipeline.get('agents', []):
                 agent_name = agent.get('agent_name', '')
                 if agent_name in langgraph_agents_map:
                     langgraph_agent = langgraph_agents_map[agent_name]
-                    # Merge langgraph agent details into pipeline agent config
-                    agent['config'] = agent.get('config', {})
-                    agent['config']['role'] = langgraph_agent.get('role', agent['config'].get('role', 'Agent'))
-                    agent['config']['description'] = langgraph_agent.get('description', agent['config'].get('description', ''))
-                    agent['config']['system_prompt'] = langgraph_agent.get('system_prompt', agent['config'].get('system_prompt', ''))
-                    agent['config']['tools'] = langgraph_agent.get('tools', agent['config'].get('tools', []))
-                    # Also add id from langgraph for reference
+                    # ONLY add the langgraph ID for reference
+                    # DO NOT overwrite any config values from the database!
                     agent['langgraph_agent_id'] = langgraph_agent.get('id')
+                    
+                    # If config is missing certain fields, use langgraph as fallback ONLY
+                    if 'config' not in agent:
+                        agent['config'] = {}
+                    
+                    # Only fill in missing values, never overwrite existing ones
+                    if 'role' not in agent['config'] and not agent['config'].get('role'):
+                        agent['config']['role'] = langgraph_agent.get('role', 'Agent')
+                    if 'description' not in agent['config'] and not agent['config'].get('description'):
+                        agent['config']['description'] = langgraph_agent.get('description', '')
         except Exception as e:
             logger.warning(f"Failed to enrich agents with langgraph details: {str(e)}")
             # Continue without enrichment if it fails
@@ -374,6 +380,7 @@ async def execute_pipeline(
             "query": request.query,
             "conversation_history": request.conversation_history,
             "direct_execution": request.direct_execution,
+            "debug_mode": request.debug_mode,
             **request.additional_params
         }
         

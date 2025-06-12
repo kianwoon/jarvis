@@ -1,5 +1,4 @@
 import json
-from app.core.db import SessionLocal, Settings as SettingsModel
 from app.core.redis_base import RedisCache
 
 EMBEDDING_SETTINGS_KEY = 'embedding_settings_cache'
@@ -23,19 +22,27 @@ def set_embedding_settings(settings_dict):
 
 # Call this after updating settings in DB
 def reload_embedding_settings():
-    db = SessionLocal()
     try:
-        row = db.query(SettingsModel).filter(SettingsModel.category == 'storage').first()
-        if row and 'embedding_model' in row.settings and 'embedding_endpoint' in row.settings:
-            embedding = {
-                "embedding_model": row.settings['embedding_model'],
-                "embedding_endpoint": row.settings['embedding_endpoint']
-            }
-            cache.set(EMBEDDING_SETTINGS_KEY, embedding)
-            return embedding
-        else:
-            default = {"embedding_model": "", "embedding_endpoint": ""}
-            cache.set(EMBEDDING_SETTINGS_KEY, default)
-            return default
-    finally:
-        db.close() 
+        # Lazy import to avoid database connection at startup
+        from app.core.db import SessionLocal, Settings as SettingsModel
+        
+        db = SessionLocal()
+        try:
+            row = db.query(SettingsModel).filter(SettingsModel.category == 'storage').first()
+            if row and 'embedding_model' in row.settings and 'embedding_endpoint' in row.settings:
+                embedding = {
+                    "embedding_model": row.settings['embedding_model'],
+                    "embedding_endpoint": row.settings['embedding_endpoint']
+                }
+                cache.set(EMBEDDING_SETTINGS_KEY, embedding)
+                return embedding
+            else:
+                default = {"embedding_model": "", "embedding_endpoint": ""}
+                cache.set(EMBEDDING_SETTINGS_KEY, default)
+                return default
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"Failed to load embedding settings from database: {e}")
+        # Return default settings on error
+        return {"embedding_model": "", "embedding_endpoint": ""} 

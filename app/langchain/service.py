@@ -8,6 +8,7 @@ from app.core.llm_settings_cache import get_llm_settings
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
+from app.core.collection_registry_cache import get_all_collections
 from app.api.v1.endpoints.document import HTTPEmbeddingFunction
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Milvus
@@ -40,6 +41,84 @@ def get_redis_conversation_client():
     except Exception as e:
         print(f"[DEBUG] Redis client not available for conversations: {e}")
         return None
+
+def build_enhanced_system_prompt(base_prompt: str = None) -> str:
+    """Build system prompt with real MCP tools and RAG collections from Redis cache"""
+    
+    # Get base system prompt from settings if not provided
+    if not base_prompt:
+        llm_settings = get_llm_settings()
+        base_prompt = llm_settings.get('system_prompt', 'You are Jarvis, an AI assistant.')
+    
+    # Get available MCP tools from cache
+    tools_info = []
+    try:
+        mcp_tools = get_enabled_mcp_tools()
+        if mcp_tools:
+            tools_info.append("\n**Available Tools:**")
+            for tool_name, tool_info in mcp_tools.items():
+                # Extract description from manifest if available
+                description = "Available for use"
+                if isinstance(tool_info, dict):
+                    manifest = tool_info.get('manifest', {})
+                    if manifest and 'tools' in manifest:
+                        for tool_def in manifest['tools']:
+                            if tool_def.get('name') == tool_name:
+                                description = tool_def.get('description', description)
+                                break
+                tools_info.append(f"- **{tool_name}**: {description}")
+    except Exception as e:
+        print(f"[DEBUG] Failed to load MCP tools for prompt: {e}")
+    
+    # Get available RAG collections from cache
+    collections_info = []
+    try:
+        collections = get_all_collections()
+        if collections:
+            collections_info.append("\n**Available Knowledge Collections:**")
+            for collection in collections:
+                name = collection.get('collection_name', '')
+                description = collection.get('description', 'No description')
+                collection_type = collection.get('collection_type', 'Unknown')
+                stats = collection.get('statistics', {})
+                doc_count = stats.get('document_count', 0)
+                
+                collections_info.append(
+                    f"- **{name}**: {description} (Type: {collection_type}, Documents: {doc_count})"
+                )
+    except Exception as e:
+        print(f"[DEBUG] Failed to load RAG collections for prompt: {e}")
+    
+    # Build enhanced prompt
+    enhanced_prompt = base_prompt
+    
+    if tools_info:
+        enhanced_prompt += "\n" + "\n".join(tools_info)
+        enhanced_prompt += "\n\nYou can use these tools when needed by including tool calls in your response."
+    
+    if collections_info:
+        enhanced_prompt += "\n" + "\n".join(collections_info)
+        enhanced_prompt += "\n\nYou can search these collections to find relevant information for the user's query."
+    
+    # Add guidance for using tools and collections
+    if tools_info or collections_info:
+        enhanced_prompt += "\n\n**Guidelines:**"
+        enhanced_prompt += "\n- Use tools for real-time data, calculations, or external information"
+        enhanced_prompt += "\n- Search collections for documented knowledge and historical information"
+        enhanced_prompt += "\n- Combine multiple sources when appropriate for comprehensive answers"
+        enhanced_prompt += "\n- Always provide accurate, helpful responses based on available resources"
+        
+    # Add tool calling format instructions
+    if tools_info:
+        enhanced_prompt += "\n\n**Tool Usage Format:**"
+        enhanced_prompt += "\nWhen you need to use a tool, format your tool call as:"
+        enhanced_prompt += "\n<tool>tool_name(parameters)</tool>"
+        enhanced_prompt += "\n\nExamples:"
+        enhanced_prompt += "\n- <tool>get_datetime()</tool>"
+        enhanced_prompt += '\n- <tool>google_search({"query": "latest AI news", "num_results": 5})</tool>'
+        enhanced_prompt += "\n\nIMPORTANT: Actually include these tool calls in your response when needed, don't just describe what you would do."
+    
+    return enhanced_prompt
 
 def get_conversation_history(conversation_id: str) -> str:
     """Get formatted conversation history with Redis support"""
@@ -260,13 +339,163 @@ def get_full_conversation_history(conversation_id: str) -> list:
         print(f"[ERROR] Failed to get full conversation history: {e}")
         return []
 
-def build_prompt(prompt: str, thinking: bool = False, is_internal: bool = False) -> str:
+def build_prompt(prompt: str, thinking: bool = False, is_internal: bool = False, include_tools: bool = True) -> str:
+    """
+    Build a comprehensive prompt with optional tool context injection
+    
+    Args:
+        prompt: Base prompt text
+        thinking: Whether to include thinking instructions
+        is_internal: Whether this is an internal system prompt
+        include_tools: Whether to inject MCP tools context
+    """
+    final_prompt = prompt
+    
+    # Add thinking instructions if requested
     if thinking:
-        return (
+        final_prompt = (
             "Please show your reasoning step by step before giving the final answer.\n"
-            + prompt
+            + final_prompt
         )
-    return prompt
+    
+    # Inject MCP tools context for non-internal prompts (unless explicitly disabled)
+    if include_tools and not is_internal:
+        # Check if this prompt might benefit from tools
+        prompt_lower = prompt.lower()
+        tool_indicators = [
+            'latest', 'recent', 'current', 'search', 'find', 'look up',
+            'what time', 'date', 'email', 'send', 'gmail', 'jira',
+            'online', 'internet', 'web', 'news', 'update'
+        ]
+        
+        # Only inject tools context if the prompt suggests tool usage might be helpful
+        if any(indicator in prompt_lower for indicator in tool_indicators):
+            tools_context = get_mcp_tools_context(include_examples=False)  # Compact version for injection
+            final_prompt = f"""{final_prompt}
+
+{tools_context}
+
+IMPORTANT: If any of the available tools above can help provide a better answer to this question, use them by formatting your response as:
+<tool>tool_name(parameters)</tool>
+
+Only use tools when they would genuinely improve your response with real-time or specific information."""
+    
+    return final_prompt
+
+def unified_llm_synthesis(
+    question: str,
+    query_type: str,
+    rag_context: str = "",
+    tool_context: str = "",
+    conversation_history: str = "",
+    thinking: bool = False
+) -> tuple[str, str, str]:
+    """
+    Unified LLM synthesis function that generates responses regardless of query classification.
+    All queries flow through this function for consistent, high-quality responses.
+    
+    Args:
+        question: Original user question
+        query_type: Classification result (TOOLS, RAG, LLM, etc.)
+        rag_context: Retrieved document context (if any)
+        tool_context: Tool execution results (if any)
+        conversation_history: Previous conversation context
+        thinking: Whether to enable extended thinking
+    
+    Returns:
+        tuple: (prompt, source_label, context_for_metadata)
+    """
+    # Build conversation history prompt
+    history_prompt = f"Previous conversation:\n{conversation_history}\n\n" if conversation_history else ""
+    
+    # Determine source label for metadata
+    sources = []
+    if rag_context:
+        sources.append("RAG")
+    if tool_context or query_type == "TOOLS":
+        sources.append("TOOLS")
+    sources.append("LLM")  # LLM synthesis is always involved
+    source_label = "+".join(sources)
+    
+    # Build context for metadata
+    full_context = ""
+    if rag_context and tool_context:
+        full_context = f"Internal Knowledge:\n{rag_context}\n\nTool Results:\n{tool_context}"
+    elif rag_context:
+        full_context = rag_context
+    elif tool_context:
+        full_context = tool_context
+    
+    # Build unified synthesis prompt with enhanced system context
+    prompt_parts = []
+    
+    # Add enhanced system prompt with MCP tools and RAG collections
+    # This exposes all available resources to the LLM
+    enhanced_system = build_enhanced_system_prompt()
+    prompt_parts.append(enhanced_system)
+    
+    # Add conversation history if available
+    if history_prompt:
+        prompt_parts.append(history_prompt)
+    
+    # Add context sections
+    if rag_context and tool_context:
+        prompt_parts.append(f"""You have access to both internal knowledge base information and real-time tool results. Synthesize these sources with your knowledge to provide a comprehensive, insightful answer.
+
+📚 Internal Knowledge Base:
+{rag_context}
+
+🔧 Current Information (Web Search):
+{tool_context}""")
+    elif rag_context:
+        prompt_parts.append(f"""You have access to relevant information from our internal knowledge base. Synthesize this with your broader knowledge to provide a comprehensive answer.
+
+📚 Internal Knowledge Base:
+{rag_context}""")
+    elif tool_context:
+        # Check if this is from web search fallback
+        if "google_search" in str(tool_context).lower():
+            prompt_parts.append(f"""No relevant documents were found in our internal knowledge base, so I searched the web for current information. Use these search results along with your knowledge to provide a comprehensive answer.
+
+🌐 Current Information (Web Search):
+{tool_context}""")
+        else:
+            prompt_parts.append(f"""You have executed tools to gather current, real-time information. Use these results along with your knowledge to provide a comprehensive answer.
+
+🔧 Tool Results:
+{tool_context}""")
+    else:
+        # Pure LLM - enhance with general instructions
+        if query_type == "TOOLS":
+            prompt_parts.append("The user is asking for information that would benefit from real-time tools, but no tools were executed. Provide the best answer possible with your knowledge and suggest what current information might be helpful.")
+        elif query_type == "RAG":
+            prompt_parts.append("No specific documents were found in our knowledge base for this query. Provide a comprehensive answer based on your general knowledge.")
+    
+    # Add the main question
+    prompt_parts.append(f"""Question: {question}
+
+Instructions:
+- Provide a direct, helpful, and comprehensive answer
+- Synthesize information from all available sources
+- Add context, insights, and broader perspective where valuable
+- Use clear, natural language
+- If using tool results, explain and contextualize the information rather than just presenting raw data
+
+Answer:""")
+    
+    final_prompt = "\n\n".join(prompt_parts)
+    
+    # Apply thinking wrapper if needed (unified handling)
+    if thinking:
+        final_prompt = (
+            "Please show your reasoning step by step before giving the final answer.\n\n"
+            + final_prompt
+        )
+    
+    print(f"[DEBUG] Unified synthesis - Source: {source_label}, Query type: {query_type}")
+    print(f"[DEBUG] Unified synthesis - Has RAG: {bool(rag_context)}, Has tools: {bool(tool_context)}")
+    
+    return final_prompt, source_label, full_context
 
 def calculate_relevance_score(query: str, context: str, corpus_stats=None) -> float:
     """Enhanced relevance score using BM25 with fallback to existing TF-IDF logic"""
@@ -399,6 +628,18 @@ def _calculate_legacy_relevance_score(query: str, context: str) -> float:
 
 def detect_large_output_potential(question: str) -> dict:
     """Detect if question will likely produce large output requiring chunked processing"""
+    # Skip large generation detection for questions that already contain tool results
+    if "Tool Results:" in question or "Please provide a complete answer using the tool results" in question:
+        return {
+            "likely_large": False,
+            "estimated_items": 1,
+            "confidence": 0.0,
+            "score": 0,
+            "max_number": 0,
+            "matched_indicators": [],
+            "pattern_matches": []
+        }
+    
     from app.core.large_generation_utils import get_config_accessor
     config = get_config_accessor()
     
@@ -414,9 +655,12 @@ def detect_large_output_potential(question: str) -> dict:
             score += 1
             matched_indicators.append(indicator)
     
-    # Extract numbers that might indicate quantity (exclude years and contextual numbers)
+    # Extract numbers that might indicate quantity (exclude years, URLs, and contextual numbers)
     import re
-    all_numbers = re.findall(r'\b(\d+)\b', question)
+    
+    # First remove URLs to avoid extracting numbers from them
+    question_no_urls = re.sub(r'https?://[^\s]+', '', question)
+    all_numbers = re.findall(r'\b(\d+)\b', question_no_urls)
     
     # Filter out years and other contextual numbers that don't indicate quantity
     quantity_numbers = []
@@ -514,6 +758,99 @@ def detect_large_output_potential(question: str) -> dict:
     print(f"[DEBUG] Large output detection for '{question}': {result}")
     return result
 
+async def classify_query_type_efficient(question: str, llm_cfg) -> str:
+    """
+    EFFICIENT query classification using direct OllamaLLM instead of HTTP.
+    Only does RAG if the question requires internal corporate knowledge.
+    
+    Categories:
+    - LARGE_GENERATION: Requires chunked processing
+    - RAG: Needs internal company documents/knowledge base  
+    - TOOLS: Needs function calls (time, calculations, web search, etc.)
+    - LLM: Can be answered with general knowledge
+    """
+    print(f"[DEBUG] classify_query_type_efficient: question = {question}")
+    
+    # First check for large generation (keep existing logic)
+    large_output_analysis = detect_large_output_potential(question)
+    from app.core.large_generation_utils import get_config_accessor
+    config = get_config_accessor()
+    
+    if large_output_analysis["likely_large"] and large_output_analysis["estimated_items"] >= config.min_items_for_chunking:
+        print(f"[DEBUG] classify_query_type_efficient: Detected large generation requirement")
+        return "LARGE_GENERATION"
+    
+    # Try smart pattern classifier first (fast, no LLM call)
+    try:
+        from app.langchain.smart_query_classifier import classify_without_context
+        query_type, confidence = classify_without_context(question)
+        print(f"[DEBUG] Smart classifier result: {query_type} (confidence: {confidence})")
+        
+        if confidence >= 0.7:  # High confidence, trust the pattern classifier
+            return query_type.upper()  # Normalize to uppercase for consistency
+    except Exception as e:
+        print(f"[DEBUG] Smart classifier failed: {e}")
+    
+    # Use efficient LLM classification (direct OllamaLLM, low tokens)
+    return await _llm_classify_efficient(question, llm_cfg)
+
+async def _llm_classify_efficient(question: str, llm_cfg) -> str:
+    """Use direct OllamaLLM for fast classification with minimal tokens"""
+    try:
+        from app.llm.ollama import OllamaLLM
+        from app.llm.base import LLMConfig
+        from app.core.mcp_tools_cache import get_enabled_mcp_tools
+        import os
+        
+        # Get available tools for context
+        available_tools = get_enabled_mcp_tools()
+        tool_names = list(available_tools.keys()) if available_tools else []
+        
+        # Build classification prompt (keep it short!)
+        router_prompt = f"""You are a query classifier. Analyze this question and classify it into exactly ONE category:
+
+RAG: Question asks about internal company information, policies, processes, or specific corporate knowledge
+TOOLS: Question needs real-time data, calculations, or external information. Available tools: {', '.join(tool_names[:5])}
+LLM: Question can be answered with general knowledge
+
+Question: "{question}"
+
+Answer with exactly one word: RAG, TOOLS, or LLM"""
+
+        # Use configurable tokens for classification (default 10 for one word response)
+        classifier_config = llm_cfg.get("query_classifier", {})
+        max_tokens = int(classifier_config.get("classifier_max_tokens", 10))
+        
+        # Create LLM config for classification
+        llm_config = LLMConfig(
+            model_name=llm_cfg["model"],
+            temperature=0.1,  # Low temperature for consistent classification
+            top_p=0.9,
+            max_tokens=max_tokens
+        )
+        
+        # Create LLM instance
+        ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+        llm = OllamaLLM(llm_config, base_url=ollama_url)
+        
+        # Get classification (collect all text)
+        response_text = ""
+        async for chunk in llm.generate_stream(router_prompt):
+            response_text += chunk.text
+        
+        # Parse classification
+        classification = response_text.strip().upper()
+        if classification in ["RAG", "TOOLS", "LLM"]:
+            print(f"[DEBUG] LLM classification: {classification}")
+            return classification
+        else:
+            print(f"[DEBUG] Invalid LLM response '{classification}', defaulting to LLM")
+            return "LLM"  # Safe default for general questions
+            
+    except Exception as e:
+        print(f"[DEBUG] LLM classification failed: {e}, defaulting to LLM")
+        return "LLM"  # Safe default
+
 def classify_query_type(question: str, llm_cfg) -> str:
     """
     Classify the query into one of four categories:
@@ -584,12 +921,12 @@ Classification guidelines:
 
 Examples:
 - "What's our Q4 revenue?" → RAG (internal company data)
-- "What time is it now?" → TOOLS (get_datetime tool available)
+- "What time is it now?" → TOOLS (if time/date tools available)
 - "Explain machine learning" → LLM (general knowledge)
 - "How's Apple's AI progress?" → RAG (check for market research/competitor analysis docs first)
 - "How's DBS progress in AI?" → RAG (check for industry reports/analysis first)
 - "What is photosynthesis?" → LLM (pure general knowledge)
-- "Send email to John" → TOOLS (outlook_send_message available)
+- "Send email to John" → TOOLS (if email tools available)
 - "Find the meeting notes from last week" → RAG (internal documents)
 
 Answer with exactly one word: RAG, TOOLS, or LLM"""
@@ -637,13 +974,19 @@ Answer with exactly one word: RAG, TOOLS, or LLM"""
         # Check if available tools can actually help with this question
         tool_can_help = False
         if available_tools:
-            # Simple heuristics for tool matching
-            if any(keyword in question_lower for keyword in ["time", "date", "now"]) and "get_datetime" in available_tools:
-                tool_can_help = True
-            elif any(keyword in question_lower for keyword in ["email", "send", "message"]) and "outlook_send_message" in available_tools:
-                tool_can_help = True
-            elif any(keyword in question_lower for keyword in ["jira", "issue", "ticket"]) and any("jira" in tool for tool in available_tools):
-                tool_can_help = True
+            # Dynamic tool matching - check if any available tools could help with the query
+            for tool_name, tool_info in available_tools.items():
+                tool_desc = tool_info.get("description", "").lower()
+                # Check if the tool description matches the query intent
+                if any(keyword in question_lower for keyword in ["time", "date", "now"]) and any(word in tool_desc for word in ["time", "date", "datetime"]):
+                    tool_can_help = True
+                    break
+                elif any(keyword in question_lower for keyword in ["email", "gmail", "mail"]) and any(word in tool_desc for word in ["email", "gmail", "mail"]):
+                    tool_can_help = True
+                    break
+                elif any(keyword in question_lower for keyword in ["search", "find"]) and any(word in tool_desc for word in ["search", "find", "list"]):
+                    tool_can_help = True
+                    break
         
         if tool_can_help:
             classification = "TOOLS"
@@ -671,31 +1014,22 @@ def execute_tools_first(question: str, thinking: bool = False) -> tuple:
     
     # Get tools context
     mcp_tools_context = get_mcp_tools_context()
+    print(f"[DEBUG] execute_tools_first: got MCP tools context, length = {len(mcp_tools_context)}")
     
-    # First, ask LLM to identify which tools to use
-    tool_selection_prompt = f"""IMPORTANT: Output ONLY the tool call format shown below, no other text or explanation.
-
-Question: {question}
+    # First, ask LLM to identify which tools to use with enhanced prompt
+    tool_selection_prompt = f"""USER QUESTION: "{question}"
 
 {mcp_tools_context}
 
-Based on the question and available tools, output the exact tool call in this format:
-<tool>tool_name(parameters)</tool>
+INSTRUCTIONS: Analyze the question and output EXACTLY ONE of these options:
 
-Examples:
-- For "What time is it?": <tool>get_datetime({{}})</tool>
-- For "What is today date & time?": <tool>get_datetime({{}})</tool>
-- For "find emails from amazon": <tool>search_emails({{"query": "from:amazon"}})</tool>
-- For "search gmail for amazon": <tool>search_emails({{"query": "amazon"}})</tool>
-- For "find latest gmail": <tool>search_emails({{"query": ""}})</tool>
-- For "search gmail for unread": <tool>search_emails({{"query": "is:unread"}})</tool>
-- For "show today's emails": <tool>search_emails({{"query": "newer_than:1d"}})</tool>
-- For "send email": <tool>send_email({{"to": ["email@example.com"], "subject": "...", "body": "..."}})</tool>
+1. If you need to search the internet/web: <tool>google_search({{"query": "search terms here", "num_results": 10}})</tool>
+2. If you need current date/time: <tool>get_datetime({{}})</tool>
+3. If no tools needed: NO_TOOLS_NEEDED
 
-If the question is asking about emails or Gmail, you MUST use search_emails.
-If no tools are needed to answer the question: NO_TOOLS_NEEDED
+For the question "{question}" - this clearly needs web search.
 
-CRITICAL: You MUST output ONLY the tool call or NO_TOOLS_NEEDED, nothing else."""
+Output the tool call now:"""
 
     llm_cfg = get_llm_settings()
     prompt = build_prompt(tool_selection_prompt, thinking=False)
@@ -722,6 +1056,7 @@ CRITICAL: You MUST output ONLY the tool call or NO_TOOLS_NEEDED, nothing else.""
                     tool_selection_text += token
     
     print(f"[DEBUG] execute_tools_first: tool_selection_text = {tool_selection_text}")
+    print(f"[DEBUG] execute_tools_first: First 500 chars of LLM response: {tool_selection_text[:500]}")
     
     # Execute identified tools
     tool_results = extract_and_execute_tool_calls(tool_selection_text)
@@ -1779,7 +2114,7 @@ def get_llm_response_direct(question: str, thinking: bool = False, stream: bool 
         
         return response
 
-def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True, collections: List[str] = None, collection_strategy: str = "auto"):
+async def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True, collections: List[str] = None, collection_strategy: str = "auto", query_type: str = None):
     """Main function with hybrid RAG+LLM approach prioritizing answer quality
     
     Args:
@@ -1790,6 +2125,7 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
         use_langgraph: Whether to use LangGraph agents
         collections: List of collection names to search (None = auto-detect)
         collection_strategy: "auto", "specific", or "all"
+        query_type: Pre-computed query type (RAG/TOOLS/LLM) to skip classification
     """
     print(f"[DEBUG] rag_answer: incoming question = {question}")
     print(f"[DEBUG] rag_answer: conversation_id = {conversation_id}")
@@ -1835,9 +2171,18 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
     if missing:
         raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
     
-    # STEP 1: Check if this requires large generation (chunked processing) FIRST
-    query_type = classify_query_type(question, llm_cfg)
-    print(f"[DEBUG] rag_answer: query_type = {query_type}")
+    # STEP 1: Use pre-computed query_type if provided, otherwise classify
+    if query_type:
+        # Use pre-computed classification from API layer to avoid double work
+        query_type = query_type.upper()  # Normalize case
+        print(f"[DEBUG] rag_answer: Using pre-computed query_type = {query_type}")
+    elif "Tool Results:" in question or "Please provide a complete answer using the tool results" in question:
+        query_type = "TOOLS"  # Force to TOOLS to avoid large generation misdetection
+        print(f"[DEBUG] rag_answer: Enhanced question with tool results detected, forcing query_type = TOOLS")
+    else:
+        # Use efficient classification to avoid unnecessary RAG calls
+        query_type = await classify_query_type_efficient(question, llm_cfg)
+        print(f"[DEBUG] rag_answer: query_type = {query_type}")
     
     # STEP 2: If large generation, check if chunking is actually needed
     if query_type == "LARGE_GENERATION":
@@ -1855,19 +2200,55 @@ def rag_answer(question: str, thinking: bool = False, stream: bool = False, conv
             rag_context = ""  # Skip RAG entirely for large generation to avoid delays
             print(f"[DEBUG] rag_answer: Proceeding without RAG context for chunked processing")
     else:
-        # STEP 2a: For TOOLS queries, skip RAG and execute tools immediately
+        # Initialize tool variables for potential fallback use
+        tool_calls = []
+        tool_context = ""
+        
+        # STEP 2a: Skip RAG based on query classification to optimize performance
         if query_type == "TOOLS":
             print(f"[DEBUG] rag_answer: TOOLS query detected - skipping RAG retrieval")
             rag_context = ""  # No RAG needed for tool queries
-        else:
-            # For non-large generation and non-tools queries, do full RAG retrieval
-            print(f"[DEBUG] rag_answer: Step 2a - Attempting full RAG retrieval")
+        elif query_type == "LLM":
+            print(f"[DEBUG] rag_answer: LLM query detected - skipping RAG retrieval (general knowledge sufficient)")
+            rag_context = ""  # No RAG needed for general knowledge queries
+        elif query_type == "RAG":
+            # Only RAG queries need internal knowledge retrieval
+            print(f"[DEBUG] rag_answer: RAG query detected - performing knowledge retrieval")
             import time
             rag_start_time = time.time()
             rag_context, _ = handle_rag_query(question, thinking, collections, collection_strategy)
             rag_end_time = time.time()
             print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
             print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
+        else:
+            # Unknown query type, default to RAG for safety
+            print(f"[DEBUG] rag_answer: Unknown query_type '{query_type}' - defaulting to RAG retrieval")
+            import time
+            rag_start_time = time.time()
+            rag_context, _ = handle_rag_query(question, thinking, collections, collection_strategy)
+            rag_end_time = time.time()
+            print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
+            print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
+            
+            # INTELLIGENT FALLBACK: If RAG finds no relevant docs, try web search for current info
+            if not rag_context or len(rag_context.strip()) < 50:  # No meaningful RAG context
+                print(f"[DEBUG] rag_answer: No relevant RAG context found, attempting web search fallback")
+                try:
+                    # Execute google_search tool to get current information
+                    search_results, _, search_context = execute_tools_first(question, thinking)
+                    if search_results and search_context:
+                        print(f"[DEBUG] rag_answer: Web search fallback successful, got {len(search_context)} chars")
+                        # Keep original empty rag_context, but we'll have search_context for synthesis
+                        # This will be handled in unified synthesis as RAG+TOOLS+LLM
+                        # Set tool context for later synthesis
+                        tool_calls = search_results
+                        tool_context = search_context
+                        query_type = "TOOLS"  # Change classification to include tools
+                        print(f"[DEBUG] rag_answer: Updated query_type to TOOLS due to web search fallback")
+                    else:
+                        print(f"[DEBUG] rag_answer: Web search fallback failed, proceeding with LLM-only response")
+                except Exception as e:
+                    print(f"[DEBUG] rag_answer: Web search fallback error: {e}, proceeding with LLM-only response")
     
     # STEP 3: Handle large generation immediately if detected
     if query_type == "LARGE_GENERATION":
@@ -2153,14 +2534,39 @@ Please generate the requested items incorporating relevant information from the 
     # STEP 3: Check if tools can add value (for non-large generation queries)
     print(f"[DEBUG] rag_answer: Step 3 - Checking tool applicability")
     
-    tool_calls = []
-    tool_context = ""
+    # Initialize tool variables if not already set by fallback
+    if 'tool_calls' not in locals():
+        tool_calls = []
+        tool_context = ""
+    
     if query_type == "TOOLS":
-        tool_calls, _, tool_context = execute_tools_first(question, thinking)
-        if not tool_calls:
-            print(f"[DEBUG] rag_answer: No tools actually executed despite TOOLS classification")
-            # For TOOLS queries, we should still prioritize tool-based response
-            # even if tool execution failed
+        # Only execute tools if not already executed in web search fallback
+        if not tool_calls:  # Check if fallback already populated these
+            # Try simple tool executor first
+            try:
+                from app.langchain.simple_tool_executor import identify_and_execute_tools
+                tool_calls, tool_context = identify_and_execute_tools(question)
+                print(f"[DEBUG] rag_answer: Simple tool executor returned:")
+                print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
+                print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
+                if tool_calls:
+                    for tc in tool_calls:
+                        print(f"  - Tool: {tc.get('tool', 'unknown')} - Success: {tc.get('success', False)}")
+            except Exception as e:
+                print(f"[DEBUG] rag_answer: Simple tool executor failed: {e}, trying original method")
+                # Fallback to original method
+                tool_calls, _, tool_context = execute_tools_first(question, thinking)
+                print(f"[DEBUG] rag_answer: execute_tools_first returned:")
+                print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
+                print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
+            
+            if not tool_calls:
+                print(f"[DEBUG] rag_answer: No tools actually executed despite TOOLS classification")
+                # For TOOLS queries, we should still prioritize tool-based response
+                # even if tool execution failed
+                tool_context = f"Tool execution was attempted for query: '{question}' but no tools were successfully executed. This may indicate missing tool configuration or execution errors."
+        else:
+            print(f"[DEBUG] rag_answer: Tools already executed in web search fallback, skipping duplicate execution")
     
     # Get conversation history with smart filtering for ALL query types
     conversation_history = ""
@@ -2172,123 +2578,26 @@ Please generate the requested items incorporating relevant information from the 
         if conversation_history:
             history_prompt = f"Previous conversation:\n{conversation_history}\n\n"
     
-    # STEP 4: Hybrid approach - combine available sources for optimal answer
-    context = ""
-    source = ""
+    # STEP 4: UNIFIED LLM SYNTHESIS - All responses flow through unified synthesis
+    print(f"[DEBUG] rag_answer: Using unified LLM synthesis approach")
+    print(f"[DEBUG] rag_answer: Before synthesis - query_type={query_type}, tool_context length={len(tool_context) if tool_context else 0}")
+    print(f"[DEBUG] rag_answer: Before synthesis - tool_calls count={len(tool_calls) if tool_calls else 0}")
+    prompt, source, context = unified_llm_synthesis(
+        question=question,
+        query_type=query_type,
+        rag_context=rag_context,
+        tool_context=tool_context,
+        conversation_history=conversation_history,
+        thinking=thinking
+    )
     
-    if rag_context and tool_calls:
-        # BEST CASE: RAG + TOOLS + LLM synthesis
-        source = "RAG+TOOLS+LLM"
-        context = f"RAG Context:\n{rag_context}\n\nTool Results:\n{tool_context}"
-        prompt = f"""{history_prompt}You have both internal knowledge base information and tool results to answer this question comprehensively.
-
-Internal Knowledge Base Context:
-{rag_context}
-
-Tool Results:
-{tool_context}
-
-Question: {question}
-
-Please provide a comprehensive answer that synthesizes information from both the internal knowledge base and the tool results, along with your general knowledge to give the most complete and insightful response.
-
-Answer:"""
-        print(f"[DEBUG] rag_answer: Using RAG+TOOLS+LLM hybrid approach")
-        
-    elif rag_context:
-        # IDEAL CASE: RAG + LLM synthesis 
-        source = "RAG+LLM"
-        context = rag_context
-        prompt = f"""{history_prompt}You have relevant information from our internal knowledge base. Use this along with your general knowledge to provide a comprehensive, insightful answer.
-
-Internal Knowledge Base Context:
-{rag_context}
-
-Question: {question}
-
-Please synthesize the specific information from our knowledge base with broader context and analysis to give the most complete and valuable response.
-
-Answer:"""
-        print(f"[DEBUG] rag_answer: Using RAG+LLM hybrid approach")
-        
-    elif tool_calls:
-        # TOOLS + LLM
-        source = "TOOLS+LLM"
-        context = tool_context
-        prompt = f"""{history_prompt}I have executed tools to gather current information. Now I need to provide a comprehensive answer based on the tool results and relevant general knowledge.
-
-Tool Results:
-{tool_context}
-
-Question: {question}
-
-Please provide a direct, helpful answer using the tool results above."""
-        print(f"[DEBUG] rag_answer: Using TOOLS+LLM approach")
-        
-    elif query_type == "TOOLS":
-        # TOOLS query but no tools executed - still treat as tool query
-        source = "TOOLS"
-        context = ""
-        
-        # Get available tools for the prompt
-        mcp_tools_context = get_mcp_tools_context()
-        
-        prompt = f"""{history_prompt}The user is asking for information that requires using tools.
-
-Question: {question}
-
-{mcp_tools_context}
-
-Based on the available tools above, please answer the question. For date/time queries, provide the current date and time in Singapore timezone (Asia/Singapore)."""
-        print(f"[DEBUG] rag_answer: Using TOOLS approach (direct answer)")
-        
-    elif query_type == "RAG":
-        # RAG was attempted but no documents found - still use RAG+LLM to indicate RAG was checked
-        source = "RAG+LLM"
-        context = ""
-        prompt = f"""{history_prompt}No specific documents were found in our internal knowledge base for this query, but I'll provide a comprehensive answer based on general knowledge.
-
-Question: {question}
-
-Answer:"""
-        print(f"[DEBUG] rag_answer: Using RAG+LLM approach (no documents found)")
-        
-    else:
-        # FALLBACK: Pure LLM (including large single generations)
-        source = "LLM"
-        
-        # Enhanced prompt for large generation requests
-        if "generate" in question.lower() and any(word in question.lower() for word in ["questions", "items", "list"]):
-            # Extract number for better prompt
-            import re
-            numbers = re.findall(r'\b(\d+)\b', question)
-            target_num = max([int(n) for n in numbers], default=10) if numbers else 10
-            
-            prompt = f"""{history_prompt}Generate exactly {target_num} high-quality, unique interview questions for the specified role and context.
-
-Requirements:
-- Each question must be completely unique and cover different aspects
-- Avoid any semantic duplicates or variations of the same concept  
-- Number each question clearly (1. 2. 3. etc.)
-- Ensure professional interview quality
-- Cover diverse competency areas
-
-{question}
-
-Generate exactly {target_num} questions:"""
-        else:
-            prompt = f"{history_prompt}Question: {question}\n\nAnswer:"
-        
-        print(f"[DEBUG] rag_answer: Using pure LLM approach (no relevant context or tools)")
     
-    # Apply thinking wrapper if needed
-    prompt = build_prompt(prompt, thinking=thinking)
+    # Thinking is now handled in unified_llm_synthesis function
     
     print(f"[DEBUG] rag_answer: final prompt = {prompt[:200]}...")
     print(f"[DEBUG] rag_answer: source = {source}")
     
-    # Generate response using internal API
-    llm_api_url = "http://localhost:8000/api/v1/generate_stream"
+    # Generate response using direct LLM instead of HTTP API for better streaming
     mode_config = llm_cfg["thinking_mode"] if thinking else llm_cfg["non_thinking_mode"]
     
     # Dynamic max_tokens based on request type
@@ -2330,187 +2639,312 @@ Generate exactly {target_num} questions:"""
     }
     
     if stream:
-        def token_stream():
-            # Import time locally to avoid scope issues
-            import time
-            # Capture max_tokens in local scope
-            tokens_limit = max_tokens
-            text = ""
-            streaming_start_time = time.time()
-            print(f"[DEBUG] Starting LLM streaming at {streaming_start_time}")
-            try:
-                with httpx.Client(timeout=60.0) as client:  # 1 minute timeout, more reasonable
-                    with client.stream("POST", llm_api_url, json=payload) as response:
-                        response.raise_for_status()  # Raise exception for HTTP errors
-                        for line in response.iter_lines():
-                            if not line:
-                                continue
-                            if isinstance(line, bytes):
-                                line = line.decode("utf-8")
-                            if line.startswith("data: "):
-                                token = line.replace("data: ", "")
-                                if token.strip():  # Only process non-empty tokens
-                                    text += token
-                                    yield json.dumps({"token": token}) + "\n"
-                        
-                        # Ensure response is fully consumed
-                        streaming_end_time = time.time()
-                        print(f"[DEBUG] HTTP streaming completed in {streaming_end_time - streaming_start_time:.2f} seconds, total text length: {len(text)}")
-                        print(f"[DEBUG] Starting post-processing of response")
-            except httpx.TimeoutException:
-                print(f"[ERROR] HTTP timeout after 60 seconds")
-                # Send completion event to stop cursor
-                yield json.dumps({
-                    "answer": "Request timed out. Please try again.",
-                    "source": "ERROR",
-                    "error": "Request timed out"
-                }) + "\n"
-                return
-            except httpx.HTTPStatusError as e:
-                print(f"[ERROR] HTTP error: {e.response.status_code} - {e.response.text}")
-                # Send completion event to stop cursor
-                yield json.dumps({
-                    "answer": f"HTTP error: {e.response.status_code}. Please try again.",
-                    "source": "ERROR", 
-                    "error": f"HTTP error: {e.response.status_code}"
-                }) + "\n"
-                return
-            except Exception as e:
-                print(f"[ERROR] Streaming error: {e}")
-                # Send completion event to stop cursor  
-                yield json.dumps({
-                    "answer": f"Streaming failed: {str(e)}. Please try again.",
-                    "source": "ERROR",
-                    "error": f"Streaming failed: {str(e)}"
-                }) + "\n"
-                return
+        print(f"[DEBUG] STREAM=TRUE - Using direct OllamaLLM like multi-agent")
+        
+        async def stream_tokens():
+            from app.llm.ollama import OllamaLLM
+            from app.llm.base import LLMConfig
+            import os
             
-            print(f"[DEBUG] Post-processing response: text_length={len(text)}")
-            try:
-                import re  # Import re inside the function to fix scoping issue
-                # Extract reasoning and preserve formatting in answer
-                reasoning = re.findall(r"<think>(.*?)</think>", text, re.DOTALL)
-                print(f"[DEBUG] Found {len(reasoning)} reasoning sections")
-                # Remove thinking tags but preserve all formatting
-                answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+            # Create LLM config exactly like multi-agent
+            llm_config = LLMConfig(
+                model_name=llm_cfg["model"],
+                temperature=float(mode_config.get("temperature", 0.7)),
+                top_p=float(mode_config.get("top_p", 1.0)),
+                max_tokens=int(max_tokens)
+            )
+            
+            # Get Ollama URL
+            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+            
+            # Create LLM instance
+            llm = OllamaLLM(llm_config, base_url=ollama_url)
+            
+            # Stream tokens exactly like multi-agent
+            response_text = ""
+            
+            async for response_chunk in llm.generate_stream(prompt):
+                response_text += response_chunk.text
                 
-                # Clean up the answer while preserving structure
-                if answer:
-                    # Remove excessive blank lines (more than 2)
-                    answer = re.sub(r'\n{3,}', '\n\n', answer)
-                    # Remove leading/trailing whitespace but preserve internal structure
-                    answer = answer.strip()
-                    # Ensure proper spacing after periods for readability
-                    answer = re.sub(r'\.([A-Z])', r'. \1', answer)
-                    # Fix any missing spaces after colons
-                    answer = re.sub(r':([A-Z])', r': \1', answer)
-                else:
-                    answer = ""
+                # Stream tokens in real-time
+                if response_chunk.text.strip():
+                    yield json.dumps({
+                        "token": response_chunk.text
+                    }) + "\n"
+            
+            # Parse and execute tool calls using proven function
+            tool_results = extract_and_execute_tool_calls(response_text)
+            
+            if tool_results:
+                print(f"[DEBUG] Executed {len(tool_results)} tools from LLM response")
                 
-                # Send completion event with the exact format the frontend expects first for immediate UI response
-                completion_event = {
-                    "answer": answer,  # This is the key field the frontend looks for
-                    "source": source,
-                    "reasoning": reasoning[0] if reasoning else None,
-                    "tool_calls": tool_calls,
-                    "query_type": source,
-                    "metadata": {
-                        "streaming_complete": True,
-                        "total_tokens": len(text),
-                        "response_length": len(answer),
-                        "max_tokens_used": tokens_limit,
-                        "completion_timestamp": datetime.now().isoformat()
-                    }
-                }
+                # Stream tool execution results
+                for result in tool_results:
+                    yield json.dumps({
+                        "tool_execution": {
+                            "tool": result.get('tool'),
+                            "success": result.get('success', False),
+                            "result": result.get('result') if result.get('success') else result.get('error')
+                        }
+                    }) + "\n"
                 
-                print(f"[DEBUG] Sending completion event: answer_length={len(answer)}, source={source}")
-                try:
-                    completion_json = json.dumps(completion_event, ensure_ascii=False)
-                    print(f"[DEBUG] Completion JSON length: {len(completion_json)}")
-                    yield completion_json + "\n"
+                # If tools were executed, we need to synthesize the response with tool results
+                if any(r.get('success') for r in tool_results):
+                    # Build enhanced response with tool results
+                    tool_context = "\n\nTool Results:\n"
+                    for tr in tool_results:
+                        # Handle tool result structure properly
+                        if 'result' in tr and tr.get('success', False):
+                            tool_context += f"\n{tr['tool']}: {json.dumps(tr['result'], indent=2)}\n"
+                        elif 'error' in tr:
+                            tool_context += f"\n{tr['tool']}: Error - {tr['error']}\n"
+                        else:
+                            tool_context += f"\n{tr['tool']}: No result available\n"
                     
-                    # Store conversation message after sending response for better performance
-                    if conversation_id and answer:
-                        try:
-                            store_conversation_message(conversation_id, "assistant", answer)
-                        except Exception as storage_error:
-                            print(f"[ERROR] Failed to store conversation message: {storage_error}")
+                    # Create a follow-up prompt to synthesize with tool results
+                    synthesis_prompt = f"""You need to provide a final answer based on the tool results below.
+
+{tool_context}
+
+Based on these search results, provide a comprehensive answer to the user's question about latest AI news. Format the information clearly and include the most relevant findings."""
                     
-                except Exception as json_error:
-                    print(f"[ERROR] Failed to serialize completion event: {json_error}")
-                    # Send a minimal completion event as fallback
-                    fallback_event = {"answer": answer, "source": source}
-                    yield json.dumps(fallback_event, ensure_ascii=False) + "\n"
-            except Exception as e:
-                print(f"[ERROR] Completion processing error: {e}")
-                import traceback
-                traceback.print_exc()
-                # Always send a completion event even on error to stop the cursor
-                yield json.dumps({
-                    "answer": f"Error: {str(e)}",
-                    "source": "ERROR",
-                    "error": f"Completion failed: {str(e)}"
-                }) + "\n"
+                    # Generate final response with tool results
+                    final_response = ""
+                    async for response_chunk in llm.generate_stream(synthesis_prompt):
+                        final_response += response_chunk.text
+                        if response_chunk.text.strip():
+                            yield json.dumps({
+                                "token": response_chunk.text
+                            }) + "\n"
+                    
+                    response_text = final_response
+            
+            # Send completion event
+            yield json.dumps({
+                "answer": response_text,
+                "source": source + ("+TOOLS" if tool_results else ""),
+                "conversation_id": conversation_id
+            }) + "\n"
+            
+            # Store conversation
+            if conversation_id and response_text:
+                store_conversation_message(conversation_id, "assistant", response_text)
         
-        return token_stream()
+        return stream_tokens()
     
+    # Non-streaming version - collect all tokens
     else:
-        text = ""
-        with httpx.Client(timeout=30.0) as client:  # Add timeout to prevent hanging
-            with client.stream("POST", llm_api_url, json=payload) as response:
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    if isinstance(line, bytes):
-                        line = line.decode("utf-8")
-                    if line.startswith("data: "):
-                        token = line.replace("data: ", "")
-                        text += token
+        from app.llm.ollama import OllamaLLM
+        from app.llm.base import LLMConfig
+        import os
         
-        reasoning = re.findall(r"<think>(.*?)</think>", text, re.DOTALL)
-        answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        llm_config = LLMConfig(
+            model_name=llm_cfg["model"],
+            temperature=float(mode_config.get("temperature", 0.7)),
+            top_p=float(mode_config.get("top_p", 1.0)),
+            max_tokens=int(max_tokens)
+        )
         
-        print(f"[RAG ROUTER] Final answer preview: {answer[:100]}...")
-        print(f"[RAG ROUTER] Source used: {source}")
+        ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+        llm = OllamaLLM(llm_config, base_url=ollama_url)
         
-        # Store assistant's response in conversation history
-        if conversation_id and answer:
-            store_conversation_message(conversation_id, "assistant", answer)
+        response_text = ""
+        async for response_chunk in llm.generate_stream(prompt):
+            response_text += response_chunk.text
+        
+        # Parse and execute tool calls using proven function
+        tool_results = extract_and_execute_tool_calls(response_text)
+        
+        if tool_results and any(r.get('success') for r in tool_results):
+            # Build enhanced response with tool results
+            tool_context = "\n\nTool Results:\n"
+            for tr in tool_results:
+                if tr.get('success'):
+                    tool_context += f"\n{tr['tool']}: {json.dumps(tr['result'], indent=2)}\n"
+            
+            # Create a follow-up prompt to synthesize with tool results
+            synthesis_prompt = f"""{response_text}
+
+{tool_context}
+
+Please provide a complete answer using the tool results above."""
+            
+            # Generate final response with tool results
+            final_response = ""
+            async for response_chunk in llm.generate_stream(synthesis_prompt):
+                final_response += response_chunk.text
+            
+            response_text = final_response
+            source = source + "+TOOLS"
+        
+        if conversation_id and response_text:
+            store_conversation_message(conversation_id, "assistant", response_text)
         
         return {
-            "answer": answer,
-            "context": context,
-            "reasoning": reasoning[0] if reasoning else None,
-            "raw": text,
-            "route": source,  # Updated to use source
+            "answer": response_text,
             "source": source,
-            "tool_calls": tool_calls,
-            "query_type": source,  # Use source as query_type for backward compatibility
-            "metadata": {
-                "total_tokens": len(text),
-                "response_length": len(answer),
-                "max_tokens_used": max_tokens,
-                "completion_timestamp": datetime.now().isoformat()
-            }
+            "context": context
         }
 
 # Keep existing helper functions
-def get_mcp_tools_context():
-    """Prepare MCP tools context for LLM prompt"""
+def get_mcp_tools_context(force_reload=False, include_examples=True):
+    """
+    Prepare comprehensive MCP tools context for LLM prompt with full parameter details
+    
+    Args:
+        force_reload: Force reload cache from database
+        include_examples: Include usage examples for better LLM understanding
+    
+    Returns:
+        Formatted string with all available tools, their parameters, and usage examples
+    """
+    from app.core.mcp_tools_cache import reload_enabled_mcp_tools
+    
+    # Get tools data - reload if forced or cache is empty
     enabled_tools = get_enabled_mcp_tools()
+    
+    if force_reload or not enabled_tools:
+        print("[DEBUG] MCP Tools: Reloading cache from database...")
+        enabled_tools = reload_enabled_mcp_tools()
+    
+    # Validate critical tools have parameters
+    critical_tools = ['google_search', 'get_datetime']
+    for tool_name in critical_tools:
+        if tool_name in enabled_tools:
+            tool_info = enabled_tools[tool_name]
+            if not tool_info.get('parameters') or tool_info.get('parameters') == {}:
+                print(f"[DEBUG] MCP Tools: {tool_name} missing parameters, forcing reload...")
+                enabled_tools = reload_enabled_mcp_tools()
+                break
+    
     if not enabled_tools:
-        return ""
+        return "\n⚠️ No MCP tools available. Tool execution disabled."
     
+    # Build comprehensive tools context
     tools_context = []
-    for _, tool_info in enabled_tools.items():
-        tool_desc = {
-            "name": tool_info["name"],
-            "description": tool_info["description"],
-            "parameters": tool_info["parameters"]
-        }
-        tools_context.append(json.dumps(tool_desc, indent=2))
+    tools_context.append("=" * 60)
+    tools_context.append("🛠️  AVAILABLE MCP TOOLS")
+    tools_context.append("=" * 60)
     
-    return "\nAvailable tools:\n" + "\n".join(tools_context)
+    # Group tools by category for better organization
+    tool_categories = {
+        "search": [],
+        "email": [],
+        "jira": [],
+        "datetime": [],
+        "other": []
+    }
+    
+    for tool_name, tool_info in enabled_tools.items():
+        # Categorize tools
+        if "search" in tool_name.lower() or "google" in tool_name.lower():
+            category = "search"
+        elif "email" in tool_name.lower() or "gmail" in tool_name.lower():
+            category = "email"
+        elif "jira" in tool_name.lower():
+            category = "jira"
+        elif "datetime" in tool_name.lower() or "time" in tool_name.lower():
+            category = "datetime"
+        else:
+            category = "other"
+        
+        tool_categories[category].append((tool_name, tool_info))
+    
+    # Format each category
+    for category, tools in tool_categories.items():
+        if not tools:
+            continue
+            
+        tools_context.append(f"\n📂 {category.upper()} TOOLS:")
+        tools_context.append("-" * 40)
+        
+        for tool_name, tool_info in tools:
+            # Parse parameters if they're a string
+            parameters = tool_info.get("parameters", {})
+            if isinstance(parameters, str):
+                try:
+                    import json
+                    parameters = json.loads(parameters)
+                except json.JSONDecodeError:
+                    print(f"[WARNING] Failed to parse parameters for {tool_name}")
+                    parameters = {}
+            
+            # Build tool description
+            tool_desc = []
+            tool_desc.append(f"🔧 Tool: {tool_name}")
+            tool_desc.append(f"   Description: {tool_info.get('description', 'No description')}")
+            
+            # Add parameter details
+            if parameters and isinstance(parameters, dict):
+                if "required" in parameters:
+                    required_params = parameters.get("required", [])
+                    if required_params:
+                        tool_desc.append(f"   Required Parameters: {', '.join(required_params)}")
+                
+                if "properties" in parameters:
+                    props = parameters["properties"]
+                    tool_desc.append("   Parameters:")
+                    for param_name, param_info in props.items():
+                        param_type = param_info.get("type", "unknown")
+                        param_desc = param_info.get("description", "No description")
+                        required_mark = "* " if param_name in parameters.get("required", []) else "  "
+                        tool_desc.append(f"   {required_mark}- {param_name} ({param_type}): {param_desc}")
+                        
+                        # Add constraints
+                        constraints = []
+                        if "maxLength" in param_info:
+                            constraints.append(f"max length: {param_info['maxLength']}")
+                        if "minimum" in param_info:
+                            constraints.append(f"min: {param_info['minimum']}")
+                        if "maximum" in param_info:
+                            constraints.append(f"max: {param_info['maximum']}")
+                        if "default" in param_info:
+                            constraints.append(f"default: {param_info['default']}")
+                        if constraints:
+                            tool_desc.append(f"       ({', '.join(constraints)})")
+            
+            # Add usage examples for critical tools
+            if include_examples:
+                if tool_name == "google_search":
+                    tool_desc.append("   💡 Example: <tool>google_search({\"query\": \"latest AI news\"})</tool>")
+                elif tool_name == "get_datetime":
+                    tool_desc.append("   💡 Example: <tool>get_datetime({})</tool>")
+                elif "gmail" in tool_name and "send" in tool_name:
+                    tool_desc.append("   💡 Example: <tool>gmail_send({\"to\": \"user@example.com\", \"subject\": \"Test\", \"body\": \"Hello\"})</tool>")
+            
+            tools_context.append("\n".join(tool_desc))
+            tools_context.append("")  # Empty line between tools
+    
+    # Add usage instructions
+    if include_examples:
+        tools_context.append("\n" + "=" * 60)
+        tools_context.append("📋 TOOL USAGE INSTRUCTIONS")
+        tools_context.append("=" * 60)
+        tools_context.append("To use a tool, format your response as:")
+        tools_context.append("<tool>tool_name(parameters)</tool>")
+        tools_context.append("")
+        tools_context.append("Where:")
+        tools_context.append("• tool_name: exact name from the list above")
+        tools_context.append("• parameters: JSON object with required parameters")
+        tools_context.append("• Use {} for tools that need no parameters")
+        tools_context.append("")
+        tools_context.append("IMPORTANT: Only use tools when they can help answer the user's question!")
+    
+    context = "\n".join(tools_context)
+    
+    # Enhanced debug logging
+    tools_by_category = {cat: len(tools) for cat, tools in tool_categories.items() if tools}
+    print(f"[DEBUG] MCP Tools Context: {len(enabled_tools)} total tools, categories: {tools_by_category}")
+    print(f"[DEBUG] MCP Tools Context length: {len(context)} characters")
+    
+    # Log critical tools status
+    for tool_name in critical_tools:
+        if tool_name in enabled_tools:
+            tool_info = enabled_tools[tool_name]
+            has_params = bool(tool_info.get('parameters'))
+            print(f"[DEBUG] MCP Tools: {tool_name} - parameters: {has_params}")
+    
+    return context
 
 def refresh_gmail_token(server_id):
     """Refresh Gmail OAuth token"""
@@ -2842,100 +3276,146 @@ def call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info):
         print(f"[ERROR] {error_msg}")
         return {"error": error_msg}
 
-def extract_and_execute_tool_calls(text):
-    """Extract tool calls from LLM output and execute them"""
+def extract_and_execute_tool_calls(text, stream_callback=None):
+    """
+    Extract tool calls from LLM output and execute them
+    
+    Args:
+        text: LLM response text to scan for tool calls
+        stream_callback: Optional callback to stream tool execution updates
+    
+    Returns:
+        List of tool execution results
+    """
     import re  # Import at function level to avoid scope issues
     
     if "NO_TOOLS_NEEDED" in text:
+        print("[DEBUG] Tool extraction: LLM indicated no tools needed")
         return []
         
-    tool_calls_pattern = r'<tool>(.*?)\((.*?)\)</tool>'
-    tool_calls = re.findall(tool_calls_pattern, text, re.DOTALL)
+    # Enhanced pattern to catch more tool call variations
+    tool_calls_patterns = [
+        r'<tool>(.*?)\((.*?)\)</tool>',  # Standard format
+        r'<tool>(.*?):\s*(.*?)</tool>',  # Alternative format with colon
+        r'Tool:\s*(.*?)\((.*?)\)',       # Plain format
+    ]
     
-    # Fallback: If no tool calls found in proper format, try to extract from thinking
+    tool_calls = []
+    for pattern in tool_calls_patterns:
+        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+        if matches:
+            print(f"[DEBUG] Tool extraction: Found {len(matches)} tool calls with pattern: {pattern}")
+            tool_calls.extend(matches)
+            break  # Use first matching pattern only
+    
+    # If no tool calls found, return empty list
     if not tool_calls:
-        print("[DEBUG] No tool calls in proper format, attempting fallback extraction")
-        text_lower = text.lower()
-        
-        # Look for tool mentions in thinking or anywhere in the text
-        if ("get_datetime" in text or "date" in text_lower or "time" in text_lower) and not ("gmail" in text_lower or "email" in text_lower):
-            print("[DEBUG] Detected date/time query, executing get_datetime")
-            tool_calls = [("get_datetime", "{}")]
-        elif any(indicator in text_lower for indicator in ["gmail", "email", "mail", "amazon", "from:", "subject:", "unread"]):
-            print("[DEBUG] Detected email/Gmail query, executing search_emails")
-            
-            # Try to extract query parameters from the original question
-            query_params = {}
-            
-            # Check for specific patterns
-            if "amazon" in text_lower:
-                query_params["query"] = "from:amazon"
-            elif "unread" in text_lower:
-                query_params["query"] = "is:unread"
-            elif "today" in text_lower:
-                query_params["query"] = "newer_than:1d"
-            elif "from:" in text_lower:
-                # Extract from: pattern
-                import re
-                from_match = re.search(r'from:\s*(\S+)', text_lower)
-                if from_match:
-                    query_params["query"] = f"from:{from_match.group(1)}"
-                else:
-                    query_params["query"] = ""
-            else:
-                # Default to empty query (gets recent emails)
-                query_params["query"] = ""
-            
-            tool_calls = [("search_emails", json.dumps(query_params))]
-        elif "send_email" in text and "send" in text_lower:
-            # Would need more sophisticated parsing for email parameters
-            pass
-        elif "outlook_send_message" in text and "email" in text_lower:
-            # Would need more sophisticated parsing for email parameters
-            pass
-        elif "jira" in text and ("ticket" in text_lower or "issue" in text_lower):
-            # Would need more sophisticated parsing for JIRA parameters
-            pass
+        print("[DEBUG] Tool extraction: No tool calls found in LLM response")
+        print(f"[DEBUG] Tool extraction: Scanned text: {text[:200]}...")
+        return []
+    
+    # Deduplicate tool calls (same tool with same parameters)
+    unique_tools = []
+    seen_calls = set()
+    for tool_name, params_str in tool_calls:
+        call_signature = (tool_name.strip(), params_str.strip())
+        if call_signature not in seen_calls:
+            unique_tools.append((tool_name, params_str))
+            seen_calls.add(call_signature)
+        else:
+            print(f"[DEBUG] Tool extraction: Skipping duplicate call to {tool_name}")
+    
+    tool_calls = unique_tools
+    print(f"[DEBUG] Tool extraction: {len(tool_calls)} unique tools to execute")
     
     results = []
-    for tool_name, params_str in tool_calls:
+    for i, (tool_name, params_str) in enumerate(tool_calls):
         try:
             tool_name = tool_name.strip()
             params_str = params_str.strip()
             
-            if params_str == "{}" or params_str == "":
+            if stream_callback:
+                stream_callback(f"🔧 Executing tool: {tool_name}")
+            
+            print(f"[DEBUG] Tool execution [{i+1}/{len(tool_calls)}]: {tool_name}")
+            
+            # Parse parameters with enhanced error handling
+            if params_str == "{}" or params_str == "" or params_str.lower() == "none":
                 params = {}
             else:
                 try:
-                    params = json.loads(params_str)
-                except json.JSONDecodeError:
+                    # Handle common parameter format issues
+                    if not params_str.startswith('{'):
+                        # Try to wrap as object if it looks like key-value
+                        if ':' in params_str:
+                            params_str = '{' + params_str + '}'
+                        else:
+                            # Assume it's a single string parameter for query-like tools
+                            if 'search' in tool_name.lower():
+                                params = {"query": params_str.strip('"\'`')}
+                            else:
+                                params = {}
+                    else:
+                        params = json.loads(params_str)
+                except json.JSONDecodeError as e:
                     print(f"[ERROR] Failed to parse parameters for {tool_name}: {params_str}")
-                    params = {}
+                    print(f"[ERROR] JSON decode error: {e}")
+                    # Try fallback parsing for common cases
+                    if 'search' in tool_name.lower():
+                        params = {"query": params_str.strip('"\'`{}()')}
+                    else:
+                        params = {}
             
-            print(f"[DEBUG] Executing tool call: {tool_name} with params: {params}")
+            print(f"[DEBUG] Tool execution: {tool_name} with params: {params}")
+            
+            # Execute the tool
             result = call_mcp_tool(tool_name, params)
             
-            # Special handling for date/time responses
-            if tool_name == "get_datetime" and "result" in result:
-                try:
-                    from datetime import datetime
-                    iso_date = result["result"]
-                    dt = datetime.fromisoformat(iso_date.replace("Z", "+00:00"))
-                    formatted_date = dt.strftime("%B %d, %Y at %I:%M %p")
-                    result["formatted_date"] = formatted_date
-                except Exception as e:
-                    print(f"[ERROR] Failed to format date: {str(e)}")
-            
-            results.append({
-                "tool": tool_name,
-                "parameters": params,
-                "result": result
-            })
+            # Enhanced result processing
+            if "error" in result:
+                print(f"[ERROR] Tool {tool_name} returned error: {result['error']}")
+                results.append({
+                    "tool": tool_name,
+                    "parameters": params,
+                    "success": False,
+                    "error": result['error']
+                })
+                if stream_callback:
+                    stream_callback(f"❌ Tool {tool_name} failed: {result['error']}")
+            else:
+                print(f"[SUCCESS] Tool {tool_name} executed successfully")
+                
+                # Special formatting for different tool types
+                if tool_name == "get_datetime" and "result" in result:
+                    try:
+                        from datetime import datetime
+                        iso_date = result["result"]
+                        dt = datetime.fromisoformat(iso_date.replace("Z", "+00:00"))
+                        formatted_date = dt.strftime("%B %d, %Y at %I:%M %p")
+                        result["formatted_date"] = formatted_date
+                    except Exception as e:
+                        print(f"[ERROR] Failed to format date: {str(e)}")
+                
+                results.append({
+                    "tool": tool_name,
+                    "parameters": params,
+                    "success": True,
+                    "result": result
+                })
+                
+                if stream_callback:
+                    stream_callback(f"✅ Tool {tool_name} completed successfully")
+                    
         except Exception as e:
             print(f"[ERROR] Failed to execute tool call {tool_name}: {str(e)}")
             results.append({
                 "tool": tool_name,
+                "parameters": params_str,
+                "success": False,
                 "error": str(e)
             })
+            if stream_callback:
+                stream_callback(f"❌ Tool {tool_name} failed: {str(e)}")
     
+    print(f"[DEBUG] Tool extraction complete: {len(results)} tools executed")
     return results

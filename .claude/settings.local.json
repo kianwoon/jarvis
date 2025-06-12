@@ -39,7 +39,10 @@
       "Bash(npm run type-check:*)",
       "Bash(Searches for hardcoded values in pipeline files)",
       "Bash(docker-compose exec:*)",
-      "Bash(psql:*)"
+      "Bash(psql:*)",
+      "WebFetch(domain:huggingface.co)",
+      "Bash(docker cp:*)",
+      "mcp__ide__getDiagnostics"
     ],
     "deny": []
   },

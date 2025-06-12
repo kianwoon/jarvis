@@ -69,50 +69,59 @@ tool_patterns:
       - '\b(online|web|internet)\b.*\b(info|information|search|data)\b.*\b(about|for|regarding)\b'
     confidence_boost: 0.3
     suggested_tools: ["web_search", "news_api", "realtime_data"]
+    
+  freshness_queries:
+    patterns:
+      - '\b(current|latest|recent|up-to-date|real-time|live)\b'
+      - '\b(compare|vs|versus|difference|better|best|advantage|disadvantage)\b'
+      - '\b(today|now|this week|this month|this year)\b'
+      - '\b(what happened|what changed|updates|news)\b'
+    confidence_boost: 0.6
+    suggested_tools: ["web_search", "google_search"]
 
 # RAG/knowledge search patterns
 rag_patterns:
   question_answering:
     patterns:
-      - '\b(what|who|when|where|why|how)\b.*\b(is|are|was|were|does|do|did)\b'
-      - '\b(tell me about|explain|describe|what do you know about)\b'
-      - '\b(can you explain|could you describe|please tell me)\b'
+      - '\b(what|who|when|where|why|how)\b.*\b(in our|in my|in the uploaded|in the provided|from our|from my)\b.*\b(document|file|data|knowledge|report)\b'
+      - '\b(tell me about|explain|describe)\b.*\b(our|my|the uploaded|the provided)\b.*\b(document|file|data|policy|procedure)\b'
+      - '\b(can you explain|could you describe|please tell me)\b.*\b(from|about)\b.*\b(our|my|the uploaded)\b.*\b(document|knowledge|data)\b'
     confidence_boost: 0.25
     
   document_search:
     patterns:
-      - '\b(find|search|look for|locate|retrieve)\b.*\b(document|file|information|data|content|info|details)\b'
-      - '\b(find out|look up|search for|get)\b.*\b(info|information|details|data|about)\b'
-      - '\b(in the|from the|within the)\b.*\b(document|file|data|report|paper)\b'
-      - '\b(uploaded|provided|given|shared)\b.*\b(document|file|data)\b'
+      - '\b(find|search|look for|locate|retrieve)\b.*\b(in our|in my|in the uploaded|in the provided|from our|from my)\b.*\b(document|file|information|data|content)\b'
+      - '\b(find out|look up|search for|get)\b.*\b(info|information|details|data)\b.*\b(from our|from my|in our|in the uploaded)\b.*\b(document|file|knowledge)\b'
+      - '\b(in the|from the|within the)\b.*\b(uploaded|provided|shared|internal|company)\b.*\b(document|file|data|report|paper)\b'
+      - '\b(uploaded|provided|given|shared|internal|company)\b.*\b(document|file|data|knowledge|report)\b'
     confidence_boost: 0.3
     
   reference_lookup:
     patterns:
-      - '\b(according to|based on|from the|in the|as per)\b.*\b(document|file|data|information|report)\b'
-      - '\b(document says|file contains|data shows|report mentions)\b'
-      - '\b(mentioned in|stated in|written in|found in)\b'
+      - '\b(according to|based on|from the|in the|as per)\b.*\b(uploaded|provided|internal|company|our)\b.*\b(document|file|data|information|report)\b'
+      - '\b(our|my|the uploaded|the provided|internal|company)\b.*\b(document says|file contains|data shows|report mentions)\b'
+      - '\b(mentioned in|stated in|written in|found in)\b.*\b(our|my|the uploaded|the provided|internal)\b.*\b(document|file|report)\b'
     confidence_boost: 0.35
     
   summarization:
     patterns:
-      - '\b(summarize|summary|overview|brief|key points|main points)\b'
-      - '\b(tldr|gist|essence|highlights)\b'
-      - '\b(brief me on|give me an overview)\b'
+      - '\b(summarize|summary|overview|brief|key points|main points)\b.*\b(our|my|the uploaded|the provided|internal)\b.*\b(document|file|data|report)\b'
+      - '\b(tldr|gist|essence|highlights)\b.*\b(of|from)\b.*\b(our|my|the uploaded|the provided)\b.*\b(document|file|report)\b'
+      - '\b(brief me on|give me an overview)\b.*\b(our|my|the uploaded|the provided)\b.*\b(document|file|data|report)\b'
     confidence_boost: 0.3
     
   knowledge_base:
     patterns:
-      - '\b(documentation|manual|guide|reference|handbook)\b'
-      - '\b(policy|procedure|guideline|standard|protocol)\b'
-      - '\b(knowledge base|wiki|faq|help)\b'
+      - '\b(our|my|internal|company)\b.*\b(documentation|manual|guide|reference|handbook|policy|procedure|guideline|standard|protocol)\b'
+      - '\b(internal|company|uploaded|provided)\b.*\b(knowledge base|wiki|faq|help|documentation)\b'
+      - '\b(what does our|what do our|according to our)\b.*\b(policy|procedure|guideline|manual|documentation)\b'
     confidence_boost: 0.25
     
   entity_specific:
     patterns:
-      - '\b(company|organization|bank|institution|agency)\b.*\b(info|information|details|data|about)\b'
-      - '\b(outage|outages|issue|issues|problem|problems|incident|incidents|downtime|service disruption)\b'
-      - '\b[A-Z]{2,}\b.*\b(bank|company|corporation|inc|ltd|limited)\b'  # Acronyms like DBS, OCBC, etc.
+      - '\b(our|my|internal)\b.*\b(company|organization|bank|institution|agency)\b.*\b(info|information|details|data|policy|procedure)\b'
+      - '\b(internal|company|our)\b.*\b(outage|outages|issue|issues|problem|problems|incident|incidents|downtime|service disruption)\b'
+      - '\b(our|my|internal|company)\b.*\b[A-Z]{2,}\b.*\b(policy|procedure|documentation|guidelines)\b'
     confidence_boost: 0.3
 
 # Code generation patterns

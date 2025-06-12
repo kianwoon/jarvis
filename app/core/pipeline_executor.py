@@ -289,6 +289,17 @@ class PipelineExecutor:
         # Sort agents by execution order
         sorted_agents = sorted(agents, key=lambda x: x.get("execution_order", 0))
         
+        # Check if debug mode is enabled via input_data
+        debug_mode = input_data.get("debug_mode", False)
+        
+        if debug_mode:
+            logger.info(f"\n{'='*80}")
+            logger.info(f"[PIPELINE DEBUG] Starting sequential execution for execution_id: {execution_id}")
+            logger.info(f"[PIPELINE DEBUG] Total agents to execute: {len(sorted_agents)}")
+            logger.info(f"[PIPELINE DEBUG] Agent sequence: {[a['agent_name'] for a in sorted_agents]}")
+            logger.info(f"[PIPELINE DEBUG] Initial query: {input_data.get('query', '')[:200]}...")
+            logger.info(f"{'='*80}\n")
+        
         # Always use pipeline bridge adapter for proper I/O tracking
         logger.info(f"[BRIDGE] Using PipelineBridgeAdapter for execution {execution_id}")
         
@@ -310,6 +321,9 @@ class PipelineExecutor:
             "pipeline_goal": pipeline_goal
         }
         
+        # Track current input for each agent
+        current_input = input_data.get("query", "")
+        
         # Execute via adapter
         async for event in adapter.execute_with_io_tracking(
             query=input_data.get("query", ""),
@@ -330,7 +344,26 @@ class PipelineExecutor:
                 duration = event_data.get("duration", 0)
                 progress = event_data.get("progress", (completed_agents / total_agents) * 100)
                 
-                logger.info(f"[BRIDGE] Agent {agent_name} completed ({completed_agents}/{total_agents})")
+                if debug_mode:
+                    logger.info(f"\n{'-'*60}")
+                    logger.info(f"[AGENT I/O] Agent: {agent_name} (#{completed_agents}/{total_agents})")
+                    logger.info(f"[AGENT I/O] Execution time: {duration:.2f}s")
+                    logger.info(f"[AGENT I/O] Progress: {progress:.1f}%")
+                    logger.info(f"[AGENT I/O] Input received:")
+                    logger.info(f"  - Query: {current_input[:500]}...")
+                    logger.info(f"[AGENT I/O] Output generated:")
+                    logger.info(f"  - Response length: {len(response)} characters")
+                    logger.info(f"  - Response preview: {response[:500]}...")
+                    
+                    # Log tools if used
+                    if "tools_used" in event_data and event_data["tools_used"]:
+                        logger.info(f"[AGENT I/O] Tools used:")
+                        for tool in event_data["tools_used"]:
+                            logger.info(f"  - {tool}")
+                    
+                    logger.info(f"{'-'*60}\n")
+                else:
+                    logger.info(f"[BRIDGE] Agent {agent_name} completed ({completed_agents}/{total_agents})")
                 
                 # Build agent output
                 agent_output = {
@@ -349,8 +382,34 @@ class PipelineExecutor:
                 agent_outputs.append(agent_output)
                 final_output = response
                 
+                # Update current input for next agent (if any)
+                current_input = response
+                
+                # Log what will be passed to next agent
+                if debug_mode and completed_agents < total_agents:
+                    logger.info(f"[AGENT HANDOFF] Preparing to pass output to next agent")
+                    logger.info(f"[AGENT HANDOFF] Output length: {len(response)} chars")
+                    logger.info(f"[AGENT HANDOFF] Output preview: {response[:500]}...")
+                    if len(response) > 1000:
+                        logger.info(f"[AGENT HANDOFF] Output contains email info? {'From:' in response or 'from:' in response}")
+                        # Try to extract key info
+                        import re
+                        from_match = re.search(r'(?:From|from):\s*([^\n]+)', response)
+                        subject_match = re.search(r'(?:Subject|subject):\s*([^\n]+)', response)
+                        if from_match:
+                            logger.info(f"[AGENT HANDOFF] Found From: {from_match.group(1)}")
+                        if subject_match:
+                            logger.info(f"[AGENT HANDOFF] Found Subject: {subject_match.group(1)}")
+                
             elif event_type == "pipeline_complete":
-                logger.info(f"[BRIDGE] Pipeline execution completed with {completed_agents} agents")
+                if debug_mode:
+                    logger.info(f"\n{'='*80}")
+                    logger.info(f"[PIPELINE DEBUG] Pipeline execution completed")
+                    logger.info(f"[PIPELINE DEBUG] Total agents executed: {completed_agents}")
+                    logger.info(f"[PIPELINE DEBUG] Final output length: {len(final_output)} characters")
+                    logger.info(f"{'='*80}\n")
+                else:
+                    logger.info(f"[BRIDGE] Pipeline execution completed with {completed_agents} agents")
                 summary = event_data.get("summary", {})
                 
             elif event_type == "error":
@@ -359,7 +418,13 @@ class PipelineExecutor:
                 raise Exception(f"Pipeline execution failed: {error_msg}")
         
         # Debug logging
-        logger.info(f"[BRIDGE] Returning {len(agent_outputs)} agent outputs")
+        if debug_mode:
+            logger.info(f"\n[PIPELINE SUMMARY] Execution complete:")
+            logger.info(f"  - Total agents: {len(agent_outputs)}")
+            logger.info(f"  - Total execution time: {sum(a.get('execution_time', 0) for a in agent_outputs):.2f}s")
+            logger.info(f"  - Final output preview: {final_output[:200]}...")
+        else:
+            logger.info(f"[BRIDGE] Returning {len(agent_outputs)} agent outputs")
         
         return {
             "agent_outputs": agent_outputs,
@@ -387,17 +452,37 @@ class PipelineExecutor:
         """Original sequential execution logic"""
         multi_agent = MultiAgentSystem()
         
+        # Check if debug mode is enabled
+        debug_mode = input_data.get("debug_mode", False)
+        
+        if debug_mode:
+            logger.info(f"\n{'='*80}")
+            logger.info(f"[PIPELINE DEBUG] Starting sequential execution (fallback mode)")
+            logger.info(f"[PIPELINE DEBUG] Execution ID: {execution_id}")
+            logger.info(f"[PIPELINE DEBUG] Total agents: {len(agents)}")
+            logger.info(f"[PIPELINE DEBUG] Agent sequence: {[a['agent_name'] for a in agents]}")
+            logger.info(f"{'='*80}\n")
+        
         current_input = input_data.get("query", "")
         agent_outputs = []
         conversation_history = input_data.get("conversation_history", [])
         
-        for agent in agents:
-            logger.info(f"Executing agent: {agent['agent_name']}")
+        for idx, agent in enumerate(agents):
+            agent_name = agent['agent_name']
+            
+            if debug_mode:
+                logger.info(f"\n{'-'*60}")
+                logger.info(f"[AGENT I/O] Starting agent: {agent_name} (#{idx+1}/{len(agents)})")
+                logger.info(f"[AGENT I/O] Input:")
+                logger.info(f"  - Current query: {current_input[:500]}...")
+                logger.info(f"  - Previous outputs: {len(agent_outputs)}")
+            else:
+                logger.info(f"Executing agent: {agent_name}")
             
             # Update execution progress
             await self._update_progress(
                 execution_id,
-                f"Executing {agent['agent_name']}"
+                f"Executing {agent_name}"
             )
             
             # Add pipeline goal to agent config
@@ -407,7 +492,7 @@ class PipelineExecutor:
             
             # Execute single agent
             agent_result = await multi_agent.execute_single_agent(
-                agent_name=agent["agent_name"],
+                agent_name=agent_name,
                 query=current_input,
                 conversation_history=conversation_history,
                 previous_outputs=agent_outputs,
@@ -416,7 +501,7 @@ class PipelineExecutor:
             
             # Include all relevant data from agent result
             agent_output = {
-                "agent": agent["agent_name"],
+                "agent": agent_name,
                 "output": agent_result.get("content", ""),
                 "content": agent_result.get("content", ""),
                 "reasoning": agent_result.get("reasoning", ""),
@@ -427,11 +512,28 @@ class PipelineExecutor:
             if "tools_used" in agent_result:
                 agent_output["tools_used"] = agent_result["tools_used"]
             
+            if debug_mode:
+                logger.info(f"[AGENT I/O] Output:")
+                logger.info(f"  - Response length: {len(agent_output['output'])} characters")
+                logger.info(f"  - Response preview: {agent_output['output'][:500]}...")
+                logger.info(f"  - Execution time: {agent_output['execution_time']:.2f}s")
+                if agent_output.get("tools_used"):
+                    logger.info(f"  - Tools used: {agent_output['tools_used']}")
+                logger.info(f"{'-'*60}\n")
+            
             agent_outputs.append(agent_output)
             
             # Use output as input for next agent
             if agent.get("config", {}).get("pass_output_to_next", True):
                 current_input = agent_result.get("content", current_input)
+        
+        if debug_mode:
+            logger.info(f"\n{'='*80}")
+            logger.info(f"[PIPELINE DEBUG] Execution complete")
+            logger.info(f"  - Total agents executed: {len(agent_outputs)}")
+            logger.info(f"  - Total execution time: {sum(a.get('execution_time', 0) for a in agent_outputs):.2f}s")
+            logger.info(f"  - Final output length: {len(agent_outputs[-1]['output']) if agent_outputs else 0} characters")
+            logger.info(f"{'='*80}\n")
         
         return {
             "agent_outputs": agent_outputs,

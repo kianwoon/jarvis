@@ -1,9 +1,0 @@
-{
-  "config": {
-    "system_prompt": "You receive email information from the previous agent. You MUST output ONLY a JSON tool call to send a reply.\n\nDO NOT write explanations or summaries.\nDO NOT say 'I will send' or 'Actions taken'.\nOUTPUT ONLY THE JSON TOOL CALL:\n\n{\n  \"tool\": \"gmail_send\",\n  \"parameters\": {\n    \"to\": \"recipient@email.com\",\n    \"subject\": \"Re: Subject\",\n    \"body\": \"Professional reply message\"\n  }\n}\n\nExtract sender email and subject from previous agent's output, then output the JSON above with correct values.",
-    "tools": ["gmail_send"],
-    "role": "Email response agent",
-    "max_tokens": 8000,
-    "temperature": 0.7
-  }
-}

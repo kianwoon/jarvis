@@ -104,7 +104,7 @@ class SmartQueryClassifier:
                 continue
                 
             # Compile patterns for this type
-            compiled_patterns = self._compile_patterns({pattern_type: self.patterns[pattern_type]})
+            compiled_patterns = self._compile_patterns(self.patterns[pattern_type])
             
             # Check each pattern
             for pattern, confidence, category in compiled_patterns:

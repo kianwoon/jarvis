@@ -2094,7 +2094,9 @@ Remember {context['client']} is a major bank requiring highest service standards
                         }
                         
                         # Call the async function directly since we're already in async context
+                        logger.info(f"[TOOL CALL] Executing {tool_name} with params: {json.dumps(params, indent=2)}")
                         result = await call_mcp_tool_via_stdio(server_config, tool_name, params)
+                        logger.info(f"[TOOL RESULT] {tool_name} returned: {json.dumps(result, indent=2) if isinstance(result, dict) else str(result)[:500]}")
                         
                         # Handle the response
                         if isinstance(result, dict):
@@ -2213,6 +2215,15 @@ Remember {context['client']} is a major bank requiring highest service standards
                 # Show more context for better understanding
                 prompt += f"\n\n{agent_name}:\n{content}"
                 
+                # Log what we're passing to help debug
+                logger.info(f"[CONTEXT] Previous agent output being passed to current agent:")
+                logger.info(f"[CONTEXT] From agent: {agent_name}")
+                logger.info(f"[CONTEXT] Content length: {len(content)} chars")
+                logger.info(f"[CONTEXT] Content preview (first 500 chars): {content[:500]}...")
+                if len(content) > 1000:
+                    logger.info(f"[CONTEXT] Content middle (500-1000 chars): {content[500:1000]}...")
+                    logger.info(f"[CONTEXT] Content end (last 500 chars): {content[-500:]}...")
+                
                 # Also include tool results if available
                 if 'tools_used' in output and output['tools_used']:
                     prompt += f"\n\n**Tools used by {agent_name}:**"
@@ -2233,21 +2244,36 @@ Remember {context['client']} is a major bank requiring highest service standards
             
             mcp_tools = get_enabled_mcp_tools()
             
+            # Enhanced debug logging
+            logger.info(f"[TOOL INFO] Agent {agent_name} has access to tools: {tools}")
+            logger.info(f"[TOOL INFO] MCP tools cache contains {len(mcp_tools)} tools total")
+            
+            # Check which tools are actually available
+            available_tools = []
+            missing_tools = []
+            for tool in tools:
+                if tool in mcp_tools:
+                    available_tools.append(tool)
+                else:
+                    missing_tools.append(tool)
+            
+            if missing_tools:
+                logger.warning(f"[TOOL INFO] Tools configured but not found in MCP: {missing_tools}")
+            
             prompt += f"\n\nYou have access to the following tools: {', '.join(tools)}"
             
-            # Debug: Log what tools we're providing
-            logger.info(f"Agent {agent_name} has tools: {tools}")
-            
             # Add tool descriptions and parameters from MCP
-            prompt += "\n\nTool specifications:"
-            for tool_name in tools:
-                if tool_name in mcp_tools:
+            if available_tools:
+                prompt += "\n\nTool specifications:"
+                for tool_name in available_tools:
                     tool_info = mcp_tools[tool_name]
                     prompt += f"\n- {tool_name}: {tool_info.get('description', 'No description available')}"
                     if tool_info.get('parameters'):
                         prompt += f"\n  Parameters: {json.dumps(tool_info['parameters'], indent=2)}"
-                else:
-                    logger.warning(f"Tool {tool_name} not found in MCP tools for agent {agent_name}")
+                    logger.info(f"[TOOL INFO] Added spec for {tool_name} to {agent_name}'s prompt")
+            else:
+                logger.error(f"[TOOL INFO] No valid MCP tools found for agent {agent_name}! Configured tools: {tools}")
+                prompt += "\n\n**WARNING**: The tools configured for this agent are not available in the MCP system."
             
             prompt += "\n\nTo use a tool, respond with a JSON object in this format:"
             prompt += '\n{"tool": "tool_name", "parameters": {...}}'
@@ -2292,7 +2318,16 @@ Remember {context['client']} is a major bank requiring highest service standards
                 logger.info(f"Generated example for {agent_name}: {example_json}")
                 prompt += f'\n{example_json}'
             
-            prompt += "\n\n**CRITICAL**: You MUST use these tools by including the JSON format in your response. Do not just describe what you would do - actually include the tool call JSON to execute the tools."
+            prompt += "\n\n**CRITICAL INSTRUCTIONS**:"
+            prompt += "\n1. You MUST use the tools by outputting the JSON format shown above"
+            prompt += "\n2. DO NOT use <think> tags or explain what you're going to do"
+            prompt += "\n3. START your response with the tool JSON immediately"
+            prompt += "\n4. After the tool executes, you can provide additional analysis"
+            
+            # Extra emphasis for email sending agents
+            if any(tool in ['gmail_send', 'send_email'] for tool in tools):
+                prompt += "\n\n**FOR EMAIL SENDING**: Your PRIMARY task is to send the email. Start with:"
+                prompt += '\n{"tool": "gmail_send", "parameters": {"to": "...", "subject": "...", "body": "..."}}'
             
             if has_previous_context:
                 prompt += "\n\nBased on the context from previous agents and your role, use your tools to continue the workflow and complete your assigned task."
@@ -2374,15 +2409,18 @@ Remember {context['client']} is a major bank requiring highest service standards
                         tool_name = tool_call["tool"]
                         tool_params = tool_call.get("parameters", {})
                         
-                        # Log tool execution attempt
-                        logger.info(f"Agent {agent_name} attempting to use tool: {tool_name}")
+                        # Log tool execution attempt with parameters
+                        logger.info(f"[TOOL DETECTION] Agent {agent_name} requesting tool: {tool_name}")
+                        logger.info(f"[TOOL PARAMS] {json.dumps(tool_params, indent=2)}")
                         
                         # Execute actual tool (if available) or simulate
                         tool_result = await self._execute_mcp_tool(tool_name, tool_params, agent_name)
                         
-                        # Debug: Log tool result for email tools
-                        if tool_name in ['search_emails', 'get_emails', 'read_email', 'send_email']:
-                            logger.info(f"[TOOL RESULT DEBUG] {tool_name} returned: {tool_result[:500]}...")
+                        # Log tool result
+                        if isinstance(tool_result, str) and len(tool_result) > 500:
+                            logger.info(f"[TOOL COMPLETE] {tool_name} returned {len(tool_result)} chars: {tool_result[:500]}...")
+                        else:
+                            logger.info(f"[TOOL COMPLETE] {tool_name} returned: {tool_result}")
                         
                         tool_results.append({
                             "tool": tool_name,

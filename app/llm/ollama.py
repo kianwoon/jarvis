@@ -18,6 +18,7 @@ class OllamaLLM(BaseLLM):
         payload = {
             "model": self.model_name,
             "prompt": prompt,
+            "stream": False,  # Important: disable streaming for single response
             "options": {
                 "temperature": self.config.temperature,
                 "top_p": self.config.top_p,
@@ -25,16 +26,34 @@ class OllamaLLM(BaseLLM):
                 "num_ctx": context_length,  # Set context window size
             }
         }
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:  # 30 second timeout
             response = await client.post(f"{self.base_url}/api/generate", json=payload)
             response.raise_for_status()
-            # Patch: Only parse the first JSON object in the response
-            lines = response.text.strip().splitlines()
-            data = json.loads(lines[0])
-            return LLMResponse(
-                text=data["response"],
-                metadata={"model": self.model_name}
-            )
+            
+            # With stream=False, Ollama returns a single JSON response
+            try:
+                data = response.json()
+                return LLMResponse(
+                    text=data.get("response", ""),
+                    metadata={"model": self.model_name, "done": data.get("done", True)}
+                )
+            except json.JSONDecodeError:
+                # Fallback: try parsing line by line if single JSON fails
+                lines = response.text.strip().splitlines()
+                full_text = ""
+                for line in lines:
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            if "response" in data:
+                                full_text += data["response"]
+                        except json.JSONDecodeError:
+                            continue
+                
+                return LLMResponse(
+                    text=full_text,
+                    metadata={"model": self.model_name}
+                )
 
     async def generate_stream(self, prompt: str, **kwargs) -> AsyncGenerator[LLMResponse, None]:
         # Get context length from settings or use model-specific defaults
