@@ -915,12 +915,148 @@ Remember {context['client']} is a major bank requiring highest service standards
             yield event
     
     async def _tool_executor_agent(self, state: AgentState) -> Dict[str, Any]:
-        """Execute tools based on query"""
-        # For now, return a placeholder
-        return {
-            "response": "Tool execution capability is being developed.",
-            "tools_used": []
-        }
+        """Execute MCP tools based on query and available tools"""
+        try:
+            from app.langchain.service import call_mcp_tool
+            
+            query = state['query']
+            tools_used = []
+            tool_results = []
+            
+            # Get available MCP tools
+            enabled_tools = get_enabled_mcp_tools()
+            
+            if not enabled_tools:
+                return {
+                    "response": "No MCP tools are currently available or enabled.",
+                    "tools_used": [],
+                    "tool_results": []
+                }
+            
+            # Analyze query to determine which tools to use
+            query_lower = query.lower()
+            tools_to_execute = []
+            
+            # Smart tool selection based on query keywords
+            for tool_name, tool_info in enabled_tools.items():
+                tool_description = ""
+                if isinstance(tool_info, dict):
+                    tool_description = tool_info.get('description', '').lower()
+                    # Also check tool manifest for more detailed descriptions
+                    manifest = tool_info.get('manifest', {})
+                    if manifest and 'tools' in manifest:
+                        for tool_def in manifest['tools']:
+                            if tool_def.get('name') == tool_name:
+                                tool_description += " " + tool_def.get('description', '').lower()
+                
+                # Match query intent with tool capabilities
+                if any(keyword in query_lower for keyword in ['search', 'find', 'lookup', 'google', 'web']) and 'search' in tool_name.lower():
+                    # Search tool
+                    search_query = query
+                    for word in ['search', 'internet', 'web', 'google', 'find', 'about', 'for']:
+                        search_query = search_query.replace(word, '').strip()
+                    tools_to_execute.append((tool_name, {'query': search_query, 'num_results': 5}))
+                
+                elif any(keyword in query_lower for keyword in ['time', 'date', 'now', 'current']) and 'datetime' in tool_name.lower():
+                    # DateTime tool
+                    tools_to_execute.append((tool_name, {}))
+                
+                elif any(keyword in query_lower for keyword in ['email', 'gmail', 'send', 'message']) and 'gmail' in tool_name.lower():
+                    # Gmail tools - need to extract recipient and content
+                    if 'send' in tool_name.lower():
+                        # For send email, we'd need to parse the query for recipient and content
+                        # This is a simplified implementation
+                        tools_to_execute.append((tool_name, {
+                            'to': 'user@example.com',  # Would need proper parsing
+                            'subject': 'Multi-Agent System Message',
+                            'body': query
+                        }))
+                
+                elif any(keyword in query_lower for keyword in ['weather', 'temperature', 'forecast']) and 'weather' in tool_name.lower():
+                    # Weather tools
+                    location = "current location"  # Could be extracted from query
+                    tools_to_execute.append((tool_name, {'location': location}))
+            
+            # If no specific tools matched, try to use the most general/useful ones
+            if not tools_to_execute and enabled_tools:
+                # Look for commonly useful tools
+                for tool_name in enabled_tools.keys():
+                    if 'search' in tool_name.lower() or 'google' in tool_name.lower():
+                        tools_to_execute.append((tool_name, {'query': query, 'num_results': 3}))
+                        break
+                
+                # If still no tools and we have datetime, use it as fallback
+                if not tools_to_execute:
+                    for tool_name in enabled_tools.keys():
+                        if 'datetime' in tool_name.lower() or 'time' in tool_name.lower():
+                            tools_to_execute.append((tool_name, {}))
+                            break
+            
+            # Execute selected tools
+            for tool_name, params in tools_to_execute:
+                try:
+                    print(f"[TOOL_EXECUTOR] Executing {tool_name} with params: {params}")
+                    result = call_mcp_tool(tool_name, params)
+                    
+                    tools_used.append(tool_name)
+                    tool_results.append({
+                        "tool": tool_name,
+                        "parameters": params,
+                        "result": result,
+                        "success": True
+                    })
+                    print(f"[TOOL_EXECUTOR] Tool {tool_name} executed successfully")
+                    
+                except Exception as tool_error:
+                    print(f"[TOOL_EXECUTOR] Error executing {tool_name}: {tool_error}")
+                    tool_results.append({
+                        "tool": tool_name,
+                        "parameters": params,
+                        "error": str(tool_error),
+                        "success": False
+                    })
+            
+            # Format response based on results
+            if tool_results:
+                response_parts = []
+                successful_results = [r for r in tool_results if r.get("success")]
+                failed_results = [r for r in tool_results if not r.get("success")]
+                
+                if successful_results:
+                    response_parts.append("🔧 **Tool Execution Results:**\n")
+                    for result in successful_results:
+                        response_parts.append(f"**{result['tool']}:**")
+                        if isinstance(result['result'], dict):
+                            response_parts.append(f"```json\n{json.dumps(result['result'], indent=2)}\n```")
+                        else:
+                            response_parts.append(f"{result['result']}")
+                        response_parts.append("")
+                
+                if failed_results:
+                    response_parts.append("❌ **Tool Execution Errors:**")
+                    for result in failed_results:
+                        response_parts.append(f"- {result['tool']}: {result.get('error', 'Unknown error')}")
+                    response_parts.append("")
+                
+                response = "\n".join(response_parts)
+            else:
+                response = f"No suitable tools found for the query: '{query}'. Available tools: {', '.join(enabled_tools.keys())}"
+            
+            return {
+                "response": response,
+                "tools_used": tools_used,
+                "tool_results": tool_results,
+                "available_tools": list(enabled_tools.keys())
+            }
+            
+        except Exception as e:
+            print(f"[TOOL_EXECUTOR] Error in tool executor agent: {e}")
+            return {
+                "response": f"Error in tool execution: {str(e)}",
+                "tools_used": [],
+                "tool_results": [],
+                "error": str(e)
+            }
     
     async def _context_manager_agent(self, state: AgentState) -> Dict[str, Any]:
         """Manage conversation context"""
@@ -2026,7 +2162,7 @@ Remember {context['client']} is a major bank requiring highest service standards
         
         return None
     
-    async def _execute_mcp_tool(self, tool_name: str, params: Dict[str, Any], agent_name: str) -> str:
+    async def _execute_mcp_tool(self, tool_name: str, params: Dict[str, Any], agent_name: str, event_callback=None) -> str:
         """Execute actual MCP tool"""
         try:
             from app.core.mcp_tools_cache import get_enabled_mcp_tools
@@ -2035,12 +2171,31 @@ Remember {context['client']} is a major bank requiring highest service standards
             
             logger.info(f"Executing MCP tool '{tool_name}' for agent '{agent_name}' with params: {params}")
             
+            # Yield tool start event if callback is provided
+            if event_callback:
+                await event_callback({
+                    "type": "tool_start",
+                    "agent": agent_name,
+                    "tool": tool_name,
+                    "parameters": params,
+                    "timestamp": datetime.now().isoformat()
+                })
+            
             # Get tool info
             enabled_tools = get_enabled_mcp_tools()
             tool_info = enabled_tools.get(tool_name)
             
             if not tool_info:
-                return f"Error: Tool '{tool_name}' not found in enabled tools"
+                error_msg = f"Error: Tool '{tool_name}' not found in enabled tools"
+                if event_callback:
+                    await event_callback({
+                        "type": "tool_error",
+                        "agent": agent_name,
+                        "tool": tool_name,
+                        "error": error_msg,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                return error_msg
             
             # Check if this is a Gmail tool and inject OAuth credentials
             if "gmail" in tool_name.lower() or "email" in tool_name.lower():
@@ -2121,6 +2276,16 @@ Remember {context['client']} is a major bank requiring highest service standards
                             if error_msg:
                                 logger.error(f"Tool execution error: {error_msg}")
                                 
+                                # Yield tool error event
+                                if event_callback:
+                                    await event_callback({
+                                        "type": "tool_error",
+                                        "agent": agent_name,
+                                        "tool": tool_name,
+                                        "error": error_msg,
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                
                                 # If it's an authentication error, provide helpful guidance
                                 if any(auth_keyword in error_msg.lower() for auth_keyword in ["no access", "refresh token", "authentication", "unauthorized"]):
                                     return (
@@ -2132,19 +2297,113 @@ Remember {context['client']} is a major bank requiring highest service standards
                                 return f"Error: {error_msg}"
                             else:
                                 # Success - return the result
-                                return json.dumps(result, indent=2)
+                                result_str = json.dumps(result, indent=2)
+                                
+                                # Yield tool success event
+                                if event_callback:
+                                    await event_callback({
+                                        "type": "tool_result",
+                                        "agent": agent_name,
+                                        "tool": tool_name,
+                                        "result": result,
+                                        "success": True,
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                
+                                return result_str
                         else:
-                            return str(result)
+                            result_str = str(result)
+                            
+                            # Yield tool success event for string results
+                            if event_callback:
+                                await event_callback({
+                                    "type": "tool_result",
+                                    "agent": agent_name,
+                                    "tool": tool_name,
+                                    "result": result_str,
+                                    "success": True,
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                            
+                            return result_str
                 finally:
                     db.close()
             else:
                 # For HTTP-based tools, make the request
                 # This would need to be implemented based on your HTTP tool execution logic
-                return f"HTTP tool execution not implemented for {tool_name}"
+                error_msg = f"HTTP tool execution not implemented for {tool_name}"
+                
+                if event_callback:
+                    await event_callback({
+                        "type": "tool_error",
+                        "agent": agent_name,
+                        "tool": tool_name,
+                        "error": error_msg,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+                return error_msg
                 
         except Exception as e:
+            error_msg = f"Tool execution failed: {str(e)}"
             logger.error(f"Failed to execute MCP tool {tool_name}: {str(e)}", exc_info=True)
-            return f"Tool execution failed: {str(e)}"
+            
+            # Yield tool error event
+            if event_callback:
+                await event_callback({
+                    "type": "tool_error",
+                    "agent": agent_name,
+                    "tool": tool_name,
+                    "error": error_msg,
+                    "timestamp": datetime.now().isoformat()
+                })
+            
+            return error_msg
+    
+    def _map_tool_parameters(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Map common parameter mismatches to correct parameter names"""
+        mapped_params = params.copy()
+        
+        # Google Search tool parameter mapping
+        if 'search' in tool_name.lower():
+            # Map common variations to 'query'
+            if 'q' in mapped_params and 'query' not in mapped_params:
+                mapped_params['query'] = mapped_params.pop('q')
+                logger.info(f"[PARAM MAPPING] Mapped 'q' -> 'query' for {tool_name}")
+            
+            if 'search' in mapped_params and 'query' not in mapped_params:
+                mapped_params['query'] = mapped_params.pop('search')
+                logger.info(f"[PARAM MAPPING] Mapped 'search' -> 'query' for {tool_name}")
+            
+            if 'search_query' in mapped_params and 'query' not in mapped_params:
+                mapped_params['query'] = mapped_params.pop('search_query')
+                logger.info(f"[PARAM MAPPING] Mapped 'search_query' -> 'query' for {tool_name}")
+            
+            # Map 'num' to 'num_results'
+            if 'num' in mapped_params and 'num_results' not in mapped_params:
+                mapped_params['num_results'] = mapped_params.pop('num')
+                logger.info(f"[PARAM MAPPING] Mapped 'num' -> 'num_results' for {tool_name}")
+            
+            if 'count' in mapped_params and 'num_results' not in mapped_params:
+                mapped_params['num_results'] = mapped_params.pop('count')
+                logger.info(f"[PARAM MAPPING] Mapped 'count' -> 'num_results' for {tool_name}")
+        
+        # Email tool parameter mapping  
+        elif 'email' in tool_name.lower() or 'gmail' in tool_name.lower():
+            # Map common email field variations
+            if 'recipient' in mapped_params and 'to' not in mapped_params:
+                mapped_params['to'] = mapped_params.pop('recipient')
+                logger.info(f"[PARAM MAPPING] Mapped 'recipient' -> 'to' for {tool_name}")
+            
+            if 'message' in mapped_params and 'body' not in mapped_params:
+                mapped_params['body'] = mapped_params.pop('message')
+                logger.info(f"[PARAM MAPPING] Mapped 'message' -> 'body' for {tool_name}")
+            
+            if 'content' in mapped_params and 'body' not in mapped_params:
+                mapped_params['body'] = mapped_params.pop('content')
+                logger.info(f"[PARAM MAPPING] Mapped 'content' -> 'body' for {tool_name}")
+        
+        return mapped_params
     
     async def _dynamic_agent(self, agent_name: str, agent_info: Dict[str, Any], state: AgentState):
         """Execute a dynamic agent from database"""
@@ -2264,12 +2523,18 @@ Remember {context['client']} is a major bank requiring highest service standards
             
             # Add tool descriptions and parameters from MCP
             if available_tools:
-                prompt += "\n\nTool specifications:"
+                prompt += "\n\n**TOOL SPECIFICATIONS** (Use these exact parameter names):"
                 for tool_name in available_tools:
                     tool_info = mcp_tools[tool_name]
-                    prompt += f"\n- {tool_name}: {tool_info.get('description', 'No description available')}"
+                    prompt += f"\n\n• **{tool_name}**: {tool_info.get('description', 'No description available')}"
                     if tool_info.get('parameters'):
-                        prompt += f"\n  Parameters: {json.dumps(tool_info['parameters'], indent=2)}"
+                        properties = tool_info['parameters'].get('properties', {})
+                        if properties:
+                            prompt += f"\n  Required parameters:"
+                            for param_name, param_schema in properties.items():
+                                param_type = param_schema.get('type', 'string')
+                                param_desc = param_schema.get('description', '')
+                                prompt += f"\n    - {param_name} ({param_type}): {param_desc}"
                     logger.info(f"[TOOL INFO] Added spec for {tool_name} to {agent_name}'s prompt")
             else:
                 logger.error(f"[TOOL INFO] No valid MCP tools found for agent {agent_name}! Configured tools: {tools}")
@@ -2290,7 +2555,10 @@ Remember {context['client']} is a major bank requiring highest service standards
                         param_type = param_schema.get('type', 'string')
                         
                         if param_name == "query":
-                            example_params[param_name] = "subject:ENQUIRY"
+                            if "search" in example_tool.lower():
+                                example_params[param_name] = "your search terms here"
+                            else:
+                                example_params[param_name] = "subject:ENQUIRY"
                         elif param_name == "maxResults" or param_name == "count":
                             example_params[param_name] = 10
                         elif param_name == "to":
@@ -2320,9 +2588,11 @@ Remember {context['client']} is a major bank requiring highest service standards
             
             prompt += "\n\n**CRITICAL INSTRUCTIONS**:"
             prompt += "\n1. You MUST use the tools by outputting the JSON format shown above"
-            prompt += "\n2. DO NOT use <think> tags or explain what you're going to do"
-            prompt += "\n3. START your response with the tool JSON immediately"
-            prompt += "\n4. After the tool executes, you can provide additional analysis"
+            prompt += "\n2. Use the EXACT parameter names shown in the tool specifications"
+            prompt += "\n3. For google_search tool, use 'query' NOT 'q' and 'num_results' NOT 'num'"
+            prompt += "\n4. DO NOT use <think> tags or explain what you're going to do"
+            prompt += "\n5. START your response with the tool JSON immediately"
+            prompt += "\n6. After the tool executes, you can provide additional analysis"
             
             # Extra emphasis for email sending agents
             if any(tool in ['gmail_send', 'send_email'] for tool in tools):
@@ -2413,6 +2683,10 @@ Remember {context['client']} is a major bank requiring highest service standards
                         logger.info(f"[TOOL DETECTION] Agent {agent_name} requesting tool: {tool_name}")
                         logger.info(f"[TOOL PARAMS] {json.dumps(tool_params, indent=2)}")
                         
+                        # Apply parameter mapping for common mismatches
+                        tool_params = self._map_tool_parameters(tool_name, tool_params)
+                        logger.info(f"[TOOL PARAMS MAPPED] {json.dumps(tool_params, indent=2)}")
+                        
                         # Execute actual tool (if available) or simulate
                         tool_result = await self._execute_mcp_tool(tool_name, tool_params, agent_name)
                         
@@ -2441,106 +2715,56 @@ Remember {context['client']} is a major bank requiring highest service standards
         # If tools were called, process the results
         if tool_results:
             # Build a context-aware response based on tool results
-            tool_context = "\n\nBased on the tool execution results:\n"
+            tool_context = "\n\n**Tool Execution Results:**\n"
             for result in tool_results:
-                tool_context += f"\n{result['result']}\n"
+                tool_name = result['tool']
+                tool_result = result['result']
+                
+                tool_context += f"\n**{tool_name}:**\n"
+                
+                # Format search results nicely
+                if 'search' in tool_name.lower() and isinstance(tool_result, dict) and 'result' in tool_result:
+                    search_results = tool_result['result']
+                    if isinstance(search_results, list):
+                        tool_context += f"Found {len(search_results)} search results:\n"
+                        for i, item in enumerate(search_results[:5], 1):  # Limit to top 5 results
+                            if isinstance(item, dict):
+                                title = item.get('title', 'No title')
+                                url = item.get('url', '')
+                                description = item.get('description', 'No description')
+                                tool_context += f"\n{i}. **{title}**\n"
+                                tool_context += f"   URL: {url}\n"
+                                tool_context += f"   Description: {description}\n"
+                            else:
+                                tool_context += f"\n{i}. {item}\n"
+                    else:
+                        tool_context += f"{search_results}\n"
+                else:
+                    # For other tools, include the raw result
+                    tool_context += f"{tool_result}\n"
+                
+                tool_context += "\n"
             
-            # If the response is just a tool call, generate proper content
-            if len(response) < 500 and '"tool"' in response:
-                # Re-prompt the agent to generate actual content based on tool results
-                follow_up_prompt = f"{prompt}\n\n**Tool Execution Results**:{tool_context}\n\n**Now provide your complete response**: Based on these tool results, provide a comprehensive response that fulfills your role."
-                
-                # Special handling for email-related agents
-                if "email" in agent_name.lower() or "customer" in agent_name.lower():
-                    # Parse tool results to extract email content
-                    try:
-                        for result in tool_results:
-                            if result['tool'] in ['search_emails', 'get_emails', 'read_email']:
-                                # Gmail MCP returns search results directly as a string
-                                result_text = str(result['result'])
-                                
-                                # Extract email content from the text
-                                if any(keyword in result_text for keyword in ["Subject:", "From:", "subject:", "from:", "To:", "to:", "ID:"]):
-                                    follow_up_prompt += "\n\n**Email Content to Analyze**:\n"
-                                    follow_up_prompt += result_text
-                                    
-                                    # Try to extract specific fields
-                                    import re
-                                    
-                                    # Extract email ID first - critical for read_email
-                                    id_match = re.search(r'ID:\s*([a-f0-9]+)', result_text)
-                                    email_id = None
-                                    if id_match:
-                                        email_id = id_match.group(1).strip()
-                                        follow_up_prompt += f"\n**Email ID**: {email_id}"
-                                    
-                                    # Extract sender
-                                    sender_match = re.search(r'(?:From|from):\s*([^\n]+)', result_text)
-                                    if sender_match:
-                                        follow_up_prompt += f"\n**Sender**: {sender_match.group(1).strip()}"
-                                    
-                                    # Extract subject
-                                    subject_match = re.search(r'(?:Subject|subject|ENQUIRY):\s*([^\n]+)', result_text)
-                                    if subject_match:
-                                        follow_up_prompt += f"\n**Subject**: {subject_match.group(1).strip()}"
-                                    
-                                    # If we have an email ID but no body content yet, suggest using read_email
-                                    if email_id and result['tool'] == 'search_emails':
-                                        follow_up_prompt += f"\n\n**Important**: The search found an email with ID '{email_id}'. To read the full email content, use the read_email tool with this exact messageId."
-                                        follow_up_prompt += f'\n\nExample: {{"tool": "read_email", "parameters": {{"messageId": "{email_id}"}}}}'
-                                    
-                                    # Extract body or snippet if available
-                                    body_match = re.search(r'(?:Body|body|Snippet|snippet):\s*(.+)', result_text, re.DOTALL)
-                                    if body_match:
-                                        body_content = body_match.group(1).strip()
-                                        follow_up_prompt += f"\n**Message Content**: {body_content[:500]}..."  # Limit length
-                                        
-                                        # Look for specific questions or topics
-                                        if "agentic AI" in body_content.lower():
-                                            follow_up_prompt += "\n\n**Customer's Question**: The customer is asking about 'agentic AI' - please provide a comprehensive explanation of what agentic AI is, how it works, and its benefits."
-                                        elif "?" in body_content:
-                                            # Extract questions
-                                            questions = re.findall(r'([^.!?]*\?)', body_content)
-                                            if questions:
-                                                follow_up_prompt += f"\n\n**Customer's Questions**: {' '.join(questions[:3])}"
-                                    
-                                    # If we found email content, add clear instructions
-                                    if sender_match or subject_match or body_match:
-                                        follow_up_prompt += "\n\n**Your Task**: Compose a professional email response that:"
-                                        follow_up_prompt += "\n1. Addresses the customer by name if available"
-                                        follow_up_prompt += "\n2. References their original email subject"
-                                        follow_up_prompt += "\n3. Directly answers their question(s) or addresses their concern(s)"
-                                        follow_up_prompt += "\n4. Provides helpful and accurate information"
-                                        follow_up_prompt += "\n5. Ends with an appropriate closing and offer for further assistance"
-                                    else:
-                                        follow_up_prompt += "\n\n**Your Task**: First use read_email to get the full content if you have an email ID, then compose an appropriate response."
-                                elif "No emails found" in result_text or "no results" in result_text.lower():
-                                    follow_up_prompt += "\n\n**Note**: No emails were found matching the search criteria. Consider adjusting your search parameters or checking if the inbox is empty."
-                                else:
-                                    # Fallback - just include the raw result
-                                    follow_up_prompt += f"\n\n**Search Results**:\n{result_text[:1000]}..."
-                                    follow_up_prompt += "\n\n**Your Task**: Analyze the search results and take appropriate action based on your role."
-                    except Exception as e:
-                        logger.warning(f"Error parsing email results: {e}")
-                        pass  # If parsing fails, continue with standard processing
-                
-                follow_up_prompt += " Include analysis, recommendations, and any draft content as needed."
-                
-                print(f"[DEBUG] Agent {agent_name} only returned tool call, requesting full response...")
-                
-                # Get actual content response
-                follow_up_response = ""
-                async for event in self._call_llm_stream(follow_up_prompt, agent_name, temperature=0.8, timeout=30, agent_config=pipeline_agent_config):
-                    if event.get("type") == "agent_token":
-                        follow_up_response += event.get("token", "")
-                    elif event.get("type") == "agent_complete":
-                        if event.get("content"):
-                            follow_up_response = event.get("content", "")
-                
-                response = follow_up_response
-            else:
-                # Append tool results to existing response
-                response += tool_context
+            # Always generate a follow-up response when tools were executed to incorporate results
+            print(f"[DEBUG] Agent {agent_name} executed {len(tool_results)} tools, generating follow-up response to incorporate results")
+            
+            # Re-prompt the agent to generate content based on tool results
+            follow_up_prompt = f"{prompt}\n\n**Tool Execution Results**:{tool_context}\n\n**Now provide your complete response**: Based on these tool results, provide a comprehensive response that fulfills your role. Do not repeat the tool calls, just provide your analysis and conclusions based on the results."
+            
+            # Email handling disabled for now - focusing on search tool integration
+            
+            # Get actual content response that incorporates tool results
+            follow_up_response = ""
+            async for event in self._call_llm_stream(follow_up_prompt, agent_name, temperature=0.8, timeout=60, agent_config=pipeline_agent_config):
+                if event.get("type") == "agent_token":
+                    follow_up_response += event.get("token", "")
+                elif event.get("type") == "agent_complete":
+                    if event.get("content"):
+                        follow_up_response = event.get("content", "")
+            
+            # Use the follow-up response that incorporates tool results
+            response = follow_up_response if follow_up_response.strip() else response
+            print(f"[DEBUG] Agent {agent_name} follow-up response length: {len(follow_up_response)}")
         
         # Debug logging
         print(f"[DEBUG] Dynamic agent {agent_name} generated response of length: {len(response)}")

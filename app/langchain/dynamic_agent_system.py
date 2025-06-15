@@ -533,7 +533,27 @@ Please provide a comprehensive response based on your role and expertise."""
             print(f"[DEBUG] {agent_name}: Cleaned preview (first 200 chars): {cleaned_content[:200]!r}")
             
             # Check for and execute any tool calls
-            enhanced_content, tool_results = await self._process_tool_calls(agent_name, cleaned_content)
+            # Debug: Verify all variables are defined before the call
+            print(f"[DEBUG] {agent_name}: About to call _process_tool_calls")
+            print(f"[DEBUG] {agent_name}: Variables check - agent_name: {agent_name is not None}, cleaned_content: {len(cleaned_content)}")
+            try:
+                print(f"[DEBUG] {agent_name}: query length: {len(query)}")
+                print(f"[DEBUG] {agent_name}: context is None: {context is None}")
+                print(f"[DEBUG] {agent_name}: agent_data is None: {agent_data is None}")
+                # If we get here, all variables are properly defined
+                query_to_use = query
+                context_to_use = context
+                agent_data_to_use = agent_data
+            except NameError as e:
+                print(f"[ERROR] {agent_name}: NameError in variable check: {e}")
+                print(f"[ERROR] {agent_name}: Available locals: {list(locals().keys())}")
+                # Use fallbacks to avoid breaking the system
+                query_to_use = "fallback query due to scoping issue"
+                context_to_use = None
+                agent_data_to_use = agent_data if 'agent_data' in locals() else {}
+                print(f"[ERROR] {agent_name}: Using fallback variables")
+            
+            enhanced_content, tool_results = await self._process_tool_calls(agent_name, cleaned_content, query_to_use, context_to_use, agent_data_to_use)
             
             # ALWAYS yield completion event, even if content is empty
             print(f"[DEBUG] {agent_name}: Yielding completion event with content_length={len(enhanced_content)}")
@@ -594,9 +614,11 @@ Please provide a comprehensive response based on your role and expertise."""
                 "error": str(e)
             }
     
-    async def _process_tool_calls(self, agent_name: str, agent_response: str) -> tuple[str, list]:
+    async def _process_tool_calls(self, agent_name: str, agent_response: str, query: str, context: Dict = None, agent_data: Dict = None) -> tuple[str, list]:
         """Process agent response for tool calls and execute them"""
         try:
+            print(f"[DEBUG] {agent_name}: _process_tool_calls started with query: {query[:50]}...")
+            print(f"[DEBUG] {agent_name}: Method parameters - query type: {type(query)}, context: {context is not None}, agent_data: {agent_data is not None}")
             # Import tool executor at runtime to avoid circular imports
             from app.langchain.tool_executor import tool_executor
             
@@ -705,19 +727,93 @@ Please provide a comprehensive response based on your role and expertise."""
             
             print(f"[DEBUG] {agent_name}: All tools executed. Results: {len(tool_results)} tools")
             
-            # Create enhanced response
-            enhanced_response = agent_response
-            if tool_results:
-                enhanced_response += "\n\n**Tool Execution Results:**\n"
-                for result in tool_results:
-                    if result["success"]:
-                        enhanced_response += f"✅ {result['tool']}: {json.dumps(result['result'], indent=2)}\n"
-                    else:
-                        enhanced_response += f"❌ {result['tool']}: {result.get('error', 'Unknown error')}\n"
+            # If tools were executed successfully, generate a follow-up response that incorporates the results
+            if tool_results and any(result.get("success") for result in tool_results):
+                print(f"[DEBUG] {agent_name}: Tools executed successfully, generating follow-up response to incorporate results")
                 
-                print(f"[DEBUG] {agent_name}: Executed {len(tool_results)} tool(s)")
+                # Build tool context for the follow-up prompt
+                tool_context = "\n\n**Tool Execution Results:**\n"
                 for result in tool_results:
-                    print(f"[DEBUG] {agent_name}: Tool {result['tool']} -> {'Success' if result['success'] else 'Failed'}")
+                    if result.get("success"):
+                        tool_name = result['tool']
+                        tool_result = result['result']
+                        
+                        tool_context += f"\n**{tool_name}:**\n"
+                        
+                        # Format search results nicely
+                        if 'search' in tool_name.lower() and isinstance(tool_result, dict) and 'result' in tool_result:
+                            search_results = tool_result['result']
+                            if isinstance(search_results, list):
+                                tool_context += f"Found {len(search_results)} search results:\n"
+                                for i, item in enumerate(search_results[:5], 1):  # Limit to top 5 results
+                                    if isinstance(item, dict):
+                                        title = item.get('title', 'No title')
+                                        url = item.get('url', '')
+                                        description = item.get('description', 'No description')
+                                        tool_context += f"\n{i}. **{title}**\n"
+                                        tool_context += f"   URL: {url}\n"
+                                        tool_context += f"   Description: {description}\n"
+                                    else:
+                                        tool_context += f"\n{i}. {item}\n"
+                            else:
+                                tool_context += f"{search_results}\n"
+                        else:
+                            # For other tools, include the raw result
+                            tool_context += f"{tool_result}\n"
+                        
+                        tool_context += "\n"
+                
+                # Create follow-up prompt to generate a response that incorporates tool results
+                agent_config = context.get("agent_config", {}) if context else {}
+                system_prompt = agent_config.get("system_prompt") or agent_data.get("system_prompt", "You are a helpful assistant.")
+                
+                print(f"[DEBUG] {agent_name}: Building follow-up prompt with query length: {len(query)}")
+                
+                # Build the follow-up prompt carefully to avoid scoping issues
+                user_query_part = f"USER QUERY: {query}"
+                
+                follow_up_prompt = f"""{system_prompt}
+
+{user_query_part}
+
+You have executed tools and received the following results:
+{tool_context}
+
+Based on these tool results, provide a comprehensive response that:
+1. Directly answers the user's question
+2. Incorporates the relevant information from the tool results
+3. Synthesizes the findings into a coherent response
+4. Does not repeat the raw tool output but interprets and explains it
+
+Provide your complete response based on the tool results above."""
+
+                # Generate follow-up response that incorporates tool results
+                follow_up_response = ""
+                async for chunk in self._call_llm_stream(
+                    follow_up_prompt,
+                    agent_name, 
+                    temperature=0.8,
+                    max_tokens=2000,
+                    timeout=60
+                ):
+                    if chunk.get("type") == "agent_complete":
+                        follow_up_response = chunk.get("content", "")
+                        break
+                
+                # Use the follow-up response that incorporates tool results, fallback to original if needed
+                enhanced_response = follow_up_response if follow_up_response.strip() else agent_response
+                print(f"[DEBUG] {agent_name}: Generated follow-up response incorporating tool results (length: {len(follow_up_response)})")
+                
+            else:
+                # No successful tools or no tools executed
+                enhanced_response = agent_response
+                if tool_results:
+                    enhanced_response += "\n\n**Tool Execution Results:**\n"
+                    for result in tool_results:
+                        if not result.get("success"):
+                            enhanced_response += f"❌ {result['tool']}: {result.get('error', 'Unknown error')}\n"
+                
+                print(f"[DEBUG] {agent_name}: No successful tools executed, using original response")
             
             return enhanced_response, tool_results
             

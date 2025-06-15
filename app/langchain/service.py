@@ -2971,9 +2971,62 @@ def refresh_gmail_token(server_id):
     except Exception as e:
         return {"error": f"Exception refreshing token: {str(e)}"}
 
+def _map_tool_parameters_service(tool_name: str, params: dict) -> dict:
+    """Map common parameter mismatches to correct parameter names for service layer"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    mapped_params = params.copy()
+    
+    # Google Search tool parameter mapping
+    if 'search' in tool_name.lower():
+        # Map common variations to 'query'
+        if 'q' in mapped_params and 'query' not in mapped_params:
+            mapped_params['query'] = mapped_params.pop('q')
+            logger.info(f"[PARAM MAPPING] Mapped 'q' -> 'query' for {tool_name}")
+        
+        if 'search' in mapped_params and 'query' not in mapped_params:
+            mapped_params['query'] = mapped_params.pop('search')
+            logger.info(f"[PARAM MAPPING] Mapped 'search' -> 'query' for {tool_name}")
+        
+        if 'search_query' in mapped_params and 'query' not in mapped_params:
+            mapped_params['query'] = mapped_params.pop('search_query')
+            logger.info(f"[PARAM MAPPING] Mapped 'search_query' -> 'query' for {tool_name}")
+        
+        # Map 'num' to 'num_results'
+        if 'num' in mapped_params and 'num_results' not in mapped_params:
+            mapped_params['num_results'] = mapped_params.pop('num')
+            logger.info(f"[PARAM MAPPING] Mapped 'num' -> 'num_results' for {tool_name}")
+        
+        if 'count' in mapped_params and 'num_results' not in mapped_params:
+            mapped_params['num_results'] = mapped_params.pop('count')
+            logger.info(f"[PARAM MAPPING] Mapped 'count' -> 'num_results' for {tool_name}")
+    
+    # Email tool parameter mapping  
+    elif 'email' in tool_name.lower() or 'gmail' in tool_name.lower():
+        # Map common email field variations
+        if 'recipient' in mapped_params and 'to' not in mapped_params:
+            mapped_params['to'] = mapped_params.pop('recipient')
+            logger.info(f"[PARAM MAPPING] Mapped 'recipient' -> 'to' for {tool_name}")
+        
+        if 'message' in mapped_params and 'body' not in mapped_params:
+            mapped_params['body'] = mapped_params.pop('message')
+            logger.info(f"[PARAM MAPPING] Mapped 'message' -> 'body' for {tool_name}")
+        
+        if 'content' in mapped_params and 'body' not in mapped_params:
+            mapped_params['body'] = mapped_params.pop('content')
+            logger.info(f"[PARAM MAPPING] Mapped 'content' -> 'body' for {tool_name}")
+    
+    return mapped_params
+
 def call_mcp_tool(tool_name, parameters):
     """Call an MCP tool and return the result using info from Redis cache"""
     print(f"[DEBUG] call_mcp_tool called with tool_name='{tool_name}', parameters={parameters}")
+    
+    # Apply parameter mapping for common mismatches
+    parameters = _map_tool_parameters_service(tool_name, parameters)
+    print(f"[DEBUG] Parameters after mapping: {parameters}")
+    
     enabled_tools = get_enabled_mcp_tools()
     if tool_name not in enabled_tools:
         return {"error": f"Tool {tool_name} not found in enabled tools"}
