@@ -55,8 +55,9 @@ class MultiAgentSystem:
     - Graceful handling of system constraints
     """
     
-    def __init__(self, conversation_id: Optional[str] = None):
+    def __init__(self, conversation_id: Optional[str] = None, trace=None):
         self.conversation_id = conversation_id or str(uuid.uuid4())
+        self.trace = trace  # Store trace for span creation
         
         # Ensure Redis cache is warmed before proceeding
         from app.core.langgraph_agents_cache import validate_and_warm_cache, get_cache_status
@@ -420,7 +421,7 @@ class MultiAgentSystem:
         try:
             print("[DEBUG] Attempting dynamic LLM-based routing")
             from app.langchain.dynamic_agent_system import DynamicMultiAgentSystem
-            dynamic_system = DynamicMultiAgentSystem()
+            dynamic_system = DynamicMultiAgentSystem(trace=self.trace)
             routing_result = await dynamic_system.route_query(query, conversation_history)
             
             if routing_result.get("agents"):
@@ -503,6 +504,28 @@ Respond ONLY in this JSON format:
 Important: Only use agent names that exist in the available agents list above."""
 
         # Make a quick LLM call for routing with timeout
+        # Create Langfuse generation for router system decision
+        router_generation = None
+        if self.trace:
+            try:
+                from app.core.langfuse_integration import get_tracer
+                tracer = get_tracer()
+                if tracer.is_enabled():
+                    router_generation = tracer.create_generation_with_usage(
+                        trace=self.trace,
+                        name="system-router",
+                        model="qwen3:30b-a3b",
+                        input_text=routing_prompt,
+                        metadata={
+                            "operation": "agent_routing",
+                            "conversation_id": self.conversation_id,
+                            "available_agents": list(implemented_agents.keys()),
+                            "has_conversation_history": bool(conversation_history)
+                        }
+                    )
+            except Exception as e:
+                print(f"[WARNING] Failed to create router generation: {e}")
+        
         try:
             async for chunk in self._call_llm_stream(routing_prompt, "router", temperature=0.3, timeout=8):
                 if chunk.get("type") == "agent_complete":
@@ -526,6 +549,27 @@ Important: Only use agent names that exist in the available agents list above.""
                                     "agents": valid_agents,
                                     "reasoning": routing_data.get("reasoning", "LLM-based routing")
                                 }
+                                
+                                # End router generation with success
+                                if router_generation:
+                                    try:
+                                        from app.core.langfuse_integration import get_tracer
+                                        tracer = get_tracer()
+                                        usage = tracer.estimate_token_usage(routing_prompt, response_text)
+                                        
+                                        router_generation.end(
+                                            output=json.dumps(result, indent=2),
+                                            usage_details=usage,
+                                            metadata={
+                                                "success": True,
+                                                "selected_agents": valid_agents,
+                                                "reasoning_length": len(routing_data.get("reasoning", "")),
+                                                "conversation_id": self.conversation_id
+                                            }
+                                        )
+                                    except Exception as e:
+                                        print(f"[WARNING] Failed to end router generation: {e}")
+                                
                                 # Cache the result
                                 self.routing_cache[cache_key] = result
                                 return result
@@ -536,7 +580,35 @@ Important: Only use agent names that exist in the available agents list above.""
                         raise Exception(f"Failed to parse LLM routing response: {e}")
                         
         except Exception as e:
+            # End router generation with error
+            if router_generation:
+                try:
+                    router_generation.end(
+                        output=f"Error: {str(e)}",
+                        metadata={
+                            "success": False,
+                            "error": str(e),
+                            "conversation_id": self.conversation_id
+                        }
+                    )
+                except Exception as gen_error:
+                    print(f"[WARNING] Failed to end router generation with error: {gen_error}")
+            
             raise Exception(f"LLM routing call failed: {e}")
+        
+        # End router generation with error for no response
+        if router_generation:
+            try:
+                router_generation.end(
+                    output="Error: No complete response received",
+                    metadata={
+                        "success": False,
+                        "error": "No complete response received from LLM router",
+                        "conversation_id": self.conversation_id
+                    }
+                )
+            except Exception as gen_error:
+                print(f"[WARNING] Failed to end router generation with error: {gen_error}")
         
         raise Exception("No complete response received from LLM router")
     
@@ -917,8 +989,6 @@ Remember {context['client']} is a major bank requiring highest service standards
     async def _tool_executor_agent(self, state: AgentState) -> Dict[str, Any]:
         """Execute MCP tools based on query and available tools"""
         try:
-            from app.langchain.service import call_mcp_tool
-            
             query = state['query']
             tools_used = []
             tool_results = []
@@ -996,7 +1066,8 @@ Remember {context['client']} is a major bank requiring highest service standards
             for tool_name, params in tools_to_execute:
                 try:
                     print(f"[TOOL_EXECUTOR] Executing {tool_name} with params: {params}")
-                    result = call_mcp_tool(tool_name, params)
+                    # Use _execute_mcp_tool which includes Langfuse span creation
+                    result = await self._execute_mcp_tool(tool_name, params, "tool_executor")
                     
                     tools_used.append(tool_name)
                     tool_results.append({
@@ -1484,13 +1555,21 @@ Remember {context['client']} is a major bank requiring highest service standards
                                 state["agent_metrics"][agent_name_local]["end_time"] = datetime.now().isoformat()
                                 return  # Return from this specific wrapper, not the main function
                         
-                        dynamic_system = DynamicMultiAgentSystem()
+                        dynamic_system = DynamicMultiAgentSystem(trace=self.trace)
                         start_time = agent_start_times[agent_name_local]
                         
                         # Build context including conversation history
                         agent_context = self._extract_query_context(state["query"])
                         if conversation_history:
                             agent_context["conversation_history"] = conversation_history
+                        
+                        # CRITICAL FIX: Add tool information to agent context
+                        # This ensures tools are available when using DynamicMultiAgentSystem execution path
+                        if agent_data and agent_data.get("tools"):
+                            agent_context["available_tools"] = agent_data["tools"]
+                            print(f"[DEBUG] Added {len(agent_data['tools'])} tools to context for {agent_name_local}: {agent_data['tools']}")
+                        else:
+                            print(f"[DEBUG] No tools found for {agent_name_local} in agent_data")
                         
                         # CRITICAL FIX: Check state at execution time, not at wrapper creation time
                         # This ensures we get the previous agent response that was set during sequential execution
@@ -1953,6 +2032,27 @@ Remember {context['client']} is a major bank requiring highest service standards
         import time
         start_time = time.time()
         
+        # Create agent span for tracing if trace is available
+        from app.core.langfuse_integration import get_tracer
+        tracer = get_tracer()
+        agent_generation = None
+        
+        if self.trace and tracer.is_enabled():
+            # Create generation for agent LLM response (not span)
+            agent_generation = tracer.create_generation_with_usage(
+                trace=self.trace,
+                name=f"agent-{agent_name}",
+                model=agent_data.get("config", {}).get("model", "qwen3:30b-a3b"),
+                input_text=query,
+                metadata={
+                    "conversation_id": self.conversation_id,
+                    "has_previous_outputs": bool(previous_outputs),
+                    "has_conversation_history": bool(conversation_history),
+                    "agent_role": agent_data.get("role", ""),
+                    "tools_available": agent_data.get("tools", [])
+                }
+            )
+        
         # Initialize state for single agent execution
         state = AgentState(
             query=query,
@@ -2032,18 +2132,50 @@ Remember {context['client']} is a major bank requiring highest service standards
                 "tools_used": result.get("tools_used", state.get("tools_used", []))
             }
             
+            # End agent generation with success
+            if agent_generation:
+                # Estimate token usage for cost calculation
+                usage = tracer.estimate_token_usage(query, return_value.get("content", ""))
+                
+                agent_generation.end(
+                    output=return_value.get("content", ""),
+                    usage_details=usage,
+                    metadata={
+                        "success": True,
+                        "execution_time": execution_time,
+                        "tools_used": return_value.get("tools_used", []),
+                        "response_length": len(return_value.get("content", "")),
+                        "conversation_id": self.conversation_id
+                    }
+                )
+            
             print(f"[DEBUG] execute_single_agent {agent_name} returning content length: {len(return_value['content'])}")
             return return_value
             
         except Exception as e:
             logger.error(f"Error executing agent {agent_name}: {str(e)}")
-            return {
+            
+            error_result = {
                 "agent": agent_name,
                 "content": f"Error: {str(e)}",
                 "reasoning": "Agent execution failed",
                 "execution_time": time.time() - start_time,
                 "error": str(e)
             }
+            
+            # End agent generation with error
+            if agent_generation:
+                agent_generation.end(
+                    output=f"Error: {str(e)}",
+                    metadata={
+                        "success": False,
+                        "error": str(e),
+                        "execution_time": time.time() - start_time,
+                        "conversation_id": self.conversation_id
+                    }
+                )
+            
+            return error_result
     
     async def execute_agents(
         self,
@@ -2164,6 +2296,22 @@ Remember {context['client']} is a major bank requiring highest service standards
     
     async def _execute_mcp_tool(self, tool_name: str, params: Dict[str, Any], agent_name: str, event_callback=None) -> str:
         """Execute actual MCP tool"""
+        # Create tool span for tracing if trace is available
+        from app.core.langfuse_integration import get_tracer
+        tracer = get_tracer()
+        tool_span = None
+        
+        if self.trace and tracer.is_enabled():
+            print(f"[DEBUG] Creating tool span for {tool_name} by agent {agent_name}")
+            tool_span = tracer.create_tool_span(
+                self.trace, 
+                tool_name, 
+                {**params, "agent": agent_name}
+            )
+            print(f"[DEBUG] Tool span created: {tool_span is not None}")
+        else:
+            print(f"[DEBUG] No tool span created - trace: {self.trace is not None}, tracer enabled: {tracer.is_enabled()}")
+        
         try:
             from app.core.mcp_tools_cache import get_enabled_mcp_tools
             from app.core.oauth_token_manager import OAuthTokenManager
@@ -2195,6 +2343,9 @@ Remember {context['client']} is a major bank requiring highest service standards
                         "error": error_msg,
                         "timestamp": datetime.now().isoformat()
                     })
+                # End tool span with error (early error case)
+                if tool_span:
+                    tracer.end_span_with_result(tool_span, None, False, error_msg)
                 return error_msg
             
             # Check if this is a Gmail tool and inject OAuth credentials
@@ -2288,12 +2439,19 @@ Remember {context['client']} is a major bank requiring highest service standards
                                 
                                 # If it's an authentication error, provide helpful guidance
                                 if any(auth_keyword in error_msg.lower() for auth_keyword in ["no access", "refresh token", "authentication", "unauthorized"]):
-                                    return (
+                                    auth_error = (
                                         f"Authentication Error: Gmail access is not properly configured. "
                                         f"Please ensure Gmail OAuth is set up in the MCP Servers settings. "
                                         f"Error details: {error_msg}"
                                     )
+                                    # End tool span with authentication error
+                                    if tool_span:
+                                        tracer.end_span_with_result(tool_span, None, False, auth_error)
+                                    return auth_error
                                 
+                                # End tool span with general error
+                                if tool_span:
+                                    tracer.end_span_with_result(tool_span, None, False, f"Error: {error_msg}")
                                 return f"Error: {error_msg}"
                             else:
                                 # Success - return the result
@@ -2310,6 +2468,10 @@ Remember {context['client']} is a major bank requiring highest service standards
                                         "timestamp": datetime.now().isoformat()
                                     })
                                 
+                                # End tool span with success
+                                if tool_span:
+                                    print(f"[DEBUG] Ending tool span for {tool_name} with success")
+                                    tracer.end_span_with_result(tool_span, result, True)
                                 return result_str
                         else:
                             result_str = str(result)
@@ -2325,6 +2487,10 @@ Remember {context['client']} is a major bank requiring highest service standards
                                     "timestamp": datetime.now().isoformat()
                                 })
                             
+                            # End tool span with success (string result)
+                            if tool_span:
+                                print(f"[DEBUG] Ending tool span for {tool_name} with success (string result)")
+                                tracer.end_span_with_result(tool_span, result_str, True)
                             return result_str
                 finally:
                     db.close()
@@ -2342,6 +2508,9 @@ Remember {context['client']} is a major bank requiring highest service standards
                         "timestamp": datetime.now().isoformat()
                     })
                 
+                # End tool span with error (HTTP not implemented)
+                if tool_span:
+                    tracer.end_span_with_result(tool_span, None, False, error_msg)
                 return error_msg
                 
         except Exception as e:
@@ -2358,6 +2527,9 @@ Remember {context['client']} is a major bank requiring highest service standards
                     "timestamp": datetime.now().isoformat()
                 })
             
+            # End tool span with error (exception)
+            if tool_span:
+                tracer.end_span_with_result(tool_span, None, False, error_msg)
             return error_msg
     
     def _map_tool_parameters(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:

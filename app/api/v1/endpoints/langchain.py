@@ -64,17 +64,18 @@ async def rag_endpoint(request: RAGRequest):
         
         # Create generation within the trace for detailed observability
         if trace:
-            generation = tracer.create_generation(
+            generation = tracer.create_generation_with_usage(
                 trace=trace,
                 name="rag-generation",
                 model=model_name,
-                input=request.question,
+                input_text=request.question,
                 metadata={
                     "thinking": request.thinking,
                     "collections": request.collections,
                     "collection_strategy": request.collection_strategy,
                     "use_langgraph": request.use_langgraph,
-                    "model": model_name
+                    "model": model_name,
+                    "endpoint": "rag"
                 }
             )
     
@@ -147,7 +148,8 @@ async def rag_endpoint(request: RAGRequest):
                 use_langgraph=request.use_langgraph,
                 collections=request.collections,
                 collection_strategy=request.collection_strategy,
-                query_type=simple_query_type
+                query_type=simple_query_type,
+                trace=trace
             )
             print(f"[DEBUG] API endpoint - Got rag_stream: {type(rag_stream)}")
             
@@ -221,10 +223,14 @@ async def rag_endpoint(request: RAGRequest):
                     # Ensure we have meaningful output for the generation
                     generation_output = final_answer if final_answer else "Response generated successfully"
                     
-                    # End the generation with results (like llm-generate does)
+                    # Estimate token usage for cost tracking
+                    usage = tracer.estimate_token_usage(request.question, generation_output)
+                    
+                    # End the generation with results including usage
                     if generation:
                         generation.end(
                             output=generation_output,
+                            usage_details=usage,
                             metadata={
                                 "response_length": len(final_answer) if final_answer else len(collected_output),
                                 "source": source_info or "rag-chat",
@@ -234,7 +240,8 @@ async def rag_endpoint(request: RAGRequest):
                                 "output_captured": bool(final_answer),
                                 "model": model_name,
                                 "input_length": len(request.question),
-                                "output_length": len(generation_output)
+                                "output_length": len(generation_output),
+                                "estimated_tokens": usage
                             }
                         )
                     
@@ -259,15 +266,21 @@ async def rag_endpoint(request: RAGRequest):
             # Update generation and trace with error
             if tracer.is_enabled():
                 try:
+                    # Estimate usage even for errors
+                    error_output = f"Error: {str(e)}"
+                    usage = tracer.estimate_token_usage(request.question, error_output)
+                    
                     # End generation with error
                     if generation:
                         generation.end(
-                            output=f"Error: {str(e)}",
+                            output=error_output,
+                            usage_details=usage,
                             metadata={
                                 "success": False,
                                 "error": str(e),
                                 "conversation_id": conversation_id,
-                                "model": model_name
+                                "model": model_name,
+                                "estimated_tokens": usage
                             }
                         )
                     
@@ -341,21 +354,10 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
             }
         )
         
-        # Create generation within the trace for detailed observability
-        if trace:
-            generation = tracer.create_generation(
-                trace=trace,
-                name="multi-agent-generation",
-                model=model_name,
-                input=request.question,
-                metadata={
-                    "selected_agents": request.selected_agents,
-                    "max_iterations": request.max_iterations,
-                    "model": model_name
-                }
-            )
+        # Note: Individual agent generations will be created by each agent
+        # No single top-level generation needed for multi-agent mode
     
-    system = MultiAgentSystem(conversation_id=request.conversation_id)
+    system = MultiAgentSystem(conversation_id=request.conversation_id, trace=trace)
     
     async def stream_events_with_tracing():
         collected_output = ""
@@ -398,10 +400,14 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                 try:
                     generation_output = final_response if final_response else "Multi-agent processing completed"
                     
-                    # End the generation with results
+                    # Estimate token usage for cost tracking
+                    usage = tracer.estimate_token_usage(request.question, generation_output)
+                    
+                    # End the generation with results including usage
                     if generation:
                         generation.end(
                             output=generation_output,
+                            usage_details=usage,
                             metadata={
                                 "response_length": len(final_response) if final_response else len(collected_output),
                                 "source": "multi-agent",
@@ -411,7 +417,8 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                                 "agent_count": len(agent_outputs),
                                 "model": model_name,
                                 "input_length": len(request.question),
-                                "output_length": len(generation_output)
+                                "output_length": len(generation_output),
+                                "estimated_tokens": usage
                             }
                         )
                     
@@ -437,17 +444,12 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
             # Update generation and trace with error
             if tracer.is_enabled():
                 try:
-                    # End generation with error
-                    if generation:
-                        generation.end(
-                            output=f"Error: {str(e)}",
-                            metadata={
-                                "success": False,
-                                "error": str(e),
-                                "conversation_id": request.conversation_id,
-                                "model": model_name
-                            }
-                        )
+                    # Estimate usage even for errors
+                    error_output = f"Error: {str(e)}"
+                    usage = tracer.estimate_token_usage(request.question, error_output)
+                    
+                    # Individual agent generations handle their own errors
+                    # No top-level generation to end in multi-agent mode
                     
                     # Update trace with error
                     if trace:
@@ -505,20 +507,21 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
         
         # Create generation within the trace for detailed observability
         if trace:
-            generation = tracer.create_generation(
+            generation = tracer.create_generation_with_usage(
                 trace=trace,
                 name="large-generation-generation",
                 model=model_name,
-                input=request.task_description,
+                input_text=request.task_description,
                 metadata={
                     "target_count": request.target_count,
                     "chunk_size": request.chunk_size,
                     "use_redis": request.use_redis,
-                    "model": model_name
+                    "model": model_name,
+                    "endpoint": "large-generation"
                 }
             )
     
-    system = MultiAgentSystem(conversation_id=request.conversation_id)
+    system = MultiAgentSystem(conversation_id=request.conversation_id, trace=trace)
     
     async def stream_events_with_tracing():
         collected_output = ""
@@ -569,10 +572,14 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                 try:
                     generation_output = final_result if final_result else f"Large generation completed - {chunks_processed} chunks processed"
                     
-                    # End the generation with results
+                    # Estimate token usage for cost tracking (large generation can be expensive)
+                    usage = tracer.estimate_token_usage(request.task_description, generation_output)
+                    
+                    # End the generation with results including usage
                     if generation:
                         generation.end(
                             output=generation_output,
+                            usage_details=usage,
                             metadata={
                                 "response_length": len(final_result) if final_result else len(collected_output),
                                 "source": "large-generation",
@@ -583,7 +590,8 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                                 "use_redis": request.use_redis,
                                 "model": model_name,
                                 "input_length": len(request.task_description),
-                                "output_length": len(generation_output)
+                                "output_length": len(generation_output),
+                                "estimated_tokens": usage
                             }
                         )
                     
@@ -609,16 +617,22 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
             # Update generation and trace with error
             if tracer.is_enabled():
                 try:
+                    # Estimate usage even for errors
+                    error_output = f"Error: {str(e)}"
+                    usage = tracer.estimate_token_usage(request.task_description, error_output)
+                    
                     # End generation with error
                     if generation:
                         generation.end(
-                            output=f"Error: {str(e)}",
+                            output=error_output,
+                            usage_details=usage,
                             metadata={
                                 "success": False,
                                 "error": str(e),
                                 "conversation_id": request.conversation_id,
                                 "chunks_processed": chunks_processed,
-                                "model": model_name
+                                "model": model_name,
+                                "estimated_tokens": usage
                             }
                         )
                     

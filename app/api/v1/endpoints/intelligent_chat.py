@@ -35,12 +35,24 @@ class IntelligentChatResponse(BaseModel):
     confidence: float = 0.0
     classification: str = ""
 
-async def execute_mcp_tool(tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_mcp_tool(tool_name: str, parameters: Dict[str, Any], trace=None) -> Dict[str, Any]:
     """Phase 2: Execute MCP tool with just-in-time schema loading and validation"""
+    # Import here to avoid circular imports
+    from app.langchain.service import call_mcp_tool
+    from app.core.langfuse_integration import get_tracer
+    
+    tracer = get_tracer()
+    tool_span = None
+    
+    # Create tool execution span if tracing is enabled and trace is provided
+    if trace and tracer.is_enabled():
+        print(f"[DEBUG] Standard chat creating tool span for {tool_name}")
+        tool_span = tracer.create_tool_span(trace, tool_name, parameters)
+        print(f"[DEBUG] Standard chat tool span created: {tool_span is not None}")
+    else:
+        print(f"[DEBUG] Standard chat no tool span created - trace: {trace is not None}, tracer enabled: {tracer.is_enabled()}")
+    
     try:
-        # Import here to avoid circular imports
-        from app.langchain.service import call_mcp_tool
-        
         logger.info(f"Phase 2 - Executing MCP tool: {tool_name} with parameters: {parameters}")
         
         # Just-in-time: Load full tool schema only when executing
@@ -69,6 +81,11 @@ async def execute_mcp_tool(tool_name: str, parameters: Dict[str, Any]) -> Dict[s
             elif "message" in result and "error" in str(result.get("message", "")).lower():
                 success = False
         
+        # End tool span with result
+        if tool_span:
+            print(f"[DEBUG] Standard chat ending tool span for {tool_name} with success: {success}")
+            tracer.end_span_with_result(tool_span, result, success)
+        
         # Return in same format as existing system
         return {
             "tool": tool_name,
@@ -78,6 +95,12 @@ async def execute_mcp_tool(tool_name: str, parameters: Dict[str, Any]) -> Dict[s
         }
     except Exception as e:
         logger.error(f"Phase 2 - MCP tool execution failed for {tool_name}: {e}")
+        
+        # End tool span with error
+        if tool_span:
+            print(f"[DEBUG] Standard chat ending tool span for {tool_name} with error: {str(e)}")
+            tracer.end_span_with_result(tool_span, None, False, str(e))
+        
         return {
             "tool": tool_name,
             "parameters": parameters,
@@ -171,12 +194,20 @@ def validate_nested_parameters(parameters: Dict[str, Any], schema: Dict[str, Any
         logger.warning(f"Parameter validation failed: {e}, using original parameters")
         return parameters
 
-async def execute_rag_search(query: str, collections: List[str] = None) -> Dict[str, Any]:
+async def execute_rag_search(query: str, collections: List[str] = None, trace=None) -> Dict[str, Any]:
     """Phase 2: Execute RAG search with just-in-time collection validation"""
+    # Import here to avoid circular imports
+    from app.langchain.service import handle_rag_query
+    from app.core.langfuse_integration import get_tracer
+    
+    tracer = get_tracer()
+    rag_span = None
+    
+    # Create RAG search span if tracing is enabled and trace is provided
+    if trace and tracer.is_enabled():
+        rag_span = tracer.create_rag_span(trace, query, collections)
+    
     try:
-        # Import here to avoid circular imports
-        from app.langchain.service import handle_rag_query
-        
         logger.info(f"Phase 2 - Performing RAG search for: {query[:100]}...")
         
         # Just-in-time: Validate collections against available collections
@@ -223,7 +254,7 @@ async def execute_rag_search(query: str, collections: List[str] = None) -> Dict[
                 }
                 documents.append(doc_info)
         
-        return {
+        result = {
             "query": query,
             "collections": collections or "all",
             "context": context[:1000] + "..." if len(context) > 1000 else context,  # Truncate for response
@@ -231,14 +262,27 @@ async def execute_rag_search(query: str, collections: List[str] = None) -> Dict[
             "success": True,
             "document_count": len(documents)
         }
+        
+        # End RAG span with result
+        if rag_span:
+            tracer.end_span_with_result(rag_span, result, True)
+        
+        return result
     except Exception as e:
         logger.error(f"Phase 2 - RAG search failed for query '{query}': {e}")
-        return {
+        
+        result = {
             "query": query,
             "collections": collections,
             "error": str(e),
             "success": False
         }
+        
+        # End RAG span with error
+        if rag_span:
+            tracer.end_span_with_result(rag_span, None, False, str(e))
+        
+        return result
 
 def build_lightweight_decision_context() -> tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """Build lightweight context for decision-making phase - only names and descriptions"""
@@ -349,11 +393,19 @@ async def intelligent_routing(question: str) -> Dict[str, Any]:
     try:
         # Use existing enhanced classifier
         classifier = EnhancedQueryClassifier()
-        result = classifier.classify_query(question)
+        results = await classifier.classify(question)
+        
+        # Get the primary classification result
+        result = results[0] if results else None
         
         # Get confidence threshold from Redis cache
         llm_settings = get_llm_settings()
-        min_confidence = llm_settings.get("query_classifier", {}).get("min_confidence_threshold", 0.1)
+        min_confidence = float(llm_settings.get("query_classifier", {}).get("min_confidence_threshold", 0.1))
+        
+        # Handle case where no classification was returned
+        if not result:
+            logger.info("No classification returned, falling back to online search")
+            return await execute_online_search_fallback(question)
         
         logger.info(f"Query classification: {result.query_type.value}, confidence: {result.confidence}")
         
@@ -406,8 +458,8 @@ async def parse_function_calls(response_text: str) -> tuple[str, List[Dict], Lis
     
     import re
     
-    # Pattern to match function calls: function_name(param1="value1", param2="value2")
-    function_pattern = r'(call_tool_\w+|search_knowledge)\s*\(([^)]+)\)'
+    # Pattern to match function calls: function_name(param1="value1", param2="value2") or function_name()
+    function_pattern = r'(call_tool_\w+|search_knowledge)\s*\(([^)]*)\)'
     
     matches = re.finditer(function_pattern, response_text, re.MULTILINE | re.DOTALL)
     
@@ -416,8 +468,8 @@ async def parse_function_calls(response_text: str) -> tuple[str, List[Dict], Lis
         params_str = match.group(2)
         
         try:
-            # Parse parameters from function call
-            parameters = parse_function_parameters(params_str)
+            # Parse parameters from function call (handle empty parameters)
+            parameters = parse_function_parameters(params_str) if params_str.strip() else {}
             
             if function_name.startswith('call_tool_'):
                 # Extract tool name
@@ -492,6 +544,7 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
     if not tracer._initialized:
         tracer.initialize()
     
+    print(f"[DEBUG] Standard chat tracer enabled: {tracer.is_enabled()}")
     if tracer.is_enabled():
         trace = tracer.create_trace(
             name="intelligent-chat",
@@ -503,17 +556,19 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 "model": model_name
             }
         )
+        print(f"[DEBUG] Standard chat trace created: {trace is not None}")
         
         # Create generation within the trace for detailed observability
         if trace:
-            generation = tracer.create_generation(
+            generation = tracer.create_generation_with_usage(
                 trace=trace,
                 name="intelligent-chat-generation",
                 model=model_name,
-                input=request.question,
+                input_text=request.question,
                 metadata={
                     "thinking": request.thinking,
-                    "model": model_name
+                    "model": model_name,
+                    "endpoint": "intelligent-chat"
                 }
             )
     
@@ -616,9 +671,11 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 }) + "\n"
                 
                 for tool_call in tool_calls:
+                    print(f"[DEBUG] Standard chat executing tool {tool_call['tool']} with trace: {trace is not None}")
                     tool_result = await execute_mcp_tool(
                         tool_call["tool"],
-                        tool_call["parameters"]
+                        tool_call["parameters"],
+                        trace  # Pass trace for span creation
                     )
                     tool_results.append(tool_result)
                     
@@ -638,7 +695,8 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 for rag_search_request in rag_searches:
                     rag_result = await execute_rag_search(
                         rag_search_request["query"],
-                        rag_search_request["collections"]
+                        rag_search_request["collections"],
+                        trace  # Pass trace for span creation
                     )
                     rag_results.append(rag_result)
                     
@@ -721,10 +779,14 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 try:
                     generation_output = final_answer if final_answer else "Intelligent chat completed"
                     
-                    # End the generation with results
+                    # Estimate token usage for cost tracking
+                    usage = tracer.estimate_token_usage(request.question, generation_output)
+                    
+                    # End the generation with results including usage
                     if generation:
                         generation.end(
                             output=generation_output,
+                            usage_details=usage,
                             metadata={
                                 "response_length": len(final_answer) if final_answer else len(collected_output),
                                 "source": source,
@@ -735,7 +797,8 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                                 "rag_searches_count": len(rag_searches_made),
                                 "model": model_name,
                                 "input_length": len(request.question),
-                                "output_length": len(generation_output)
+                                "output_length": len(generation_output),
+                                "estimated_tokens": usage
                             }
                         )
                     
@@ -764,15 +827,21 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
             # Update generation and trace with error
             if tracer.is_enabled():
                 try:
+                    # Estimate usage even for errors
+                    error_output = f"Error: {str(e)}"
+                    usage = tracer.estimate_token_usage(request.question, error_output)
+                    
                     # End generation with error
                     if generation:
                         generation.end(
-                            output=f"Error: {str(e)}",
+                            output=error_output,
+                            usage_details=usage,
                             metadata={
                                 "success": False,
                                 "error": str(e),
                                 "conversation_id": request.conversation_id,
-                                "model": model_name
+                                "model": model_name,
+                                "estimated_tokens": usage
                             }
                         )
                     

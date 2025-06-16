@@ -14,12 +14,54 @@ from app.llm.base import LLMConfig
 import os
 
 
+def _is_tool_result_successful(result) -> bool:
+    """
+    Determine if a tool execution result indicates success
+    
+    Args:
+        result: The tool execution result
+        
+    Returns:
+        bool: True if successful, False if failed
+    """
+    if not isinstance(result, dict):
+        return True  # Non-dict results are considered successful
+    
+    # Check for explicit error indicators
+    if "error" in result and isinstance(result["error"], str) and result["error"].strip():
+        return False
+    
+    # Check for successful content patterns
+    if "content" in result:
+        content = result["content"]
+        if isinstance(content, list) and len(content) > 0:
+            # Check if first content item indicates success
+            first_item = content[0]
+            if isinstance(first_item, dict) and "text" in first_item:
+                text = first_item["text"].lower()
+                # Look for explicit success indicators
+                if any(indicator in text for indicator in ["✅", "success", "sent successfully", "completed successfully"]):
+                    return True
+                # Look for explicit error indicators
+                if any(indicator in text for indicator in ["❌", "failed", "error:", "exception:"]):
+                    return False
+        return True  # Content exists, assume success
+    
+    # Check for result field
+    if "result" in result:
+        return True  # Has result field, assume success
+    
+    # Default to success for unrecognized formats
+    return True
+
+
 class DynamicMultiAgentSystem:
     """Orchestrates ANY agents dynamically based on their capabilities"""
     
-    def __init__(self):
+    def __init__(self, trace=None):
         self.llm_settings = get_llm_settings()
         self.routing_cache = {}
+        self.trace = trace  # Store trace for span creation
         
         # Agent avatars mapping
         self.agent_avatars = {
@@ -74,15 +116,17 @@ class DynamicMultiAgentSystem:
                 "reasoning": "No active agents available in the system"
             }
         
-        # Build comprehensive agent catalog
+        # Build comprehensive agent catalog with dynamic capabilities
         agent_catalog = []
         for agent_name, agent_data in all_agents.items():
+            capabilities = self._extract_capabilities(agent_data)
             agent_catalog.append({
                 "name": agent_name,
                 "role": agent_data.get("role", ""),
                 "description": agent_data.get("description", ""),
-                "capabilities": self._extract_capabilities(agent_data),
-                "tools": agent_data.get("tools", [])
+                "capabilities": capabilities,
+                "tools": agent_data.get("tools", []),
+                "config_metadata": agent_data.get("config", {})
             })
         
         # Create routing prompt with all available agents
@@ -94,22 +138,28 @@ AVAILABLE AGENTS ({len(agent_catalog)} total):
 USER QUERY: "{query}"
 
 INSTRUCTIONS:
-1. Analyze the query to understand what capabilities are needed
-2. Select 1-5 most relevant agents based on their roles and descriptions
-3. Consider agent specializations:
-   - C-Suite agents (CEO, CIO, CTO) for strategic/high-level queries
-   - Analyst agents for detailed analysis
-   - Technical agents for implementation details
-   - Compliance/Risk agents for regulatory matters
-   - Operational agents for day-to-day tasks
-4. Prefer specialized agents over generic ones when applicable
+1. Analyze the query to understand what specific capabilities are needed
+2. Match query requirements with agent capabilities (focus on the "capabilities" field)
+3. Consider agent tools for direct functionality requirements
+4. Select 1-5 most relevant agents based on capability scores
+5. Consider agent specializations:
+   - Strategic agents for high-level planning and vision
+   - Technical agents for implementation and architecture
+   - Research agents for investigation and analysis
+   - Operational agents for process and workflow management
+   - Specialized agents for domain-specific expertise
 
-IMPORTANT SELECTION CRITERIA:
-- Match query intent with agent capabilities
-- Consider multi-perspective needs (e.g., technical + financial + strategic)
-- Balance between focused expertise and comprehensive coverage
+INTELLIGENT SELECTION CRITERIA:
+- PRIORITIZE agents whose capabilities directly match query requirements
+- Look for specific tools that can execute the requested tasks
+- Consider role descriptions for domain expertise
+- Balance comprehensive coverage with focused specialization
+- Use config_metadata for additional context when available
+- Prefer agents with proven track record in similar tasks
 
-Respond in JSON:
+CRITICAL: Respond ONLY with valid JSON. Do not use thinking tags or explanations. Output must start with {{.
+
+Required JSON format:
 {{
     "agents": ["agent_name1", "agent_name2", ...],
     "reasoning": "Clear explanation of why these agents were selected",
@@ -117,7 +167,7 @@ Respond in JSON:
 }}"""
 
         try:
-            # Use LLM to select agents
+            # Use LLM to select agents with enhanced agent information
             response_text = await self._call_llm(routing_prompt, temperature=0.3, max_tokens=1000)
             
             print(f"[DEBUG] LLM routing response: {response_text[:200]}...")
@@ -196,78 +246,326 @@ Respond in JSON:
             
         except Exception as e:
             print(f"[ERROR] LLM routing failed: {e}")
-            # Fallback to simple keyword matching
-            return self._fallback_routing(query, all_agents)
+            # Fallback to intelligent capability-based routing
+            print("[INFO] Using intelligent capability-based fallback routing")
+            return self._intelligent_capability_routing(query, all_agents)
     
     def _extract_capabilities(self, agent_data: Dict) -> List[str]:
-        """Extract key capabilities from agent description and prompt"""
+        """Dynamically extract capabilities from agent profile data"""
         capabilities = []
         
-        # Parse from description
-        description = agent_data.get("description", "").lower()
-        if "strategic" in description:
-            capabilities.append("strategic planning")
-        if "financial" in description or "cost" in description:
-            capabilities.append("financial analysis")
-        if "technical" in description or "architect" in description:
-            capabilities.append("technical design")
-        if "compliance" in description or "risk" in description:
-            capabilities.append("risk management")
-        if "operational" in description:
-            capabilities.append("operations")
+        # Extract from tools (direct capability indicators)
+        tools = agent_data.get("tools", [])
+        for tool in tools:
+            if isinstance(tool, str):
+                # Map tools to capabilities
+                tool_lower = tool.lower()
+                if any(keyword in tool_lower for keyword in ["search", "google", "web"]):
+                    capabilities.append("web_research")
+                if any(keyword in tool_lower for keyword in ["pdf", "document", "file"]):
+                    capabilities.append("document_analysis")
+                if any(keyword in tool_lower for keyword in ["email", "gmail", "mail"]):
+                    capabilities.append("email_management")
+                if any(keyword in tool_lower for keyword in ["database", "sql", "query"]):
+                    capabilities.append("data_analysis")
+                if any(keyword in tool_lower for keyword in ["api", "integration", "webhook"]):
+                    capabilities.append("system_integration")
+                if any(keyword in tool_lower for keyword in ["calculate", "math", "compute"]):
+                    capabilities.append("computational_analysis")
         
-        # Parse from system prompt
-        prompt = agent_data.get("system_prompt", "").lower()
-        if "analyze" in prompt:
-            capabilities.append("analysis")
-        if "design" in prompt:
-            capabilities.append("solution design")
-        if "implement" in prompt:
+        # Extract from role (primary function indicator)
+        role = agent_data.get("role", "").lower()
+        if any(keyword in role for keyword in ["strategic", "ceo", "executive", "director"]):
+            capabilities.append("strategic_planning")
+        if any(keyword in role for keyword in ["financial", "cfo", "analyst", "budget"]):
+            capabilities.append("financial_analysis")
+        if any(keyword in role for keyword in ["technical", "cto", "architect", "engineer"]):
+            capabilities.append("technical_design")
+        if any(keyword in role for keyword in ["compliance", "risk", "legal", "audit"]):
+            capabilities.append("risk_management")
+        if any(keyword in role for keyword in ["operation", "delivery", "project", "manager"]):
+            capabilities.append("operations_management")
+        if any(keyword in role for keyword in ["research", "analyst", "investigator"]):
+            capabilities.append("research_analysis")
+        if any(keyword in role for keyword in ["sales", "business", "commercial"]):
+            capabilities.append("business_development")
+        if any(keyword in role for keyword in ["writer", "content", "communication"]):
+            capabilities.append("content_creation")
+        
+        # Extract from description (detailed capabilities)
+        description = agent_data.get("description", "").lower()
+        if any(keyword in description for keyword in ["analyze", "analysis", "examine"]):
+            capabilities.append("analytical_thinking")
+        if any(keyword in description for keyword in ["design", "architect", "build", "create"]):
+            capabilities.append("solution_design")
+        if any(keyword in description for keyword in ["implement", "execute", "deploy"]):
             capabilities.append("implementation")
+        if any(keyword in description for keyword in ["optimize", "improve", "enhance"]):
+            capabilities.append("optimization")
+        if any(keyword in description for keyword in ["security", "secure", "protect"]):
+            capabilities.append("security_analysis")
+        if any(keyword in description for keyword in ["customer", "client", "service"]):
+            capabilities.append("customer_focus")
+        
+        # Extract from system prompt (behavioral patterns)
+        prompt = agent_data.get("system_prompt", "").lower()
+        if any(keyword in prompt for keyword in ["strategic", "high-level", "vision"]):
+            capabilities.append("strategic_thinking")
+        if any(keyword in prompt for keyword in ["detail", "thorough", "comprehensive"]):
+            capabilities.append("detailed_analysis")
+        if any(keyword in prompt for keyword in ["creative", "innovative", "brainstorm"]):
+            capabilities.append("creative_thinking")
+        if any(keyword in prompt for keyword in ["collaborative", "team", "coordinate"]):
+            capabilities.append("collaboration")
+        
+        # Extract from config metadata (custom capabilities)
+        config = agent_data.get("config", {})
+        if isinstance(config, dict):
+            # Check for custom capability tags
+            custom_capabilities = config.get("capabilities", [])
+            if isinstance(custom_capabilities, list):
+                capabilities.extend(custom_capabilities)
+            
+            # Check for domain specializations
+            domains = config.get("domains", [])
+            if isinstance(domains, list):
+                capabilities.extend([f"{domain}_expertise" for domain in domains])
+            
+            # Check for industry focus
+            industries = config.get("industries", [])
+            if isinstance(industries, list):
+                capabilities.extend([f"{industry}_knowledge" for industry in industries])
         
         return list(set(capabilities))  # Remove duplicates
     
-    def _fallback_routing(self, query: str, all_agents: Dict) -> Dict[str, Any]:
-        """Simple keyword-based fallback routing"""
+    def _intelligent_capability_routing(self, query: str, all_agents: Dict) -> Dict[str, Any]:
+        """Intelligent routing based on dynamic capability analysis"""
         query_lower = query.lower()
-        selected_agents = []
         
-        # Keywords to agent mapping
-        keyword_map = {
-            "strategic": ["ceo_agent", "corporate_strategist", "cio_agent"],
-            "financial": ["financial_analyst", "roi_analyst", "cfo_agent"],
-            "technical": ["technical_architect", "cto_agent", "infrastructure_agent"],
-            "compliance": ["compliance_agent", "risk_agent"],
-            "proposal": ["proposal_writer", "sales_strategist", "presales_architect"],
-            "database": ["dba", "infrastructure_agent"],
-            "security": ["secops_agent", "compliance_agent"],
-            "document": ["document_researcher", "context_manager"]
-        }
+        # Analyze query to identify required capabilities
+        required_capabilities = self._analyze_query_requirements(query_lower)
         
-        # Check keywords
-        for keyword, agents in keyword_map.items():
-            if keyword in query_lower:
-                for agent in agents:
-                    if agent in all_agents and agent not in selected_agents:
-                        selected_agents.append(agent)
+        # Score each agent based on capability match
+        agent_scores = {}
+        capability_matches = {}
         
-        # Default to document researcher if no matches
-        if not selected_agents and "document_researcher" in all_agents:
-            selected_agents = ["document_researcher"]
+        for agent_name, agent_data in all_agents.items():
+            agent_capabilities = self._extract_capabilities(agent_data)
+            
+            # Calculate capability match score
+            matches = set(required_capabilities).intersection(set(agent_capabilities))
+            match_score = len(matches)
+            
+            # Bonus for exact role matches
+            role_bonus = self._calculate_role_bonus(query_lower, agent_data.get("role", ""))
+            
+            # Tool relevance bonus
+            tool_bonus = self._calculate_tool_relevance(query_lower, agent_data.get("tools", []))
+            
+            # Final score
+            total_score = match_score + (role_bonus * 0.5) + (tool_bonus * 0.3)
+            
+            if total_score > 0:
+                agent_scores[agent_name] = total_score
+                capability_matches[agent_name] = list(matches)
+        
+        # Select top agents based on scores
+        sorted_agents = sorted(agent_scores.items(), key=lambda x: x[1], reverse=True)
+        selected_agents = [agent for agent, score in sorted_agents[:5]]
+        
+        # Determine collaboration pattern based on query complexity
+        collaboration_pattern = self._determine_collaboration_pattern(query_lower, len(selected_agents))
+        
+        # Generate reasoning
+        reasoning_parts = []
+        for agent in selected_agents[:3]:  # Explain top 3 selections
+            if agent in capability_matches and capability_matches[agent]:
+                reasoning_parts.append(f"{agent}: {', '.join(capability_matches[agent])}")
+        
+        reasoning = f"Selected based on capability analysis. Required: {', '.join(required_capabilities[:3])}. " + \
+                   f"Top matches: {'; '.join(reasoning_parts)}"
+        
+        # Fallback if no matches found
+        if not selected_agents:
+            # Find agents with the most tools or general capabilities
+            fallback_agents = []
+            for agent_name, agent_data in all_agents.items():
+                tools_count = len(agent_data.get("tools", []))
+                if tools_count > 0:
+                    fallback_agents.append((agent_name, tools_count))
+            
+            fallback_agents.sort(key=lambda x: x[1], reverse=True)
+            selected_agents = [agent for agent, _ in fallback_agents[:2]]
+            reasoning = "No direct capability matches found. Selected agents with most tools available."
+            collaboration_pattern = "parallel"
         
         return {
-            "agents": selected_agents[:5],  # Limit to 5 agents
-            "reasoning": "Selected based on keyword matching",
-            "collaboration_pattern": "parallel"
+            "agents": selected_agents,
+            "reasoning": reasoning,
+            "collaboration_pattern": collaboration_pattern,
+            "capability_analysis": {
+                "required_capabilities": required_capabilities,
+                "agent_scores": dict(sorted_agents[:5]) if sorted_agents else {},
+                "capability_matches": capability_matches
+            }
         }
+    
+    def _analyze_query_requirements(self, query_lower: str) -> List[str]:
+        """Analyze query to identify required capabilities"""
+        requirements = []
+        
+        # Intent analysis
+        if any(word in query_lower for word in ["strategy", "strategic", "plan", "roadmap", "vision"]):
+            requirements.append("strategic_planning")
+        
+        if any(word in query_lower for word in ["cost", "budget", "financial", "roi", "revenue", "profit"]):
+            requirements.append("financial_analysis")
+        
+        if any(word in query_lower for word in ["technical", "architecture", "system", "technology", "implement"]):
+            requirements.append("technical_design")
+        
+        if any(word in query_lower for word in ["risk", "compliance", "security", "audit", "legal"]):
+            requirements.append("risk_management")
+        
+        if any(word in query_lower for word in ["research", "analyze", "investigate", "study", "examine"]):
+            requirements.append("research_analysis")
+        
+        if any(word in query_lower for word in ["document", "pdf", "file", "content", "text"]):
+            requirements.append("document_analysis")
+        
+        if any(word in query_lower for word in ["search", "google", "web", "internet", "online"]):
+            requirements.append("web_research")
+        
+        if any(word in query_lower for word in ["email", "mail", "communication", "message"]):
+            requirements.append("email_management")
+        
+        if any(word in query_lower for word in ["data", "database", "analytics", "metrics", "statistics"]):
+            requirements.append("data_analysis")
+        
+        if any(word in query_lower for word in ["sales", "business", "client", "customer", "market"]):
+            requirements.append("business_development")
+        
+        if any(word in query_lower for word in ["write", "content", "create", "generate", "compose"]):
+            requirements.append("content_creation")
+        
+        if any(word in query_lower for word in ["operations", "process", "workflow", "management"]):
+            requirements.append("operations_management")
+        
+        # If no specific requirements found, default to general capabilities
+        if not requirements:
+            requirements = ["analytical_thinking", "research_analysis"]
+        
+        return requirements
+    
+    def _calculate_role_bonus(self, query_lower: str, role: str) -> float:
+        """Calculate bonus score for role relevance"""
+        if not role:
+            return 0.0
+        
+        role_lower = role.lower()
+        bonus = 0.0
+        
+        # Direct role mentions in query
+        role_keywords = role_lower.split()
+        for keyword in role_keywords:
+            if len(keyword) > 3 and keyword in query_lower:
+                bonus += 1.0
+        
+        return bonus
+    
+    def _calculate_tool_relevance(self, query_lower: str, tools: List[str]) -> float:
+        """Calculate bonus score for tool relevance"""
+        if not tools:
+            return 0.0
+        
+        relevance_score = 0.0
+        
+        for tool in tools:
+            if isinstance(tool, str):
+                tool_lower = tool.lower()
+                # Check if tool keywords appear in query
+                if any(keyword in query_lower for keyword in tool_lower.split('_')):
+                    relevance_score += 0.5
+        
+        return min(relevance_score, 2.0)  # Cap at 2.0
+    
+    def _determine_collaboration_pattern(self, query_lower: str, agent_count: int) -> str:
+        """Determine the best collaboration pattern for the query"""
+        
+        # Sequential for complex, multi-step processes
+        if any(word in query_lower for word in ["step", "process", "workflow", "phase", "sequence"]):
+            return "sequential"
+        
+        # Hierarchical for strategic/executive queries
+        if any(word in query_lower for word in ["strategy", "decision", "approve", "executive", "leadership"]):
+            return "hierarchical"
+        
+        # Parallel for research/analysis queries or when multiple perspectives needed
+        if agent_count > 2 or any(word in query_lower for word in ["analyze", "research", "compare", "evaluate"]):
+            return "parallel"
+        
+        # Default to parallel for general queries
+        return "parallel"
     
     async def execute_agent(self, agent_name: str, agent_data: Dict, query: str, context: Dict = None) -> AsyncGenerator[Dict, None]:
         """Execute any agent dynamically using its system prompt"""
         
+        # Import json at the top to ensure it's always available
+        import json
+        
         print(f"[DEBUG] DynamicMultiAgentSystem.execute_agent called for {agent_name}")
         print(f"[DEBUG] Agent data keys: {list(agent_data.keys()) if agent_data else 'None'}")
         print(f"[DEBUG] execute_agent: Starting async generator for {agent_name}")
+        print(f"[DEBUG] Parameters: query_type={type(query)}, query_length={len(query) if query else 0}")
         
+        # Initialize variables for Langfuse generation (will be created after prompt is built)
+        agent_generation = None
+        tracer = None
+        if self.trace:
+            try:
+                from app.core.langfuse_integration import get_tracer
+                tracer = get_tracer()
+            except Exception as e:
+                print(f"[WARNING] Failed to get tracer for {agent_name}: {e}")
+        
+        generation_ended = False
+        
+        def _end_agent_generation(output_text: str = None, error: str = None, success: bool = True, input_prompt: str = None):
+            """Safely end agent generation with proper error handling"""
+            nonlocal generation_ended
+            if agent_generation and tracer and tracer.is_enabled() and not generation_ended:
+                try:
+                    # Estimate token usage for cost calculation
+                    actual_input = input_prompt or query
+                    if output_text:
+                        usage = tracer.estimate_token_usage(actual_input, output_text)
+                    else:
+                        usage = tracer.estimate_token_usage(actual_input, "")
+                    
+                    print(f"[DEBUG] Ending generation for {agent_name} with usage: {usage}")
+                    agent_generation.end(
+                        output=error if error else (output_text or "Agent completed successfully"),
+                        usage_details=usage,
+                        metadata={
+                            "success": success,
+                            "agent_name": agent_name,
+                            "error": error if error else None,
+                            "output_length": len(output_text) if output_text else 0
+                        }
+                    )
+                    generation_ended = True
+                    print(f"[DEBUG] Ended Langfuse generation for agent {agent_name}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to end agent generation for {agent_name}: {e}")
+        
+        # Ensure all parameters are valid to prevent scope issues
+        if not query:
+            query = "No query provided"
+        if not agent_data:
+            agent_data = {}
+        if context is None:
+            context = {}
+            
         # Get agent configuration
         agent_config = agent_data.get("config", {})
         max_tokens = agent_config.get("max_tokens", 4000)
@@ -369,12 +667,66 @@ Respond in JSON:
             available_tools = agent_data["tools"]
             
         if available_tools:
+            # Get detailed tool specifications from MCP system
+            from app.core.mcp_tools_cache import get_enabled_mcp_tools
+            mcp_tools = get_enabled_mcp_tools()
+            
             if not context_str:
                 context_str = f"\n\nCONTEXT:\n"
             context_str += f"\n\nAVAILABLE TOOLS:\n"
             context_str += f"You have access to the following tools: {available_tools}\n"
-            context_str += "To use a tool, output JSON in this format:\n"
-            context_str += '{"tool": "tool_name", "parameters": {"param1": "value1"}}'
+            
+            # Add detailed tool specifications like _dynamic_agent does
+            verified_tools = []
+            for tool in available_tools:
+                if tool in mcp_tools:
+                    verified_tools.append(tool)
+            
+            if verified_tools:
+                context_str += "\n**TOOL SPECIFICATIONS** (Use these exact parameter names):"
+                for tool_name in verified_tools:
+                    tool_info = mcp_tools[tool_name]
+                    context_str += f"\n\n• **{tool_name}**: {tool_info.get('description', 'No description available')}"
+                    if tool_info.get('parameters'):
+                        properties = tool_info['parameters'].get('properties', {})
+                        if properties:
+                            context_str += f"\n  Required parameters:"
+                            for param_name, param_schema in properties.items():
+                                param_type = param_schema.get('type', 'string')
+                                param_desc = param_schema.get('description', '')
+                                context_str += f"\n    - {param_name} ({param_type}): {param_desc}"
+                
+                # Add example usage
+                context_str += f"\n\n**TOOL USAGE EXAMPLE:**"
+                example_tool = verified_tools[0]  # Use first available tool as example
+                example_params = {}
+                example_info = mcp_tools.get(example_tool, {})
+                if example_info.get('parameters'):
+                    for param_name, param_schema in example_info['parameters'].get('properties', {}).items():
+                        param_type = param_schema.get('type', 'string')
+                        if param_name == "query":
+                            example_params[param_name] = "your search terms here"
+                        elif param_name in ["maxResults", "count", "num_results"]:
+                            example_params[param_name] = 10
+                        elif param_name == "to":
+                            example_params[param_name] = "recipient@email.com"
+                        else:
+                            example_params[param_name] = f"<{param_name} value>"
+                
+                example_json = f'{{"tool": "{example_tool}", "parameters": {json.dumps(example_params)}}}'
+                context_str += f'\n{example_json}'
+                
+                # Add critical instructions
+                context_str += "\n\n**CRITICAL INSTRUCTIONS:**"
+                context_str += "\n1. You MUST use the tools by outputting the JSON format shown above"
+                context_str += "\n2. Use the EXACT parameter names shown in the tool specifications"
+                context_str += "\n3. For google_search tool, use 'query' NOT 'q' and 'num_results' NOT 'num'"
+                context_str += "\n4. START your response with the tool JSON if the task requires tool usage"
+                context_str += "\n5. After the tool executes, you can provide additional analysis"
+            else:
+                # Fallback to basic format if tool specs aren't available
+                context_str += "\nTo use a tool, output JSON in this format:\n"
+                context_str += '{"tool": "tool_name", "parameters": {"param1": "value1"}}'
         
         # Enhance prompt for completion tasks
         task_enhancement = ""
@@ -416,6 +768,30 @@ Please provide a comprehensive response based on your role and expertise."""
             if task_enhancement:
                 print(f"[DEBUG] {agent_name}: Task enhancement applied for completion task")
             
+            # Create Langfuse generation now that we have the actual input prompt
+            if self.trace and tracer and tracer.is_enabled():
+                try:
+                    model_name = agent_data.get("config", {}).get("model", "qwen3:30b-a3b")
+                    print(f"[DEBUG] Creating Langfuse generation for {agent_name} with model: '{model_name}'")
+                    agent_generation = tracer.create_generation_with_usage(
+                        trace=self.trace,
+                        name=f"agent-{agent_name}",
+                        model=model_name,
+                        input_text=full_prompt,
+                        metadata={
+                            "agent_role": agent_data.get("role", ""),
+                            "tools_available": agent_data.get("tools", []),
+                            "context_keys": list(context.keys()) if context else [],
+                            "agent_name": agent_name,
+                            "prompt_length": len(full_prompt),
+                            "has_context": bool(context and context.get("previous_outputs")),
+                            "agent_position": len(context.get("previous_outputs", [])) + 1 if context else 1
+                        }
+                    )
+                    print(f"[DEBUG] Created Langfuse generation for agent {agent_name} with actual prompt")
+                except Exception as e:
+                    print(f"[WARNING] Failed to create agent generation for {agent_name}: {e}")
+            
             response_text = ""
             error_occurred = False
             
@@ -430,17 +806,33 @@ Please provide a comprehensive response based on your role and expertise."""
                 
                 if chunk.get("type") == "agent_complete":
                     response_text = chunk.get("content", "")
-                    # Enhance the completion event with avatar and description
+                    print(f"[DEBUG] execute_agent: Agent {agent_name} completed, processing tools...")
+                    
+                    # Process tool calls with proper variable access
+                    print(f"[DEBUG] {agent_name}: About to call _process_tool_calls")
+                    print(f"[DEBUG] {agent_name}: Variables check - agent_name: {agent_name is not None}, content: {len(response_text)}")
+                    
+                    enhanced_content, tool_results = await self._process_tool_calls(agent_name, response_text, query, context, agent_data)
+                    
+                    # Enhance the completion event with avatar, description, and tool results
                     enhanced_chunk = {
                         **chunk,
+                        "content": enhanced_content,  # Use enhanced content with tool results
                         "avatar": self.get_agent_avatar(agent_name, agent_data.get("role", "")),
                         "description": agent_data.get("description", "")
                     }
-                    print(f"[DEBUG] execute_agent: Agent {agent_name} completed")
+                    
+                    # Add tool results if any were executed
+                    if tool_results:
+                        enhanced_chunk["tools_used"] = tool_results
+                    
+                    print(f"[DEBUG] execute_agent: Agent {agent_name} yielding enhanced completion")
+                    _end_agent_generation(output_text=enhanced_content, success=True, input_prompt=full_prompt)
                     yield enhanced_chunk
                 elif chunk.get("type") == "agent_error":
                     error_occurred = True
                     print(f"[DEBUG] execute_agent: Agent {agent_name} error")
+                    _end_agent_generation(error=chunk.get("error", "Agent error occurred"), success=False, input_prompt=full_prompt)
                     yield chunk
                 elif chunk.get("type") == "agent_token":
                     # Forward tokens without logging each one
@@ -453,6 +845,7 @@ Please provide a comprehensive response based on your role and expertise."""
             print(f"[ERROR] Agent {agent_name} execution failed: {e}")
             import traceback
             print(f"[ERROR] Agent {agent_name} traceback: {traceback.format_exc()}")
+            _end_agent_generation(error=str(e), success=False, input_prompt=full_prompt if 'full_prompt' in locals() else query)
             yield {
                 "type": "agent_error",
                 "agent": agent_name,
@@ -460,6 +853,13 @@ Please provide a comprehensive response based on your role and expertise."""
             }
         finally:
             print(f"[DEBUG] execute_agent: Finished (finally block) for {agent_name}")
+            # Safety cleanup: end generation if it hasn't been ended yet
+            if not generation_ended and agent_generation and tracer and tracer.is_enabled():
+                try:
+                    # This will only end if not already ended
+                    _end_agent_generation(output_text="Agent execution completed", success=True, input_prompt=full_prompt if 'full_prompt' in locals() else query)
+                except Exception:
+                    pass  # Ignore if already ended
     
     async def _call_llm(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2000) -> str:
         """Simple LLM call that returns complete response"""
@@ -526,48 +926,18 @@ Please provide a comprehensive response based on your role and expertise."""
             print(f"[DEBUG] {agent_name}: Total response length: {len(response_text)}")
             print(f"[DEBUG] {agent_name}: Response preview (first 200 chars): {response_text[:200]!r}")
             
-            # Clean response and yield final completion
+            # Clean response and return it for tool processing in the calling method
             print(f"[DEBUG] {agent_name}: Calling _clean_response on {len(response_text)} chars")
             cleaned_content = self._clean_response(response_text)
             print(f"[DEBUG] {agent_name}: After cleaning: {len(cleaned_content)} chars")
             print(f"[DEBUG] {agent_name}: Cleaned preview (first 200 chars): {cleaned_content[:200]!r}")
             
-            # Check for and execute any tool calls
-            # Debug: Verify all variables are defined before the call
-            print(f"[DEBUG] {agent_name}: About to call _process_tool_calls")
-            print(f"[DEBUG] {agent_name}: Variables check - agent_name: {agent_name is not None}, cleaned_content: {len(cleaned_content)}")
-            try:
-                print(f"[DEBUG] {agent_name}: query length: {len(query)}")
-                print(f"[DEBUG] {agent_name}: context is None: {context is None}")
-                print(f"[DEBUG] {agent_name}: agent_data is None: {agent_data is None}")
-                # If we get here, all variables are properly defined
-                query_to_use = query
-                context_to_use = context
-                agent_data_to_use = agent_data
-            except NameError as e:
-                print(f"[ERROR] {agent_name}: NameError in variable check: {e}")
-                print(f"[ERROR] {agent_name}: Available locals: {list(locals().keys())}")
-                # Use fallbacks to avoid breaking the system
-                query_to_use = "fallback query due to scoping issue"
-                context_to_use = None
-                agent_data_to_use = agent_data if 'agent_data' in locals() else {}
-                print(f"[ERROR] {agent_name}: Using fallback variables")
-            
-            enhanced_content, tool_results = await self._process_tool_calls(agent_name, cleaned_content, query_to_use, context_to_use, agent_data_to_use)
-            
-            # ALWAYS yield completion event, even if content is empty
-            print(f"[DEBUG] {agent_name}: Yielding completion event with content_length={len(enhanced_content)}")
-            completion_data = {
-                "type": "agent_complete",
+            # Return the cleaned content - tool processing will be handled by execute_agent
+            yield {
+                "type": "agent_complete", 
                 "agent": agent_name,
-                "content": enhanced_content
+                "content": cleaned_content
             }
-            
-            # Add tool results if any were executed
-            if tool_results:
-                completion_data["tools_used"] = tool_results
-            
-            yield completion_data
                 
         except asyncio.TimeoutError:
             print(f"[WARNING] Agent {agent_name} timed out after {timeout}s")
@@ -599,6 +969,7 @@ Please provide a comprehensive response based on your role and expertise."""
             
             timeout_content += "\n\nThe system will continue with other agents to provide you with available insights."
             
+            _end_agent_generation(output_text=timeout_content, success=True, input_prompt=full_prompt)
             yield {
                 "type": "agent_complete",
                 "agent": agent_name,
@@ -608,6 +979,10 @@ Please provide a comprehensive response based on your role and expertise."""
             }
         except Exception as e:
             print(f"[ERROR] Agent {agent_name} failed: {e}")
+            import traceback
+            print(f"[ERROR] Full traceback: {traceback.format_exc()}")
+            
+            _end_agent_generation(error=str(e), success=False, input_prompt=full_prompt)
             yield {
                 "type": "agent_error", 
                 "agent": agent_name,
@@ -670,22 +1045,64 @@ Please provide a comprehensive response based on your role and expertise."""
             
             def execute_tool_sync(tool_name, parameters):
                 """Execute tool in a separate thread to avoid event loop conflicts"""
+                # Create tool span for tracing if trace is available
+                from app.core.langfuse_integration import get_tracer
+                tracer = get_tracer()
+                tool_span = None
+                
+                if self.trace and tracer.is_enabled():
+                    try:
+                        print(f"[DEBUG] Creating tool span for {tool_name} by agent {agent_name}")
+                        # Add agent info to parameters
+                        params_with_agent = dict(parameters) if isinstance(parameters, dict) else {}
+                        params_with_agent["agent"] = agent_name
+                        
+                        tool_span = tracer.create_tool_span(
+                            self.trace, 
+                            tool_name, 
+                            params_with_agent
+                        )
+                        print(f"[DEBUG] Tool span created: {tool_span is not None}")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to create tool span: {e}")
+                        tool_span = None
+                else:
+                    print(f"[DEBUG] No tool span created - trace: {self.trace is not None}, tracer enabled: {tracer.is_enabled() if tracer else False}")
+                
                 try:
                     print(f"[DEBUG] Thread execution: {tool_name} with parameters: {parameters}")
                     
                     # Import and call MCP tool in thread context
                     from app.langchain.service import call_mcp_tool
-                    result = call_mcp_tool(tool_name, parameters)
+                    # Skip span creation in call_mcp_tool since we already created it
+                    result = call_mcp_tool(tool_name, parameters, trace=self.trace, _skip_span_creation=True)
+                    
+                    # End tool span with success
+                    if tool_span:
+                        try:
+                            print(f"[DEBUG] Ending tool span for {tool_name} with success")
+                            tracer.end_span_with_result(tool_span, result, True)
+                        except Exception as e:
+                            print(f"[ERROR] Failed to end tool span: {e}")
                     
                     return {
                         "tool": tool_name,
                         "parameters": parameters,
                         "result": result,
-                        "success": "error" not in result if isinstance(result, dict) else True
+                        "success": _is_tool_result_successful(result)
                     }
                     
                 except Exception as e:
                     print(f"[ERROR] Thread execution failed for {tool_name}: {e}")
+                    
+                    # End tool span with error
+                    if tool_span:
+                        try:
+                            print(f"[DEBUG] Ending tool span for {tool_name} with error")
+                            tracer.end_span_with_result(tool_span, None, False, str(e)[:500])
+                        except Exception as span_error:
+                            print(f"[ERROR] Failed to end tool span with error: {span_error}")
+                    
                     return {
                         "tool": tool_name,
                         "parameters": parameters,
@@ -824,20 +1241,62 @@ Provide your complete response based on the tool results above."""
             return agent_response, []
     
     def _parse_json_response(self, response: str) -> Dict:
-        """Parse JSON from LLM response"""
+        """Parse JSON from LLM response with enhanced error handling"""
         import re
         
-        # Try to find JSON in response
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        if json_match:
+        print(f"[DEBUG] Full routing response: {response}")
+        
+        # Remove thinking tags if present
+        cleaned_response = response
+        if "<think>" in response and "</think>" in response:
+            # Extract content after thinking tags
+            think_end = response.find("</think>")
+            if think_end != -1:
+                cleaned_response = response[think_end + 8:].strip()
+                print(f"[DEBUG] Extracted content after thinking tags: {cleaned_response[:200]}...")
+        
+        # Try multiple JSON extraction strategies
+        json_patterns = [
+            r'\{[^{}]*"agents"[^{}]*\}',  # Simple JSON with agents field
+            r'\{.*?"agents".*?\}',        # More flexible JSON with agents
+            r'\{.*\}',                    # Any JSON-like structure
+        ]
+        
+        for pattern in json_patterns:
+            json_matches = re.findall(pattern, cleaned_response, re.DOTALL)
+            for json_match in json_matches:
+                try:
+                    print(f"[DEBUG] Trying to parse JSON: {json_match[:200]}...")
+                    result = json.loads(json_match)
+                    if "agents" in result:
+                        # Ensure order field exists
+                        if "order" not in result:
+                            result["order"] = result["agents"]
+                        print(f"[DEBUG] Successfully parsed JSON: {result}")
+                        return result
+                except json.JSONDecodeError as e:
+                    print(f"[DEBUG] JSON parse failed: {e}")
+                    continue
+        
+        # Try to extract agents list even if full JSON fails
+        agent_match = re.search(r'"agents"\s*:\s*\[(.*?)\]', cleaned_response, re.DOTALL)
+        if agent_match:
             try:
-                result = json.loads(json_match.group())
-                # Ensure order field exists
-                if "agents" in result and "order" not in result:
-                    result["order"] = result["agents"]
-                return result
-            except json.JSONDecodeError:
-                pass
+                agents_str = agent_match.group(1)
+                # Extract agent names from the list
+                agent_names = re.findall(r'"([^"]+)"', agents_str)
+                if agent_names:
+                    print(f"[DEBUG] Extracted agents from partial parse: {agent_names}")
+                    return {
+                        "agents": agent_names,
+                        "reasoning": "Extracted from partial JSON parse",
+                        "collaboration_pattern": "parallel",
+                        "order": agent_names
+                    }
+            except Exception as e:
+                print(f"[DEBUG] Partial agent extraction failed: {e}")
+        
+        print(f"[DEBUG] All JSON parsing strategies failed for response: {cleaned_response[:500]}...")
         
         # Fallback
         return {

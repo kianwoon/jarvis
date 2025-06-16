@@ -115,7 +115,41 @@ class PipelineExecutor:
                 })
             )
         
-        # Store pipeline_id for bridge usage
+        # Initialize Langfuse tracing for agentic pipeline (with enhanced error handling)
+        trace = None
+        try:
+            from app.core.langfuse_integration import get_tracer
+            tracer = get_tracer()
+            
+            if not tracer._initialized:
+                tracer.initialize()
+            
+            if tracer.is_enabled():
+                # Sanitize metadata to prevent Langfuse errors
+                safe_metadata = {
+                    "pipeline_id": str(pipeline_id),
+                    "pipeline_name": str(pipeline.get("name", "Unknown")),
+                    "collaboration_mode": str(pipeline.get("collaboration_mode", "unknown")),
+                    "trigger_type": str(trigger_type),
+                    "execution_id": str(execution_id),
+                    "agent_count": len(pipeline.get("agents", []))
+                }
+                
+                trace = tracer.create_trace(
+                    name=f"agentic-pipeline-{pipeline['collaboration_mode']}",
+                    input=str(input_data.get("query", ""))[:1000],  # Limit input length
+                    metadata=safe_metadata
+                )
+                logger.info(f"[TRACE] Created Langfuse trace for pipeline {pipeline_id} execution {execution_id}")
+            else:
+                logger.info("[TRACE] Langfuse tracer not enabled for pipeline")
+        except Exception as e:
+            logger.warning(f"[TRACE] Failed to create Langfuse trace for pipeline: {e}")
+            # Continue without tracing if Langfuse fails
+            trace = None
+        
+        # Store trace and pipeline_id for bridge usage
+        self.current_trace = trace
         self.current_pipeline_id = pipeline_id
         
         try:
@@ -157,6 +191,33 @@ class PipelineExecutor:
                 result.get("execution_time", 0)
             )
             
+            # Complete Langfuse trace with enhanced error handling
+            if trace:
+                try:
+                    from app.core.langfuse_integration import get_tracer
+                    tracer = get_tracer()
+                    if tracer.is_enabled():
+                        # Sanitize output and metadata
+                        safe_output = str(result.get("final_output", ""))[:2000]  # Limit output length
+                        safe_metadata = {
+                            "execution_status": "completed",
+                            "execution_time": float(result.get("execution_time", 0)),
+                            "total_agents": int(len(result.get("agents_used", []))),
+                            "pipeline_id": str(pipeline_id)
+                        }
+                        
+                        trace.update(
+                            output=safe_output,
+                            metadata=safe_metadata
+                        )
+                        
+                        # Flush traces to ensure they appear in Langfuse UI
+                        tracer.flush()
+                        logger.info(f"[TRACE] Completed and flushed Langfuse trace for pipeline {pipeline_id}")
+                except Exception as e:
+                    logger.warning(f"[TRACE] Failed to complete Langfuse trace: {e}")
+                    # Continue execution even if trace completion fails
+            
             return {
                 "execution_id": execution_id,
                 "pipeline_id": pipeline_id,
@@ -179,6 +240,31 @@ class PipelineExecutor:
                 str(execution_id),
                 str(e)
             )
+            
+            # Complete Langfuse trace with error (enhanced error handling)
+            if trace:
+                try:
+                    from app.core.langfuse_integration import get_tracer
+                    tracer = get_tracer()
+                    if tracer.is_enabled():
+                        safe_metadata = {
+                            "execution_status": "failed",
+                            "error_message": str(e)[:500],  # Limit error message length
+                            "pipeline_id": str(pipeline_id),
+                            "execution_id": str(execution_id)
+                        }
+                        
+                        trace.update(
+                            output="",
+                            metadata=safe_metadata
+                        )
+                        
+                        # Flush traces to ensure they appear in Langfuse UI
+                        tracer.flush()
+                        logger.info(f"[TRACE] Completed and flushed Langfuse trace with error for pipeline {pipeline_id}")
+                except Exception as trace_error:
+                    logger.warning(f"[TRACE] Failed to complete Langfuse trace with error: {trace_error}")
+                    # Continue execution even if trace completion fails
             
             raise
         
@@ -307,7 +393,7 @@ class PipelineExecutor:
         pipeline = await self.pipeline_manager.get_pipeline(self.current_pipeline_id)
         
         # Create bridge adapter
-        adapter = PipelineBridgeAdapter(pipeline, str(execution_id))
+        adapter = PipelineBridgeAdapter(pipeline, str(execution_id), trace=self.current_trace)
         
         # Execute through adapter to get proper I/O tracking
         agent_outputs = []
@@ -340,13 +426,23 @@ class PipelineExecutor:
             elif event_type == "agent_complete":
                 completed_agents += 1
                 agent_name = event_data.get("agent")
-                response = event_data.get("response", "")
+                
+                # Extract response from multiple possible fields
+                response = (
+                    event_data.get("response") or 
+                    event_data.get("content") or 
+                    event_data.get("output") or
+                    ""
+                )
+                
                 duration = event_data.get("duration", 0)
                 progress = event_data.get("progress", (completed_agents / total_agents) * 100)
                 
+                # Enhanced debugging with response extraction details
                 if debug_mode:
                     logger.info(f"\n{'-'*60}")
                     logger.info(f"[AGENT I/O] Agent: {agent_name} (#{completed_agents}/{total_agents})")
+                    logger.info(f"[AGENT I/O] Event data fields: {list(event_data.keys())}")
                     logger.info(f"[AGENT I/O] Execution time: {duration:.2f}s")
                     logger.info(f"[AGENT I/O] Progress: {progress:.1f}%")
                     logger.info(f"[AGENT I/O] Input received:")
@@ -354,6 +450,7 @@ class PipelineExecutor:
                     logger.info(f"[AGENT I/O] Output generated:")
                     logger.info(f"  - Response length: {len(response)} characters")
                     logger.info(f"  - Response preview: {response[:500]}...")
+                    logger.info(f"  - Response source field: {'response' if event_data.get('response') else 'content' if event_data.get('content') else 'output' if event_data.get('output') else 'none'}")
                     
                     # Log tools if used
                     if "tools_used" in event_data and event_data["tools_used"]:
@@ -363,9 +460,9 @@ class PipelineExecutor:
                     
                     logger.info(f"{'-'*60}\n")
                 else:
-                    logger.info(f"[BRIDGE] Agent {agent_name} completed ({completed_agents}/{total_agents})")
+                    logger.info(f"[BRIDGE] Agent {agent_name} completed ({completed_agents}/{total_agents}) - Response: {len(response)} chars")
                 
-                # Build agent output
+                # Build agent output with proper response handling
                 agent_output = {
                     "agent": agent_name,
                     "output": response,
@@ -380,7 +477,13 @@ class PipelineExecutor:
                     agent_output["tools_used"] = event_data["tools_used"]
                 
                 agent_outputs.append(agent_output)
-                final_output = response
+                
+                # Update final_output to be the last agent's response (only if non-empty)
+                if response.strip():
+                    final_output = response
+                    logger.info(f"[BRIDGE] Updated final_output from {agent_name}: {len(final_output)} chars")
+                else:
+                    logger.warning(f"[BRIDGE] Agent {agent_name} produced empty response!")
                 
                 # Update current input for next agent (if any)
                 current_input = response
@@ -426,6 +529,23 @@ class PipelineExecutor:
         else:
             logger.info(f"[BRIDGE] Returning {len(agent_outputs)} agent outputs")
         
+        # Ensure we have a final_output - fallback to last agent's output if needed
+        if not final_output.strip() and agent_outputs:
+            for agent_output in reversed(agent_outputs):
+                potential_output = agent_output.get("output") or agent_output.get("content")
+                if potential_output and potential_output.strip():
+                    final_output = potential_output
+                    logger.info(f"[BRIDGE] Using fallback final_output from {agent_output.get('agent')}: {len(final_output)} chars")
+                    break
+        
+        # Last resort - combine all agent outputs
+        if not final_output.strip() and agent_outputs:
+            final_output = "\n\n".join([
+                f"**{agent.get('agent', 'Unknown Agent')}:**\n{agent.get('output') or agent.get('content') or 'No output'}"
+                for agent in agent_outputs
+            ])
+            logger.info(f"[BRIDGE] Using combined agent outputs as final_output: {len(final_output)} chars")
+        
         return {
             "agent_outputs": agent_outputs,
             "final_output": final_output,
@@ -450,7 +570,7 @@ class PipelineExecutor:
         pipeline_goal: str = ""
     ) -> Dict[str, Any]:
         """Original sequential execution logic"""
-        multi_agent = MultiAgentSystem()
+        multi_agent = MultiAgentSystem(trace=self.current_trace)
         
         # Check if debug mode is enabled
         debug_mode = input_data.get("debug_mode", False)
@@ -549,7 +669,7 @@ class PipelineExecutor:
         pipeline_goal: str = ""
     ) -> Dict[str, Any]:
         """Execute agents in parallel."""
-        multi_agent = MultiAgentSystem()
+        multi_agent = MultiAgentSystem(trace=self.current_trace)
         
         # Prepare agent names and configs
         agent_names = [agent["agent_name"] for agent in agents]
@@ -606,7 +726,7 @@ class PipelineExecutor:
         )
         
         # Execute hierarchically
-        multi_agent = MultiAgentSystem()
+        multi_agent = MultiAgentSystem(trace=self.current_trace)
         
         # Prepare subordinate agents for lead
         subordinates = hierarchy.get(lead_agent["agent_name"], [])

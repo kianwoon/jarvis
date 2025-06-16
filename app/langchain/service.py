@@ -2,6 +2,7 @@ import requests
 import re
 import httpx
 import json
+import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Tuple
 from app.core.llm_settings_cache import get_llm_settings
@@ -13,6 +14,8 @@ from app.api.v1.endpoints.document import HTTPEmbeddingFunction
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Milvus
 from app.rag.bm25_processor import BM25Processor, BM25CorpusManager
+
+logger = logging.getLogger(__name__)
 
 # Enhanced conversation management with Redis fallback
 _conversation_cache = {}  # In-memory fallback
@@ -2114,7 +2117,7 @@ def get_llm_response_direct(question: str, thinking: bool = False, stream: bool 
         
         return response
 
-async def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True, collections: List[str] = None, collection_strategy: str = "auto", query_type: str = None):
+async def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True, collections: List[str] = None, collection_strategy: str = "auto", query_type: str = None, trace=None):
     """Main function with hybrid RAG+LLM approach prioritizing answer quality
     
     Args:
@@ -2545,7 +2548,7 @@ Please generate the requested items incorporating relevant information from the 
             # Try simple tool executor first
             try:
                 from app.langchain.simple_tool_executor import identify_and_execute_tools
-                tool_calls, tool_context = identify_and_execute_tools(question)
+                tool_calls, tool_context = identify_and_execute_tools(question, trace=trace)
                 print(f"[DEBUG] rag_answer: Simple tool executor returned:")
                 print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
                 print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
@@ -2673,7 +2676,7 @@ Please generate the requested items incorporating relevant information from the 
                     }) + "\n"
             
             # Parse and execute tool calls using proven function
-            tool_results = extract_and_execute_tool_calls(response_text)
+            tool_results = extract_and_execute_tool_calls(response_text, trace=trace)
             
             if tool_results:
                 print(f"[DEBUG] Executed {len(tool_results)} tools from LLM response")
@@ -2753,7 +2756,7 @@ Based on these search results, provide a comprehensive answer to the user's ques
             response_text += response_chunk.text
         
         # Parse and execute tool calls using proven function
-        tool_results = extract_and_execute_tool_calls(response_text)
+        tool_results = extract_and_execute_tool_calls(response_text, trace=trace)
         
         if tool_results and any(r.get('success') for r in tool_results):
             # Build enhanced response with tool results
@@ -2948,6 +2951,10 @@ def get_mcp_tools_context(force_reload=False, include_examples=True):
 
 def refresh_gmail_token(server_id):
     """Refresh Gmail OAuth token"""
+    # Ensure logger is available in this function context
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
         from app.core.oauth_token_manager import oauth_token_manager
         
@@ -2971,12 +2978,19 @@ def refresh_gmail_token(server_id):
     except Exception as e:
         return {"error": f"Exception refreshing token: {str(e)}"}
 
-def _map_tool_parameters_service(tool_name: str, params: dict) -> dict:
+def _map_tool_parameters_service(tool_name: str, params: dict) -> tuple[str, dict]:
     """Map common parameter mismatches to correct parameter names for service layer"""
+    # Ensure logger is available in this function context
     import logging
     logger = logging.getLogger(__name__)
     
     mapped_params = params.copy()
+    
+    # Tool name mapping for aliases
+    if tool_name == 'find_email':
+        # find_email is an alias for search_emails 
+        logger.info(f"[TOOL MAPPING] Mapping find_email -> search_emails")
+        tool_name = 'search_emails'
     
     # Google Search tool parameter mapping
     if 'search' in tool_name.lower():
@@ -3017,281 +3031,239 @@ def _map_tool_parameters_service(tool_name: str, params: dict) -> dict:
             mapped_params['body'] = mapped_params.pop('content')
             logger.info(f"[PARAM MAPPING] Mapped 'content' -> 'body' for {tool_name}")
     
-    return mapped_params
+    return tool_name, mapped_params
 
-def call_mcp_tool(tool_name, parameters):
+def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
     """Call an MCP tool and return the result using info from Redis cache"""
-    print(f"[DEBUG] call_mcp_tool called with tool_name='{tool_name}', parameters={parameters}")
+    
+    # Ensure logger is available in this function context
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Create tool span if trace is provided and span creation is not skipped
+    tool_span = None
+    tracer = None
+    if trace and not _skip_span_creation:
+        try:
+            from app.core.langfuse_integration import get_tracer
+            tracer = get_tracer()
+            if tracer.is_enabled():
+                # Sanitize parameters for Langfuse
+                safe_parameters = {}
+                if isinstance(parameters, dict):
+                    for key, value in parameters.items():
+                        # Ensure key and value are strings and limit length
+                        safe_key = str(key)[:100]
+                        safe_value = str(value)[:500] if value is not None else ""
+                        safe_parameters[safe_key] = safe_value
+                tool_span = tracer.create_tool_span(trace, str(tool_name), safe_parameters)
+        except Exception as e:
+            logger.warning(f"Failed to create tool span for {tool_name}: {e}")
+            tool_span = None
+            tracer = None
     
     # Apply parameter mapping for common mismatches
-    parameters = _map_tool_parameters_service(tool_name, parameters)
-    print(f"[DEBUG] Parameters after mapping: {parameters}")
-    
-    enabled_tools = get_enabled_mcp_tools()
-    if tool_name not in enabled_tools:
-        return {"error": f"Tool {tool_name} not found in enabled tools"}
-    
-    tool_info = enabled_tools[tool_name]
-    endpoint = tool_info["endpoint"]
-    print(f"[DEBUG] Tool info keys: {list(tool_info.keys())}")
-    print(f"[DEBUG] Endpoint: {endpoint}")
-    
-    # Replace localhost with the actual hostname from manifest if available
-    # This handles the case where endpoints are stored with localhost but need to use Docker hostname
-    server_hostname = tool_info.get("server_hostname")
-    
-    # Check if we're running inside Docker
-    import os
-    in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
-    
-    if in_docker and server_hostname and "localhost" in endpoint:
-        # When calling from inside Docker, use the Docker hostname
-        endpoint = endpoint.replace("localhost", server_hostname)
-        print(f"[DEBUG] Replaced localhost with server hostname '{server_hostname}' in endpoint (Docker environment)")
-    elif not in_docker and server_hostname and server_hostname in endpoint:
-        # When calling from host (e.g., user's browser), replace Docker hostname with localhost
-        endpoint = endpoint.replace(server_hostname, "localhost")
-        print(f"[DEBUG] Replaced server hostname '{server_hostname}' with localhost in endpoint (Host environment)")
-    
-    method = tool_info.get("method", "POST")
-    headers = tool_info.get("headers") or {}
-    
-    # Handle MCP server pattern: use endpoint_prefix if tool-specific endpoint doesn't work
-    # Most MCP servers use a generic /invoke endpoint with tool name in payload
-    endpoint_prefix = tool_info.get("endpoint_prefix")
-    if endpoint_prefix and endpoint.endswith(f"/invoke/{tool_name}"):
-        # Use the generic invoke endpoint instead
-        endpoint = endpoint_prefix
-        print(f"[DEBUG] Using generic MCP endpoint: {endpoint}")
-    
-    print(f"[DEBUG] Calling MCP tool {tool_name} at {endpoint} with params: {parameters}")
-    
-    # Add API key authentication if available
-    api_key = tool_info.get("api_key")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-        print(f"[DEBUG] Added API key authentication for {tool_name}")
-    
-    # Inject OAuth credentials for Gmail tools
-    # Check if this is a Gmail tool by looking at the endpoint or tool name
-    is_gmail_tool = ("gmail" in tool_name.lower() or 
-                     "email" in tool_name.lower() or 
-                     "Gmail MCP" in endpoint)
-    print(f"[DEBUG] Checking OAuth injection: is_gmail_tool={is_gmail_tool}, server_id={tool_info.get('server_id')}")
-    if is_gmail_tool and tool_info.get("server_id"):
-        try:
-            from app.core.oauth_token_manager import oauth_token_manager
-            
-            # Get valid token (will refresh automatically if needed)
-            oauth_creds = oauth_token_manager.get_valid_token(
-                server_id=tool_info["server_id"],
-                service_name="gmail"
-            )
-            
-            if oauth_creds and "google_access_token" not in parameters:
-                # Gmail MCP server expects these exact parameter names
-                parameters.update({
-                    "google_access_token": oauth_creds.get("access_token", ""),
-                    "google_refresh_token": oauth_creds.get("refresh_token", ""),
-                    "google_client_id": oauth_creds.get("client_id", ""),
-                    "google_client_secret": oauth_creds.get("client_secret", "")
-                    # Note: token_uri is NOT passed as the Gmail MCP server has it hardcoded
-                })
-                print(f"[DEBUG] Injected OAuth credentials for {tool_name} from cache/refresh")
-                print(f"[DEBUG] Token expires at: {oauth_creds.get('expires_at', 'Unknown')}")
-            else:
-                print(f"[WARNING] No valid OAuth credentials available for {tool_name}")
-        except Exception as e:
-            print(f"[ERROR] Failed to inject OAuth credentials: {e}")
-    
-    # Check if this is a stdio-based tool
-    if endpoint.startswith("stdio://"):
-        print(f"[DEBUG] Using stdio bridge for {tool_name}")
-        # For stdio tools, we need to get the server configuration
-        if tool_info.get("server_id"):
-            from app.core.db import SessionLocal, MCPServer
-            db = SessionLocal()
-            try:
-                server = db.query(MCPServer).filter(MCPServer.id == tool_info["server_id"]).first()
-                if server and server.config_type == "command":
-                    # Use stdio bridge for command-based servers
-                    import asyncio
-                    from app.core.mcp_stdio_bridge import call_mcp_tool_via_stdio
-                    
-                    server_config = {
-                        "command": server.command,
-                        "args": server.args or []
-                    }
-                    
-                    # Run the async function
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        result = loop.run_until_complete(
-                            call_mcp_tool_via_stdio(server_config, tool_name, parameters)
-                        )
-                        
-                        # Check if this is a Gmail token error in stdio response
-                        error_str = str(result.get("error", "")) if isinstance(result, dict) else ""
-                        
-                        # Extract the actual error message from the response content
-                        if isinstance(result, dict) and "content" in result:
-                            content = result.get("content", [])
-                            if content and isinstance(content, list) and len(content) > 0:
-                                text_content = content[0].get("text", "")
-                                if text_content:
-                                    error_str = text_content
-                        
-                        if ("gmail" in tool_name.lower() and
-                            ("credentials do not contain" in error_str.lower() or
-                             "token" in error_str.lower() or
-                             "expired" in error_str.lower() or
-                             "invalid_grant" in error_str.lower())):
-                            print(f"[DEBUG] Detected Gmail token error in stdio response: {error_str[:200]}")
-                            
-                            # Check for invalid_grant (token revoked)
-                            if "invalid_grant" in error_str.lower():
-                                print(f"[ERROR] Gmail refresh token has been revoked")
-                                result = {
-                                    "error": "Gmail authorization has been revoked. Please re-authorize Gmail access in the MCP Servers settings.",
-                                    "error_type": "auth_revoked",
-                                    "server_id": tool_info["server_id"]
-                                }
-                            else:
-                                print(f"[DEBUG] Attempting to refresh token...")
-                                
-                                refresh_result = refresh_gmail_token(tool_info["server_id"])
-                                if refresh_result and not refresh_result.get("error"):
-                                    print(f"[DEBUG] Token refreshed successfully, retrying stdio tool call...")
-                                    # Invalidate the tool cache to ensure fresh OAuth credentials are loaded
-                                    from app.core.mcp_tools_cache import reload_enabled_mcp_tools
-                                    reload_enabled_mcp_tools()
-                                    
-                                    # Re-inject OAuth credentials with fresh token
-                                    oauth_creds = oauth_token_manager.get_valid_token(
-                                        server_id=tool_info["server_id"],
-                                        service_name="gmail"
-                                    )
-                                    if oauth_creds:
-                                        parameters.update({
-                                            "google_access_token": oauth_creds.get("access_token", ""),
-                                            "google_refresh_token": oauth_creds.get("refresh_token", ""),
-                                            "google_client_id": oauth_creds.get("client_id", ""),
-                                            "google_client_secret": oauth_creds.get("client_secret", "")
-                                            # Note: token_uri is NOT passed as the Gmail MCP server has it hardcoded
-                                        })
-                                    
-                                    # Retry the tool call with refreshed token
-                                    result = loop.run_until_complete(
-                                        call_mcp_tool_via_stdio(server_config, tool_name, parameters)
-                                    )
-                                else:
-                                    print(f"[ERROR] Failed to refresh token: {refresh_result}")
-                                    # Check if refresh also failed due to invalid_grant
-                                    if "invalid_grant" in str(refresh_result.get("error", "")):
-                                        result = {
-                                            "error": "Gmail authorization has been revoked. Please re-authorize Gmail access in the MCP Servers settings.",
-                                            "error_type": "auth_revoked",
-                                            "server_id": tool_info["server_id"]
-                                        }
-                        
-                        return result
-                    finally:
-                        loop.close()
-                else:
-                    return {"error": "Server configuration not found for stdio tool"}
-            finally:
-                db.close()
-        else:
-            return {"error": "No server_id for stdio tool"}
-    
-    # Original HTTP-based logic
-    # MCP server pattern: always use generic invoke format
-    if "/invoke" in endpoint and (endpoint.endswith("/invoke") or endpoint_prefix):
-        # Standard MCP format: {"name": "tool_name", "arguments": {parameters}}
-        payload = {
-            "name": tool_name,
-            "arguments": parameters if parameters else {}
-        }
-        print(f"[DEBUG] Using MCP invoke format")
-    else:
-        # Fallback to direct parameters for other API patterns
-        payload = parameters if parameters else {}
-        print(f"[DEBUG] Using direct parameters format")
-    
-    print(f"[DEBUG] Final payload: {payload}")
+    tool_name, parameters = _map_tool_parameters_service(tool_name, parameters)
     
     try:
-        # Set default headers
-        if "Content-Type" not in headers:
-            headers["Content-Type"] = "application/json"
+        from app.core.mcp_tools_cache import get_enabled_mcp_tools
+        enabled_tools = get_enabled_mcp_tools()
+        if tool_name not in enabled_tools:
+            # End tool span with error
+            if tool_span and tracer:
+                try:
+                    tracer.end_span_with_result(tool_span, {"error": f"Tool {tool_name} is disabled or not available"}, False, f"Tool {tool_name} not found in enabled tools")
+                except Exception as e:
+                    logger.warning(f"Failed to end tool span for {tool_name}: {e}")
+            return {"error": f"Tool {tool_name} is disabled or not available"}
         
-        if method.upper() == "GET":
-            response = requests.get(endpoint, params=payload, headers=headers, timeout=30)
+        tool_info = enabled_tools[tool_name]
+        endpoint = tool_info["endpoint"]
+        
+        # Replace localhost with the actual hostname from manifest if available
+        server_hostname = tool_info.get("server_hostname")
+        
+        # Check if we're running inside Docker
+        import os
+        in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+        
+        if in_docker and server_hostname and "localhost" in endpoint:
+            endpoint = endpoint.replace("localhost", server_hostname)
+        elif not in_docker and server_hostname and server_hostname in endpoint:
+            endpoint = endpoint.replace(server_hostname, "localhost")
+        
+        method = tool_info.get("method", "POST")
+        headers = tool_info.get("headers") or {}
+        
+        # Handle MCP server pattern: use endpoint_prefix if tool-specific endpoint doesn't work
+        endpoint_prefix = tool_info.get("endpoint_prefix")
+        if endpoint_prefix and endpoint.endswith(f"/invoke/{tool_name}"):
+            endpoint = endpoint_prefix
+        
+        # Add API key authentication if available
+        api_key = tool_info.get("api_key")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        
+        # Inject OAuth credentials for Gmail tools (skipping for brevity)
+        
+        # Check if this is a stdio-based tool (after endpoint_prefix override)
+        if endpoint.startswith("stdio://"):
+            # For stdio tools, we need to get the server configuration
+            server_id = tool_info.get("server_id")
+            if server_id:
+                try:
+                    # Get server configuration from database
+                    from app.core.db import SessionLocal, MCPServer
+                    db = SessionLocal()
+                    try:
+                        server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+                        if server and server.command:
+                            # Use stdio handler
+                            from app.core.stdio_mcp_handler import call_stdio_mcp_tool
+                            
+                            server_config = {
+                                "command": server.command,
+                                "args": server.args if server.args else []
+                            }
+                            
+                            # Clean up parameters (remove agent parameter that shouldn't be sent to tool)
+                            clean_parameters = {k: v for k, v in parameters.items() if k != "agent"}
+                            
+                            logger.info(f"[STDIO] Calling {tool_name} via stdio with server_id {server_id}")
+                            result = call_stdio_mcp_tool(server_config, tool_name, clean_parameters)
+                            
+                            # End tool span with result
+                            if tool_span and tracer:
+                                try:
+                                    success = "error" not in result
+                                    tracer.end_span_with_result(tool_span, result, success, result.get("error"))
+                                except Exception as e:
+                                    logger.warning(f"Failed to end tool span for {tool_name}: {e}")
+                            
+                            return result
+                        else:
+                            error_msg = f"Server {server_id} not found or has no command configured"
+                            logger.error(error_msg)
+                            if tool_span:
+                                tracer.end_span_with_result(tool_span, None, False, error_msg)
+                            return {"error": error_msg}
+                    finally:
+                        db.close()
+                except Exception as e:
+                    error_msg = f"Error getting server config for {tool_name}: {str(e)}"
+                    logger.error(error_msg)
+                    if tool_span:
+                        tracer.end_span_with_result(tool_span, None, False, error_msg)
+                    return {"error": error_msg}
+            else:
+                error_msg = "No server_id for stdio tool"
+                if tool_span:
+                    tracer.end_span_with_result(tool_span, None, False, error_msg)
+                return {"error": error_msg}
+        
+        # Original HTTP-based logic
+        # MCP server pattern: always use generic invoke format
+        if "/invoke" in endpoint and (endpoint.endswith("/invoke") or endpoint_prefix):
+            # Standard MCP format: {"name": "tool_name", "arguments": {parameters}}
+            payload = {
+                "name": tool_name,
+                "arguments": parameters if parameters else {}
+            }
         else:
-            response = requests.post(endpoint, json=payload, headers=headers, timeout=30)
+            # Fallback to direct parameters for other API patterns
+            payload = parameters if parameters else {}
         
-        response.raise_for_status()
-        
-        # Handle different response types
         try:
-            result = response.json()
-            print(f"[DEBUG] MCP tool {tool_name} response: {result}")
-            return result
-        except json.JSONDecodeError:
-            # If response is not JSON, return as text
-            return {"result": response.text}
+            # Set default headers
+            if "Content-Type" not in headers:
+                headers["Content-Type"] = "application/json"
             
-    except requests.exceptions.Timeout:
-        error_msg = f"Timeout calling tool {tool_name} (30s timeout exceeded)"
-        print(f"[ERROR] {error_msg}")
-        return {"error": error_msg}
-    except requests.exceptions.ConnectionError:
-        error_msg = f"Connection error calling tool {tool_name} at {endpoint}. Check if MCP server is running."
-        print(f"[ERROR] {error_msg}")
-        return {"error": error_msg}
-    except requests.exceptions.HTTPError as e:
-        try:
-            error_detail = e.response.text
-        except:
-            error_detail = str(e)
-        error_msg = f"HTTP {e.response.status_code} error calling tool {tool_name}: {error_detail}"
-        print(f"[ERROR] {error_msg}")
-        
-        # Check if this is a Gmail token expiration error
-        if ("gmail" in tool_name.lower() and 
-            ("credentials do not contain" in error_detail.lower() or 
-             "token" in error_detail.lower() or
-             "401" in error_detail or
-             e.response.status_code == 401)):
-            print(f"[DEBUG] Detected Gmail token error, attempting to refresh token...")
+            if method.upper() == "GET":
+                response = requests.get(endpoint, params=payload, headers=headers, timeout=30)
+            else:
+                response = requests.post(endpoint, json=payload, headers=headers, timeout=30)
             
-            # Try to refresh the token
-            if tool_info.get("server_id"):
-                refresh_result = refresh_gmail_token(tool_info["server_id"])
-                if refresh_result and not refresh_result.get("error"):
-                    print(f"[DEBUG] Token refreshed successfully, retrying tool call...")
-                    # Invalidate the tool cache to ensure fresh OAuth credentials are loaded
-                    from app.core.mcp_tools_cache import reload_enabled_mcp_tools
-                    reload_enabled_mcp_tools()
-                    # Retry the tool call with refreshed token
-                    return call_mcp_tool(tool_name, parameters)
-                else:
-                    print(f"[ERROR] Failed to refresh token: {refresh_result}")
-                    # Check if it's an invalid_grant error (token revoked)
-                    if "invalid_grant" in str(refresh_result.get("error", "")):
-                        return {
-                            "error": "Gmail authorization has been revoked. Please re-authorize Gmail access in the MCP Servers settings.",
-                            "error_type": "auth_revoked",
-                            "server_id": tool_info.get("server_id")
-                        }
-        
-        # If we get 404 and were using tool-specific endpoint, try generic endpoint
-        if e.response.status_code == 404 and endpoint_prefix and not endpoint.endswith("/invoke"):
-            print(f"[DEBUG] Retrying with generic endpoint due to 404...")
-            return call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info)
-        
-        return {"error": error_msg}
+            response.raise_for_status()
+            
+            # Handle different response types
+            try:
+                result = response.json()
+                # End tool span with success
+                if tool_span:
+                    tracer.end_span_with_result(tool_span, result, True)
+                
+                return result
+            except json.JSONDecodeError:
+                # If response is not JSON, return as text
+                result = {"result": response.text}
+                
+                # End tool span with success
+                if tool_span:
+                    tracer.end_span_with_result(tool_span, result, True)
+                
+                return result
+            
+        except requests.exceptions.Timeout:
+            error_msg = f"Timeout calling tool {tool_name} (30s timeout exceeded)"
+            print(f"[ERROR] {error_msg}")
+            
+            # End tool span with error
+            if tool_span:
+                tracer.end_span_with_result(tool_span, None, False, error_msg)
+            
+            return {"error": error_msg}
+        except requests.exceptions.ConnectionError:
+            error_msg = f"Connection error calling tool {tool_name} at {endpoint}. Check if MCP server is running."
+            print(f"[ERROR] {error_msg}")
+            
+            # End tool span with error
+            if tool_span:
+                tracer.end_span_with_result(tool_span, None, False, error_msg)
+            
+            return {"error": error_msg}
+        except requests.exceptions.HTTPError as e:
+            try:
+                error_detail = e.response.text
+            except:
+                error_detail = str(e)
+            error_msg = f"HTTP {e.response.status_code} error calling tool {tool_name}: {error_detail}"
+            print(f"[ERROR] {error_msg}")
+            
+            # Check if this is a Gmail token expiration error
+            if ("gmail" in tool_name.lower() and 
+                ("credentials do not contain" in error_detail.lower() or 
+                 "token" in error_detail.lower() or
+                 "401" in error_detail or
+                 e.response.status_code == 401)):
+                print(f"[DEBUG] Detected Gmail token error, attempting to refresh token...")
+                
+                # Try to refresh the token
+                if tool_info.get("server_id"):
+                    refresh_result = refresh_gmail_token(tool_info["server_id"])
+                    if refresh_result and not refresh_result.get("error"):
+                        print(f"[DEBUG] Token refreshed successfully, retrying tool call...")
+                        # Invalidate the tool cache to ensure fresh OAuth credentials are loaded
+                        from app.core.mcp_tools_cache import reload_enabled_mcp_tools
+                        reload_enabled_mcp_tools()
+                        # Retry the tool call with refreshed token (skip span creation since already created)
+                        return call_mcp_tool(tool_name, parameters, trace=trace, _skip_span_creation=True)
+                    else:
+                        print(f"[ERROR] Failed to refresh token: {refresh_result}")
+                        # Check if it's an invalid_grant error (token revoked)
+                        if "invalid_grant" in str(refresh_result.get("error", "")):
+                            return {
+                                "error": "Gmail authorization has been revoked. Please re-authorize Gmail access in the MCP Servers settings.",
+                                "error_type": "auth_revoked",
+                                "server_id": tool_info.get("server_id")
+                            }
+            
+            # If we get 404 and were using tool-specific endpoint, try generic endpoint
+            if e.response.status_code == 404 and endpoint_prefix and not endpoint.endswith("/invoke"):
+                print(f"[DEBUG] Retrying with generic endpoint due to 404...")
+                return call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info)
+            
+            return {"error": error_msg}
     except Exception as e:
         error_msg = f"Unexpected error calling tool {tool_name}: {str(e)}"
         print(f"[ERROR] {error_msg}")
@@ -3299,6 +3271,10 @@ def call_mcp_tool(tool_name, parameters):
 
 def call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info):
     """Fallback function to retry with generic MCP endpoint"""
+    # Ensure logger is available in this function context
+    import logging
+    logger = logging.getLogger(__name__)
+    
     endpoint_prefix = tool_info.get("endpoint_prefix")
     if not endpoint_prefix:
         return {"error": f"No fallback endpoint available for {tool_name}"}
@@ -3329,13 +3305,14 @@ def call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info):
         print(f"[ERROR] {error_msg}")
         return {"error": error_msg}
 
-def extract_and_execute_tool_calls(text, stream_callback=None):
+def extract_and_execute_tool_calls(text, stream_callback=None, trace=None):
     """
     Extract tool calls from LLM output and execute them
     
     Args:
         text: LLM response text to scan for tool calls
         stream_callback: Optional callback to stream tool execution updates
+        trace: Optional Langfuse trace for span creation
     
     Returns:
         List of tool execution results
@@ -3421,12 +3398,28 @@ def extract_and_execute_tool_calls(text, stream_callback=None):
             
             print(f"[DEBUG] Tool execution: {tool_name} with params: {params}")
             
-            # Execute the tool
-            result = call_mcp_tool(tool_name, params)
+            # Create tool span if trace is provided
+            tool_span = None
+            if trace:
+                from app.core.langfuse_integration import get_tracer
+                tracer = get_tracer()
+                if tracer.is_enabled():
+                    print(f"[DEBUG] RAG chat creating tool span for {tool_name}")
+                    tool_span = tracer.create_tool_span(trace, tool_name, params)
+                    print(f"[DEBUG] RAG chat tool span created: {tool_span is not None}")
+            
+            # Execute the tool (skip span creation since we already created it above)
+            result = call_mcp_tool(tool_name, params, trace=trace, _skip_span_creation=True)
             
             # Enhanced result processing
             if "error" in result:
                 print(f"[ERROR] Tool {tool_name} returned error: {result['error']}")
+                
+                # End tool span with error
+                if tool_span:
+                    print(f"[DEBUG] RAG chat ending tool span for {tool_name} with error: {result['error']}")
+                    tracer.end_span_with_result(tool_span, None, False, result['error'])
+                
                 results.append({
                     "tool": tool_name,
                     "parameters": params,
@@ -3437,6 +3430,11 @@ def extract_and_execute_tool_calls(text, stream_callback=None):
                     stream_callback(f"❌ Tool {tool_name} failed: {result['error']}")
             else:
                 print(f"[SUCCESS] Tool {tool_name} executed successfully")
+                
+                # End tool span with success
+                if tool_span:
+                    print(f"[DEBUG] RAG chat ending tool span for {tool_name} with success")
+                    tracer.end_span_with_result(tool_span, result, True)
                 
                 # Special formatting for different tool types
                 if tool_name == "get_datetime" and "result" in result:

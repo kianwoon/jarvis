@@ -96,5 +96,15 @@ def get_default_langfuse_settings():
         "s3_endpoint_url": "",
         "s3_access_key_id": "",
         "s3_secret_access_key": "",
-        "s3_region": "auto"
+        "s3_region": "auto",
+        # Custom model definitions for cost tracking
+        "custom_models": [
+            {
+                "model_name": "qwen3:30b-a3b",
+                "input_cost_per_token": 0.000001,  # $0.001 per 1K tokens (estimate)
+                "output_cost_per_token": 0.000002,  # $0.002 per 1K tokens (estimate)
+                "tokenizer": "cl100k_base",  # Use OpenAI tokenizer as fallback
+                "unit": "TOKENS"
+            }
+        ]
     }

@@ -9,6 +9,46 @@ from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+def _is_tool_result_successful(result) -> bool:
+    """
+    Determine if a tool execution result indicates success
+    
+    Args:
+        result: The tool execution result
+        
+    Returns:
+        bool: True if successful, False if failed
+    """
+    if not isinstance(result, dict):
+        return True  # Non-dict results are considered successful
+    
+    # Check for explicit error indicators
+    if "error" in result and isinstance(result["error"], str) and result["error"].strip():
+        return False
+    
+    # Check for successful content patterns
+    if "content" in result:
+        content = result["content"]
+        if isinstance(content, list) and len(content) > 0:
+            # Check if first content item indicates success
+            first_item = content[0]
+            if isinstance(first_item, dict) and "text" in first_item:
+                text = first_item["text"].lower()
+                # Look for explicit success indicators
+                if any(indicator in text for indicator in ["✅", "success", "sent successfully", "completed successfully"]):
+                    return True
+                # Look for explicit error indicators
+                if any(indicator in text for indicator in ["❌", "failed", "error:", "exception:"]):
+                    return False
+        return True  # Content exists, assume success
+    
+    # Check for result field
+    if "result" in result:
+        return True  # Has result field, assume success
+    
+    # Default to success for unrecognized formats
+    return True
+
 class ToolExecutor:
     """Executes tools based on agent responses"""
     
@@ -249,7 +289,7 @@ class ToolExecutor:
                     "tool": tool_name,
                     "parameters": parameters,
                     "result": result,
-                    "success": "error" not in result
+                    "success": _is_tool_result_successful(result)
                 })
                 
             except Exception as e:

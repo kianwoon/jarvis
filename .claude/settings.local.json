@@ -50,7 +50,10 @@
       "Bash(docker-compose up:*)",
       "Bash(docker-compose:*)",
       "Bash(git checkout:*)",
-      "Bash(/dev/null)"
+      "Bash(/dev/null)",
+      "Bash(true)",
+      "Bash(awk:*)",
+      "Bash(cat:*)"
     ],
     "deny": []
   },

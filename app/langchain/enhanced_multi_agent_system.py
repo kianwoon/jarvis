@@ -29,8 +29,8 @@ except ImportError as e:
 class EnhancedMultiAgentSystem(MultiAgentSystem):
     """Enhanced version with structured communication"""
     
-    def __init__(self, conversation_id: Optional[str] = None):
-        super().__init__(conversation_id)
+    def __init__(self, conversation_id: Optional[str] = None, trace=None):
+        super().__init__(conversation_id, trace)
         self.communication_protocol = AgentCommunicationProtocol() if AgentCommunicationProtocol else None
         self.context_manager = None
         self.pipeline_orchestrator = None
@@ -235,7 +235,7 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
                 agent_data["tools"] = pipeline_config["tools"]
         
         # Create dynamic system and execute agent
-        dynamic_system = DynamicMultiAgentSystem()
+        dynamic_system = DynamicMultiAgentSystem(trace=self.trace)
         
         # Build enhanced context with pipeline information
         context = {
@@ -266,16 +266,26 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
                 duration = (datetime.now() - start_time).total_seconds()
                 response_text = event.get("content", "")
                 
+                # Ensure response_text is not empty - check multiple fields
+                if not response_text.strip():
+                    response_text = (
+                        event.get("response") or
+                        event.get("output") or
+                        "Agent completed but produced no output"
+                    )
+                
                 yield {
                     "event": "agent_complete",
                     "data": {
                         "agent": agent_name,
                         "response": response_text,
+                        "content": response_text,  # Add both fields for compatibility
                         "reasoning": event.get("reasoning", ""),
                         "duration": duration,
                         "avatar": event.get("avatar", "🤖"),
                         "description": event.get("description", ""),
-                        "timeout": event.get("timeout", False)
+                        "timeout": event.get("timeout", False),
+                        "tools_used": event.get("tools_used", [])
                     }
                 }
             elif event_type == "agent_token":

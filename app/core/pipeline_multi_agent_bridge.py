@@ -55,9 +55,10 @@ class AgentOutput:
 class PipelineMultiAgentBridge:
     """Bridges pipeline execution with multi-agent system"""
     
-    def __init__(self, pipeline_id: str, execution_id: str):
+    def __init__(self, pipeline_id: str, execution_id: str, trace=None):
         self.pipeline_id = pipeline_id
         self.execution_id = execution_id
+        self.trace = trace
         self.multi_agent_system = None
         self.agent_contracts = {}
         self.redis_client = get_redis_client()
@@ -70,7 +71,8 @@ class PipelineMultiAgentBridge:
         
         # Create enhanced multi-agent system
         self.multi_agent_system = EnhancedMultiAgentSystem(
-            conversation_id=self.execution_id
+            conversation_id=self.execution_id,
+            trace=self.trace
         )
         
         # Load pipeline configuration from database

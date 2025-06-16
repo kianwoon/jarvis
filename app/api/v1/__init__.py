@@ -157,4 +157,10 @@ api_router.include_router(
     pipeline_replay.router,
     prefix="/pipelines",
     tags=["pipeline-replay"]
+)
+
+api_router.include_router(
+    pipeline_execution_ws.router,
+    prefix="",
+    tags=["pipeline-websockets"]
 ) 
