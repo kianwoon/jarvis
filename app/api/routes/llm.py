@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 from app.core.llm_settings_cache import get_llm_settings
+from app.core.langfuse_integration import trace_llm_call, get_tracer
 import asyncio
 from fastapi.responses import StreamingResponse
 import os
@@ -113,24 +114,102 @@ async def get_current_model():
 
 @router.post("/generate", response_model=GenerateResponse)
 async def generate(request: GenerateRequest):
+    tracer = get_tracer()
+    trace = None
+    generation = None
+    
     try:
         inference = get_inference()
         # Update config params for this request
         inference.config.temperature = request.temperature
         inference.config.top_p = request.top_p
         inference.config.max_tokens = request.max_tokens
+        
+        # Create Langfuse trace and generation
+        # Initialize tracer if not already done
+        if not tracer._initialized:
+            tracer.initialize()
+            
+        if tracer.is_enabled():
+            trace = tracer.create_trace(
+                name="llm-generate",
+                input=request.prompt,
+                metadata={
+                    "endpoint": "/api/v1/generate",
+                    "model": inference.config.model_name
+                }
+            )
+            
+            if trace:
+                generation = tracer.create_generation(
+                    trace=trace,
+                    name="ollama-generation",
+                    model=inference.config.model_name,
+                    input=request.prompt,
+                    metadata={
+                        "temperature": request.temperature,
+                        "top_p": request.top_p,
+                        "max_tokens": request.max_tokens
+                    }
+                )
+        
         response = await inference.generate(request.prompt)
         text = response.text or ""
         reasoning = re.findall(r"<think>(.*?)</think>", text, re.DOTALL)
         answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        return {
+        
+        result = {
             "text": text,
             "reasoning": reasoning[0] if reasoning else None,
             "answer": answer,
             "metadata": response.metadata
         }
+        
+        # Update generation with results
+        if generation:
+            generation.end(
+                output=text,
+                metadata={
+                    "response_length": len(text),
+                    "has_reasoning": bool(reasoning),
+                    "model_metadata": response.metadata,
+                    "input_length": len(request.prompt),
+                    "output_length": len(text)
+                }
+            )
+        
+        # Update trace with final result
+        if trace:
+            trace.update(
+                output=result,
+                metadata={
+                    "success": True,
+                    "response_type": "reasoning" if reasoning else "direct"
+                }
+            )
+        
+        return result
+        
     except Exception as e:
+        # Log error in generation and trace
+        if generation:
+            generation.end(
+                output=f"Error: {str(e)}",
+                metadata={"error": str(e), "level": "ERROR"}
+            )
+        
+        if trace:
+            trace.update(
+                output=f"Error: {str(e)}",
+                metadata={"error": str(e), "success": False}
+            )
+        
         raise HTTPException(status_code=500, detail=str(e))
+    
+    finally:
+        # Flush traces
+        if tracer.is_enabled():
+            tracer.flush()
 
 @router.post("/generate_stream")
 async def generate_stream(request: GenerateRequest):

@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from app.langchain.service import rag_answer
 from app.langchain.multi_agent_system_simple import MultiAgentSystem
 from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier, QueryType
+from app.core.langfuse_integration import get_tracer
 from fastapi.responses import StreamingResponse
 import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any
@@ -33,6 +34,50 @@ class RAGResponse(BaseModel):
 
 @router.post("/rag")
 async def rag_endpoint(request: RAGRequest):
+    # Initialize Langfuse tracing
+    tracer = get_tracer()
+    trace = None
+    generation = None
+    
+    # Get model name from LLM settings for proper tracing
+    from app.core.llm_settings_cache import get_llm_settings
+    llm_settings = get_llm_settings()
+    model_name = llm_settings.get("model", "unknown")
+    
+    if not tracer._initialized:
+        tracer.initialize()
+    
+    if tracer.is_enabled():
+        trace = tracer.create_trace(
+            name="rag-chat",
+            input=request.question,
+            metadata={
+                "endpoint": "/api/v1/langchain/rag",
+                "conversation_id": request.conversation_id,
+                "thinking": request.thinking,
+                "collections": request.collections,
+                "collection_strategy": request.collection_strategy,
+                "use_langgraph": request.use_langgraph,
+                "model": model_name
+            }
+        )
+        
+        # Create generation within the trace for detailed observability
+        if trace:
+            generation = tracer.create_generation(
+                trace=trace,
+                name="rag-generation",
+                model=model_name,
+                input=request.question,
+                metadata={
+                    "thinking": request.thinking,
+                    "collections": request.collections,
+                    "collection_strategy": request.collection_strategy,
+                    "use_langgraph": request.use_langgraph,
+                    "model": model_name
+                }
+            )
+    
     # Use session_id as conversation_id if conversation_id is not provided
     conversation_id = request.conversation_id or request.session_id
     
@@ -140,7 +185,109 @@ async def rag_endpoint(request: RAGRequest):
                 print(f"[ERROR] Could not send error response, client likely disconnected")
     
     print(f"[DEBUG] API endpoint - Returning StreamingResponse")
-    return StreamingResponse(stream(), media_type="application/json")
+    
+    # Create a wrapper to capture the output for Langfuse tracing
+    async def stream_with_tracing():
+        collected_output = ""
+        final_answer = ""
+        source_info = ""
+        
+        try:
+            async for chunk in stream():
+                # Collect the streamed data
+                if chunk and chunk.strip():
+                    collected_output += chunk
+                    
+                    # Try to extract the final answer from the response chunks
+                    if '"answer"' in chunk:
+                        try:
+                            chunk_data = json_module.loads(chunk.strip())
+                            if "answer" in chunk_data:
+                                final_answer = chunk_data["answer"]
+                                # Clean up thinking tags from the answer for cleaner output
+                                import re
+                                if final_answer:
+                                    final_answer = re.sub(r'<think>.*?</think>', '', final_answer, flags=re.DOTALL).strip()
+                            if "source" in chunk_data:
+                                source_info = chunk_data["source"]
+                        except:
+                            pass  # Continue streaming even if parsing fails
+                
+                yield chunk
+            
+            # Update Langfuse generation and trace with the final output
+            if tracer.is_enabled():
+                try:
+                    # Ensure we have meaningful output for the generation
+                    generation_output = final_answer if final_answer else "Response generated successfully"
+                    
+                    # End the generation with results (like llm-generate does)
+                    if generation:
+                        generation.end(
+                            output=generation_output,
+                            metadata={
+                                "response_length": len(final_answer) if final_answer else len(collected_output),
+                                "source": source_info or "rag-chat",
+                                "streaming": True,
+                                "has_answer": bool(final_answer),
+                                "conversation_id": conversation_id,
+                                "output_captured": bool(final_answer),
+                                "model": model_name,
+                                "input_length": len(request.question),
+                                "output_length": len(generation_output)
+                            }
+                        )
+                    
+                    # Update trace with final result
+                    if trace:
+                        trace.update(
+                            output=final_answer if final_answer else collected_output[:500],
+                            metadata={
+                                "success": True,
+                                "source": source_info,
+                                "response_length": len(final_answer) if final_answer else len(collected_output),
+                                "streaming": True,
+                                "conversation_id": conversation_id
+                            }
+                        )
+                    
+                    tracer.flush()
+                except Exception as e:
+                    print(f"[WARNING] Failed to update Langfuse trace/generation: {e}")
+                    
+        except Exception as e:
+            # Update generation and trace with error
+            if tracer.is_enabled():
+                try:
+                    # End generation with error
+                    if generation:
+                        generation.end(
+                            output=f"Error: {str(e)}",
+                            metadata={
+                                "success": False,
+                                "error": str(e),
+                                "conversation_id": conversation_id,
+                                "model": model_name
+                            }
+                        )
+                    
+                    # Update trace with error
+                    if trace:
+                        trace.update(
+                            output=f"Error: {str(e)}",
+                            metadata={
+                                "success": False,
+                                "error": str(e),
+                                "conversation_id": conversation_id
+                            }
+                        )
+                    
+                    tracer.flush()
+                except:
+                    pass  # Don't fail the request if tracing fails
+            raise
+    
+    return StreamingResponse(stream_with_tracing(), media_type="application/json")
 
 class MultiAgentRequest(BaseModel):
     question: str
@@ -168,35 +315,158 @@ class GenerationProgressRequest(BaseModel):
 @router.post("/multi-agent")
 async def multi_agent_endpoint(request: MultiAgentRequest):
     """Process a question using the multi-agent system"""
+    # Initialize Langfuse tracing
+    tracer = get_tracer()
+    trace = None
+    generation = None
+    
+    # Get model name from LLM settings for proper tracing
+    from app.core.llm_settings_cache import get_llm_settings
+    llm_settings = get_llm_settings()
+    model_name = llm_settings.get("model", "unknown")
+    
+    if not tracer._initialized:
+        tracer.initialize()
+    
+    if tracer.is_enabled():
+        trace = tracer.create_trace(
+            name="multi-agent",
+            input=request.question,
+            metadata={
+                "endpoint": "/api/v1/langchain/multi-agent",
+                "conversation_id": request.conversation_id,
+                "selected_agents": request.selected_agents,
+                "max_iterations": request.max_iterations,
+                "model": model_name
+            }
+        )
+        
+        # Create generation within the trace for detailed observability
+        if trace:
+            generation = tracer.create_generation(
+                trace=trace,
+                name="multi-agent-generation",
+                model=model_name,
+                input=request.question,
+                metadata={
+                    "selected_agents": request.selected_agents,
+                    "max_iterations": request.max_iterations,
+                    "model": model_name
+                }
+            )
+    
     system = MultiAgentSystem(conversation_id=request.conversation_id)
     
-    async def stream_events():
-        async for event in system.stream_events(
-            request.question,
-            selected_agents=request.selected_agents,
-            max_iterations=request.max_iterations,
-            conversation_history=request.conversation_history
-        ):
-            # Events from multi-agent system should always be dicts
-            if not isinstance(event, dict):
-                print(f"[ERROR] Received non-dict event: {type(event)} - {str(event)[:200]}...")
-                continue
+    async def stream_events_with_tracing():
+        collected_output = ""
+        final_response = ""
+        agent_outputs = []
+        
+        try:
+            async for event in system.stream_events(
+                request.question,
+                selected_agents=request.selected_agents,
+                max_iterations=request.max_iterations,
+                conversation_history=request.conversation_history
+            ):
+                # Events from multi-agent system should always be dicts
+                if not isinstance(event, dict):
+                    print(f"[ERROR] Received non-dict event: {type(event)} - {str(event)[:200]}...")
+                    continue
+                
+                # Collect event data for Langfuse
+                collected_output += json_module.dumps(event) + "\n"
+                
+                # Log key events
+                event_type = event.get('type', 'unknown')
+                if event_type == 'agent_complete':
+                    agent = event.get('agent', 'unknown')
+                    content = event.get('content', '')
+                    content_length = len(content)
+                    print(f"[INFO] Agent {agent} completed ({content_length} chars)")
+                    agent_outputs.append({"agent": agent, "content": content[:500]})
+                elif event_type == 'final_response':
+                    final_response = event.get('response', '')
+                    response_length = len(final_response)
+                    print(f"[INFO] Multi-agent processing complete ({response_length} chars)")
+                
+                # Convert to JSON string with newline, same as standard chat
+                yield json_module.dumps(event, ensure_ascii=False) + "\n"
             
-            # Log key events
-            event_type = event.get('type', 'unknown')
-            if event_type == 'agent_complete':
-                agent = event.get('agent', 'unknown')
-                content_length = len(event.get('content', ''))
-                print(f"[INFO] Agent {agent} completed ({content_length} chars)")
-            elif event_type == 'final_response':
-                response_length = len(event.get('response', ''))
-                print(f"[INFO] Multi-agent processing complete ({response_length} chars)")
-            
-            # Convert to JSON string with newline, same as standard chat
-            yield json_module.dumps(event, ensure_ascii=False) + "\n"
+            # Update Langfuse generation and trace with the final output
+            if tracer.is_enabled():
+                try:
+                    generation_output = final_response if final_response else "Multi-agent processing completed"
+                    
+                    # End the generation with results
+                    if generation:
+                        generation.end(
+                            output=generation_output,
+                            metadata={
+                                "response_length": len(final_response) if final_response else len(collected_output),
+                                "source": "multi-agent",
+                                "streaming": True,
+                                "has_final_response": bool(final_response),
+                                "conversation_id": request.conversation_id,
+                                "agent_count": len(agent_outputs),
+                                "model": model_name,
+                                "input_length": len(request.question),
+                                "output_length": len(generation_output)
+                            }
+                        )
+                    
+                    # Update trace with final result
+                    if trace:
+                        trace.update(
+                            output=generation_output,
+                            metadata={
+                                "success": True,
+                                "source": "multi-agent",
+                                "agent_outputs": agent_outputs,
+                                "response_length": len(final_response) if final_response else len(collected_output),
+                                "streaming": True,
+                                "conversation_id": request.conversation_id
+                            }
+                        )
+                    
+                    tracer.flush()
+                except Exception as e:
+                    print(f"[WARNING] Failed to update Langfuse trace/generation: {e}")
+                    
+        except Exception as e:
+            # Update generation and trace with error
+            if tracer.is_enabled():
+                try:
+                    # End generation with error
+                    if generation:
+                        generation.end(
+                            output=f"Error: {str(e)}",
+                            metadata={
+                                "success": False,
+                                "error": str(e),
+                                "conversation_id": request.conversation_id,
+                                "model": model_name
+                            }
+                        )
+                    
+                    # Update trace with error
+                    if trace:
+                        trace.update(
+                            output=f"Error: {str(e)}",
+                            metadata={
+                                "success": False,
+                                "error": str(e),
+                                "conversation_id": request.conversation_id
+                            }
+                        )
+                    
+                    tracer.flush()
+                except:
+                    pass  # Don't fail the request if tracing fails
+            raise
     
     return StreamingResponse(
-        stream_events(),
+        stream_events_with_tracing(),
         media_type="application/json"
     )
 
@@ -206,9 +476,55 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
     Handle large generation tasks that transcend context limits
     using intelligent chunking and Redis-based state management
     """
+    # Initialize Langfuse tracing
+    tracer = get_tracer()
+    trace = None
+    generation = None
+    
+    # Get model name from LLM settings for proper tracing
+    from app.core.llm_settings_cache import get_llm_settings
+    llm_settings = get_llm_settings()
+    model_name = llm_settings.get("model", "unknown")
+    
+    if not tracer._initialized:
+        tracer.initialize()
+    
+    if tracer.is_enabled():
+        trace = tracer.create_trace(
+            name="large-generation",
+            input=request.task_description,
+            metadata={
+                "endpoint": "/api/v1/langchain/large-generation",
+                "conversation_id": request.conversation_id,
+                "target_count": request.target_count,
+                "chunk_size": request.chunk_size,
+                "use_redis": request.use_redis,
+                "model": model_name
+            }
+        )
+        
+        # Create generation within the trace for detailed observability
+        if trace:
+            generation = tracer.create_generation(
+                trace=trace,
+                name="large-generation-generation",
+                model=model_name,
+                input=request.task_description,
+                metadata={
+                    "target_count": request.target_count,
+                    "chunk_size": request.chunk_size,
+                    "use_redis": request.use_redis,
+                    "model": model_name
+                }
+            )
+    
     system = MultiAgentSystem(conversation_id=request.conversation_id)
     
-    async def stream_events():
+    async def stream_events_with_tracing():
+        collected_output = ""
+        final_result = ""
+        chunks_processed = 0
+        
         try:
             # Choose Redis or in-memory continuity manager
             if request.use_redis:
@@ -219,6 +535,15 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                     chunk_size=request.chunk_size,
                     conversation_history=request.conversation_history
                 ):
+                    # Collect event data for Langfuse
+                    collected_output += json_module.dumps(event) + "\n"
+                    
+                    # Track chunk processing
+                    if event.get('type') == 'chunk_complete':
+                        chunks_processed += 1
+                    elif event.get('type') == 'generation_complete':
+                        final_result = event.get('final_result', '')
+                    
                     yield json_module.dumps(event, ensure_ascii=False) + "\n"
             else:
                 # Use in-memory approach for testing
@@ -228,9 +553,91 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                     chunk_size=request.chunk_size,
                     conversation_history=request.conversation_history
                 ):
+                    # Collect event data for Langfuse
+                    collected_output += json_module.dumps(event) + "\n"
+                    
+                    # Track chunk processing
+                    if event.get('type') == 'chunk_complete':
+                        chunks_processed += 1
+                    elif event.get('type') == 'generation_complete':
+                        final_result = event.get('final_result', '')
+                    
                     yield json_module.dumps(event, ensure_ascii=False) + "\n"
+            
+            # Update Langfuse generation and trace with the final output
+            if tracer.is_enabled():
+                try:
+                    generation_output = final_result if final_result else f"Large generation completed - {chunks_processed} chunks processed"
+                    
+                    # End the generation with results
+                    if generation:
+                        generation.end(
+                            output=generation_output,
+                            metadata={
+                                "response_length": len(final_result) if final_result else len(collected_output),
+                                "source": "large-generation",
+                                "streaming": True,
+                                "chunks_processed": chunks_processed,
+                                "target_count": request.target_count,
+                                "conversation_id": request.conversation_id,
+                                "use_redis": request.use_redis,
+                                "model": model_name,
+                                "input_length": len(request.task_description),
+                                "output_length": len(generation_output)
+                            }
+                        )
+                    
+                    # Update trace with final result
+                    if trace:
+                        trace.update(
+                            output=generation_output,
+                            metadata={
+                                "success": True,
+                                "source": "large-generation",
+                                "chunks_processed": chunks_processed,
+                                "response_length": len(final_result) if final_result else len(collected_output),
+                                "streaming": True,
+                                "conversation_id": request.conversation_id
+                            }
+                        )
+                    
+                    tracer.flush()
+                except Exception as e:
+                    print(f"[WARNING] Failed to update Langfuse trace/generation: {e}")
                     
         except Exception as e:
+            # Update generation and trace with error
+            if tracer.is_enabled():
+                try:
+                    # End generation with error
+                    if generation:
+                        generation.end(
+                            output=f"Error: {str(e)}",
+                            metadata={
+                                "success": False,
+                                "error": str(e),
+                                "conversation_id": request.conversation_id,
+                                "chunks_processed": chunks_processed,
+                                "model": model_name
+                            }
+                        )
+                    
+                    # Update trace with error
+                    if trace:
+                        trace.update(
+                            output=f"Error: {str(e)}",
+                            metadata={
+                                "success": False,
+                                "error": str(e),
+                                "conversation_id": request.conversation_id,
+                                "chunks_processed": chunks_processed
+                            }
+                        )
+                    
+                    tracer.flush()
+                except:
+                    pass  # Don't fail the request if tracing fails
+            
             error_event = {
                 "type": "large_generation_error",
                 "error": str(e),
@@ -239,7 +646,7 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
             yield json_module.dumps(error_event, ensure_ascii=False) + "\n"
     
     return StreamingResponse(
-        stream_events(),
+        stream_events_with_tracing(),
         media_type="application/json"
     )
 

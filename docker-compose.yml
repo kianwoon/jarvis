@@ -24,6 +24,7 @@ services:
       - postgres
       - qdrant
       - redis
+      - clickhouse  # Required for Langfuse analytics
       # - memory-service
       # - ollama
 
@@ -33,10 +34,12 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=llm_platform
+      - POSTGRES_MULTIPLE_DATABASES=llm_platform,langfuse
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./scripts/create-multiple-databases.sh:/docker-entrypoint-initdb.d/create-multiple-databases.sh
 
   qdrant:
     image: qdrant/qdrant
@@ -85,12 +88,72 @@ services:
     tty: false
     restart: unless-stopped
 
+  # ClickHouse for Langfuse analytics (required for v3)
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: jarvis-clickhouse
+    ports:
+      - "8123:8123"    # HTTP interface
+      - "9009:9009"    # Native interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    environment:
+      - CLICKHOUSE_DB=langfuse
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=clickhouse_password
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # Langfuse Web Application  
+  langfuse-web:
+    image: langfuse/langfuse:2
+    container_name: jarvis-langfuse-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      # Database Configuration (separate Langfuse database)
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langfuse_new
+      - DIRECT_URL=postgresql://postgres:postgres@postgres:5432/langfuse_new
+      
+      # Langfuse Configuration
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXTAUTH_SECRET=langfuse-secret-key-change-in-production
+      - SALT=langfuse-salt-change-in-production
+      
+      # Optional: Enable debug mode
+      - NODE_ENV=development
+    restart: unless-stopped
+
+  # Langfuse Worker (not needed for v2 - background processing is handled by web service)
+  # langfuse-worker:
+  #   image: langfuse/langfuse:2
+  #   container_name: jarvis-langfuse-worker
+  #   depends_on:
+  #     - postgres
+  #     - redis
+  #   environment:
+  #     # Database Configuration (separate Langfuse database)
+  #     - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langfuse
+  #     
+  #     # Langfuse Configuration  
+  #     - NEXTAUTH_SECRET=langfuse-secret-key-change-in-production
+  #     - SALT=langfuse-salt-change-in-production
+  #   command: ["worker"]
+  #   restart: unless-stopped
+
 
 volumes:
   postgres_data:
   qdrant_data:
   ollama_data:
   redis_data:
+  clickhouse_data:
   mcp-gmail:
 
 networks:

@@ -479,7 +479,50 @@ def parse_function_parameters(params_str: str) -> Dict[str, Any]:
 async def intelligent_chat_endpoint(request: IntelligentChatRequest):
     """Intelligent chat endpoint with LLM-driven decision making and structured function calling"""
     
+    # Initialize Langfuse tracing
+    from app.core.langfuse_integration import get_tracer
+    tracer = get_tracer()
+    trace = None
+    generation = None
+    
+    # Get model name from LLM settings for proper tracing
+    llm_settings = get_llm_settings()
+    model_name = llm_settings.get("model", "unknown")
+    
+    if not tracer._initialized:
+        tracer.initialize()
+    
+    if tracer.is_enabled():
+        trace = tracer.create_trace(
+            name="intelligent-chat",
+            input=request.question,
+            metadata={
+                "endpoint": "/api/v1/intelligent-chat",
+                "conversation_id": request.conversation_id,
+                "thinking": request.thinking,
+                "model": model_name
+            }
+        )
+        
+        # Create generation within the trace for detailed observability
+        if trace:
+            generation = tracer.create_generation(
+                trace=trace,
+                name="intelligent-chat-generation",
+                model=model_name,
+                input=request.question,
+                metadata={
+                    "thinking": request.thinking,
+                    "model": model_name
+                }
+            )
+    
     async def stream():
+        collected_output = ""
+        final_answer = ""
+        tool_calls_made = []
+        rag_searches_made = []
+        
         try:
             # Step 1: Use intelligent routing to check confidence
             routing_result = await intelligent_routing(request.question)
@@ -655,8 +698,17 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
             source = "intelligent_chat"
             if tool_results:
                 source += "+TOOLS"
+                tool_calls_made = tool_results
             if rag_results:
                 source += "+RAG"
+                rag_searches_made = rag_results
+            
+            final_answer = final_response
+            collected_output += json.dumps({
+                "answer": final_response,
+                "source": source,
+                "conversation_id": request.conversation_id
+            })
             
             yield json.dumps({
                 "answer": final_response,
@@ -664,8 +716,81 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 "conversation_id": request.conversation_id
             }) + "\n"
             
+            # Update Langfuse generation and trace with the final output
+            if tracer.is_enabled():
+                try:
+                    generation_output = final_answer if final_answer else "Intelligent chat completed"
+                    
+                    # End the generation with results
+                    if generation:
+                        generation.end(
+                            output=generation_output,
+                            metadata={
+                                "response_length": len(final_answer) if final_answer else len(collected_output),
+                                "source": source,
+                                "streaming": True,
+                                "has_final_answer": bool(final_answer),
+                                "conversation_id": request.conversation_id,
+                                "tool_calls_count": len(tool_calls_made),
+                                "rag_searches_count": len(rag_searches_made),
+                                "model": model_name,
+                                "input_length": len(request.question),
+                                "output_length": len(generation_output)
+                            }
+                        )
+                    
+                    # Update trace with final result
+                    if trace:
+                        trace.update(
+                            output=generation_output,
+                            metadata={
+                                "success": True,
+                                "source": source,
+                                "tool_calls": tool_calls_made[:3] if tool_calls_made else [],  # Limit for readability
+                                "rag_searches": rag_searches_made[:3] if rag_searches_made else [],  # Limit for readability
+                                "response_length": len(final_answer) if final_answer else len(collected_output),
+                                "streaming": True,
+                                "conversation_id": request.conversation_id
+                            }
+                        )
+                    
+                    tracer.flush()
+                except Exception as e:
+                    print(f"[WARNING] Failed to update Langfuse trace/generation: {e}")
+            
         except Exception as e:
             logger.error(f"Intelligent chat error: {e}")
+            
+            # Update generation and trace with error
+            if tracer.is_enabled():
+                try:
+                    # End generation with error
+                    if generation:
+                        generation.end(
+                            output=f"Error: {str(e)}",
+                            metadata={
+                                "success": False,
+                                "error": str(e),
+                                "conversation_id": request.conversation_id,
+                                "model": model_name
+                            }
+                        )
+                    
+                    # Update trace with error
+                    if trace:
+                        trace.update(
+                            output=f"Error: {str(e)}",
+                            metadata={
+                                "success": False,
+                                "error": str(e),
+                                "conversation_id": request.conversation_id
+                            }
+                        )
+                    
+                    tracer.flush()
+                except:
+                    pass  # Don't fail the request if tracing fails
+            
             # Always send final answer even on errors (prevents content disappearing)
             yield json.dumps({
                 "answer": f"Error: {str(e)}",

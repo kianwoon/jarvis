@@ -42,7 +42,15 @@
       "Bash(psql:*)",
       "WebFetch(domain:huggingface.co)",
       "Bash(docker cp:*)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "WebFetch(domain:langfuse.com)",
+      "WebFetch(domain:langfuse.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker-compose:*)",
+      "Bash(git checkout:*)",
+      "Bash(/dev/null)"
     ],
     "deny": []
   },
