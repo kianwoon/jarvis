@@ -202,6 +202,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     
     // Common OAuth setup
     try {
+        console.error(`[DEBUG] Setting up OAuth for tool: ${name}`);
+        console.error(`[DEBUG] Client ID present: ${!!args.google_client_id}`);
+        console.error(`[DEBUG] Access token present: ${!!args.google_access_token}`);
+        
         const oauth2Client = new OAuth2Client(
             args.google_client_id,
             args.google_client_secret
@@ -212,7 +216,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             refresh_token: args.google_refresh_token
         });
         
+        console.error(`[DEBUG] OAuth client configured successfully`);
         const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+        console.error(`[DEBUG] Gmail API client created successfully`);
         
         if (name === "search_emails") {
             const query = args.query;
@@ -561,9 +567,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         
         if (name === "gmail_send") {
-            const { to, subject, body, cc, bcc } = args;
+            console.error(`[DEBUG] gmail_send tool called`);
+            console.error(`[DEBUG] RAW ARGS: ${JSON.stringify(args)}`);
+            console.error(`[DEBUG] Args keys: ${Object.keys(args)}`);
+            console.error(`[DEBUG] Args type: ${typeof args}`);
+            
+            // Handle parameter extraction more carefully
+            let { to, subject, body, cc, bcc } = args;
+            
+            // If body is undefined, check for common parameter variations
+            if (!body) {
+                body = args.message || args.content || args.text || "";
+                console.error(`[DEBUG] Body was undefined, using fallback: ${body}`);
+            }
             
             console.error(`[DEBUG] gmail_send called with: to=${JSON.stringify(to)}, subject=${subject}`);
+            console.error(`[DEBUG] Body parameter: ${JSON.stringify(body)}`);
+            console.error(`[DEBUG] Body length: ${body ? body.length : 'undefined'} characters`);
             
             // Ensure 'to' is an array
             const toArray = Array.isArray(to) ? to : [to];
@@ -585,26 +605,69 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             messageParts.push('', body);
             const message = messageParts.join('\n');
             
+            console.error(`[DEBUG] Complete message before encoding: ${JSON.stringify(message)}`);
+            console.error(`[DEBUG] Message parts: ${JSON.stringify(messageParts)}`);
+            
             const encodedMessage = Buffer.from(message).toString('base64')
                 .replace(/\+/g, '-')
                 .replace(/\//g, '_')
                 .replace(/=+$/, '');
             
             console.error(`[DEBUG] Attempting to send email to Gmail API...`);
-            const response = await gmail.users.messages.send({
-                userId: 'me',
-                requestBody: {
-                    raw: encodedMessage
-                }
-            });
+            console.error(`[DEBUG] Message size: ${encodedMessage.length} chars`);
             
-            console.error(`[DEBUG] Gmail API response: ${JSON.stringify(response.data)}`);
-            return {
-                content: [{
-                    type: "text",
-                    text: `✅ Email sent successfully!\nMessage ID: ${response.data.id}`
-                }]
-            };
+            try {
+                const response = await gmail.users.messages.send({
+                    userId: 'me',
+                    requestBody: {
+                        raw: encodedMessage
+                    }
+                });
+                
+                console.error(`[DEBUG] Gmail API response: ${JSON.stringify(response.data)}`);
+                console.error(`[DEBUG] Email sent successfully with ID: ${response.data.id}`);
+                
+                return {
+                    content: [{
+                        type: "text",
+                        text: `✅ Email sent successfully!\nMessage ID: ${response.data.id}`
+                    }]
+                };
+            } catch (gmailError) {
+                console.error(`[ERROR] Gmail API call failed: ${gmailError.message}`);
+                console.error(`[ERROR] Gmail error code: ${gmailError.code}`);
+                console.error(`[ERROR] Gmail error details:`, gmailError);
+                
+                // Try to refresh token if it's an auth error
+                if (gmailError.code === 401 || gmailError.message.includes('invalid_token')) {
+                    console.error(`[DEBUG] Token seems expired, attempting refresh...`);
+                    try {
+                        const newTokens = await oauth2Client.refreshAccessToken();
+                        console.error(`[DEBUG] Token refreshed successfully`);
+                        
+                        // Retry the send with new token
+                        const retryResponse = await gmail.users.messages.send({
+                            userId: 'me',
+                            requestBody: {
+                                raw: encodedMessage
+                            }
+                        });
+                        
+                        console.error(`[DEBUG] Retry successful: ${JSON.stringify(retryResponse.data)}`);
+                        return {
+                            content: [{
+                                type: "text",
+                                text: `✅ Email sent successfully (after token refresh)!\nMessage ID: ${retryResponse.data.id}`
+                            }]
+                        };
+                    } catch (refreshError) {
+                        console.error(`[ERROR] Token refresh failed: ${refreshError.message}`);
+                        throw new Error(`Gmail authentication failed: ${refreshError.message}`);
+                    }
+                } else {
+                    throw gmailError;
+                }
+            }
         }
         
         if (name === "draft_email") {
@@ -838,10 +901,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             };
         }
     } catch (error) {
+        console.error(`[ERROR] Tool ${name} failed: ${error.message}`);
+        console.error(`[ERROR] Stack trace: ${error.stack}`);
+        
+        // Ensure we always return a valid JSON-RPC response
         return {
             content: [{
                 type: "text",
-                text: `Error: ${error.message}`
+                text: `Error executing ${name}: ${error.message}`
             }]
         };
     }
@@ -856,4 +923,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error('Simple Gmail MCP Server running');
+
+// Force immediate output
+process.stderr.write('Simple Gmail MCP Server running\n');
+
+// Add process error handlers to catch any unhandled errors
+process.on('uncaughtException', (error) => {
+    console.error(`[UNCAUGHT] Exception: ${error.message}`);
+    console.error(`[UNCAUGHT] Stack: ${error.stack}`);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error(`[UNHANDLED] Rejection at:`, promise, 'reason:', reason);
+});

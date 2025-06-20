@@ -16,7 +16,7 @@ from app.core.pipeline_multi_agent_bridge import (
     AgentOutput,
     ToolExecution
 )
-from app.langchain.enhanced_multi_agent_system import EnhancedMultiAgentSystem
+from app.langchain.clean_pipeline_executor import CleanPipelineExecutor
 from app.core.db import SessionLocal
 from sqlalchemy import text
 from app.core.langfuse_integration import get_tracer
@@ -46,41 +46,24 @@ class PipelineBridgeAdapter:
         # Get tracer for Langfuse integration
         tracer = get_tracer()
         
-        # Override the bridge's initialize to use our config
-        self.bridge.pipeline_config = self.pipeline_config
-        self.bridge.agent_sequence = [
-            {
-                "agent": agent.get("agent_name"),
-                "tools": agent.get("config", {}).get("tools", []),
-                "role": agent.get("config", {}).get("role", ""),
-                "config": agent.get("config", {})
-            }
-            for agent in agents
-        ]
-        
-        # Initialize multi-agent system
-        self.bridge.multi_agent_system = EnhancedMultiAgentSystem(
-            conversation_id=self.execution_id,
-            trace=self.bridge.trace
+        # CRITICAL: Use CLEAN pipeline executor to avoid multi-agent contamination
+        logger.info(f"🔴 [BRIDGE] CREATING CLEAN EXECUTOR - NO ENHANCED MULTI-AGENT SYSTEM!")
+        self.clean_executor = CleanPipelineExecutor(
+            pipeline_id=self.pipeline_id,
+            execution_id=self.execution_id,
+            trace=self.trace
         )
+        logger.info(f"🔴 [BRIDGE] Clean executor created successfully - will NOT create multi-agent spans")
         
-        # Create pipeline configuration for execution
-        pipeline_config = {
-            "pipeline": {
-                "id": self.pipeline_id,
-                "name": self.pipeline_config.get("name", "Pipeline"),
-                "agents": self.bridge.agent_sequence
-            },
-            "agents": self.bridge.agent_sequence,
-            "context": context or {}
-        }
+        # Clean pipeline execution - no complex configuration needed
         
         # Create pipeline workflow span if trace is available
         pipeline_workflow_span = None
         if self.trace and tracer.is_enabled():
             try:
-                pipeline_workflow_span = tracer.create_multi_agent_workflow_span(
+                pipeline_workflow_span = tracer.create_pipeline_execution_span(
                     self.trace,
+                    self.pipeline_id,
                     self.pipeline_config.get("collaboration_mode", "sequential"),
                     [agent.get("agent_name", "unknown") for agent in agents]
                 )
@@ -94,11 +77,10 @@ class PipelineBridgeAdapter:
         current_agent_idx = 0
         previous_outputs = []
         
-        # Execute through multi-agent system
-        async for event in self.bridge.multi_agent_system.execute(
-            query, 
-            mode="sequential",
-            config=pipeline_config
+        # Execute through CLEAN pipeline executor - NO multi-agent contamination
+        async for event in self.clean_executor.execute_agents_sequentially(
+            query=query, 
+            agent_sequence=agents
         ):
             event_type = event.get("event", "")
             
@@ -110,29 +92,9 @@ class PipelineBridgeAdapter:
                 if agent_name and current_agent_idx < len(agents):
                     agent_info = agents[current_agent_idx]
                     
-                    # Create agent generation for Langfuse tracking (LLM responses should be generations)
-                    if self.trace and tracer.is_enabled():
-                        try:
-                            agent_input_query = query if current_agent_idx == 0 else previous_outputs[-1]["output"] if previous_outputs else query
-                            agent_generation = tracer.create_generation_with_usage(
-                                trace=self.trace,
-                                name=f"agent-{agent_name}",
-                                model="qwen3:30b-a3b",  # Get from agent config if available
-                                input_text=agent_input_query,
-                                metadata={
-                                    "pipeline_id": self.pipeline_id,
-                                    "execution_id": self.execution_id,
-                                    "agent_index": current_agent_idx,
-                                    "total_agents": total_agents,
-                                    "tools_available": agent_info.get("config", {}).get("tools", []),
-                                    "collaboration_mode": self.pipeline_config.get("collaboration_mode", "sequential"),
-                                    "agent_role": agent_info.get("config", {}).get("role", "")
-                                }
-                            )
-                            self.agent_spans[agent_name] = agent_generation
-                            logger.info(f"[LANGFUSE] Created agent generation for {agent_name} in pipeline {self.pipeline_id}")
-                        except Exception as e:
-                            logger.warning(f"[LANGFUSE] Failed to create agent generation for {agent_name}: {e}")
+                    # Agent generation spans are handled by DynamicMultiAgentSystem to avoid duplication
+                    # The underlying agent system will create proper generation spans
+                    logger.debug(f"[LANGFUSE] Agent generation spans will be created by agent system for {agent_name}")
                     
                     # Create detailed input data
                     input_data = AgentInput(
@@ -178,36 +140,8 @@ class PipelineBridgeAdapter:
                     ""
                 )
                 
-                # End agent generation with results
-                if agent_name in self.agent_spans and tracer.is_enabled():
-                    try:
-                        agent_generation = self.agent_spans[agent_name]
-                        
-                        # Estimate token usage for cost calculation
-                        agent_input = query if current_agent_idx == 0 else previous_outputs[-1]["output"] if previous_outputs else query
-                        usage = tracer.estimate_token_usage(agent_input, agent_response)
-                        
-                        # End generation with proper metadata
-                        agent_generation.end(
-                            output=agent_response,
-                            usage_details=usage,
-                            metadata={
-                                "success": True,
-                                "response_length": len(agent_response),
-                                "tools_used": agent_data.get("tools_used", []),
-                                "duration": agent_data.get("duration", 0),
-                                "agent_index": current_agent_idx,
-                                "completed_agents": completed_agents,
-                                "pipeline_id": self.pipeline_id
-                            }
-                        )
-                        logger.info(f"[LANGFUSE] Ended agent generation for {agent_name} in pipeline {self.pipeline_id}")
-                        
-                        # Remove from tracking
-                        del self.agent_spans[agent_name]
-                        
-                    except Exception as e:
-                        logger.warning(f"[LANGFUSE] Failed to end agent generation for {agent_name}: {e}")
+                # Agent generation spans are ended by DynamicMultiAgentSystem to avoid duplication
+                logger.debug(f"[LANGFUSE] Agent generation span ending handled by agent system for {agent_name}")
                 
                 # Log for debugging using proper logger
                 logger.info(f"[BRIDGE DEBUG] Agent {agent_name} response fields: {list(agent_data.keys())}")
@@ -321,22 +255,8 @@ class PipelineBridgeAdapter:
                 if current_agent_idx < len(agents):
                     agent_name = agents[current_agent_idx].get("agent_name")
                     
-                    # End agent generation with error if exists
-                    if agent_name in self.agent_spans and tracer.is_enabled():
-                        try:
-                            agent_generation = self.agent_spans[agent_name]
-                            agent_generation.end(
-                                output=f"Error: {error_message}",
-                                metadata={
-                                    "success": False,
-                                    "error": error_message,
-                                    "pipeline_id": self.pipeline_id
-                                }
-                            )
-                            logger.info(f"[LANGFUSE] Ended agent generation with error for {agent_name}: {error_message}")
-                            del self.agent_spans[agent_name]
-                        except Exception as e:
-                            logger.warning(f"[LANGFUSE] Failed to end agent generation with error for {agent_name}: {e}")
+                    # Agent generation span error handling done by DynamicMultiAgentSystem  
+                    logger.debug(f"[LANGFUSE] Agent generation error handling managed by agent system for {agent_name}")
                     
                     # Publish error for I/O tracking
                     await self.bridge.publish_agent_io_update(

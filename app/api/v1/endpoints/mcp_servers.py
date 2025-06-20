@@ -32,7 +32,7 @@ def get_db():
 # Pydantic models for API
 class MCPServerBase(BaseModel):
     name: str
-    config_type: str  # 'manifest' or 'command'
+    config_type: str  # 'manifest', 'command', or 'remote_http'
     
     # Manifest-based configuration
     manifest_url: Optional[str] = None
@@ -47,6 +47,13 @@ class MCPServerBase(BaseModel):
     working_directory: Optional[str] = None
     restart_policy: Optional[str] = "on-failure"
     max_restarts: Optional[int] = 3
+    
+    # Remote HTTP/SSE MCP Server Configuration
+    remote_config: Optional[dict] = None
+    
+    # Enhanced Error Handling Configuration
+    enhanced_error_handling_config: Optional[dict] = None
+    auth_refresh_config: Optional[dict] = None
     
     is_active: bool = True
 
@@ -71,6 +78,13 @@ class MCPServerUpdate(BaseModel):
     restart_policy: Optional[str] = None
     max_restarts: Optional[int] = None
     
+    # Remote HTTP/SSE MCP Server Configuration
+    remote_config: Optional[dict] = None
+    
+    # Enhanced Error Handling Configuration
+    enhanced_error_handling_config: Optional[dict] = None
+    auth_refresh_config: Optional[dict] = None
+    
     is_active: Optional[bool] = None
 
 class MCPServerResponse(BaseModel):
@@ -92,11 +106,18 @@ class MCPServerResponse(BaseModel):
     restart_policy: Optional[str] = None
     max_restarts: Optional[int] = None
     
+    # Remote HTTP/SSE MCP Server Configuration
+    remote_config: Optional[dict] = None
+    
     # Process management
     process_id: Optional[int] = None
     is_running: Optional[bool] = False
     restart_count: Optional[int] = 0
     health_status: Optional[str] = "unknown"
+    
+    # Enhanced Error Handling Configuration
+    enhanced_error_handling_config: Optional[dict] = None
+    auth_refresh_config: Optional[dict] = None
     
     is_active: bool
     status: Optional[str] = 'disconnected'
@@ -168,6 +189,9 @@ def list_servers(db: Session = Depends(get_db)):
                 working_directory=server.working_directory,
                 restart_policy=server.restart_policy,
                 max_restarts=server.max_restarts,
+                remote_config=server.remote_config,
+                enhanced_error_handling_config=server.enhanced_error_handling_config,
+                auth_refresh_config=server.auth_refresh_config,
                 process_id=server.process_id,
                 is_running=server.is_running,
                 restart_count=server.restart_count,
@@ -189,8 +213,8 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
     """Create a new MCP server."""
     try:
         # Validate configuration type
-        if server.config_type not in ["manifest", "command"]:
-            raise HTTPException(status_code=400, detail="config_type must be 'manifest' or 'command'")
+        if server.config_type not in ["manifest", "command", "remote_http"]:
+            raise HTTPException(status_code=400, detail="config_type must be 'manifest', 'command', or 'remote_http'")
         
         # Validate required fields based on config type
         if server.config_type == "manifest" and not server.manifest_url:
@@ -198,6 +222,34 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
         
         if server.config_type == "command" and not server.command:
             raise HTTPException(status_code=400, detail="command is required for command-based servers")
+            
+        if server.config_type == "remote_http":
+            if not server.remote_config or not server.remote_config.get("server_url"):
+                raise HTTPException(status_code=400, detail="remote_config.server_url is required for remote HTTP servers")
+        
+        # Set default enhanced error handling configuration if not provided
+        default_error_config = {
+            "enabled": True,
+            "max_tool_retries": 3,
+            "retry_base_delay": 1.0,
+            "retry_max_delay": 60.0,
+            "retry_backoff_multiplier": 2.0,
+            "timeout_seconds": 30,
+            "enable_circuit_breaker": True,
+            "circuit_failure_threshold": 5,
+            "circuit_recovery_timeout": 60
+        }
+        
+        default_auth_config = {
+            "enabled": False,
+            "server_type": "custom",
+            "auth_type": "oauth2",
+            "refresh_endpoint": "",
+            "refresh_method": "POST",
+            "refresh_headers": {},
+            "refresh_data_template": {},
+            "token_expiry_buffer_minutes": 5
+        }
         
         # Create new server
         new_server = MCPServer(
@@ -213,6 +265,9 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
             working_directory=server.working_directory,
             restart_policy=server.restart_policy or "on-failure",
             max_restarts=server.max_restarts or 3,
+            remote_config=server.remote_config,
+            enhanced_error_handling_config=server.enhanced_error_handling_config or default_error_config,
+            auth_refresh_config=server.auth_refresh_config or default_auth_config,
             is_active=server.is_active
         )
         db.add(new_server)
@@ -269,6 +324,47 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
             else:
                 logger.warning("Process manager not available, command-based server created but not started")
         
+        # Handle remote HTTP/SSE server
+        elif server.config_type == "remote_http":
+            # Discover tools from remote MCP server
+            try:
+                from app.core.remote_mcp_client import remote_mcp_manager
+                
+                server_config = {
+                    "id": new_server.id,
+                    "name": new_server.name,
+                    "remote_config": new_server.remote_config
+                }
+                
+                logger.info(f"Discovering tools from remote MCP server: {new_server.name}")
+                tools = await remote_mcp_manager.discover_tools(server_config)
+                
+                # Create tools in database
+                tools_added = 0
+                for tool_def in tools:
+                    tool_name = tool_def.get("name")
+                    if not tool_name:
+                        continue
+                        
+                    db_tool = MCPTool(
+                        name=tool_name,
+                        description=tool_def.get("description", ""),
+                        endpoint=f"remote://{new_server.name}/{tool_name}",
+                        method="POST",
+                        parameters=tool_def.get("inputSchema", {}),
+                        is_active=True,
+                        server_id=new_server.id
+                    )
+                    db.add(db_tool)
+                    tools_added += 1
+                
+                logger.info(f"Added {tools_added} tools from remote MCP server")
+                
+            except Exception as e:
+                logger.error(f"Failed to discover tools from remote MCP server: {str(e)}")
+                # Don't fail the server creation, just log the warning
+                logger.warning("Remote MCP server created but tool discovery failed")
+        
         db.commit()
         
         # Reload caches
@@ -291,6 +387,9 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
             working_directory=new_server.working_directory,
             restart_policy=new_server.restart_policy,
             max_restarts=new_server.max_restarts,
+            remote_config=new_server.remote_config,
+            enhanced_error_handling_config=new_server.enhanced_error_handling_config,
+            auth_refresh_config=new_server.auth_refresh_config,
             process_id=new_server.process_id,
             is_running=new_server.is_running,
             restart_count=new_server.restart_count,
@@ -346,6 +445,9 @@ def get_server(server_id: int, show_sensitive: bool = False, db: Session = Depen
         working_directory=server.working_directory,
         restart_policy=server.restart_policy,
         max_restarts=server.max_restarts,
+        remote_config=server.remote_config,
+        enhanced_error_handling_config=server.enhanced_error_handling_config,
+        auth_refresh_config=server.auth_refresh_config,
         process_id=server.process_id,
         is_running=server.is_running,
         restart_count=server.restart_count,
@@ -373,6 +475,12 @@ def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = 
             db_server.api_key = server_update.api_key
         if server_update.oauth_credentials is not None:
             db_server.oauth_credentials = server_update.oauth_credentials
+        if server_update.enhanced_error_handling_config is not None:
+            db_server.enhanced_error_handling_config = server_update.enhanced_error_handling_config
+        if server_update.auth_refresh_config is not None:
+            db_server.auth_refresh_config = server_update.auth_refresh_config
+        if server_update.remote_config is not None:
+            db_server.remote_config = server_update.remote_config
         if server_update.is_active is not None:
             db_server.is_active = server_update.is_active
         
@@ -402,6 +510,10 @@ def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = 
                 db_server.restart_policy = server_update.restart_policy
             if server_update.max_restarts is not None:
                 db_server.max_restarts = server_update.max_restarts
+        
+        elif db_server.config_type == "remote_http":
+            # Remote HTTP servers primarily use remote_config, which is handled above
+            pass
         
         db.commit()
         db.refresh(db_server)
@@ -434,6 +546,9 @@ def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = 
             working_directory=db_server.working_directory,
             restart_policy=db_server.restart_policy,
             max_restarts=db_server.max_restarts,
+            remote_config=db_server.remote_config,
+            enhanced_error_handling_config=db_server.enhanced_error_handling_config,
+            auth_refresh_config=db_server.auth_refresh_config,
             process_id=db_server.process_id,
             is_running=db_server.is_running,
             restart_count=db_server.restart_count,
@@ -803,14 +918,42 @@ async def check_server_health(server_id: int, db: Session = Depends(get_db)):
                     except Exception as e:
                         status = "unknown"
                         message = f"Could not check Docker container: {str(e)}"
+            elif server.command in ['npx', 'node', 'python', 'python3']:
+                # For stdio-based command servers (npx, node, etc.), check if recently used
+                if server.last_health_check:
+                    last_check = server.last_health_check
+                    if isinstance(last_check, str):
+                        last_check = datetime.fromisoformat(last_check.replace('Z', '+00:00'))
+                    
+                    # Ensure both datetimes are timezone-aware
+                    now = datetime.now(timezone.utc)
+                    if last_check.tzinfo is None:
+                        last_check = last_check.replace(tzinfo=timezone.utc)
+                    
+                    # Consider healthy if used within last 10 minutes
+                    if now - last_check < timedelta(minutes=10):
+                        status = "healthy"
+                        message = f"Command-based server ({server.command})"
+                    else:
+                        status = "unknown"
+                        message = f"Command-based server (not recently used)"
+                else:
+                    # Server hasn't been used yet, but tools were discovered successfully
+                    tool_count = db.query(MCPTool).filter(MCPTool.server_id == server_id).count()
+                    if tool_count > 0:
+                        status = "healthy"
+                        message = f"Command-based server ({server.command}) - {tool_count} tools available"
+                    else:
+                        status = "unknown"
+                        message = f"Command-based server (no tools discovered)"
             elif mcp_process_manager is None:
                 status = "unknown"
                 message = "Process management not available"
             else:
                 success, message = await mcp_process_manager.health_check_server(server_id, db)
                 status = "healthy" if success else "unhealthy"
-        else:
-            # Handle manifest-based health check (existing logic)
+        elif server.config_type == "manifest":
+            # Handle manifest-based health check
             manifest = db.query(MCPManifest).filter(MCPManifest.server_id == server_id).first()
             if not manifest:
                 raise HTTPException(status_code=404, detail="Manifest not found for server")
@@ -845,6 +988,53 @@ async def check_server_health(server_id: int, db: Session = Depends(get_db)):
                 message = f"Health check failed: {str(e)}"
                 logger.warning(f"Health check failed for URL {manifest_url}: {e}")
         
+        elif server.config_type == "remote_http":
+            # Handle remote HTTP/SSE MCP server health check
+            try:
+                if not server.remote_config:
+                    status = 'unhealthy'
+                    message = "No remote configuration found"
+                else:
+                    from app.core.remote_mcp_client import RemoteMCPClient
+                    
+                    remote_config = server.remote_config
+                    server_url = remote_config.get("server_url")
+                    
+                    if not server_url:
+                        status = 'unhealthy'
+                        message = "No server URL in remote configuration"
+                    else:
+                        # Create a temporary client for health check
+                        client = RemoteMCPClient(
+                            server_url=server_url,
+                            transport_type=remote_config.get("transport_type", "http"),
+                            auth_headers=remote_config.get("auth_headers", {}),
+                            client_info=remote_config.get("client_info", {}),
+                            connection_timeout=10  # Shorter timeout for health checks
+                        )
+                        
+                        logger.info(f"Health check: Testing remote MCP server {server_url}")
+                        
+                        # Try to connect and initialize
+                        async with client:
+                            server_info = await client.get_server_info()
+                            if server_info.get("initialized", False):
+                                status = 'healthy'
+                                message = f"Remote MCP server is accessible and initialized"
+                            else:
+                                status = 'unhealthy'
+                                message = "Remote MCP server connection failed"
+                        
+            except Exception as e:
+                status = 'unhealthy'
+                message = f"Remote health check failed: {str(e)}"
+                logger.warning(f"Remote health check failed for server {server_id}: {e}")
+        
+        else:
+            # Unknown server type
+            status = 'unknown'
+            message = f"Unknown server type: {server.config_type}"
+        
         # Update health status
         server.health_status = status
         server.last_health_check = datetime.utcnow()
@@ -869,101 +1059,120 @@ def get_server_oauth(server_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{server_id}/discover-tools")
 async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
-    """Discover tools from a stdio-based MCP server."""
+    """Discover tools from an MCP server (command-based or remote HTTP)."""
     server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     
-    if server.config_type != "command":
-        raise HTTPException(status_code=400, detail="Tool discovery is only for command-based servers")
+    if server.config_type not in ["command", "remote_http"]:
+        raise HTTPException(status_code=400, detail="Tool discovery is only for command-based or remote HTTP servers")
     
     try:
-        # Use the stdio bridge to discover tools
-        import asyncio
-        import os
-        from app.core.mcp_stdio_bridge import MCPDockerBridge, MCPStdioBridge
-        
-        # Check if we're running inside Docker
-        in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
-        
-        # Determine the type of bridge to use
-        if server.command == "docker" and server.args and "exec" in server.args:
-            container_idx = server.args.index("-i") + 1
-            if container_idx < len(server.args):
-                container_name = server.args[container_idx]
-                mcp_command = server.args[container_idx + 1:]
-                
-                if in_docker:
-                    # Use network bridge when running inside Docker
-                    from app.core.mcp_network_bridge import MCPNetworkBridge
-                    bridge = MCPNetworkBridge(container_name, mcp_command)
+        if server.config_type == "command":
+            # Use the stdio bridge to discover tools
+            import asyncio
+            import os
+            from app.core.mcp_stdio_bridge import MCPDockerBridge, MCPStdioBridge
+            
+            # Check if we're running inside Docker
+            in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+            
+            # Determine the type of bridge to use
+            if server.command == "docker" and server.args and "exec" in server.args:
+                container_idx = server.args.index("-i") + 1
+                if container_idx < len(server.args):
+                    container_name = server.args[container_idx]
+                    mcp_command = server.args[container_idx + 1:]
+                    
+                    if in_docker:
+                        # Use network bridge when running inside Docker
+                        from app.core.mcp_network_bridge import MCPNetworkBridge
+                        bridge = MCPNetworkBridge(container_name, mcp_command)
+                    else:
+                        # Use Docker bridge when running on host
+                        bridge = MCPDockerBridge(container_name, mcp_command, server.env or {})
                 else:
-                    # Use Docker bridge when running on host
-                    bridge = MCPDockerBridge(container_name, mcp_command)
+                    raise ValueError("Invalid Docker exec command format")
             else:
-                raise ValueError("Invalid Docker exec command format")
-        else:
-            # Generic stdio server
-            bridge = MCPStdioBridge(server.command, server.args or [])
-        
-        # Start the bridge and discover tools
-        await bridge.start()
-        try:
-            tools = await bridge.list_tools()
+                # Generic stdio server
+                bridge = MCPStdioBridge(server.command, server.args or [], server.env or {})
             
-            # Update server status
-            server.health_status = "healthy"
-            server.is_running = True
-            server.last_health_check = datetime.utcnow()
-            
-            # Store discovered tools in database
-            tools_added = 0
-            tools_updated = 0
-            
-            for tool_def in tools:
-                # Check if tool already exists
-                existing_tool = db.query(MCPTool).filter(
-                    MCPTool.name == tool_def["name"],
-                    MCPTool.server_id == server_id
-                ).first()
+            # Start the bridge and discover tools
+            await bridge.start()
+            try:
+                tools = await bridge.list_tools()
+                endpoint_prefix = f"stdio://{server.name}"
+            finally:
+                await bridge.stop()
                 
-                if existing_tool:
-                    # Update existing tool
-                    existing_tool.description = tool_def.get("description", "")
-                    existing_tool.parameters = tool_def.get("inputSchema", {})
-                    existing_tool.endpoint = f"stdio://{server.name}/{tool_def['name']}"
-                    existing_tool.updated_at = datetime.utcnow()
-                    tools_updated += 1
-                else:
-                    # Create new tool
-                    new_tool = MCPTool(
-                        name=tool_def["name"],
-                        description=tool_def.get("description", ""),
-                        endpoint=f"stdio://{server.name}/{tool_def['name']}",
-                        method="POST",
-                        parameters=tool_def.get("inputSchema", {}),
-                        server_id=server_id,
-                        is_active=True
-                    )
-                    db.add(new_tool)
-                    tools_added += 1
+        elif server.config_type == "remote_http":
+            # Use remote MCP client to discover tools
+            from app.core.remote_mcp_client import remote_mcp_manager
             
-            db.commit()
-            
-            # Reload MCP tools cache
-            from app.core.mcp_tools_cache import reload_enabled_mcp_tools
-            reload_enabled_mcp_tools()
-            
-            return {
-                "status": "success",
-                "tools_discovered": len(tools),
-                "tools_added": tools_added,
-                "tools_updated": tools_updated,
-                "tools": [{"name": t["name"], "description": t.get("description", "")} for t in tools]
+            server_config = {
+                "id": server.id,
+                "name": server.name,
+                "remote_config": server.remote_config
             }
             
-        finally:
-            await bridge.stop()
+            tools = await remote_mcp_manager.discover_tools(server_config)
+            endpoint_prefix = f"remote://{server.name}"
+        
+        # Update server status
+        server.health_status = "healthy"
+        if server.config_type == "command":
+            server.is_running = True
+        server.last_health_check = datetime.utcnow()
+        
+        # Store discovered tools in database
+        tools_added = 0
+        tools_updated = 0
+        
+        for tool_def in tools:
+            tool_name = tool_def.get("name")
+            if not tool_name:
+                continue
+                
+            # Check if tool already exists
+            existing_tool = db.query(MCPTool).filter(
+                MCPTool.name == tool_name,
+                MCPTool.server_id == server_id
+            ).first()
+            
+            if existing_tool:
+                # Update existing tool
+                existing_tool.description = tool_def.get("description", "")
+                existing_tool.parameters = tool_def.get("inputSchema", {})
+                existing_tool.endpoint = f"{endpoint_prefix}/{tool_name}"
+                existing_tool.updated_at = datetime.utcnow()
+                tools_updated += 1
+            else:
+                # Create new tool
+                new_tool = MCPTool(
+                    name=tool_name,
+                    description=tool_def.get("description", ""),
+                    endpoint=f"{endpoint_prefix}/{tool_name}",
+                    method="POST",
+                    parameters=tool_def.get("inputSchema", {}),
+                    server_id=server_id,
+                    is_active=True
+                )
+                db.add(new_tool)
+                tools_added += 1
+        
+        db.commit()
+        
+        # Reload MCP tools cache
+        from app.core.mcp_tools_cache import reload_enabled_mcp_tools
+        reload_enabled_mcp_tools()
+        
+        return {
+            "status": "success",
+            "tools_discovered": len(tools),
+            "tools_added": tools_added,
+            "tools_updated": tools_updated,
+            "tools": [{"name": t.get("name"), "description": t.get("description", "")} for t in tools if t.get("name")]
+        }
             
     except Exception as e:
         # Update server status on error

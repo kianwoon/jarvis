@@ -285,42 +285,27 @@ async def execute_pipeline_websocket(
             }
         })
         
-        # Execute pipeline with enhanced multi-agent system
+        # Initialize timing  
         start_time = datetime.now()
         
-        async for event in execute_pipeline_with_agents(
-            pipeline_id=pipeline_id,
-            execution_id=execution_id,
-            query=query,
-            context=context
-        ):
-            # Forward events to WebSocket
-            await websocket.send_json(event)
-            
-            # Also publish to Redis for other subscribers
-            if event["type"] == "agent_token":
-                # Don't publish every token to Redis to avoid overload
-                pass
-            elif event["type"] == "agent_complete":
-                agent_data = event["data"]
-                await publish_agent_complete(
-                    execution_id,
-                    agent_data["agent"],
-                    agent_data.get("response", ""),
-                    agent_data.get("duration", 0)
-                )
-            elif event["type"] == "pipeline_complete":
-                total_time = (datetime.now() - start_time).total_seconds()
-                await publish_execution_complete(
-                    execution_id,
-                    event["data"].get("summary", {}),
-                    total_time
-                )
-            elif event["type"] == "error":
-                await publish_execution_error(
-                    execution_id,
-                    event["data"].get("error", "Unknown error")
-                )
+        # Use PipelineExecutor for proper span hierarchy and execution flow
+        from app.core.pipeline_executor import PipelineExecutor
+        
+        executor = PipelineExecutor()
+        
+        # Execute pipeline using proper PipelineExecutor (it creates its own trace)
+        result = await executor.execute_pipeline(
+            pipeline_id=int(pipeline_id),
+            input_data={"query": query, **(context or {})},
+            trigger_type="websocket"
+        )
+        
+        # Send final result to WebSocket
+        await websocket.send_json({
+            "type": "pipeline_complete",
+            "data": result
+        })
+        
         
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for execution {execution_id}")

@@ -2545,18 +2545,96 @@ Please generate the requested items incorporating relevant information from the 
     if query_type == "TOOLS":
         # Only execute tools if not already executed in web search fallback
         if not tool_calls:  # Check if fallback already populated these
-            # Try simple tool executor first
+            # Try intelligent tool executor first
             try:
-                from app.langchain.simple_tool_executor import identify_and_execute_tools
-                tool_calls, tool_context = identify_and_execute_tools(question, trace=trace)
-                print(f"[DEBUG] rag_answer: Simple tool executor returned:")
-                print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
-                print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
-                if tool_calls:
-                    for tc in tool_calls:
-                        print(f"  - Tool: {tc.get('tool', 'unknown')} - Success: {tc.get('success', False)}")
+                from app.langchain.intelligent_tool_executor import execute_task_with_intelligent_tools
+                print(f"[DEBUG] rag_answer: Using intelligent tool executor for task: {question}")
+                
+                # Create standard chat span for proper hierarchy
+                chat_span = None
+                if trace:
+                    try:
+                        from app.core.langfuse_integration import get_tracer
+                        tracer = get_tracer()
+                        if tracer.is_enabled():
+                            chat_span = tracer.create_standard_chat_span(trace, question, thinking)
+                    except Exception as e:
+                        logger.warning(f"Failed to create standard chat span: {e}")
+                
+                # Execute task with intelligent planning (pass chat_span as trace for proper nesting)
+                execution_events = await execute_task_with_intelligent_tools(
+                    task=question,
+                    context={
+                        "conversation_id": conversation_id,
+                        "collections": collections,
+                        "collection_strategy": collection_strategy
+                    },
+                    trace=chat_span if chat_span else trace,  # Use chat_span for proper hierarchy
+                    mode="standard"  # Explicitly set mode
+                )
+                
+                # Convert execution events to legacy format for compatibility
+                tool_calls = []
+                tool_context = ""
+                
+                for event in execution_events:
+                    if event.get("type") == "tool_complete" and event.get("success"):
+                        tool_calls.append({
+                            "tool": event.get("tool_name"),
+                            "success": True,
+                            "result": event.get("result"),
+                            "execution_time": event.get("execution_time")
+                        })
+                        
+                        # Build context from successful tool results
+                        if event.get("result"):
+                            tool_context += f"\n{event.get('tool_name')} result: {event.get('result')}\n"
+                    
+                    elif event.get("type") == "execution_complete":
+                        results = event.get("results", {})
+                        if results:
+                            tool_context += f"\nFinal results from {len(results)} tools:\n"
+                            for tool_name, result in results.items():
+                                tool_context += f"- {tool_name}: {result}\n"
+                
+                print(f"[DEBUG] rag_answer: Intelligent executor returned:")
+                print(f"  - tool_calls: {len(tool_calls)} calls")
+                print(f"  - tool_context length: {len(tool_context)}")
+                print(f"  - execution_events: {len(execution_events)} events")
+                
+                # End chat span with results
+                if chat_span:
+                    try:
+                        from app.core.langfuse_integration import get_tracer
+                        tracer = get_tracer()
+                        tracer.end_span_with_result(
+                            chat_span,
+                            {
+                                "tool_calls_count": len(tool_calls),
+                                "execution_events_count": len(execution_events),
+                                "tools_executed": [tc.get('tool') for tc in tool_calls if tc.get('success')],
+                                "context_length": len(tool_context)
+                            },
+                            success=len(tool_calls) > 0
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to end standard chat span: {e}")
+                
             except Exception as e:
-                print(f"[DEBUG] rag_answer: Simple tool executor failed: {e}, trying original method")
+                print(f"[DEBUG] rag_answer: Intelligent tool executor failed: {e}, trying simple tool executor")
+                
+                # Fallback to simple tool executor
+                try:
+                    from app.langchain.simple_tool_executor import identify_and_execute_tools
+                    tool_calls, tool_context = identify_and_execute_tools(question, trace=trace)
+                    print(f"[DEBUG] rag_answer: Simple tool executor returned:")
+                    print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
+                    print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
+                    if tool_calls:
+                        for tc in tool_calls:
+                            print(f"  - Tool: {tc.get('tool', 'unknown')} - Success: {tc.get('success', False)}")
+                except Exception as e2:
+                    print(f"[DEBUG] rag_answer: Simple tool executor also failed: {e2}, trying original method")
                 # Fallback to original method
                 tool_calls, _, tool_context = execute_tools_first(question, thinking)
                 print(f"[DEBUG] rag_answer: execute_tools_first returned:")
@@ -2675,8 +2753,8 @@ Please generate the requested items incorporating relevant information from the 
                         "token": response_chunk.text
                     }) + "\n"
             
-            # Parse and execute tool calls using proven function
-            tool_results = extract_and_execute_tool_calls(response_text, trace=trace)
+            # Parse and execute tool calls using enhanced error handling
+            tool_results = extract_and_execute_tool_calls(response_text, trace=trace, use_enhanced_error_handling=True)
             
             if tool_results:
                 print(f"[DEBUG] Executed {len(tool_results)} tools from LLM response")
@@ -2755,8 +2833,8 @@ Based on these search results, provide a comprehensive answer to the user's ques
         async for response_chunk in llm.generate_stream(prompt):
             response_text += response_chunk.text
         
-        # Parse and execute tool calls using proven function
-        tool_results = extract_and_execute_tool_calls(response_text, trace=trace)
+        # Parse and execute tool calls using enhanced error handling
+        tool_results = extract_and_execute_tool_calls(response_text, trace=trace, use_enhanced_error_handling=True)
         
         if tool_results and any(r.get('success') for r in tool_results):
             # Build enhanced response with tool results
@@ -2913,7 +2991,7 @@ def get_mcp_tools_context(force_reload=False, include_examples=True):
                 elif tool_name == "get_datetime":
                     tool_desc.append("   💡 Example: <tool>get_datetime({})</tool>")
                 elif "gmail" in tool_name and "send" in tool_name:
-                    tool_desc.append("   💡 Example: <tool>gmail_send({\"to\": \"user@example.com\", \"subject\": \"Test\", \"body\": \"Hello\"})</tool>")
+                    tool_desc.append("   💡 Example: <tool>gmail_send({\"to\": [\"user@example.com\"], \"subject\": \"Test\", \"body\": \"Hello\"})</tool>")
             
             tools_context.append("\n".join(tool_desc))
             tools_context.append("")  # Empty line between tools
@@ -2986,55 +3064,17 @@ def _map_tool_parameters_service(tool_name: str, params: dict) -> tuple[str, dic
     
     mapped_params = params.copy()
     
-    # Tool name mapping for aliases
-    if tool_name == 'find_email':
-        # find_email is an alias for search_emails 
-        logger.info(f"[TOOL MAPPING] Mapping find_email -> search_emails")
-        tool_name = 'search_emails'
-    
-    # Google Search tool parameter mapping
-    if 'search' in tool_name.lower():
-        # Map common variations to 'query'
-        if 'q' in mapped_params and 'query' not in mapped_params:
-            mapped_params['query'] = mapped_params.pop('q')
-            logger.info(f"[PARAM MAPPING] Mapped 'q' -> 'query' for {tool_name}")
-        
-        if 'search' in mapped_params and 'query' not in mapped_params:
-            mapped_params['query'] = mapped_params.pop('search')
-            logger.info(f"[PARAM MAPPING] Mapped 'search' -> 'query' for {tool_name}")
-        
-        if 'search_query' in mapped_params and 'query' not in mapped_params:
-            mapped_params['query'] = mapped_params.pop('search_query')
-            logger.info(f"[PARAM MAPPING] Mapped 'search_query' -> 'query' for {tool_name}")
-        
-        # Map 'num' to 'num_results'
-        if 'num' in mapped_params and 'num_results' not in mapped_params:
-            mapped_params['num_results'] = mapped_params.pop('num')
-            logger.info(f"[PARAM MAPPING] Mapped 'num' -> 'num_results' for {tool_name}")
-        
-        if 'count' in mapped_params and 'num_results' not in mapped_params:
-            mapped_params['num_results'] = mapped_params.pop('count')
-            logger.info(f"[PARAM MAPPING] Mapped 'count' -> 'num_results' for {tool_name}")
-    
-    # Email tool parameter mapping  
-    elif 'email' in tool_name.lower() or 'gmail' in tool_name.lower():
-        # Map common email field variations
-        if 'recipient' in mapped_params and 'to' not in mapped_params:
-            mapped_params['to'] = mapped_params.pop('recipient')
-            logger.info(f"[PARAM MAPPING] Mapped 'recipient' -> 'to' for {tool_name}")
-        
-        if 'message' in mapped_params and 'body' not in mapped_params:
-            mapped_params['body'] = mapped_params.pop('message')
-            logger.info(f"[PARAM MAPPING] Mapped 'message' -> 'body' for {tool_name}")
-        
-        if 'content' in mapped_params and 'body' not in mapped_params:
-            mapped_params['body'] = mapped_params.pop('content')
-            logger.info(f"[PARAM MAPPING] Mapped 'content' -> 'body' for {tool_name}")
+    # No tool mapping - intelligent planner uses exact tool names and parameters from MCP cache
     
     return tool_name, mapped_params
 
 def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
-    """Call an MCP tool and return the result using info from Redis cache"""
+    """
+    Call an MCP tool using the unified MCP service with enhanced OAuth handling
+    
+    This function now uses the unified architecture for both HTTP and stdio MCP servers
+    with automatic OAuth token refresh and comprehensive error handling.
+    """
     
     # Ensure logger is available in this function context
     import logging
@@ -3107,166 +3147,78 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
         
         # Inject OAuth credentials for Gmail tools (skipping for brevity)
         
-        # Check if this is a stdio-based tool (after endpoint_prefix override)
-        if endpoint.startswith("stdio://"):
-            # For stdio tools, we need to get the server configuration
-            server_id = tool_info.get("server_id")
-            if server_id:
-                try:
-                    # Get server configuration from database
-                    from app.core.db import SessionLocal, MCPServer
-                    db = SessionLocal()
-                    try:
-                        server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
-                        if server and server.command:
-                            # Use stdio handler
-                            from app.core.stdio_mcp_handler import call_stdio_mcp_tool
-                            
-                            server_config = {
-                                "command": server.command,
-                                "args": server.args if server.args else []
-                            }
-                            
-                            # Clean up parameters (remove agent parameter that shouldn't be sent to tool)
-                            clean_parameters = {k: v for k, v in parameters.items() if k != "agent"}
-                            
-                            logger.info(f"[STDIO] Calling {tool_name} via stdio with server_id {server_id}")
-                            result = call_stdio_mcp_tool(server_config, tool_name, clean_parameters)
-                            
-                            # End tool span with result
-                            if tool_span and tracer:
-                                try:
-                                    success = "error" not in result
-                                    tracer.end_span_with_result(tool_span, result, success, result.get("error"))
-                                except Exception as e:
-                                    logger.warning(f"Failed to end tool span for {tool_name}: {e}")
-                            
-                            return result
-                        else:
-                            error_msg = f"Server {server_id} not found or has no command configured"
-                            logger.error(error_msg)
-                            if tool_span:
-                                tracer.end_span_with_result(tool_span, None, False, error_msg)
-                            return {"error": error_msg}
-                    finally:
-                        db.close()
-                except Exception as e:
-                    error_msg = f"Error getting server config for {tool_name}: {str(e)}"
-                    logger.error(error_msg)
-                    if tool_span:
-                        tracer.end_span_with_result(tool_span, None, False, error_msg)
-                    return {"error": error_msg}
-            else:
-                error_msg = "No server_id for stdio tool"
-                if tool_span:
-                    tracer.end_span_with_result(tool_span, None, False, error_msg)
-                return {"error": error_msg}
-        
-        # Original HTTP-based logic
-        # MCP server pattern: always use generic invoke format
-        if "/invoke" in endpoint and (endpoint.endswith("/invoke") or endpoint_prefix):
-            # Standard MCP format: {"name": "tool_name", "arguments": {parameters}}
-            payload = {
-                "name": tool_name,
-                "arguments": parameters if parameters else {}
-            }
-        else:
-            # Fallback to direct parameters for other API patterns
-            payload = parameters if parameters else {}
-        
+        # Use unified MCP service for both HTTP and stdio tools
         try:
-            # Set default headers
-            if "Content-Type" not in headers:
-                headers["Content-Type"] = "application/json"
+            # Clean up parameters (remove agent parameter that shouldn't be sent to tool)
+            clean_parameters = {k: v for k, v in parameters.items() if k != "agent"}
             
-            if method.upper() == "GET":
-                response = requests.get(endpoint, params=payload, headers=headers, timeout=30)
-            else:
-                response = requests.post(endpoint, json=payload, headers=headers, timeout=30)
+            logger.info(f"[UNIFIED] Calling {tool_name} via unified MCP service")
             
-            response.raise_for_status()
+            # Import unified service
+            from app.core.unified_mcp_service import call_mcp_tool_unified
+            import asyncio
             
-            # Handle different response types
+            # Call the unified service (handle async in sync context)
             try:
-                result = response.json()
-                # End tool span with success
-                if tool_span:
-                    tracer.end_span_with_result(tool_span, result, True)
+                # Check if we're in an event loop
+                asyncio.get_running_loop()
+                # We're in an async context, create a new event loop in a thread
+                import threading
+                result_container = {'result': None, 'exception': None}
                 
-                return result
-            except json.JSONDecodeError:
-                # If response is not JSON, return as text
-                result = {"result": response.text}
+                def run_in_thread():
+                    try:
+                        # Create new event loop for this thread
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        result_container['result'] = new_loop.run_until_complete(
+                            call_mcp_tool_unified(tool_info, tool_name, clean_parameters)
+                        )
+                        new_loop.close()
+                    except Exception as e:
+                        result_container['exception'] = e
                 
-                # End tool span with success
-                if tool_span:
-                    tracer.end_span_with_result(tool_span, result, True)
+                thread = threading.Thread(target=run_in_thread)
+                thread.start()
+                thread.join()
                 
-                return result
+                if result_container['exception']:
+                    raise result_container['exception']
+                result = result_container['result']
+                
+            except RuntimeError:
+                # No running loop, we can use asyncio.run()
+                result = asyncio.run(call_mcp_tool_unified(tool_info, tool_name, clean_parameters))
             
-        except requests.exceptions.Timeout:
-            error_msg = f"Timeout calling tool {tool_name} (30s timeout exceeded)"
-            print(f"[ERROR] {error_msg}")
+            # End tool span with result
+            if tool_span and tracer:
+                try:
+                    success = "error" not in result
+                    tracer.end_span_with_result(tool_span, result, success, result.get("error"))
+                except Exception as e:
+                    logger.warning(f"Failed to end tool span for {tool_name}: {e}")
             
-            # End tool span with error
-            if tool_span:
-                tracer.end_span_with_result(tool_span, None, False, error_msg)
+            logger.info(f"[UNIFIED] Tool {tool_name} completed via unified service")
+            return result
             
+        except Exception as e:
+            error_msg = f"Unified MCP service failed for {tool_name}: {str(e)}"
+            logger.error(error_msg)
+            if tool_span and tracer:
+                try:
+                    tracer.end_span_with_result(tool_span, None, False, error_msg)
+                except:
+                    pass
             return {"error": error_msg}
-        except requests.exceptions.ConnectionError:
-            error_msg = f"Connection error calling tool {tool_name} at {endpoint}. Check if MCP server is running."
-            print(f"[ERROR] {error_msg}")
-            
-            # End tool span with error
-            if tool_span:
-                tracer.end_span_with_result(tool_span, None, False, error_msg)
-            
-            return {"error": error_msg}
-        except requests.exceptions.HTTPError as e:
-            try:
-                error_detail = e.response.text
-            except:
-                error_detail = str(e)
-            error_msg = f"HTTP {e.response.status_code} error calling tool {tool_name}: {error_detail}"
-            print(f"[ERROR] {error_msg}")
-            
-            # Check if this is a Gmail token expiration error
-            if ("gmail" in tool_name.lower() and 
-                ("credentials do not contain" in error_detail.lower() or 
-                 "token" in error_detail.lower() or
-                 "401" in error_detail or
-                 e.response.status_code == 401)):
-                print(f"[DEBUG] Detected Gmail token error, attempting to refresh token...")
-                
-                # Try to refresh the token
-                if tool_info.get("server_id"):
-                    refresh_result = refresh_gmail_token(tool_info["server_id"])
-                    if refresh_result and not refresh_result.get("error"):
-                        print(f"[DEBUG] Token refreshed successfully, retrying tool call...")
-                        # Invalidate the tool cache to ensure fresh OAuth credentials are loaded
-                        from app.core.mcp_tools_cache import reload_enabled_mcp_tools
-                        reload_enabled_mcp_tools()
-                        # Retry the tool call with refreshed token (skip span creation since already created)
-                        return call_mcp_tool(tool_name, parameters, trace=trace, _skip_span_creation=True)
-                    else:
-                        print(f"[ERROR] Failed to refresh token: {refresh_result}")
-                        # Check if it's an invalid_grant error (token revoked)
-                        if "invalid_grant" in str(refresh_result.get("error", "")):
-                            return {
-                                "error": "Gmail authorization has been revoked. Please re-authorize Gmail access in the MCP Servers settings.",
-                                "error_type": "auth_revoked",
-                                "server_id": tool_info.get("server_id")
-                            }
-            
-            # If we get 404 and were using tool-specific endpoint, try generic endpoint
-            if e.response.status_code == 404 and endpoint_prefix and not endpoint.endswith("/invoke"):
-                print(f"[DEBUG] Retrying with generic endpoint due to 404...")
-                return call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info)
-            
-            return {"error": error_msg}
+    
     except Exception as e:
         error_msg = f"Unexpected error calling tool {tool_name}: {str(e)}"
-        print(f"[ERROR] {error_msg}")
+        logger.error(error_msg)
+        if tool_span and tracer:
+            try:
+                tracer.end_span_with_result(tool_span, None, False, error_msg)
+            except:
+                pass
         return {"error": error_msg}
 
 def call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info):
@@ -3305,17 +3257,9 @@ def call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info):
         print(f"[ERROR] {error_msg}")
         return {"error": error_msg}
 
-def extract_and_execute_tool_calls(text, stream_callback=None, trace=None):
+async def extract_and_execute_tool_calls_async(text, stream_callback=None, trace=None, use_enhanced_error_handling=True):
     """
-    Extract tool calls from LLM output and execute them
-    
-    Args:
-        text: LLM response text to scan for tool calls
-        stream_callback: Optional callback to stream tool execution updates
-        trace: Optional Langfuse trace for span creation
-    
-    Returns:
-        List of tool execution results
+    Async version of extract_and_execute_tool_calls with enhanced error handling
     """
     import re  # Import at function level to avoid scope issues
     
@@ -3408,26 +3352,263 @@ def extract_and_execute_tool_calls(text, stream_callback=None, trace=None):
                     tool_span = tracer.create_tool_span(trace, tool_name, params)
                     print(f"[DEBUG] RAG chat tool span created: {tool_span is not None}")
             
-            # Execute the tool (skip span creation since we already created it above)
-            result = call_mcp_tool(tool_name, params, trace=trace, _skip_span_creation=True)
+            # Execute the tool with enhanced error handling
+            if use_enhanced_error_handling:
+                from app.core.tool_error_handler import call_mcp_tool_with_retry
+                
+                # Execute with enhanced error handling (uses server-specific configuration automatically)
+                result = await call_mcp_tool_with_retry(tool_name, params, trace=trace)
+            else:
+                # Execute the tool (skip span creation since we already created it above)
+                result = call_mcp_tool(tool_name, params, trace=trace, _skip_span_creation=True)
             
-            # Enhanced result processing
+            # Enhanced result processing with error type support
             if "error" in result:
-                print(f"[ERROR] Tool {tool_name} returned error: {result['error']}")
+                error_msg = result['error']
+                error_type = result.get('error_type', 'unknown')
+                attempts = result.get('attempts', 1)
+                
+                if attempts > 1:
+                    print(f"[ERROR] Tool {tool_name} failed after {attempts} attempts ({error_type}): {error_msg}")
+                    if stream_callback:
+                        stream_callback(f"❌ Tool {tool_name} failed after {attempts} retries ({error_type}): {error_msg}")
+                else:
+                    print(f"[ERROR] Tool {tool_name} returned error ({error_type}): {error_msg}")
+                    if stream_callback:
+                        stream_callback(f"❌ Tool {tool_name} failed ({error_type}): {error_msg}")
                 
                 # End tool span with error
                 if tool_span:
-                    print(f"[DEBUG] RAG chat ending tool span for {tool_name} with error: {result['error']}")
-                    tracer.end_span_with_result(tool_span, None, False, result['error'])
+                    print(f"[DEBUG] RAG chat ending tool span for {tool_name} with error: {error_msg}")
+                    tracer.end_span_with_result(tool_span, None, False, error_msg)
                 
                 results.append({
                     "tool": tool_name,
                     "parameters": params,
                     "success": False,
-                    "error": result['error']
+                    "error": error_msg,
+                    "error_type": error_type,
+                    "attempts": attempts
                 })
+            else:
+                print(f"[SUCCESS] Tool {tool_name} executed successfully")
+                
+                # End tool span with success
+                if tool_span:
+                    print(f"[DEBUG] RAG chat ending tool span for {tool_name} with success")
+                    tracer.end_span_with_result(tool_span, result, True)
+                
+                # Special formatting for different tool types
+                if tool_name == "get_datetime" and "result" in result:
+                    try:
+                        from datetime import datetime
+                        iso_date = result["result"]
+                        dt = datetime.fromisoformat(iso_date.replace("Z", "+00:00"))
+                        formatted_date = dt.strftime("%B %d, %Y at %I:%M %p")
+                        result["formatted_date"] = formatted_date
+                    except Exception as e:
+                        print(f"[ERROR] Failed to format date: {str(e)}")
+                
+                results.append({
+                    "tool": tool_name,
+                    "parameters": params,
+                    "success": True,
+                    "result": result
+                })
+                
                 if stream_callback:
-                    stream_callback(f"❌ Tool {tool_name} failed: {result['error']}")
+                    stream_callback(f"✅ Tool {tool_name} completed successfully")
+        
+        except Exception as e:
+            error_msg = f"Unexpected error executing {tool_name}: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            
+            results.append({
+                "tool": tool_name,
+                "parameters": params if 'params' in locals() else {},
+                "success": False,
+                "error": error_msg,
+                "error_type": "exception"
+            })
+            
+            if stream_callback:
+                stream_callback(f"❌ Tool {tool_name} failed: {error_msg}")
+    
+    print(f"[DEBUG] Tool execution complete: {len(results)} results")
+    return results
+
+def extract_and_execute_tool_calls(text, stream_callback=None, trace=None, use_enhanced_error_handling=False):
+    """
+    Synchronous wrapper for extract_and_execute_tool_calls_async
+    
+    Args:
+        text: LLM response text to scan for tool calls
+        stream_callback: Optional callback to stream tool execution updates
+        trace: Optional Langfuse trace for span creation
+        use_enhanced_error_handling: Whether to use enhanced error handling (default: False for compatibility)
+    
+    Returns:
+        List of tool execution results
+    """
+    import asyncio
+    
+    # If enhanced error handling is requested, use async version
+    if use_enhanced_error_handling:
+        # Check if we're already in an async context
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an async context, need to run in thread pool
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    lambda: asyncio.run(extract_and_execute_tool_calls_async(text, stream_callback, trace, use_enhanced_error_handling))
+                )
+                return future.result()
+        except RuntimeError:
+            # No running loop, we can use asyncio.run
+            try:
+                return asyncio.run(extract_and_execute_tool_calls_async(text, stream_callback, trace, use_enhanced_error_handling))
+            except Exception as e:
+                print(f"[ERROR] Async execution failed: {e}")
+                # Fall back to sync implementation
+                use_enhanced_error_handling = False
+    
+    # Fallback to original synchronous implementation for compatibility
+    import re  # Import at function level to avoid scope issues
+    
+    if "NO_TOOLS_NEEDED" in text:
+        print("[DEBUG] Tool extraction: LLM indicated no tools needed")
+        return []
+        
+    # Enhanced pattern to catch more tool call variations
+    tool_calls_patterns = [
+        r'<tool>(.*?)\((.*?)\)</tool>',  # Standard format
+        r'<tool>(.*?):\s*(.*?)</tool>',  # Alternative format with colon
+        r'Tool:\s*(.*?)\((.*?)\)',       # Plain format
+    ]
+    
+    tool_calls = []
+    for pattern in tool_calls_patterns:
+        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+        if matches:
+            print(f"[DEBUG] Tool extraction: Found {len(matches)} tool calls with pattern: {pattern}")
+            tool_calls.extend(matches)
+            break  # Use first matching pattern only
+    
+    # If no tool calls found, return empty list
+    if not tool_calls:
+        print("[DEBUG] Tool extraction: No tool calls found in LLM response")
+        print(f"[DEBUG] Tool extraction: Scanned text: {text[:200]}...")
+        return []
+    
+    # Deduplicate tool calls (same tool with same parameters)
+    unique_tools = []
+    seen_calls = set()
+    for tool_name, params_str in tool_calls:
+        call_signature = (tool_name.strip(), params_str.strip())
+        if call_signature not in seen_calls:
+            unique_tools.append((tool_name, params_str))
+            seen_calls.add(call_signature)
+        else:
+            print(f"[DEBUG] Tool extraction: Skipping duplicate call to {tool_name}")
+    
+    tool_calls = unique_tools
+    print(f"[DEBUG] Tool extraction: {len(tool_calls)} unique tools to execute")
+    
+    results = []
+    for i, (tool_name, params_str) in enumerate(tool_calls):
+        try:
+            tool_name = tool_name.strip()
+            params_str = params_str.strip()
+            
+            if stream_callback:
+                stream_callback(f"🔧 Executing tool: {tool_name}")
+            
+            print(f"[DEBUG] Tool execution [{i+1}/{len(tool_calls)}]: {tool_name}")
+            
+            # Parse parameters with enhanced error handling
+            if params_str == "{}" or params_str == "" or params_str.lower() == "none":
+                params = {}
+            else:
+                try:
+                    # Handle common parameter format issues
+                    if not params_str.startswith('{'):
+                        # Try to wrap as object if it looks like key-value
+                        if ':' in params_str:
+                            params_str = '{' + params_str + '}'
+                        else:
+                            # Assume it's a single string parameter for query-like tools
+                            if 'search' in tool_name.lower():
+                                params = {"query": params_str.strip('"\'`')}
+                            else:
+                                params = {}
+                    else:
+                        params = json.loads(params_str)
+                except json.JSONDecodeError as e:
+                    print(f"[ERROR] Failed to parse parameters for {tool_name}: {params_str}")
+                    print(f"[ERROR] JSON decode error: {e}")
+                    # Try fallback parsing for common cases
+                    if 'search' in tool_name.lower():
+                        params = {"query": params_str.strip('"\'`{}()')}
+                    else:
+                        params = {}
+            
+            print(f"[DEBUG] Tool execution: {tool_name} with params: {params}")
+            
+            # Create tool span if trace is provided
+            tool_span = None
+            if trace:
+                from app.core.langfuse_integration import get_tracer
+                tracer = get_tracer()
+                if tracer.is_enabled():
+                    print(f"[DEBUG] RAG chat creating tool span for {tool_name}")
+                    tool_span = tracer.create_tool_span(trace, tool_name, params)
+                    print(f"[DEBUG] RAG chat tool span created: {tool_span is not None}")
+            
+            # Execute the tool with enhanced error handling
+            if use_enhanced_error_handling:
+                from app.core.tool_error_handler import call_mcp_tool_with_retry
+                
+                # Execute with enhanced error handling in a new event loop (uses server-specific configuration automatically)
+                try:
+                    result = asyncio.run(call_mcp_tool_with_retry(tool_name, params, trace=trace))
+                except Exception as e:
+                    print(f"[ERROR] Enhanced error handling failed: {e}, falling back to direct call")
+                    result = call_mcp_tool(tool_name, params, trace=trace, _skip_span_creation=True)
+            else:
+                # Execute the tool (skip span creation since we already created it above)
+                result = call_mcp_tool(tool_name, params, trace=trace, _skip_span_creation=True)
+            
+            # Enhanced result processing with error type support
+            if "error" in result:
+                error_msg = result['error']
+                error_type = result.get('error_type', 'unknown')
+                attempts = result.get('attempts', 1)
+                
+                if attempts > 1:
+                    print(f"[ERROR] Tool {tool_name} failed after {attempts} attempts ({error_type}): {error_msg}")
+                    if stream_callback:
+                        stream_callback(f"❌ Tool {tool_name} failed after {attempts} retries ({error_type}): {error_msg}")
+                else:
+                    print(f"[ERROR] Tool {tool_name} returned error ({error_type}): {error_msg}")
+                    if stream_callback:
+                        stream_callback(f"❌ Tool {tool_name} failed ({error_type}): {error_msg}")
+                
+                # End tool span with error
+                if tool_span:
+                    print(f"[DEBUG] RAG chat ending tool span for {tool_name} with error: {error_msg}")
+                    tracer.end_span_with_result(tool_span, None, False, error_msg)
+                
+                results.append({
+                    "tool": tool_name,
+                    "parameters": params,
+                    "success": False,
+                    "error": error_msg,
+                    "error_type": error_type,
+                    "attempts": attempts
+                })
             else:
                 print(f"[SUCCESS] Tool {tool_name} executed successfully")
                 

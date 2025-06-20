@@ -67,7 +67,8 @@ class PipelineExecutor:
         self,
         pipeline_id: int,
         input_data: Dict[str, Any],
-        trigger_type: str = "manual"
+        trigger_type: str = "manual",
+        existing_execution_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """Execute a pipeline."""
         # Force reload of caches to ensure we have latest configurations
@@ -92,13 +93,22 @@ class PipelineExecutor:
         if not pipeline["is_active"]:
             raise ValueError(f"Pipeline {pipeline['name']} is not active")
         
-        # Record execution start
-        execution_id = await self.pipeline_manager.record_execution(
-            pipeline_id=pipeline_id,
-            trigger_type=trigger_type,
-            status="running",
-            input_data=input_data
-        )
+        # Use existing execution_id or create new one
+        if existing_execution_id:
+            execution_id = existing_execution_id
+            # Update status to running
+            await self.pipeline_manager.update_execution_status(
+                execution_id=execution_id,
+                status="running"
+            )
+        else:
+            # Record execution start
+            execution_id = await self.pipeline_manager.record_execution(
+                pipeline_id=pipeline_id,
+                trigger_type=trigger_type,
+                status="running",
+                input_data=input_data
+            )
         
         # Store execution state in Redis
         execution_key = f"{self._execution_cache_prefix}:{execution_id}"
@@ -136,7 +146,7 @@ class PipelineExecutor:
                 }
                 
                 trace = tracer.create_trace(
-                    name=f"agentic-pipeline-{pipeline['collaboration_mode']}",
+                    name=f"pipeline-workflow",
                     input=str(input_data.get("query", ""))[:1000],  # Limit input length
                     metadata=safe_metadata
                 )
@@ -286,142 +296,206 @@ class PipelineExecutor:
         if not agents:
             raise ValueError("Pipeline has no agents configured")
         
+        # Create pipeline execution span with proper hierarchy
+        pipeline_span = None
+        if self.current_trace:
+            try:
+                from app.core.langfuse_integration import get_tracer
+                tracer = get_tracer()
+                if tracer.is_enabled():
+                    agent_names = [agent.get("agent_name", "unknown") for agent in agents]
+                    pipeline_span = tracer.create_pipeline_execution_span(
+                        self.current_trace, 
+                        self.current_pipeline_id, 
+                        mode, 
+                        agent_names
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to create pipeline execution span: {e}")
+        
         # Add pipeline goal to input data if available
         if pipeline.get("goal"):
             input_data["pipeline_goal"] = pipeline["goal"]
         
         start_time = time.time()
         
-        if mode == "sequential":
-            result = await self._execute_sequential(
-                agents=agents,
-                input_data=input_data,
-                execution_id=execution_id,
-                pipeline_goal=pipeline.get("goal", "")
-            )
-        elif mode == "parallel":
-            result = await self._execute_parallel(
-                agents=agents,
-                input_data=input_data,
-                execution_id=execution_id,
-                pipeline_goal=pipeline.get("goal", "")
-            )
-        elif mode == "hierarchical":
-            result = await self._execute_hierarchical(
-                agents=agents,
-                input_data=input_data,
-                execution_id=execution_id,
-                pipeline_goal=pipeline.get("goal", "")
-            )
-        elif mode in settings.get_collaboration_modes():
-            # Handle additional collaboration modes
-            if mode == "conditional":
-                result = await self._execute_conditional(
-                    agents=agents,
-                    input_data=input_data,
-                    execution_id=execution_id,
-                    pipeline_goal=pipeline.get("goal", "")
-                )
-            elif mode == "approval_gate":
-                result = await self._execute_approval_gate(
-                    agents=agents,
-                    input_data=input_data,
-                    execution_id=execution_id,
-                    pipeline_goal=pipeline.get("goal", "")
-                )
-            elif mode == "event_driven":
-                result = await self._execute_event_driven(
-                    agents=agents,
-                    input_data=input_data,
-                    execution_id=execution_id,
-                    pipeline_goal=pipeline.get("goal", "")
-                )
-            elif mode == "hybrid":
-                result = await self._execute_hybrid(
-                    agents=agents,
-                    input_data=input_data,
-                    execution_id=execution_id,
-                    pipeline_goal=pipeline.get("goal", "")
-                )
-            else:
-                # Fallback to sequential for unknown modes
-                logger.warning(f"Unimplemented collaboration mode: {mode}, falling back to sequential")
+        try:
+            if mode == "sequential":
                 result = await self._execute_sequential(
                     agents=agents,
                     input_data=input_data,
                     execution_id=execution_id,
-                    pipeline_goal=pipeline.get("goal", "")
+                    pipeline_goal=pipeline.get("goal", ""),
+                    pipeline_span=pipeline_span
                 )
-        else:
-            raise ValueError(f"Unknown collaboration mode: {mode}")
+            elif mode == "parallel":
+                result = await self._execute_parallel(
+                    agents=agents,
+                    input_data=input_data,
+                    execution_id=execution_id,
+                    pipeline_goal=pipeline.get("goal", ""),
+                    pipeline_span=pipeline_span
+                )
+            elif mode == "hierarchical":
+                result = await self._execute_hierarchical(
+                    agents=agents,
+                    input_data=input_data,
+                    execution_id=execution_id,
+                    pipeline_goal=pipeline.get("goal", ""),
+                    pipeline_span=pipeline_span
+                )
+            elif mode in settings.get_collaboration_modes():
+                # Handle additional collaboration modes
+                if mode == "conditional":
+                    result = await self._execute_conditional(
+                        agents=agents,
+                        input_data=input_data,
+                        execution_id=execution_id,
+                        pipeline_goal=pipeline.get("goal", ""),
+                        pipeline_span=pipeline_span
+                    )
+                elif mode == "approval_gate":
+                    result = await self._execute_approval_gate(
+                        agents=agents,
+                        input_data=input_data,
+                        execution_id=execution_id,
+                        pipeline_goal=pipeline.get("goal", ""),
+                        pipeline_span=pipeline_span
+                    )
+                elif mode == "event_driven":
+                    result = await self._execute_event_driven(
+                        agents=agents,
+                        input_data=input_data,
+                        execution_id=execution_id,
+                        pipeline_goal=pipeline.get("goal", ""),
+                        pipeline_span=pipeline_span
+                    )
+                elif mode == "hybrid":
+                    result = await self._execute_hybrid(
+                        agents=agents,
+                        input_data=input_data,
+                        execution_id=execution_id,
+                        pipeline_goal=pipeline.get("goal", ""),
+                        pipeline_span=pipeline_span
+                    )
+                else:
+                    # Fallback to sequential for unknown modes
+                    logger.warning(f"Unimplemented collaboration mode: {mode}, falling back to sequential")
+                    result = await self._execute_sequential(
+                        agents=agents,
+                        input_data=input_data,
+                        execution_id=execution_id,
+                        pipeline_goal=pipeline.get("goal", ""),
+                        pipeline_span=pipeline_span
+                    )
+            else:
+                raise ValueError(f"Unknown collaboration mode: {mode}")
         
-        execution_time = time.time() - start_time
+            execution_time = time.time() - start_time
+            
+            # End pipeline span with success
+            if pipeline_span:
+                try:
+                    from app.core.langfuse_integration import get_tracer
+                    tracer = get_tracer()
+                    tracer.end_span_with_result(
+                        pipeline_span,
+                        {
+                            "mode": mode,
+                            "execution_time": execution_time,
+                            "agents_used": [agent["agent_name"] for agent in agents],
+                            "result_type": type(result).__name__
+                        },
+                        success=True
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to end pipeline execution span: {e}")
+            
+            return {
+                "mode": mode,
+                "execution_time": execution_time,
+                "agents_used": [agent["agent_name"] for agent in agents],
+                "result": result
+            }
         
-        return {
-            "mode": mode,
-            "execution_time": execution_time,
-            "agents_used": [agent["agent_name"] for agent in agents],
-            "result": result
-        }
+        except Exception as e:
+            # End pipeline span with error
+            if pipeline_span:
+                try:
+                    from app.core.langfuse_integration import get_tracer
+                    tracer = get_tracer()
+                    tracer.end_span_with_result(pipeline_span, None, False, str(e))
+                except Exception as span_e:
+                    logger.warning(f"Failed to end pipeline execution span with error: {span_e}")
+            raise
     
     async def _execute_sequential(
         self,
         agents: List[Dict[str, Any]],
         input_data: Dict[str, Any],
         execution_id: int,
-        pipeline_goal: str = ""
+        pipeline_goal: str = "",
+        pipeline_span=None
     ) -> Dict[str, Any]:
-        """Execute agents sequentially with proper I/O tracking."""
+        """Execute agents sequentially using clean agentic pipeline executor."""
         # Sort agents by execution order
         sorted_agents = sorted(agents, key=lambda x: x.get("execution_order", 0))
         
-        # Check if debug mode is enabled via input_data
+        logger.info(f"[PURE PIPELINE] Using PureAgenticPipeline for execution {execution_id}")
+        
+        # Initialize PURE agentic pipeline executor
+        from app.langchain.pure_agentic_pipeline import PureAgenticPipeline
+        executor = PureAgenticPipeline(
+            pipeline_id=self.current_pipeline_id,
+            execution_id=str(execution_id),
+            trace=pipeline_span or self.current_trace  # Use pipeline_span as parent if available
+        )
+        
+        # Check if debug mode is enabled
         debug_mode = input_data.get("debug_mode", False)
+        current_input = input_data.get("query", "")
         
-        if debug_mode:
-            logger.info(f"\n{'='*80}")
-            logger.info(f"[PIPELINE DEBUG] Starting sequential execution for execution_id: {execution_id}")
-            logger.info(f"[PIPELINE DEBUG] Total agents to execute: {len(sorted_agents)}")
-            logger.info(f"[PIPELINE DEBUG] Agent sequence: {[a['agent_name'] for a in sorted_agents]}")
-            logger.info(f"[PIPELINE DEBUG] Initial query: {input_data.get('query', '')[:200]}...")
-            logger.info(f"{'='*80}\n")
-        
-        # Always use pipeline bridge adapter for proper I/O tracking
-        logger.info(f"[BRIDGE] Using PipelineBridgeAdapter for execution {execution_id}")
-        
-        # Get full pipeline config
-        pipeline = await self.pipeline_manager.get_pipeline(self.current_pipeline_id)
-        
-        # Create bridge adapter
-        adapter = PipelineBridgeAdapter(pipeline, str(execution_id), trace=self.current_trace)
-        
-        # Execute through adapter to get proper I/O tracking
+        # Execute agents cleanly
         agent_outputs = []
         final_output = ""
         total_agents = len(sorted_agents)
         completed_agents = 0
         
-        # Prepare context
-        context = {
-            "conversation_history": input_data.get("conversation_history", []),
-            "pipeline_goal": pipeline_goal
-        }
+        # Publish initial agent list for progress tracking
+        await publish_log_entry(
+            str(execution_id),
+            "info",
+            f"Pipeline will execute {total_agents} agents: {[a.get('agent_name') for a in sorted_agents]}"
+        )
         
-        # Track current input for each agent
-        current_input = input_data.get("query", "")
-        
-        # Execute via adapter
-        async for event in adapter.execute_with_io_tracking(
+        # Execute through pure executor
+        async for event in executor.execute_agents_sequentially(
             query=input_data.get("query", ""),
-            agents=sorted_agents,
-            context=context
+            agents=sorted_agents
         ):
-            event_type = event.get("type", "")
+            event_type = event.get("event", "")
             event_data = event.get("data", {})
             
-            if event_type == "agent_token":
+            if event_type == "streaming":
                 # Streaming tokens - can be forwarded if needed
                 pass
+                
+            elif event_type == "agent_start":
+                agent_name = event_data.get("agent")
+                await publish_agent_start(str(execution_id), agent_name)
+                await publish_log_entry(
+                    str(execution_id),
+                    "info",
+                    f"Starting agent: {agent_name}"
+                )
+                # Update progress
+                progress = completed_agents / total_agents
+                await publish_status_update(
+                    str(execution_id),
+                    "running",
+                    progress,
+                    agent_name
+                )
                 
             elif event_type == "agent_complete":
                 completed_agents += 1
@@ -437,6 +511,24 @@ class PipelineExecutor:
                 
                 duration = event_data.get("duration", 0)
                 progress = event_data.get("progress", (completed_agents / total_agents) * 100)
+                
+                # Publish agent completion via WebSocket
+                await publish_agent_complete(str(execution_id), agent_name, response, duration)
+                await publish_log_entry(
+                    str(execution_id),
+                    "info",
+                    f"Completed agent: {agent_name} ({duration:.2f}s)"
+                )
+                
+                # Update overall progress
+                progress_ratio = completed_agents / total_agents
+                next_agent = sorted_agents[completed_agents].get("agent_name") if completed_agents < total_agents else None
+                await publish_status_update(
+                    str(execution_id),
+                    "running",
+                    progress_ratio,
+                    next_agent
+                )
                 
                 # Enhanced debugging with response extraction details
                 if debug_mode:
@@ -666,10 +758,11 @@ class PipelineExecutor:
         agents: List[Dict[str, Any]],
         input_data: Dict[str, Any],
         execution_id: int,
-        pipeline_goal: str = ""
+        pipeline_goal: str = "",
+        pipeline_span=None
     ) -> Dict[str, Any]:
         """Execute agents in parallel."""
-        multi_agent = MultiAgentSystem(trace=self.current_trace)
+        multi_agent = MultiAgentSystem(trace=pipeline_span or self.current_trace)
         
         # Prepare agent names and configs
         agent_names = [agent["agent_name"] for agent in agents]
@@ -706,7 +799,8 @@ class PipelineExecutor:
         agents: List[Dict[str, Any]],
         input_data: Dict[str, Any],
         execution_id: int,
-        pipeline_goal: str = ""
+        pipeline_goal: str = "",
+        pipeline_span=None
     ) -> Dict[str, Any]:
         """Execute agents in hierarchical mode."""
         # Identify lead agent (no parent)
@@ -726,7 +820,7 @@ class PipelineExecutor:
         )
         
         # Execute hierarchically
-        multi_agent = MultiAgentSystem(trace=self.current_trace)
+        multi_agent = MultiAgentSystem(trace=pipeline_span or self.current_trace)
         
         # Prepare subordinate agents for lead
         subordinates = hierarchy.get(lead_agent["agent_name"], [])
@@ -834,10 +928,15 @@ class PipelineExecutor:
             logger.warning("[ENHANCED] Enhanced system not available, falling back to standard execution")
             return await self._execute_sequential_standard(agents, input_data, execution_id, pipeline_goal)
         
-        logger.info("[ENHANCED] Using enhanced multi-agent system with structured communication")
+        logger.info("🔴 [CLEAN PIPELINE] Using CLEAN pipeline executor - NO multi-agent contamination")
         
-        # Initialize enhanced system
-        multi_agent = EnhancedMultiAgentSystem()
+        # Initialize CLEAN agentic pipeline executor
+        from app.langchain.agentic_pipeline_executor import AgenticPipelineExecutor
+        pipeline_executor = AgenticPipelineExecutor(
+            pipeline_id=pipeline["id"],
+            execution_id=self.execution_id,
+            trace=self.current_trace
+        )
         
         # Get communication patterns from database
         communication_patterns = await self._load_communication_patterns(agents)
@@ -881,20 +980,19 @@ class PipelineExecutor:
             "agents": enhanced_agents
         }
         
-        # Execute with enhanced system
+        # Execute with CLEAN pipeline executor
         agent_outputs = []
         final_output = ""
         
-        # Collect events and build output
-        async for event in multi_agent.execute(
+        # Execute through clean agentic pipeline executor
+        async for event in pipeline_executor.execute_sequential_pipeline(
             query=input_data.get("query", ""),
-            mode="sequential",
-            config=pipeline_config
+            agents=[{"agent_name": agent["agent_name"], "config": agent.get("config", {})} for agent in agents]
         ):
             if event.get("event") == "agent_complete":
                 data = event.get("data", {})
                 agent_output = {
-                    "agent": data.get("agent_name", "Unknown"),
+                    "agent": data.get("agent", "Unknown"),
                     "output": data.get("response", ""),
                     "content": data.get("response", ""),
                     "reasoning": data.get("reasoning", ""),
@@ -908,10 +1006,10 @@ class PipelineExecutor:
                 agent_outputs.append(agent_output)
                 final_output = agent_output["output"]
                 
-                # Update progress
+                # Update progress  
                 await self._update_progress(
                     execution_id,
-                    f"Completed {data.get('agent_name')} ({data.get('pipeline_position', '')})"
+                    f"Completed {data.get('agent')} ({data.get('agent_index', '')}/{data.get('total_agents', '')})"
                 )
             
             elif event.get("event") == "pipeline_complete":
@@ -987,45 +1085,49 @@ class PipelineExecutor:
         agents: List[Dict[str, Any]],
         input_data: Dict[str, Any],
         execution_id: int,
-        pipeline_goal: str = ""
+        pipeline_goal: str = "",
+        pipeline_span=None
     ) -> Dict[str, Any]:
         """Execute agents with conditional branching logic."""
         # TODO: Implement conditional execution logic
         logger.info("Conditional execution mode - falling back to sequential")
-        return await self._execute_sequential(agents, input_data, execution_id, pipeline_goal)
+        return await self._execute_sequential(agents, input_data, execution_id, pipeline_goal, pipeline_span)
     
     async def _execute_approval_gate(
         self,
         agents: List[Dict[str, Any]],
         input_data: Dict[str, Any],
         execution_id: int,
-        pipeline_goal: str = ""
+        pipeline_goal: str = "",
+        pipeline_span=None
     ) -> Dict[str, Any]:
         """Execute agents with approval gates."""
         # TODO: Implement approval gate logic
         logger.info("Approval gate execution mode - falling back to sequential")
-        return await self._execute_sequential(agents, input_data, execution_id, pipeline_goal)
+        return await self._execute_sequential(agents, input_data, execution_id, pipeline_goal, pipeline_span)
     
     async def _execute_event_driven(
         self,
         agents: List[Dict[str, Any]],
         input_data: Dict[str, Any],
         execution_id: int,
-        pipeline_goal: str = ""
+        pipeline_goal: str = "",
+        pipeline_span=None
     ) -> Dict[str, Any]:
         """Execute agents in event-driven mode."""
         # TODO: Implement event-driven execution logic
         logger.info("Event-driven execution mode - falling back to sequential")
-        return await self._execute_sequential(agents, input_data, execution_id, pipeline_goal)
+        return await self._execute_sequential(agents, input_data, execution_id, pipeline_goal, pipeline_span)
     
     async def _execute_hybrid(
         self,
         agents: List[Dict[str, Any]],
         input_data: Dict[str, Any],
         execution_id: int,
-        pipeline_goal: str = ""
+        pipeline_goal: str = "",
+        pipeline_span=None
     ) -> Dict[str, Any]:
         """Execute agents in hybrid mode (mixed collaboration patterns)."""
         # TODO: Implement hybrid execution logic
         logger.info("Hybrid execution mode - falling back to sequential")
-        return await self._execute_sequential(agents, input_data, execution_id, pipeline_goal)
+        return await self._execute_sequential(agents, input_data, execution_id, pipeline_goal, pipeline_span)

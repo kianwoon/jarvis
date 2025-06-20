@@ -63,11 +63,11 @@ class MCPNetworkBridge:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "to": {"type": "string", "description": "Recipient email address"},
+                        "to": {"type": "array", "items": {"type": "string"}, "description": "Recipient email addresses"},
                         "subject": {"type": "string", "description": "Email subject"},
                         "body": {"type": "string", "description": "Email body (plain text or HTML)"},
-                        "cc": {"type": "string", "description": "CC recipients (optional)"},
-                        "bcc": {"type": "string", "description": "BCC recipients (optional)"}
+                        "cc": {"type": "array", "items": {"type": "string"}, "description": "CC recipients (optional)"},
+                        "bcc": {"type": "array", "items": {"type": "string"}, "description": "BCC recipients (optional)"}
                     },
                     "required": ["to", "subject", "body"]
                 }

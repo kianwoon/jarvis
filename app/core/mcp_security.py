@@ -13,7 +13,7 @@ class MCPSecurityValidator:
     def __init__(self):
         # Whitelist of allowed commands (expandable based on needs)
         self.allowed_commands = {
-            'python', 'python3', 'node', 'npm', 'pip', 'pip3',
+            'python', 'python3', 'node', 'npm', 'npx', 'pip', 'pip3',
             'java', 'go', 'rust', 'cargo', 'dotnet',
             'mcp-server', 'uvicorn', 'gunicorn'
         }

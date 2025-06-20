@@ -70,9 +70,18 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
         # Initialize context manager for this execution
         self.context_manager = PipelineContextManager() if PipelineContextManager else None
         
-        # Initialize orchestrator if we have pipeline config
-        if config and "pipeline" in config and PipelineOrchestrator:
-            self.pipeline_orchestrator = PipelineOrchestrator(config["pipeline"])
+        # CRITICAL: Extract pipeline_id from config for proper mode detection
+        self.current_pipeline_id = None
+        if config and "pipeline" in config:
+            pipeline_config = config["pipeline"]
+            self.current_pipeline_id = pipeline_config.get("id")
+            logger.info(f"🔴 [PIPELINE DETECTED] Pipeline ID extracted from config: {self.current_pipeline_id}")
+            
+            # Initialize orchestrator
+            if PipelineOrchestrator:
+                self.pipeline_orchestrator = PipelineOrchestrator(pipeline_config)
+        else:
+            logger.info(f"🔵 [MULTI-AGENT DETECTED] No pipeline config found, using multi-agent mode")
         
         # Get agent sequence
         agents = config.get("agents", []) if config else []
@@ -121,9 +130,21 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
                 }
             
             # Get context for this agent
-            pipeline_context = self.context_manager.get_context_for_agent(
+            base_context = self.context_manager.get_context_for_agent(
                 agent_name, idx, total_agents, next_agent_info
-            )
+            ) if self.context_manager else {}
+            
+            # CRITICAL: Override with actual pipeline_id if this is a pipeline execution
+            pipeline_context = base_context.copy()
+            if self.current_pipeline_id is not None:
+                # Ensure pipeline_id is converted to int for consistency
+                pipeline_id = int(self.current_pipeline_id) if isinstance(self.current_pipeline_id, str) else self.current_pipeline_id
+                pipeline_context["pipeline_id"] = pipeline_id
+                pipeline_context["agent_index"] = idx
+                pipeline_context["total_agents"] = total_agents
+                logger.info(f"🔴 [PIPELINE CONTEXT] Added pipeline_id {pipeline_id} (type: {type(pipeline_id)}) to context for agent {agent_name} (idx {idx}/{total_agents})")
+            else:
+                logger.info(f"🔵 [MULTI-AGENT CONTEXT] No pipeline_id for agent {agent_name}")
             
             # Create enhanced prompt
             # First check if there's a system_prompt in the agent's config (pipeline-specific)
@@ -140,19 +161,33 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
                 
             logger.debug(f"[ENHANCED] Agent {agent_name} prompt source: {'pipeline-specific' if agent_specific_config.get('system_prompt') else 'registry'}")
             
-            enhanced_instructions = self.communication_protocol.create_agent_instruction(
-                agent_config, pipeline_context
-            )
-            
-            # Combine prompts
-            full_prompt = f"{base_prompt}\n\n{enhanced_instructions}"
-            
-            # Add query context
-            if idx == 0:
-                full_prompt += f"\n\nUSER QUERY: {query}"
+            # CRITICAL: For pipeline mode, use ONLY the system_prompt from pipeline_agents table
+            # Do NOT add hardcoded templates that contaminate the clean prompt
+            if self.current_pipeline_id is not None:
+                # PIPELINE MODE: Use clean prompt from pipeline_agents table without contamination
+                full_prompt = base_prompt
+                logger.info(f"🔴 [PIPELINE CLEAN] Using ONLY pipeline_agents system_prompt for {agent_name} - NO hardcoded templates")
             else:
-                full_prompt += f"\n\nORIGINAL USER QUERY: {query}"
-                full_prompt += "\n\nYour task based on previous agents' work."
+                # MULTI-AGENT MODE: Use enhanced instructions (hardcoded templates are OK here)
+                enhanced_instructions = self.communication_protocol.create_agent_instruction(
+                    agent_config, pipeline_context
+                )
+                full_prompt = f"{base_prompt}\n\n{enhanced_instructions}"
+                logger.info(f"🔵 [MULTI-AGENT ENHANCED] Using enhanced instructions for {agent_name}")
+            
+            # Add query context - different handling for pipeline vs multi-agent mode
+            if self.current_pipeline_id is not None:
+                # PIPELINE MODE: Clean query passing - let pipeline_agents system_prompt handle formatting
+                full_prompt += f"\n\n{query}"
+                logger.info(f"🔴 [PIPELINE CLEAN] Added clean query to {agent_name} without hardcoded formatting")
+            else:
+                # MULTI-AGENT MODE: Enhanced query formatting
+                if idx == 0:
+                    full_prompt += f"\n\nUSER QUERY: {query}"
+                else:
+                    full_prompt += f"\n\nORIGINAL USER QUERY: {query}"
+                    full_prompt += "\n\nYour task based on previous agents' work."
+                logger.info(f"🔵 [MULTI-AGENT ENHANCED] Added enhanced query formatting to {agent_name}")
             
             logger.info(f"[ENHANCED] Executing agent {idx + 1}/{total_agents}: {agent_name}")
             
@@ -210,29 +245,44 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
         # Import DynamicMultiAgentSystem
         from app.langchain.dynamic_agent_system import DynamicMultiAgentSystem
         from app.core.langgraph_agents_cache import get_agent_by_name
+        from app.core.pipeline_agents_cache import get_pipeline_agent_config
         
-        # Get agent data
-        agent_data = get_agent_by_name(agent_name)
-        if not agent_data:
-            # Try with agent registry if we have it
-            if hasattr(self, 'agent_registry') and agent_name in self.agent_registry:
-                agent_data = self.agent_registry[agent_name]
-            else:
-                logger.error(f"Agent {agent_name} not found in system")
+        # Check if this is a pipeline agent first
+        pipeline_context = state.get("metadata", {}).get("pipeline_context", {})
+        pipeline_id = pipeline_context.get("pipeline_id")
+        
+        agent_data = None
+        
+        if pipeline_id:
+            # PIPELINE MODE: Use ONLY pipeline_agents table
+            logger.info(f"🔴 [PIPELINE MODE] STRICT SEPARATION: Loading config ONLY from pipeline_agents table for {agent_name} in pipeline {pipeline_id}")
+            agent_data = get_pipeline_agent_config(pipeline_id, agent_name)
+            if not agent_data:
+                logger.error(f"🔴 [PIPELINE MODE] CRITICAL: No config found in pipeline_agents table for {agent_name} in pipeline {pipeline_id}")
                 yield {
                     "event": "error",
-                    "data": {"error": f"Agent {agent_name} not found"}
+                    "data": {"error": f"Pipeline agent {agent_name} not found in pipeline {pipeline_id}"}
                 }
                 return
+            logger.info(f"🔴 [PIPELINE MODE] SUCCESS: Agent {agent_name} config loaded with tools: {agent_data.get('tools', [])}")
+        else:
+            # MULTI-AGENT MODE: Use ONLY langgraph_agents table
+            logger.info(f"🔵 [MULTI-AGENT MODE] STRICT SEPARATION: Loading config ONLY from langgraph_agents table for {agent_name}")
+            agent_data = get_agent_by_name(agent_name)
+            if not agent_data:
+                # Try with agent registry if we have it
+                if hasattr(self, 'agent_registry') and agent_name in self.agent_registry:
+                    agent_data = self.agent_registry[agent_name]
+                else:
+                    logger.error(f"🔵 [MULTI-AGENT MODE] Agent {agent_name} not found in langgraph_agents table")
+                    yield {
+                        "event": "error",
+                        "data": {"error": f"Multi-agent {agent_name} not found"}
+                    }
+                    return
+            logger.info(f"🔵 [MULTI-AGENT MODE] SUCCESS: Agent {agent_name} config loaded with tools: {agent_data.get('tools', [])}")
         
-        # Use pipeline-specific config if available
-        pipeline_config = state.get("metadata", {}).get("pipeline_agent_config", {})
-        if pipeline_config:
-            # Merge configs, with pipeline config taking precedence
-            agent_data = {**agent_data, **pipeline_config}
-            # Ensure pipeline-specific tools override defaults
-            if "tools" in pipeline_config:
-                agent_data["tools"] = pipeline_config["tools"]
+        # NO CONFIG MIXING - each mode uses its own table exclusively
         
         # Create dynamic system and execute agent
         dynamic_system = DynamicMultiAgentSystem(trace=self.trace)

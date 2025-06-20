@@ -388,14 +388,53 @@ async def execute_pipeline(
         if request.direct_execution and not request.query:
             input_data["pipeline_goal"] = pipeline.get("goal", pipeline.get("description", "Execute the pipeline tasks"))
         
-        # Execute pipeline (could be async in background)
-        result = await pipeline_executor.execute_pipeline(
+        # Start pipeline execution in background and return execution_id immediately
+        # Create execution record first to get execution_id
+        execution_id = await pipeline_executor.pipeline_manager.record_execution(
             pipeline_id=pipeline_id,
-            input_data=input_data,
-            trigger_type=request.trigger_type
+            trigger_type=request.trigger_type,
+            status="starting",
+            input_data=input_data
         )
         
-        return result
+        # Start execution in background using asyncio.create_task
+        import asyncio
+        
+        async def execute_pipeline_background():
+            """Execute pipeline in background and handle completion"""
+            try:
+                logger.info(f"[BACKGROUND] Starting pipeline {pipeline_id} execution {execution_id}")
+                result = await pipeline_executor.execute_pipeline(
+                    pipeline_id=pipeline_id,
+                    input_data=input_data,
+                    trigger_type=request.trigger_type,
+                    existing_execution_id=execution_id  # Pass existing execution_id
+                )
+                logger.info(f"[BACKGROUND] Pipeline {pipeline_id} execution {execution_id} completed successfully")
+            except Exception as e:
+                logger.error(f"[BACKGROUND] Pipeline {pipeline_id} execution {execution_id} failed: {e}")
+                # Update execution status to failed
+                try:
+                    await pipeline_executor.pipeline_manager.update_execution_status(
+                        execution_id=execution_id,
+                        status="failed",
+                        result={"error": str(e)}
+                    )
+                except Exception as update_error:
+                    logger.error(f"[BACKGROUND] Failed to update execution status: {update_error}")
+        
+        # Start background execution (fire and forget)
+        asyncio.create_task(execute_pipeline_background())
+        
+        # Return execution details immediately for frontend tracking
+        return {
+            "execution_id": execution_id,
+            "pipeline_id": pipeline_id,
+            "status": "starting",
+            "message": "Pipeline execution started. Use WebSocket to monitor progress.",
+            "websocket_url": f"/ws/execution/{execution_id}",
+            "monitor_url": f"/api/v1/pipelines/executions/{execution_id}"
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

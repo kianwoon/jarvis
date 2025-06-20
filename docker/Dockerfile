@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies including Docker CLI
+# Install system dependencies including Docker CLI and Node.js
 RUN apt-get update && apt-get install -y \
     build-essential \
     libpq-dev \
@@ -19,6 +19,16 @@ RUN apt-get update && apt-get install -y \
     && apt-get update \
     && apt-get install -y docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js and npm for MCP servers that use npx
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install local MCP server
+# Note: MCP files need to be copied from host during build
+# For now, we'll install dependencies and the package will be installed manually
+RUN mkdir -p /tmp/mcp
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .

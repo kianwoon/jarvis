@@ -66,6 +66,7 @@ class ToolExecutor:
         Extract tool calls from agent response text
         Supports multiple formats without hardcoding specific tools
         """
+        import re
         tool_calls = []
         
         # Format 1: JSON tool call format - improved pattern for complex nested JSON
@@ -110,38 +111,57 @@ class ToolExecutor:
             except json.JSONDecodeError as e:
                 # Try to fix common JSON issues with multi-line strings
                 try:
-                    # More sophisticated approach: properly escape newlines in JSON strings
-                    # First, let's try a simpler fix - replace actual newlines within quoted strings
-                    lines = json_block.split('\n')
-                    fixed_lines = []
-                    in_string = False
-                    current_string = []
+                    # Simpler approach: Just escape newlines in the entire JSON block
+                    # This preserves multiline content while making it valid JSON
                     
-                    for line in lines:
-                        # Simple heuristic: count quotes to track if we're in a string
-                        quote_count = line.count('"') - line.count('\\"')
+                    # Find all string values (content between quotes) and escape newlines within them
+                    def escape_newlines_in_strings(text):
+                        # Pattern to match JSON string values while preserving the structure
+                        # This handles strings that may contain newlines
+                        result = []
+                        i = 0
+                        while i < len(text):
+                            if text[i] == '"':
+                                # Found start of string, find the end
+                                result.append('"')
+                                i += 1
+                                string_content = []
+                                
+                                while i < len(text):
+                                    if text[i] == '\\' and i + 1 < len(text):
+                                        # Handle escaped characters
+                                        string_content.append(text[i:i+2])
+                                        i += 2
+                                    elif text[i] == '"':
+                                        # End of string found
+                                        break
+                                    elif text[i] == '\n':
+                                        # Replace actual newline with escaped newline
+                                        string_content.append('\\n')
+                                        i += 1
+                                    elif text[i] == '\r':
+                                        # Replace carriage return with escaped version
+                                        string_content.append('\\r')
+                                        i += 1
+                                    elif text[i] == '\t':
+                                        # Replace tab with escaped version
+                                        string_content.append('\\t')
+                                        i += 1
+                                    else:
+                                        string_content.append(text[i])
+                                        i += 1
+                                
+                                result.append(''.join(string_content))
+                                if i < len(text):
+                                    result.append('"')
+                                    i += 1
+                            else:
+                                result.append(text[i])
+                                i += 1
                         
-                        if in_string:
-                            # We're continuing a multi-line string
-                            if quote_count % 2 == 1:  # Odd number of quotes means string ends
-                                in_string = False
-                                current_string.append(line)
-                                # Join the string parts with \n
-                                joined = '\\n'.join(current_string)
-                                fixed_lines.append(joined)
-                                current_string = []
-                            else:
-                                current_string.append(line.rstrip())
-                        else:
-                            # Check if we're starting a multi-line string
-                            if quote_count % 2 == 1 and not line.rstrip().endswith('",') and not line.rstrip().endswith('"}'):
-                                in_string = True
-                                current_string = [line.rstrip()]
-                            else:
-                                fixed_lines.append(line)
+                        return ''.join(result)
                     
-                    # Rejoin and try parsing
-                    fixed_json = '\n'.join(fixed_lines)
+                    fixed_json = escape_newlines_in_strings(json_block)
                     parsed = json.loads(fixed_json)
                     
                     if isinstance(parsed, dict) and "tool" in parsed and "parameters" in parsed:
@@ -149,7 +169,7 @@ class ToolExecutor:
                             "tool": parsed["tool"].strip(),
                             "parameters": parsed["parameters"]
                         })
-                        logger.info(f"Extracted tool call (after fixing multi-line strings): {parsed['tool']}")
+                        logger.info(f"Extracted tool call (after escaping newlines): {parsed['tool']}")
                 except Exception as fix_error:
                     logger.warning(f"Failed to parse JSON block even after fixes: {json_block[:100]}... Original error: {e}")
         

@@ -88,11 +88,15 @@ class LangfuseTracer:
             return None
     
     def create_generation_with_usage(self, trace, name: str, model: str, input_text: str, 
-                                   output_text: str = None, usage: Dict[str, Any] = None, **kwargs) -> Optional[Any]:
+                                   output_text: str = None, usage: Dict[str, Any] = None, parent_span=None, **kwargs) -> Optional[Any]:
         """Create a generation with usage tracking for cost calculation"""
         if not self.is_enabled() or not trace:
             return None
         try:
+            # Extract parent_span from kwargs if not passed as parameter
+            if parent_span is None:
+                parent_span = kwargs.pop('parent_span', None)
+            
             generation_data = {
                 "name": name,
                 "model": model,
@@ -108,18 +112,33 @@ class LangfuseTracer:
             if usage:
                 generation_data["usage"] = usage
             
-            logger.info(f"[LANGFUSE DEBUG] Creating generation with model: '{model}', usage: {usage}")
-            return trace.generation(**generation_data)
+            logger.info(f"[LANGFUSE DEBUG] Creating generation with model: '{model}', parent_span: {parent_span is not None}, usage: {usage}")
+            
+            # Create generation under parent span if provided, otherwise under trace
+            if parent_span:
+                return parent_span.generation(**generation_data)
+            else:
+                return trace.generation(**generation_data)
         except Exception as e:
             logger.error(f"Failed to create generation with usage: {e}")
             return None
     
-    def create_span(self, trace, name: str, **kwargs) -> Optional[Any]:
-        """Create a span within a trace"""
+    def create_span(self, trace, name: str, parent_span=None, **kwargs) -> Optional[Any]:
+        """Create a span within a trace or under a parent span"""
         if not self.is_enabled() or not trace:
             return None
         try:
-            return trace.span(name=name, **kwargs)
+            # Extract parent_span from kwargs if not passed as parameter
+            if parent_span is None:
+                parent_span = kwargs.pop('parent_span', None)
+            
+            logger.debug(f"[LANGFUSE DEBUG] Creating span '{name}' with parent_span: {parent_span is not None}")
+            
+            # Create span under parent if provided, otherwise under trace
+            if parent_span:
+                return parent_span.span(name=name, **kwargs)
+            else:
+                return trace.span(name=name, **kwargs)
         except Exception as e:
             logger.error(f"Failed to create span: {e}")
             return None
@@ -153,42 +172,84 @@ class LangfuseTracer:
             except Exception as e:
                 logger.error(f"Failed to flush traces: {e}")
     
-    def create_tool_span(self, trace, tool_name: str, parameters: Dict[str, Any]) -> Optional[Any]:
-        """Create a span specifically for tool execution"""
-        if not self.is_enabled() or not trace:
+    def create_tool_span(self, trace_or_parent, tool_name: str, parameters: Dict[str, Any], parent_span=None) -> Optional[Any]:
+        """
+        Create a span specifically for tool execution with proper parent-child hierarchy
+        
+        Args:
+            trace_or_parent: Either a trace (for top-level tools) or parent span (for nested tools)
+            tool_name: Name of the tool being executed
+            parameters: Tool parameters
+            parent_span: Optional parent span for nested hierarchy
+        """
+        if not self.is_enabled() or not trace_or_parent:
             return None
         try:
             # Sanitize parameters for Langfuse
             safe_parameters = self._sanitize_parameters(parameters)
             safe_tool_name = str(tool_name)[:100] if tool_name else "unknown_tool"
             
-            return trace.span(
-                name=f"tool-{safe_tool_name}",
-                input=safe_parameters,
-                metadata={
-                    "tool_name": safe_tool_name,
-                    "tool_type": "mcp_tool",
-                    "operation": "tool_execution"
-                }
-            )
+            # Create span either nested in parent or as direct child of trace
+            if parent_span:
+                # Create as nested span under parent
+                tool_span = parent_span.span(
+                    name=f"tool-{safe_tool_name}",
+                    input=safe_parameters,
+                    metadata={
+                        "tool_name": safe_tool_name,
+                        "tool_type": "mcp_tool",
+                        "operation": "tool_execution",
+                        "nesting_level": "nested"
+                    }
+                )
+            else:
+                # Create as direct child of trace
+                tool_span = trace_or_parent.span(
+                    name=f"tool-{safe_tool_name}",
+                    input=safe_parameters,
+                    metadata={
+                        "tool_name": safe_tool_name,
+                        "tool_type": "mcp_tool",
+                        "operation": "tool_execution",
+                        "nesting_level": "direct"
+                    }
+                )
+            
+            return tool_span
         except Exception as e:
             logger.error(f"Failed to create tool span: {e}")
             return None
     
-    def create_rag_span(self, trace, query: str, collections: List[str] = None) -> Optional[Any]:
+    def create_rag_span(self, trace_or_parent, query: str, collections: List[str] = None) -> Optional[Any]:
         """Create a span specifically for RAG operations"""
-        if not self.is_enabled() or not trace:
+        if not self.is_enabled() or not trace_or_parent:
             return None
         try:
-            return trace.span(
-                name="rag-search",
-                input={"query": query, "collections": collections},
-                metadata={
-                    "operation": "rag_search",
-                    "query_length": len(query),
-                    "collections": collections or []
-                }
-            )
+            # Check if trace_or_parent is a span (has .span method) or a trace
+            if hasattr(trace_or_parent, 'span') and callable(getattr(trace_or_parent, 'span')):
+                # Create span under parent
+                return trace_or_parent.span(
+                    name="rag-search",
+                    input={"query": query, "collections": collections},
+                    metadata={
+                        "operation": "rag_search",
+                        "query_length": len(query),
+                        "collections": collections or [],
+                        "nesting_level": "nested"
+                    }
+                )
+            else:
+                # Fallback to creating directly under trace
+                return trace_or_parent.span(
+                    name="rag-search",
+                    input={"query": query, "collections": collections},
+                    metadata={
+                        "operation": "rag_search",
+                        "query_length": len(query),
+                        "collections": collections or [],
+                        "nesting_level": "direct"
+                    }
+                )
         except Exception as e:
             logger.error(f"Failed to create RAG span: {e}")
             return None
@@ -344,6 +405,136 @@ class LangfuseTracer:
             )
         except Exception as e:
             logger.error(f"Failed to create large generation span: {e}")
+            return None
+    
+    # Mode-specific span creation methods for proper hierarchy
+    
+    def create_standard_chat_span(self, trace, query: str, thinking: bool = False) -> Optional[Any]:
+        """Create a span for standard chat mode with proper hierarchy"""
+        if not self.is_enabled() or not trace:
+            return None
+        try:
+            return trace.span(
+                name="standard-chat",
+                input={"query": query, "thinking": thinking},
+                metadata={
+                    "mode": "standard",
+                    "operation": "chat_processing",
+                    "thinking_enabled": thinking,
+                    "query_length": len(query)
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to create standard chat span: {e}")
+            return None
+    
+    def create_intelligent_tool_planning_span(self, parent_span, task: str, mode: str, available_tools_count: int) -> Optional[Any]:
+        """Create a span for intelligent tool planning phase"""
+        if not self.is_enabled() or not parent_span:
+            return None
+        try:
+            return parent_span.span(
+                name="intelligent-tool-planning",
+                input={"task": task, "mode": mode},
+                metadata={
+                    "operation": "tool_planning",
+                    "mode": mode,
+                    "available_tools_count": available_tools_count,
+                    "task_length": len(task)
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to create tool planning span: {e}")
+            return None
+    
+    def create_tool_execution_workflow_span(self, parent_span, plan_tools_count: int, mode: str) -> Optional[Any]:
+        """Create a span for tool execution workflow"""
+        if not self.is_enabled() or not parent_span:
+            return None
+        try:
+            return parent_span.span(
+                name="tool-execution-workflow",
+                input={"planned_tools": plan_tools_count, "mode": mode},
+                metadata={
+                    "operation": "tool_execution_workflow",
+                    "mode": mode,
+                    "planned_tools_count": plan_tools_count
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to create tool execution workflow span: {e}")
+            return None
+    
+    def create_pipeline_execution_span(self, trace, pipeline_id: int, mode: str, agents: List[str]) -> Optional[Any]:
+        """Create a span for agentic pipeline execution"""
+        if not self.is_enabled() or not trace:
+            return None
+        try:
+            safe_agents = [str(agent)[:100] for agent in (agents or [])[:20]]
+            return trace.span(
+                name=f"pipeline-execution-{mode}",
+                input={"pipeline_id": pipeline_id, "agents": safe_agents, "mode": mode},
+                metadata={
+                    "operation": "pipeline_execution",
+                    "pipeline_id": pipeline_id,
+                    "mode": mode,
+                    "agent_count": len(safe_agents),
+                    "pipeline_type": "agentic"
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to create pipeline execution span: {e}")
+            return None
+    
+    def create_agent_execution_span(self, parent_span, agent_name: str, query: str, agent_metadata: Dict[str, Any] = None) -> Optional[Any]:
+        """Create a span for individual agent execution within a workflow"""
+        if not self.is_enabled() or not parent_span:
+            return None
+        try:
+            safe_agent_name = str(agent_name)[:100] if agent_name else "unknown_agent"
+            safe_query = str(query)[:1000] if query else ""
+            
+            span_metadata = {
+                "operation": "agent_execution",
+                "agent_name": safe_agent_name,
+                "query_length": len(safe_query),
+                "nesting_level": "agent"
+            }
+            
+            if agent_metadata:
+                safe_metadata = self._sanitize_parameters(agent_metadata)
+                span_metadata.update(safe_metadata)
+            
+            return parent_span.span(
+                name=f"agent-{safe_agent_name}",
+                input={"query": safe_query, "agent": safe_agent_name},
+                metadata=span_metadata
+            )
+        except Exception as e:
+            logger.error(f"Failed to create agent execution span: {e}")
+            return None
+    
+    def create_llm_generation_span(self, parent_span, model: str, prompt: str, operation: str = "generation") -> Optional[Any]:
+        """Create a span for LLM generation within a workflow"""
+        if not self.is_enabled() or not parent_span:
+            return None
+        try:
+            safe_model = str(model)[:100] if model else "unknown_model"
+            safe_prompt = str(prompt)[:1000] if prompt else ""
+            
+            return parent_span.generation(
+                name=f"llm-{operation}",
+                model=safe_model,
+                input=safe_prompt,
+                metadata={
+                    "operation": f"llm_{operation}",
+                    "model": safe_model,
+                    "prompt_length": len(safe_prompt),
+                    "nesting_level": "generation"
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to create LLM generation span: {e}")
             return None
 
 # Global tracer instance

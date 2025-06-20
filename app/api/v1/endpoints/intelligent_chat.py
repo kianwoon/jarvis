@@ -35,7 +35,7 @@ class IntelligentChatResponse(BaseModel):
     confidence: float = 0.0
     classification: str = ""
 
-async def execute_mcp_tool(tool_name: str, parameters: Dict[str, Any], trace=None) -> Dict[str, Any]:
+async def execute_mcp_tool(tool_name: str, parameters: Dict[str, Any], trace=None, parent_span=None) -> Dict[str, Any]:
     """Phase 2: Execute MCP tool with just-in-time schema loading and validation"""
     # Import here to avoid circular imports
     from app.langchain.service import call_mcp_tool
@@ -47,7 +47,9 @@ async def execute_mcp_tool(tool_name: str, parameters: Dict[str, Any], trace=Non
     # Create tool execution span if tracing is enabled and trace is provided
     if trace and tracer.is_enabled():
         print(f"[DEBUG] Standard chat creating tool span for {tool_name}")
-        tool_span = tracer.create_tool_span(trace, tool_name, parameters)
+        # Use parent_span if provided, otherwise use trace
+        span_parent = parent_span if parent_span else trace
+        tool_span = tracer.create_tool_span(span_parent, tool_name, parameters)
         print(f"[DEBUG] Standard chat tool span created: {tool_span is not None}")
     else:
         print(f"[DEBUG] Standard chat no tool span created - trace: {trace is not None}, tracer enabled: {tracer.is_enabled()}")
@@ -194,7 +196,7 @@ def validate_nested_parameters(parameters: Dict[str, Any], schema: Dict[str, Any
         logger.warning(f"Parameter validation failed: {e}, using original parameters")
         return parameters
 
-async def execute_rag_search(query: str, collections: List[str] = None, trace=None) -> Dict[str, Any]:
+async def execute_rag_search(query: str, collections: List[str] = None, trace=None, parent_span=None) -> Dict[str, Any]:
     """Phase 2: Execute RAG search with just-in-time collection validation"""
     # Import here to avoid circular imports
     from app.langchain.service import handle_rag_query
@@ -205,7 +207,9 @@ async def execute_rag_search(query: str, collections: List[str] = None, trace=No
     
     # Create RAG search span if tracing is enabled and trace is provided
     if trace and tracer.is_enabled():
-        rag_span = tracer.create_rag_span(trace, query, collections)
+        # Use parent_span if provided, otherwise use trace
+        span_parent = parent_span if parent_span else trace
+        rag_span = tracer.create_rag_span(span_parent, query, collections)
     
     try:
         logger.info(f"Phase 2 - Performing RAG search for: {query[:100]}...")
@@ -547,7 +551,7 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
     print(f"[DEBUG] Standard chat tracer enabled: {tracer.is_enabled()}")
     if tracer.is_enabled():
         trace = tracer.create_trace(
-            name="intelligent-chat",
+            name="chat-workflow",
             input=request.question,
             metadata={
                 "endpoint": "/api/v1/intelligent-chat",
@@ -558,13 +562,28 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
         )
         print(f"[DEBUG] Standard chat trace created: {trace is not None}")
         
-        # Create generation within the trace for detailed observability
+        # Create chat execution span for proper hierarchy
+        chat_span = None
         if trace:
+            chat_span = tracer.create_span(
+                trace,
+                name="chat-execution",
+                metadata={
+                    "operation": "intelligent_chat",
+                    "thinking": request.thinking,
+                    "model": model_name
+                }
+            )
+            print(f"[DEBUG] Standard chat span created: {chat_span is not None}")
+        
+        # Create generation within the chat span for detailed observability
+        if chat_span:
             generation = tracer.create_generation_with_usage(
                 trace=trace,
-                name="intelligent-chat-generation",
+                name="chat-generation",
                 model=model_name,
                 input_text=request.question,
+                parent_span=chat_span,
                 metadata={
                     "thinking": request.thinking,
                     "model": model_name,
@@ -675,7 +694,8 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                     tool_result = await execute_mcp_tool(
                         tool_call["tool"],
                         tool_call["parameters"],
-                        trace  # Pass trace for span creation
+                        trace,  # Pass trace for span creation
+                        chat_span  # Pass chat_span as parent for proper hierarchy
                     )
                     tool_results.append(tool_result)
                     
@@ -696,7 +716,8 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                     rag_result = await execute_rag_search(
                         rag_search_request["query"],
                         rag_search_request["collections"],
-                        trace  # Pass trace for span creation
+                        trace,  # Pass trace for span creation
+                        chat_span  # Pass chat_span as parent for proper hierarchy
                     )
                     rag_results.append(rag_result)
                     

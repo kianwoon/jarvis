@@ -636,7 +636,11 @@ Required JSON format:
                 context_str += "4. FOCUS on your specific role: provide insights the previous agent couldn't\n\n"
                 context_str += "❌ DO NOT say 'The user is asking...' or 'Let me understand the request...'\n"
                 context_str += "✅ DO say 'Building on the previous analysis...' or 'Adding to what was identified...'\n\n"
-                context_str += "IMPORTANT: Provide your response directly without <think> tags. Your actual analysis should be outside any thinking tags.\n"
+                # Remove conflicting thinking instruction for tool-using agents
+                if agent_data.get("tools"):
+                    context_str += "IMPORTANT: Use tools first if needed, then provide your response.\n"
+                else:
+                    context_str += "IMPORTANT: Provide your response directly without <think> tags. Your actual analysis should be outside any thinking tags.\n"
             
             # Special handling for conversation history
             if "conversation_history" in context:
@@ -709,24 +713,26 @@ Required JSON format:
                         elif param_name in ["maxResults", "count", "num_results"]:
                             example_params[param_name] = 10
                         elif param_name == "to":
-                            example_params[param_name] = "recipient@email.com"
+                            example_params[param_name] = ["recipient@email.com"]
                         else:
                             example_params[param_name] = f"<{param_name} value>"
                 
                 example_json = f'{{"tool": "{example_tool}", "parameters": {json.dumps(example_params)}}}'
                 context_str += f'\n{example_json}'
                 
-                # Add critical instructions
-                context_str += "\n\n**CRITICAL INSTRUCTIONS:**"
-                context_str += "\n1. You MUST use the tools by outputting the JSON format shown above"
-                context_str += "\n2. Use the EXACT parameter names shown in the tool specifications"
-                context_str += "\n3. For google_search tool, use 'query' NOT 'q' and 'num_results' NOT 'num'"
-                context_str += "\n4. START your response with the tool JSON if the task requires tool usage"
-                context_str += "\n5. After the tool executes, you can provide additional analysis"
+                # Add critical instructions - SIMPLIFIED for better model reliability
+                context_str += "\n\n**HOW TO USE TOOLS:**"
+                context_str += f"\n\nTo use {example_tool}, output this JSON format first:"
+                context_str += f"\n{example_json}"
+                context_str += "\n\nThen provide your analysis after the tool executes."
             else:
                 # Fallback to basic format if tool specs aren't available
                 context_str += "\nTo use a tool, output JSON in this format:\n"
                 context_str += '{"tool": "tool_name", "parameters": {"param1": "value1"}}'
+        
+        # Store agent data and sequential workflow flag for _call_llm_stream
+        self._current_agent_data = agent_data
+        self._is_sequential_workflow = context and "previous_outputs" in context and context["previous_outputs"]
         
         # Enhance prompt for completion tasks
         task_enhancement = ""
@@ -734,7 +740,7 @@ Required JSON format:
             task_enhancement = "\n\nIMPORTANT: If the user is asking you to generate a specific number of items (like 50 interview questions), you MUST generate the complete requested amount. Do not stop early or provide fewer items than requested."
         
         # Adjust prompt based on whether this is part of a sequential workflow
-        if context and "previous_outputs" in context and context["previous_outputs"]:
+        if self._is_sequential_workflow:
             # This is a continuation in a sequential workflow
             agent_position = len(context["previous_outputs"]) + 1
             full_prompt = f"""{system_prompt}
@@ -746,19 +752,22 @@ The previous agent(s) have already analyzed the user's request and provided thei
 
 ORIGINAL USER REQUEST (for reference only): {query}
 
-YOUR SPECIFIC TASK: 
-- Build directly on the previous agent's work
-- Add your unique expertise and insights
-- DO NOT repeat their analysis or findings
-- Start with phrases like "Building on the previous analysis..." or "To add to what was identified..."
-- Provide your response WITHOUT thinking tags - give your analysis directly{task_enhancement}"""
+TASK: If you need current information, start by using the available tools. Then provide your analysis based on the results.{task_enhancement}"""
         else:
-            # This is a standalone agent or first in sequence
-            full_prompt = f"""{system_prompt}
+            # This is a standalone agent or first in sequence  
+            if available_tools:
+                # More explicit instructions for tool-enabled agents
+                full_prompt = f"""{system_prompt}
 
 USER QUERY: {query}{context_str}{task_enhancement}
 
-Please provide a comprehensive response based on your role and expertise."""
+TASK: Analyze the query above. If you need current information to answer properly, use the available tools first, then provide your strategic analysis."""
+            else:
+                full_prompt = f"""{system_prompt}
+
+USER QUERY: {query}{context_str}{task_enhancement}
+
+TASK: Provide your analysis of the query above."""
 
         # Execute agent
         try:
@@ -932,6 +941,12 @@ Please provide a comprehensive response based on your role and expertise."""
             print(f"[DEBUG] {agent_name}: After cleaning: {len(cleaned_content)} chars")
             print(f"[DEBUG] {agent_name}: Cleaned preview (first 200 chars): {cleaned_content[:200]!r}")
             
+            # Check for incomplete responses (common with tool-enabled agents)
+            if len(cleaned_content.strip()) < 10 and cleaned_content.strip() in ['<think>', '<think', 'think>', '']:
+                print(f"[WARNING] {agent_name}: Generated incomplete response, likely model generation issue")
+                cleaned_content = f"I need to analyze this request. Let me search for current information to provide accurate insights."
+                print(f"[DEBUG] {agent_name}: Using fallback response for incomplete generation")
+            
             # Return the cleaned content - tool processing will be handled by execute_agent
             yield {
                 "type": "agent_complete", 
@@ -969,7 +984,7 @@ Please provide a comprehensive response based on your role and expertise."""
             
             timeout_content += "\n\nThe system will continue with other agents to provide you with available insights."
             
-            _end_agent_generation(output_text=timeout_content, success=True, input_prompt=full_prompt)
+            # Note: _end_agent_generation will be handled in the calling method
             yield {
                 "type": "agent_complete",
                 "agent": agent_name,
@@ -982,7 +997,7 @@ Please provide a comprehensive response based on your role and expertise."""
             import traceback
             print(f"[ERROR] Full traceback: {traceback.format_exc()}")
             
-            _end_agent_generation(error=str(e), success=False, input_prompt=full_prompt)
+            # Note: _end_agent_generation will be handled in the calling method
             yield {
                 "type": "agent_error", 
                 "agent": agent_name,
@@ -990,163 +1005,369 @@ Please provide a comprehensive response based on your role and expertise."""
             }
     
     async def _process_tool_calls(self, agent_name: str, agent_response: str, query: str, context: Dict = None, agent_data: Dict = None) -> tuple[str, list]:
-        """Process agent response for tool calls and execute them"""
+        """Process agent response for tool calls and execute them using intelligent tool system"""
         try:
             print(f"[DEBUG] {agent_name}: _process_tool_calls started with query: {query[:50]}...")
             print(f"[DEBUG] {agent_name}: Method parameters - query type: {type(query)}, context: {context is not None}, agent_data: {agent_data is not None}")
-            # Import tool executor at runtime to avoid circular imports
-            from app.langchain.tool_executor import tool_executor
+            
+            # Use legacy tool executor to parse agent JSON responses (like standard chat)
+            try:
+                from app.langchain.tool_executor import tool_executor
+                use_intelligent_tools = False
+                use_intelligent_tool_results = False
+                print(f"[DEBUG] {agent_name}: Using legacy tool executor to parse agent JSON responses")
+            except ImportError:
+                print(f"[DEBUG] {agent_name}: No tool executor available")
+                use_intelligent_tools = False
+                use_intelligent_tool_results = False
             
             print(f"[DEBUG] {agent_name}: _process_tool_calls called with response length: {len(agent_response)}")
             print(f"[DEBUG] {agent_name}: Response preview: {agent_response[:200]}")
             
-            # Check if response contains potential tool calls (generic patterns)
-            tool_patterns = [
-                r'\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{.*?\}\s*\}',  # JSON format - improved
-                r'"tool"\s*:\s*"[^"]+"',  # Simple tool mention
-                r'<tool>[^<]+</tool>',  # XML format
-                r'\w+\([^)]*\)'  # Function call format
-            ]
-            
-            import re
-            import json
-            has_tool_mention = any(re.search(pattern, agent_response, re.DOTALL) for pattern in tool_patterns)
-            
-            print(f"[DEBUG] {agent_name}: Tool patterns found: {has_tool_mention}")
-            if has_tool_mention:
-                for i, pattern in enumerate(tool_patterns):
-                    matches = re.findall(pattern, agent_response)
-                    if matches:
-                        print(f"[DEBUG] {agent_name}: Pattern {i} matches: {matches}")
-            
-            if not has_tool_mention:
-                print(f"[DEBUG] {agent_name}: No tool patterns found, returning original response")
-                return agent_response, []
-            
-            print(f"[DEBUG] {agent_name}: Tool patterns detected, extracting tool calls")
-            
-            # Extract tool calls first to debug
-            tool_calls = tool_executor.extract_tool_calls(agent_response)
-            print(f"[DEBUG] {agent_name}: Extracted {len(tool_calls)} tool calls: {tool_calls}")
-            
-            if not tool_calls:
-                print(f"[DEBUG] {agent_name}: No valid tool calls extracted")
-                return agent_response, []
-            
-            # Execute tool calls - call synchronously since call_mcp_tool is sync
-            print(f"[DEBUG] {agent_name}: Executing {len(tool_calls)} tool calls")
-            
-            # Execute tools in a separate thread to avoid event loop conflicts
-            tool_results = []
-            
-            # Import for thread execution
-            import concurrent.futures
-            import threading
-            
-            def execute_tool_sync(tool_name, parameters):
-                """Execute tool in a separate thread to avoid event loop conflicts"""
-                # Create tool span for tracing if trace is available
-                from app.core.langfuse_integration import get_tracer
-                tracer = get_tracer()
-                tool_span = None
+            if use_intelligent_tools:
+                # Use intelligent tool system for multi-agent mode
+                print(f"[DEBUG] {agent_name}: Analyzing agent response for intelligent tool execution")
                 
-                if self.trace and tracer.is_enabled():
+                # Create agent execution span if trace is available
+                agent_span = None
+                if self.trace:
                     try:
-                        print(f"[DEBUG] Creating tool span for {tool_name} by agent {agent_name}")
-                        # Add agent info to parameters
-                        params_with_agent = dict(parameters) if isinstance(parameters, dict) else {}
-                        params_with_agent["agent"] = agent_name
-                        
-                        tool_span = tracer.create_tool_span(
-                            self.trace, 
-                            tool_name, 
-                            params_with_agent
-                        )
-                        print(f"[DEBUG] Tool span created: {tool_span is not None}")
+                        from app.core.langfuse_integration import get_tracer
+                        tracer = get_tracer()
+                        if tracer.is_enabled():
+                            agent_span = tracer.create_agent_execution_span(
+                                self.trace, agent_name, query, {"agent_response_length": len(agent_response)}
+                            )
                     except Exception as e:
-                        print(f"[ERROR] Failed to create tool span: {e}")
-                        tool_span = None
-                else:
-                    print(f"[DEBUG] No tool span created - trace: {self.trace is not None}, tracer enabled: {tracer.is_enabled() if tracer else False}")
+                        print(f"[DEBUG] {agent_name}: Failed to create agent span: {e}")
                 
+                # Execute tools using intelligent system - detect pipeline mode for proper constraints
                 try:
-                    print(f"[DEBUG] Thread execution: {tool_name} with parameters: {parameters}")
+                    # Check if we're running in pipeline mode to enforce proper tool constraints
+                    pipeline_id = None
                     
-                    # Import and call MCP tool in thread context
-                    from app.langchain.service import call_mcp_tool
-                    # Skip span creation in call_mcp_tool since we already created it
-                    result = call_mcp_tool(tool_name, parameters, trace=self.trace, _skip_span_creation=True)
+                    # Method 1: Check conversation_context for pipeline info
+                    pipeline_context = context.get("conversation_context", {}) if context else {}
+                    pipeline_info = pipeline_context.get("pipeline", {}) if pipeline_context else {}
+                    pipeline_id = pipeline_info.get("id") or pipeline_context.get("pipeline_id")
                     
-                    # End tool span with success
-                    if tool_span:
+                    # Method 1.5: Check pipeline_context directly for pipeline_id
+                    if not pipeline_id and context:
+                        direct_pipeline_context = context.get("pipeline_context", {})
+                        pipeline_id = direct_pipeline_context.get("pipeline_id")
+                    
+                    # Method 2: Check direct context keys
+                    if not pipeline_id and context:
+                        for key in ["pipeline_id", "execution_id"]:
+                            if key in context:
+                                pipeline_id = context[key]
+                                break
+                    
+                    # Method 3: Check if self.trace has pipeline info (from multi-agent system config)
+                    if not pipeline_id and hasattr(self, 'current_config') and self.current_config:
+                        config_pipeline = self.current_config.get("pipeline", {})
+                        pipeline_id = config_pipeline.get("id")
+                    
+                    # Method 4: Check agent_data for pipeline context
+                    if not pipeline_id and agent_data:
+                        agent_pipeline_ctx = agent_data.get("pipeline_context", {})
+                        pipeline_id = agent_pipeline_ctx.get("pipeline_id")
+                    
+                    # Method 5: Check if trace metadata contains pipeline info
+                    if not pipeline_id and self.trace and hasattr(self.trace, 'metadata'):
+                        trace_meta = getattr(self.trace, 'metadata', {}) or {}
+                        pipeline_id = trace_meta.get("pipeline_id")
+                    
+                    # Method 6: Simple heuristic - if we have a multi-agent system and conversation_id looks like execution ID
+                    if not pipeline_id and hasattr(self, 'conversation_id') and self.conversation_id:
+                        # Pipeline execution IDs are typically numeric strings
+                        if self.conversation_id.isdigit():
+                            print(f"[DEBUG] {agent_name}: Detected potential pipeline execution based on numeric conversation_id")
+                            pipeline_id = self.conversation_id
+                    
+                    # Convert pipeline_id to integer if it's a string
+                    if pipeline_id and isinstance(pipeline_id, str) and pipeline_id.isdigit():
+                        pipeline_id = int(pipeline_id)
+                    elif pipeline_id and not isinstance(pipeline_id, int):
+                        pipeline_id = None  # Invalid format
+                    
+                    print(f"[DEBUG] {agent_name}: Pipeline detection - pipeline_id: {pipeline_id} (type: {type(pipeline_id)})")
+                    
+                    if pipeline_id:
+                        # Use pipeline-specific tool execution with proper constraints
+                        print(f"[DEBUG] {agent_name}: Using pipeline tool execution with constraints")
+                        from app.langchain.intelligent_tool_integration import execute_pipeline_agent_tools
+                        execution_events = await execute_pipeline_agent_tools(
+                            task=query,
+                            agent_name=agent_name,
+                            pipeline_id=str(pipeline_id),
+                            context={
+                                "agent_response": agent_response,
+                                "conversation_context": context,
+                                "agent_data": agent_data
+                            },
+                            trace=agent_span if agent_span else self.trace
+                        )
+                    else:
+                        # Use multi-agent tool execution (original behavior)
+                        print(f"[DEBUG] {agent_name}: Using multi-agent tool execution")
+                        from app.langchain.intelligent_tool_integration import execute_multi_agent_tools
+                        execution_events = await execute_multi_agent_tools(
+                            task=query,
+                            agent_name=agent_name,
+                            context={
+                                "agent_response": agent_response,
+                                "conversation_context": context,
+                                "agent_data": agent_data
+                            },
+                            trace=agent_span if agent_span else self.trace
+                        )
+                    
+                    # Process execution events and extract results
+                    tool_results = []
+                    for event in execution_events:
+                        if event.get("type") == "tool_complete" and event.get("success"):
+                            tool_results.append({
+                                "tool": event.get("tool_name"),
+                                "success": True,
+                                "result": event.get("result"),
+                                "execution_time": event.get("execution_time")
+                            })
+                    
+                    # End agent span
+                    if agent_span:
                         try:
-                            print(f"[DEBUG] Ending tool span for {tool_name} with success")
-                            tracer.end_span_with_result(tool_span, result, True)
+                            from app.core.langfuse_integration import get_tracer
+                            tracer = get_tracer()
+                            tracer.end_span_with_result(
+                                agent_span,
+                                {
+                                    "tools_executed": len(tool_results),
+                                    "successful_tools": sum(1 for r in tool_results if r.get("success")),
+                                    "execution_events": len(execution_events)
+                                },
+                                success=len(tool_results) > 0
+                            )
                         except Exception as e:
-                            print(f"[ERROR] Failed to end tool span: {e}")
+                            print(f"[DEBUG] {agent_name}: Failed to end agent span: {e}")
                     
-                    return {
-                        "tool": tool_name,
-                        "parameters": parameters,
-                        "result": result,
-                        "success": _is_tool_result_successful(result)
-                    }
-                    
+                    # Return tool results for unified processing below
+                    print(f"[DEBUG] {agent_name}: Intelligent tools executed, will process results in unified flow")
+                    # Set flag to use intelligent tool results in unified processing
+                    use_intelligent_tool_results = True
+                        
                 except Exception as e:
-                    print(f"[ERROR] Thread execution failed for {tool_name}: {e}")
-                    
-                    # End tool span with error
-                    if tool_span:
-                        try:
-                            print(f"[DEBUG] Ending tool span for {tool_name} with error")
-                            tracer.end_span_with_result(tool_span, None, False, str(e)[:500])
-                        except Exception as span_error:
-                            print(f"[ERROR] Failed to end tool span with error: {span_error}")
-                    
-                    return {
-                        "tool": tool_name,
-                        "parameters": parameters,
-                        "error": str(e),
-                        "success": False
-                    }
+                    print(f"[DEBUG] {agent_name}: Intelligent tool execution failed: {e}")
+                    # Fall through to legacy tool processing
+                    use_intelligent_tools = False
+                    use_intelligent_tool_results = False
             
-            # Execute tools using thread pool to avoid event loop conflicts
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                # Submit all tool calls
-                future_to_tool = {
-                    executor.submit(execute_tool_sync, tool_call.get("tool"), tool_call.get("parameters", {})): tool_call
-                    for tool_call in tool_calls if tool_call.get("tool")
-                }
+            if not use_intelligent_tools:
+                # Legacy tool processing (fallback)
+                print(f"[DEBUG] {agent_name}: Using legacy tool processing")
                 
-                # Wait for all results
-                for future in concurrent.futures.as_completed(future_to_tool):
-                    tool_call = future_to_tool[future]
+                # Check if response contains potential tool calls (generic patterns)
+                tool_patterns = [
+                    r'\{\s*"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{.*?\}\s*\}',  # JSON format - improved
+                    r'"tool"\s*:\s*"[^"]+"',  # Simple tool mention
+                    r'<tool>[^<]+</tool>',  # XML format
+                    r'\w+\([^)]*\)'  # Function call format
+                ]
+                
+                import re
+                import json
+                has_tool_mention = any(re.search(pattern, agent_response, re.DOTALL) for pattern in tool_patterns)
+                
+                print(f"[DEBUG] {agent_name}: Tool patterns found: {has_tool_mention}")
+                if has_tool_mention:
+                    for i, pattern in enumerate(tool_patterns):
+                        matches = re.findall(pattern, agent_response)
+                        if matches:
+                            print(f"[DEBUG] {agent_name}: Pattern {i} matches: {matches}")
+                
+                if not has_tool_mention:
+                    print(f"[DEBUG] {agent_name}: No tool patterns found, returning original response")
+                    return agent_response, []
+                
+                print(f"[DEBUG] {agent_name}: Tool patterns detected, extracting tool calls")
+                
+                # Extract tool calls first to debug
+                tool_calls = tool_executor.extract_tool_calls(agent_response)
+                print(f"[DEBUG] {agent_name}: Extracted {len(tool_calls)} tool calls: {tool_calls}")
+                
+                if not tool_calls:
+                    print(f"[DEBUG] {agent_name}: No valid tool calls extracted")
+                    return agent_response, []
+                
+                # Execute tool calls - call synchronously since call_mcp_tool is sync
+                print(f"[DEBUG] {agent_name}: Executing {len(tool_calls)} tool calls")
+                
+                # Execute tools in a separate thread to avoid event loop conflicts
+                tool_results = []
+                
+                # Import for thread execution
+                import concurrent.futures
+                import threading
+                
+                def execute_tool_sync(tool_name, parameters):
+                    """Execute tool in a separate thread to avoid event loop conflicts"""
+                    # Create tool span for tracing if trace is available
+                    from app.core.langfuse_integration import get_tracer
+                    tracer = get_tracer()
+                    tool_span = None
+                    
+                    if self.trace and tracer.is_enabled():
+                        try:
+                            print(f"[DEBUG] Creating tool span for {tool_name} by agent {agent_name}")
+                            # Add agent info to parameters
+                            params_with_agent = dict(parameters) if isinstance(parameters, dict) else {}
+                            params_with_agent["agent"] = agent_name
+                            
+                            tool_span = tracer.create_tool_span(
+                                self.trace, 
+                                tool_name, 
+                                params_with_agent
+                            )
+                            print(f"[DEBUG] Tool span created: {tool_span is not None}")
+                        except Exception as e:
+                            print(f"[ERROR] Failed to create tool span: {e}")
+                            tool_span = None
+                    else:
+                        print(f"[DEBUG] No tool span created - trace: {self.trace is not None}, tracer enabled: {tracer.is_enabled() if tracer else False}")
+                    
                     try:
-                        result = future.result(timeout=30)  # 30 second timeout per tool
-                        tool_results.append(result)
-                        print(f"[DEBUG] {agent_name}: Tool {result['tool']} -> {'Success' if result['success'] else 'Failed'}")
-                    except concurrent.futures.TimeoutError:
-                        print(f"[ERROR] {agent_name}: Tool {tool_call.get('tool')} timed out")
-                        tool_results.append({
-                            "tool": tool_call.get("tool"),
-                            "parameters": tool_call.get("parameters", {}),
-                            "error": "Tool execution timeout (30s)",
-                            "success": False
-                        })
+                        print(f"[DEBUG] Thread execution: {tool_name} with parameters: {parameters}")
+                        
+                        # DISABLE enhanced error handling in threads to prevent duplicate executions
+                        # The enhanced error handling is already being triggered at a higher level
+                        # and parallel thread execution + retry logic causes conflicts
+                        use_enhanced_error_handling = False
+                        
+                        if use_enhanced_error_handling:
+                            # Use enhanced error handling with retry logic
+                            from app.core.tool_error_handler import call_mcp_tool_with_retry, RetryConfig
+                            import asyncio
+                            
+                            retry_config = RetryConfig(
+                                max_retries=agent_data.get("max_tool_retries", 3),
+                                base_delay=agent_data.get("retry_base_delay", 1.0),
+                                max_delay=agent_data.get("retry_max_delay", 30.0)
+                            )
+                            
+                            # Execute with retry logic in a new event loop (since we're in a thread)
+                            def run_async():
+                                return asyncio.run(call_mcp_tool_with_retry(tool_name, parameters, trace=self.trace, retry_config=retry_config))
+                            
+                            result = run_async()
+                        else:
+                            # Import and call MCP tool in thread context (legacy)
+                            from app.langchain.service import call_mcp_tool
+                            # Skip span creation in call_mcp_tool since we already created it
+                            result = call_mcp_tool(tool_name, parameters, trace=self.trace, _skip_span_creation=True)
+                        
+                        # Check result and handle enhanced error information
+                        if isinstance(result, dict) and "error" in result:
+                            error_msg = result["error"]
+                            error_type = result.get("error_type", "unknown")
+                            attempts = result.get("attempts", 1)
+                            
+                            # End tool span with error
+                            if tool_span:
+                                try:
+                                    print(f"[DEBUG] Ending tool span for {tool_name} with error: {error_msg}")
+                                    tracer.end_span_with_result(tool_span, result, False, error_msg)
+                                except Exception as e:
+                                    print(f"[ERROR] Failed to end tool span: {e}")
+                            
+                            if attempts > 1:
+                                print(f"[ERROR] Tool {tool_name} failed after {attempts} attempts ({error_type}): {error_msg}")
+                            else:
+                                print(f"[ERROR] Tool {tool_name} failed ({error_type}): {error_msg}")
+                            
+                            return {
+                                "tool": tool_name,
+                                "parameters": parameters,
+                                "result": result,
+                                "success": False,
+                                "error_type": error_type,
+                                "attempts": attempts
+                            }
+                        else:
+                            # Success
+                            # End tool span with success
+                            if tool_span:
+                                try:
+                                    print(f"[DEBUG] Ending tool span for {tool_name} with success")
+                                    tracer.end_span_with_result(tool_span, result, True)
+                                except Exception as e:
+                                    print(f"[ERROR] Failed to end tool span: {e}")
+                            
+                            return {
+                                "tool": tool_name,
+                                "parameters": parameters,
+                                "result": result,
+                                "success": _is_tool_result_successful(result)
+                            }
+                        
                     except Exception as e:
-                        print(f"[ERROR] {agent_name}: Tool {tool_call.get('tool')} execution error: {e}")
-                        tool_results.append({
-                            "tool": tool_call.get("tool"),
-                            "parameters": tool_call.get("parameters", {}),
+                        print(f"[ERROR] Thread execution failed for {tool_name}: {e}")
+                        
+                        # End tool span with error
+                        if tool_span:
+                            try:
+                                print(f"[DEBUG] Ending tool span for {tool_name} with error")
+                                tracer.end_span_with_result(tool_span, None, False, str(e)[:500])
+                            except Exception as span_error:
+                                print(f"[ERROR] Failed to end tool span with error: {span_error}")
+                        
+                        return {
+                            "tool": tool_name,
+                            "parameters": parameters,
                             "error": str(e),
                             "success": False
-                        })
-            
-            print(f"[DEBUG] {agent_name}: All tools executed. Results: {len(tool_results)} tools")
+                        }
+                
+                # Execute tools using thread pool to avoid event loop conflicts
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    # Submit all tool calls
+                    future_to_tool = {
+                        executor.submit(execute_tool_sync, tool_call.get("tool"), tool_call.get("parameters", {})): tool_call
+                        for tool_call in tool_calls if tool_call.get("tool")
+                    }
+                    
+                    # Wait for all results
+                    for future in concurrent.futures.as_completed(future_to_tool):
+                        tool_call = future_to_tool[future]
+                        try:
+                            result = future.result(timeout=30)  # 30 second timeout per tool
+                            tool_results.append(result)
+                            print(f"[DEBUG] {agent_name}: Tool {result['tool']} -> {'Success' if result['success'] else 'Failed'}")
+                        except concurrent.futures.TimeoutError:
+                            print(f"[ERROR] {agent_name}: Tool {tool_call.get('tool')} timed out")
+                            tool_results.append({
+                                "tool": tool_call.get("tool"),
+                                "parameters": tool_call.get("parameters", {}),
+                                "error": "Tool execution timeout (30s)",
+                                "success": False
+                            })
+                        except Exception as e:
+                            print(f"[ERROR] {agent_name}: Tool {tool_call.get('tool')} execution error: {e}")
+                            tool_results.append({
+                                "tool": tool_call.get("tool"),
+                                "parameters": tool_call.get("parameters", {}),
+                                "error": str(e),
+                                "success": False
+                            })
+                
+                print(f"[DEBUG] {agent_name}: All tools executed. Results: {len(tool_results)} tools")
+            else:
+                # Intelligent tools path - no legacy tool execution needed
+                tool_results = []
             
             # If tools were executed successfully, generate a follow-up response that incorporates the results
-            if tool_results and any(result.get("success") for result in tool_results):
-                print(f"[DEBUG] {agent_name}: Tools executed successfully, generating follow-up response to incorporate results")
+            # UNIFIED TOOL RESULT PROCESSING - consolidate both intelligent and legacy results
+            if (tool_results and any(result.get("success") for result in tool_results)) or use_intelligent_tool_results:
+                print(f"[DEBUG] {agent_name}: Tools executed successfully, generating unified follow-up response")
                 
                 # Build tool context for the follow-up prompt
                 tool_context = "\n\n**Tool Execution Results:**\n"
@@ -1184,7 +1405,7 @@ Please provide a comprehensive response based on your role and expertise."""
                 agent_config = context.get("agent_config", {}) if context else {}
                 system_prompt = agent_config.get("system_prompt") or agent_data.get("system_prompt", "You are a helpful assistant.")
                 
-                print(f"[DEBUG] {agent_name}: Building follow-up prompt with query length: {len(query)}")
+                print(f"[DEBUG] {agent_name}: Building unified follow-up prompt with query length: {len(query)}")
                 
                 # Build the follow-up prompt carefully to avoid scoping issues
                 user_query_part = f"USER QUERY: {query}"
@@ -1193,18 +1414,21 @@ Please provide a comprehensive response based on your role and expertise."""
 
 {user_query_part}
 
-You have executed tools and received the following results:
+You have already executed the necessary tools and received the following results:
 {tool_context}
 
-Based on these tool results, provide a comprehensive response that:
+IMPORTANT: Do NOT generate any new tool calls. The tools have already been executed.
+
+Based on these tool results, provide your final comprehensive response that:
 1. Directly answers the user's question
 2. Incorporates the relevant information from the tool results
 3. Synthesizes the findings into a coherent response
 4. Does not repeat the raw tool output but interprets and explains it
+5. NEVER includes tool JSON - only provide your analysis and response
 
-Provide your complete response based on the tool results above."""
+Provide your complete response based on the tool results above. Do not generate any tool calls."""
 
-                # Generate follow-up response that incorporates tool results
+                # Generate SINGLE follow-up response that incorporates tool results (UNIFIED PROCESSING)
                 follow_up_response = ""
                 async for chunk in self._call_llm_stream(
                     follow_up_prompt,
@@ -1219,7 +1443,7 @@ Provide your complete response based on the tool results above."""
                 
                 # Use the follow-up response that incorporates tool results, fallback to original if needed
                 enhanced_response = follow_up_response if follow_up_response.strip() else agent_response
-                print(f"[DEBUG] {agent_name}: Generated follow-up response incorporating tool results (length: {len(follow_up_response)})")
+                print(f"[DEBUG] {agent_name}: Generated unified follow-up response incorporating tool results (length: {len(follow_up_response)})")
                 
             else:
                 # No successful tools or no tools executed

@@ -194,6 +194,29 @@ class PipelineMultiAgentBridge:
         if not self.multi_agent_system:
             await self.initialize()
         
+        # Create pipeline-level span for proper trace hierarchy
+        pipeline_span = None
+        if self.trace:
+            try:
+                from app.core.langfuse_integration import get_tracer
+                tracer = get_tracer()
+                if tracer.is_enabled():
+                    pipeline_span = tracer.create_span(
+                        self.trace,
+                        name="pipeline-execution",
+                        metadata={
+                            "pipeline_id": self.pipeline_id,
+                            "execution_id": self.execution_id,
+                            "query": initial_query,
+                            "context": context,
+                            "agent_count": len(self.agent_sequence) if hasattr(self, 'agent_sequence') else 0
+                        }
+                    )
+                    print(f"[DEBUG] Created pipeline execution span: {pipeline_span}")
+            except Exception as e:
+                print(f"[DEBUG] Failed to create pipeline span: {e}")
+                pipeline_span = None
+        
         self.start_time = datetime.now()
         
         # Create pipeline configuration for multi-agent system
@@ -299,6 +322,23 @@ class PipelineMultiAgentBridge:
                 # Mark execution as complete
                 await self._mark_execution_complete()
                 
+                # End pipeline span with success
+                if pipeline_span:
+                    try:
+                        from app.core.langfuse_integration import get_tracer
+                        tracer = get_tracer()
+                        if tracer.is_enabled():
+                            summary_data = event["data"].get("execution_summary", {})
+                            tracer.end_span_with_result(
+                                pipeline_span, 
+                                summary_data, 
+                                True, 
+                                "Pipeline execution completed successfully"
+                            )
+                            print(f"[DEBUG] Ended pipeline span with success")
+                    except Exception as e:
+                        print(f"[DEBUG] Failed to end pipeline span: {e}")
+                
                 yield {
                     "type": "pipeline_complete",
                     "data": {
@@ -310,6 +350,23 @@ class PipelineMultiAgentBridge:
                 }
                 
             elif event_type == "error":
+                # End pipeline span with error
+                if pipeline_span:
+                    try:
+                        from app.core.langfuse_integration import get_tracer
+                        tracer = get_tracer()
+                        if tracer.is_enabled():
+                            error_message = event["data"].get("error", "Unknown error")
+                            tracer.end_span_with_result(
+                                pipeline_span, 
+                                None, 
+                                False, 
+                                error_message
+                            )
+                            print(f"[DEBUG] Ended pipeline span with error: {error_message}")
+                    except Exception as e:
+                        print(f"[DEBUG] Failed to end pipeline span: {e}")
+                
                 yield {
                     "type": "error",
                     "data": {
@@ -340,10 +397,11 @@ class PipelineMultiAgentBridge:
 
 
 async def execute_pipeline_with_agents(pipeline_id: str, execution_id: str,
-                                      query: str, context: Optional[Dict[str, Any]] = None):
+                                      query: str, context: Optional[Dict[str, Any]] = None,
+                                      trace=None):
     """Helper function to execute a pipeline with multi-agent system"""
     
-    bridge = PipelineMultiAgentBridge(pipeline_id, execution_id)
+    bridge = PipelineMultiAgentBridge(pipeline_id, execution_id, trace=trace)
     
     async for event in bridge.execute_pipeline(query, context):
         yield event

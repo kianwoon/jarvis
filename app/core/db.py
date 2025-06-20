@@ -61,7 +61,7 @@ class MCPServer(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False, index=True)
-    config_type = Column(String(20), nullable=False)  # 'manifest' or 'command'
+    config_type = Column(String(20), nullable=False)  # 'manifest', 'command', or 'remote_http'
     
     # Manifest-based configuration
     manifest_url = Column(String(255), nullable=True)
@@ -75,12 +75,19 @@ class MCPServer(Base):
     env = Column(JSON, nullable=True)   # Environment variables dict
     working_directory = Column(String(500), nullable=True)
     
+    # Remote HTTP/SSE MCP Server Configuration
+    remote_config = Column(JSON, nullable=True)  # Remote server configuration
+    
     # Process management
     process_id = Column(Integer, nullable=True)  # PID when running
     is_running = Column(Boolean, default=False)
     restart_policy = Column(String(20), default="on-failure")  # 'always', 'on-failure', 'never'
     max_restarts = Column(Integer, default=3)
     restart_count = Column(Integer, default=0)
+    
+    # Enhanced Error Handling Configuration
+    enhanced_error_handling_config = Column(JSON, nullable=True)  # Enhanced error handling settings
+    auth_refresh_config = Column(JSON, nullable=True)  # Authentication refresh configuration
     
     # Common fields
     is_active = Column(Boolean, nullable=False, server_default=text("true"))

@@ -47,7 +47,7 @@ class PipelineTemplate(BaseModel):
     is_active: bool = True
 
 # Agent Template endpoints
-@router.get("/agent-templates")
+@router.get("/")
 def list_agent_templates(db: Session = Depends(get_db)):
     """List all agent templates"""
     query = text("SELECT * FROM agent_templates ORDER BY name")
@@ -65,7 +65,7 @@ def list_agent_templates(db: Session = Depends(get_db)):
         })
     return templates
 
-@router.get("/agent-templates/{name}")
+@router.get("/{name}")
 def get_agent_template(name: str, db: Session = Depends(get_db)):
     """Get a specific agent template"""
     query = text("SELECT * FROM agent_templates WHERE name = :name")
@@ -82,7 +82,7 @@ def get_agent_template(name: str, db: Session = Depends(get_db)):
         "default_instructions": result.default_instructions
     }
 
-@router.post("/agent-templates")
+@router.post("/")
 def create_agent_template(template: AgentTemplate, db: Session = Depends(get_db)):
     """Create a new agent template"""
     query = text("""

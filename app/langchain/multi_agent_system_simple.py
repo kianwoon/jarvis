@@ -58,6 +58,7 @@ class MultiAgentSystem:
     def __init__(self, conversation_id: Optional[str] = None, trace=None):
         self.conversation_id = conversation_id or str(uuid.uuid4())
         self.trace = trace  # Store trace for span creation
+        self.current_agent_span = None  # Track current agent span for tool execution
         
         # Ensure Redis cache is warmed before proceeding
         from app.core.langgraph_agents_cache import validate_and_warm_cache, get_cache_status
@@ -2035,23 +2036,54 @@ Remember {context['client']} is a major bank requiring highest service standards
         # Create agent span for tracing if trace is available
         from app.core.langfuse_integration import get_tracer
         tracer = get_tracer()
+        agent_span = None
         agent_generation = None
         
         if self.trace and tracer.is_enabled():
-            # Create generation for agent LLM response (not span)
-            agent_generation = tracer.create_generation_with_usage(
-                trace=self.trace,
-                name=f"agent-{agent_name}",
-                model=agent_data.get("config", {}).get("model", "qwen3:30b-a3b"),
-                input_text=query,
-                metadata={
-                    "conversation_id": self.conversation_id,
-                    "has_previous_outputs": bool(previous_outputs),
-                    "has_conversation_history": bool(conversation_history),
-                    "agent_role": agent_data.get("role", ""),
-                    "tools_available": agent_data.get("tools", [])
-                }
-            )
+            # Create agent-level span to contain generation and tool spans
+            # Check if self.trace is actually a span (has .span method) or a trace
+            if hasattr(self.trace, 'span') and callable(getattr(self.trace, 'span')):
+                # self.trace is a span, create agent span as child
+                agent_span = self.trace.span(
+                    name=f"agent-{agent_name}",
+                    metadata={
+                        "conversation_id": self.conversation_id,
+                        "agent_role": agent_data.get("role", ""),
+                        "tools_available": agent_data.get("tools", []),
+                        "has_previous_outputs": bool(previous_outputs),
+                        "has_conversation_history": bool(conversation_history)
+                    }
+                )
+            else:
+                # self.trace is a trace, use tracer method
+                agent_span = tracer.create_span(
+                    self.trace,
+                    name=f"agent-{agent_name}",
+                    metadata={
+                        "conversation_id": self.conversation_id,
+                        "agent_role": agent_data.get("role", ""),
+                        "tools_available": agent_data.get("tools", []),
+                        "has_previous_outputs": bool(previous_outputs),
+                        "has_conversation_history": bool(conversation_history)
+                    }
+                )
+            
+            # Store current agent span for tool execution
+            self.current_agent_span = agent_span
+            
+            # Create generation within the agent span for the LLM response
+            if agent_span:
+                agent_generation = tracer.create_generation_with_usage(
+                    trace=self.trace,
+                    name=f"agent-{agent_name}-generation",
+                    model=agent_data.get("config", {}).get("model", "qwen3:30b-a3b"),
+                    input_text=query,
+                    metadata={
+                        "conversation_id": self.conversation_id,
+                        "agent_role": agent_data.get("role", "")
+                    },
+                    parent_span=agent_span
+                )
         
         # Initialize state for single agent execution
         state = AgentState(
@@ -2132,7 +2164,7 @@ Remember {context['client']} is a major bank requiring highest service standards
                 "tools_used": result.get("tools_used", state.get("tools_used", []))
             }
             
-            # End agent generation with success
+            # End agent generation and span with success
             if agent_generation:
                 # Estimate token usage for cost calculation
                 usage = tracer.estimate_token_usage(query, return_value.get("content", ""))
@@ -2148,6 +2180,17 @@ Remember {context['client']} is a major bank requiring highest service standards
                         "conversation_id": self.conversation_id
                     }
                 )
+            
+            # End agent span with success
+            if agent_span:
+                tracer.end_span_with_result(
+                    agent_span, 
+                    return_value, 
+                    True, 
+                    f"Agent {agent_name} completed successfully"
+                )
+                # Clear current agent span
+                self.current_agent_span = None
             
             print(f"[DEBUG] execute_single_agent {agent_name} returning content length: {len(return_value['content'])}")
             return return_value
@@ -2174,6 +2217,17 @@ Remember {context['client']} is a major bank requiring highest service standards
                         "conversation_id": self.conversation_id
                     }
                 )
+            
+            # End agent span with error
+            if agent_span:
+                tracer.end_span_with_result(
+                    agent_span, 
+                    None, 
+                    False, 
+                    f"Agent {agent_name} failed: {str(e)}"
+                )
+                # Clear current agent span
+                self.current_agent_span = None
             
             return error_result
     
@@ -2294,7 +2348,7 @@ Remember {context['client']} is a major bank requiring highest service standards
         
         return None
     
-    async def _execute_mcp_tool(self, tool_name: str, params: Dict[str, Any], agent_name: str, event_callback=None) -> str:
+    async def _execute_mcp_tool(self, tool_name: str, params: Dict[str, Any], agent_name: str, event_callback=None, agent_span=None) -> str:
         """Execute actual MCP tool"""
         # Create tool span for tracing if trace is available
         from app.core.langfuse_integration import get_tracer
@@ -2303,12 +2357,25 @@ Remember {context['client']} is a major bank requiring highest service standards
         
         if self.trace and tracer.is_enabled():
             print(f"[DEBUG] Creating tool span for {tool_name} by agent {agent_name}")
-            tool_span = tracer.create_tool_span(
-                self.trace, 
-                tool_name, 
-                {**params, "agent": agent_name}
-            )
-            print(f"[DEBUG] Tool span created: {tool_span is not None}")
+            # Use passed agent_span or fall back to current_agent_span
+            current_span = agent_span or getattr(self, 'current_agent_span', None)
+            
+            if current_span:
+                # Create tool span as child of agent span
+                tool_span = tracer.create_span(
+                    self.trace,
+                    name=f"tool-{tool_name}",
+                    metadata={**params, "agent": agent_name},
+                    parent_span=current_span
+                )
+            else:
+                # Fallback to direct tool span under trace
+                tool_span = tracer.create_tool_span(
+                    self.trace, 
+                    tool_name, 
+                    {**params, "agent": agent_name}
+                )
+            print(f"[DEBUG] Tool span created: {tool_span is not None}, parent: {current_span is not None}")
         else:
             print(f"[DEBUG] No tool span created - trace: {self.trace is not None}, tracer enabled: {tracer.is_enabled()}")
         
@@ -2399,22 +2466,78 @@ Remember {context['client']} is a major bank requiring highest service standards
                             "args": server.args or []
                         }
                         
-                        # Call the async function directly since we're already in async context
-                        logger.info(f"[TOOL CALL] Executing {tool_name} with params: {json.dumps(params, indent=2)}")
-                        result = await call_mcp_tool_via_stdio(server_config, tool_name, params)
+                        # Check for enhanced error handling configuration
+                        use_enhanced_error_handling = True  # Enable by default for multi-agent
+                        
+                        if use_enhanced_error_handling:
+                            # Use enhanced error handling with retry logic
+                            from app.core.tool_error_handler import ToolErrorHandler, RetryConfig
+                            
+                            retry_config = RetryConfig(
+                                max_retries=3,
+                                base_delay=1.0,
+                                max_delay=30.0
+                            )
+                            
+                            handler = ToolErrorHandler(retry_config)
+                            
+                            # Wrap stdio call for enhanced handling
+                            async def stdio_wrapper(tool_name, params, trace=None, _skip_span_creation=False):
+                                return await call_mcp_tool_via_stdio(server_config, tool_name, params)
+                            
+                            # Get tool info for error handler
+                            tool_error_info = {"server_id": server.id} if server else {}
+                            
+                            logger.info(f"[TOOL CALL] Executing {tool_name} with enhanced error handling: {json.dumps(params, indent=2)}")
+                            result = await handler.execute_with_retry(
+                                stdio_wrapper, tool_name, params, tool_error_info, trace=self.trace
+                            )
+                        else:
+                            # Call the async function directly since we're already in async context
+                            logger.info(f"[TOOL CALL] Executing {tool_name} with params: {json.dumps(params, indent=2)}")
+                            result = await call_mcp_tool_via_stdio(server_config, tool_name, params)
+                        
                         logger.info(f"[TOOL RESULT] {tool_name} returned: {json.dumps(result, indent=2) if isinstance(result, dict) else str(result)[:500]}")
                         
-                        # Handle the response
+                        # Handle the response with enhanced error information
                         if isinstance(result, dict):
-                            # Check for errors in different response formats
-                            error_msg = None
-                            
-                            # Check direct error field
+                            # Check for enhanced error format first
                             if result.get("error"):
-                                error_msg = result['error']
+                                error_msg = result["error"]
+                                error_type = result.get("error_type", "unknown")
+                                attempts = result.get("attempts", 1)
+                                
+                                if attempts > 1:
+                                    logger.error(f"Tool {tool_name} failed after {attempts} attempts ({error_type}): {error_msg}")
+                                    
+                                    # Yield enhanced tool error event
+                                    if event_callback:
+                                        await event_callback({
+                                            "type": "tool_error",
+                                            "agent": agent_name,
+                                            "tool": tool_name,
+                                            "error": error_msg,
+                                            "error_type": error_type,
+                                            "attempts": attempts,
+                                            "timestamp": datetime.now().isoformat()
+                                        })
+                                else:
+                                    logger.error(f"Tool {tool_name} failed ({error_type}): {error_msg}")
+                                    
+                                    # Yield tool error event
+                                    if event_callback:
+                                        await event_callback({
+                                            "type": "tool_error",
+                                            "agent": agent_name,
+                                            "tool": tool_name,
+                                            "error": error_msg,
+                                            "error_type": error_type,
+                                            "timestamp": datetime.now().isoformat()
+                                        })
                             
-                            # Check content for error messages (MCP protocol format)
+                            # Check content for error messages (MCP protocol format) - legacy format
                             elif result.get("content"):
+                                error_msg = None
                                 content = result["content"]
                                 if isinstance(content, list) and len(content) > 0:
                                     first_content = content[0]
@@ -2587,6 +2710,7 @@ Remember {context['client']} is a major bank requiring highest service standards
             tools = pipeline_agent_config.get("tools", [])
             system_prompt = pipeline_agent_config.get("system_prompt", "")
             logger.info(f"[PIPELINE] Using pipeline-specific config for {agent_name} with tools: {tools}")
+            agent_config_source = "pipeline"
         else:
             # Otherwise, fetch from langgraph_agents as fallback
             from app.core.langgraph_agents_cache import get_agent_by_name
@@ -2595,11 +2719,23 @@ Remember {context['client']} is a major bank requiring highest service standards
             if fresh_agent_info:
                 system_prompt = fresh_agent_info.get("system_prompt", "")
                 tools = fresh_agent_info.get("tools", [])
+                agent_config_source = "langgraph_cache"
+                
+                # DEBUG: Log detailed agent configuration for failing agents
+                if agent_name == "Researcher Agent":
+                    logger.info(f"[DEBUG] {agent_name} detailed config from {agent_config_source}:")
+                    logger.info(f"[DEBUG] - system_prompt length: {len(system_prompt)} chars")
+                    logger.info(f"[DEBUG] - tools: {tools}")
+                    logger.info(f"[DEBUG] - config: {fresh_agent_info.get('config', {})}")
+                    logger.info(f"[DEBUG] - is_active: {fresh_agent_info.get('is_active')}")
+                    logger.info(f"[DEBUG] - role: {fresh_agent_info.get('role')}")
+                
                 logger.info(f"[LANGGRAPH] Using langgraph config for {agent_name} with tools: {tools}")
             else:
                 # Final fallback to provided agent_info
                 system_prompt = agent_info.get("system_prompt", "")
                 tools = agent_info.get("tools", [])
+                agent_config_source = "fallback"
                 logger.warning(f"[FALLBACK] Could not load config for {agent_name}, using provided agent_info")
         
         # Check if there's a pipeline goal in metadata
@@ -2769,7 +2905,7 @@ Remember {context['client']} is a major bank requiring highest service standards
             # Extra emphasis for email sending agents
             if any(tool in ['gmail_send', 'send_email'] for tool in tools):
                 prompt += "\n\n**FOR EMAIL SENDING**: Your PRIMARY task is to send the email. Start with:"
-                prompt += '\n{"tool": "gmail_send", "parameters": {"to": "...", "subject": "...", "body": "..."}}'
+                prompt += '\n{"tool": "gmail_send", "parameters": {"to": ["email@example.com"], "subject": "...", "body": "..."}}'
             
             if has_previous_context:
                 prompt += "\n\nBased on the context from previous agents and your role, use your tools to continue the workflow and complete your assigned task."
@@ -2800,7 +2936,23 @@ Remember {context['client']} is a major bank requiring highest service standards
         # Otherwise, use defaults based on context
         llm_temperature = pipeline_agent_config.get("temperature", 0.8 if has_previous_context else 0.7)
         llm_timeout = pipeline_agent_config.get("timeout", 60 if has_previous_context else 30)
-        async for event in self._call_llm_stream(prompt, agent_name, temperature=llm_temperature, timeout=llm_timeout, agent_config=pipeline_agent_config):
+        
+        # Get the actual agent config from langgraph_agents for thinking mode settings
+        actual_agent_config = {}
+        if agent_config_source == "langgraph_cache" and fresh_agent_info:
+            actual_agent_config = fresh_agent_info.get("config", {})
+        elif agent_config_source == "pipeline":
+            actual_agent_config = pipeline_agent_config
+        else:
+            actual_agent_config = agent_info.get("config", {})
+        
+        # Log thinking mode configuration for debugging
+        enable_thinking = actual_agent_config.get("enable_thinking")
+        logger.info(f"[DEBUG] {agent_name}: enable_thinking = {enable_thinking} (from {agent_config_source})")
+        logger.info(f"[DEBUG] {agent_name}: full config = {actual_agent_config}")
+        
+        # Use the agent's actual configuration from database/cache
+        async for event in self._call_llm_stream(prompt, agent_name, temperature=llm_temperature, timeout=llm_timeout, agent_config=actual_agent_config):
             event_count += 1
             if event.get("type") == "agent_token":
                 # Accumulate tokens
@@ -2884,59 +3036,84 @@ Remember {context['client']} is a major bank requiring highest service standards
                     continue
         
         
-        # If tools were called, process the results
+        # Enhanced tool result processing with better error handling
+        print(f"[DEBUG] Agent {agent_name} tool processing check: {len(tool_results)} tool results found")
         if tool_results:
-            # Build a context-aware response based on tool results
-            tool_context = "\n\n**Tool Execution Results:**\n"
-            for result in tool_results:
-                tool_name = result['tool']
-                tool_result = result['result']
-                
-                tool_context += f"\n**{tool_name}:**\n"
-                
-                # Format search results nicely
-                if 'search' in tool_name.lower() and isinstance(tool_result, dict) and 'result' in tool_result:
-                    search_results = tool_result['result']
-                    if isinstance(search_results, list):
-                        tool_context += f"Found {len(search_results)} search results:\n"
-                        for i, item in enumerate(search_results[:5], 1):  # Limit to top 5 results
-                            if isinstance(item, dict):
-                                title = item.get('title', 'No title')
-                                url = item.get('url', '')
-                                description = item.get('description', 'No description')
-                                tool_context += f"\n{i}. **{title}**\n"
-                                tool_context += f"   URL: {url}\n"
-                                tool_context += f"   Description: {description}\n"
-                            else:
-                                tool_context += f"\n{i}. {item}\n"
+            try:
+                # Build a context-aware response based on tool results
+                tool_context = "\n\n**Tool Execution Results:**\n"
+                for result in tool_results:
+                    tool_name = result['tool']
+                    tool_result = result['result']
+                    
+                    tool_context += f"\n**{tool_name}:**\n"
+                    
+                    # Format search results nicely
+                    if 'search' in tool_name.lower() and isinstance(tool_result, dict) and 'result' in tool_result:
+                        search_results = tool_result['result']
+                        if isinstance(search_results, list):
+                            tool_context += f"Found {len(search_results)} search results:\n"
+                            for i, item in enumerate(search_results[:5], 1):  # Limit to top 5 results
+                                if isinstance(item, dict):
+                                    title = item.get('title', 'No title')
+                                    url = item.get('url', '')
+                                    description = item.get('description', 'No description')
+                                    tool_context += f"\n{i}. **{title}**\n"
+                                    tool_context += f"   URL: {url}\n"
+                                    tool_context += f"   Description: {description}\n"
+                                else:
+                                    tool_context += f"\n{i}. {item}\n"
+                        else:
+                            tool_context += f"{search_results}\n"
                     else:
-                        tool_context += f"{search_results}\n"
-                else:
-                    # For other tools, include the raw result
-                    tool_context += f"{tool_result}\n"
+                        # For other tools, include the raw result
+                        tool_context += f"{tool_result}\n"
+                    
+                    tool_context += "\n"
                 
-                tool_context += "\n"
-            
-            # Always generate a follow-up response when tools were executed to incorporate results
-            print(f"[DEBUG] Agent {agent_name} executed {len(tool_results)} tools, generating follow-up response to incorporate results")
-            
-            # Re-prompt the agent to generate content based on tool results
-            follow_up_prompt = f"{prompt}\n\n**Tool Execution Results**:{tool_context}\n\n**Now provide your complete response**: Based on these tool results, provide a comprehensive response that fulfills your role. Do not repeat the tool calls, just provide your analysis and conclusions based on the results."
-            
-            # Email handling disabled for now - focusing on search tool integration
-            
-            # Get actual content response that incorporates tool results
-            follow_up_response = ""
-            async for event in self._call_llm_stream(follow_up_prompt, agent_name, temperature=0.8, timeout=60, agent_config=pipeline_agent_config):
-                if event.get("type") == "agent_token":
-                    follow_up_response += event.get("token", "")
-                elif event.get("type") == "agent_complete":
-                    if event.get("content"):
-                        follow_up_response = event.get("content", "")
-            
-            # Use the follow-up response that incorporates tool results
-            response = follow_up_response if follow_up_response.strip() else response
-            print(f"[DEBUG] Agent {agent_name} follow-up response length: {len(follow_up_response)}")
+                # CRITICAL: Always generate a follow-up response when tools were executed to incorporate results
+                print(f"[DEBUG] Agent {agent_name} executed {len(tool_results)} tools, FORCING follow-up response to incorporate results")
+                print(f"[DEBUG] Tool context length: {len(tool_context)} characters")
+                
+                # Re-prompt the agent to generate content based on tool results
+                follow_up_prompt = f"{prompt}\n\n**Tool Execution Results**:{tool_context}\n\n**Now provide your complete response**: Based on these tool results, provide a comprehensive response that fulfills your role. Do not repeat the tool calls, just provide your analysis and conclusions based on the results."
+                
+                print(f"[DEBUG] Agent {agent_name} follow-up prompt length: {len(follow_up_prompt)} characters")
+                
+                # Get actual content response that incorporates tool results
+                follow_up_response = ""
+                follow_up_event_count = 0
+                
+                print(f"[DEBUG] Agent {agent_name} starting follow-up LLM call for tool result analysis...")
+                async for event in self._call_llm_stream(follow_up_prompt, agent_name, temperature=0.8, timeout=60, agent_config=pipeline_agent_config):
+                    follow_up_event_count += 1
+                    if event.get("type") == "agent_token":
+                        follow_up_response += event.get("token", "")
+                    elif event.get("type") == "agent_complete":
+                        if event.get("content"):
+                            follow_up_response = event.get("content", "")
+                            print(f"[DEBUG] Agent {agent_name} follow-up complete event received, content length: {len(follow_up_response)}")
+                
+                print(f"[DEBUG] Agent {agent_name} follow-up analysis collected {follow_up_event_count} events")
+                print(f"[DEBUG] Agent {agent_name} follow-up response length: {len(follow_up_response)}")
+                
+                # Use the follow-up response that incorporates tool results (with fallback protection)
+                if follow_up_response and follow_up_response.strip():
+                    response = follow_up_response
+                    print(f"[DEBUG] Agent {agent_name} successfully used follow-up response for tool analysis")
+                else:
+                    print(f"[DEBUG] Agent {agent_name} follow-up response was empty, keeping original response")
+                    # Add a basic tool summary to the original response
+                    response += f"\n\n**Tool Results Summary:** Executed {len(tool_results)} tools successfully."
+                
+            except Exception as e:
+                print(f"[ERROR] Agent {agent_name} tool result analysis failed: {e}")
+                import traceback
+                print(f"[ERROR] Agent {agent_name} tool analysis traceback: {traceback.format_exc()}")
+                # Fallback: append tool results to response
+                response += f"\n\n**Tool Execution Completed:** {len(tool_results)} tools executed."
+        else:
+            print(f"[DEBUG] Agent {agent_name} no tools executed, using original response")
         
         # Debug logging
         print(f"[DEBUG] Dynamic agent {agent_name} generated response of length: {len(response)}")

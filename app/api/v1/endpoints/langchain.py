@@ -1,6 +1,5 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
-from app.langchain.service import rag_answer
 from app.langchain.multi_agent_system_simple import MultiAgentSystem
 from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier, QueryType
 from app.core.langfuse_integration import get_tracer
@@ -49,7 +48,7 @@ async def rag_endpoint(request: RAGRequest):
     
     if tracer.is_enabled():
         trace = tracer.create_trace(
-            name="rag-chat",
+            name="rag-workflow",
             input=request.question,
             metadata={
                 "endpoint": "/api/v1/langchain/rag",
@@ -62,13 +61,30 @@ async def rag_endpoint(request: RAGRequest):
             }
         )
         
-        # Create generation within the trace for detailed observability
+        # Create RAG execution span for proper hierarchy
+        rag_span = None
         if trace:
+            rag_span = tracer.create_span(
+                trace,
+                name="rag-execution",
+                metadata={
+                    "operation": "rag_search_and_generation",
+                    "thinking": request.thinking,
+                    "collections": request.collections,
+                    "collection_strategy": request.collection_strategy,
+                    "use_langgraph": request.use_langgraph,
+                    "model": model_name
+                }
+            )
+        
+        # Create generation within the RAG span for detailed observability
+        if rag_span:
             generation = tracer.create_generation_with_usage(
                 trace=trace,
                 name="rag-generation",
                 model=model_name,
                 input_text=request.question,
+                parent_span=rag_span,
                 metadata={
                     "thinking": request.thinking,
                     "collections": request.collections,
@@ -140,6 +156,7 @@ async def rag_endpoint(request: RAGRequest):
                 simple_query_type = type_mapping.get(enhanced_type, "LLM")
                 print(f"[DEBUG] API endpoint - Mapped '{enhanced_type}' to '{simple_query_type}'")
             
+            from app.langchain.service import rag_answer
             rag_stream = await rag_answer(
                 request.question, 
                 thinking=request.thinking, 
@@ -149,7 +166,7 @@ async def rag_endpoint(request: RAGRequest):
                 collections=request.collections,
                 collection_strategy=request.collection_strategy,
                 query_type=simple_query_type,
-                trace=trace
+                trace=rag_span or trace
             )
             print(f"[DEBUG] API endpoint - Got rag_stream: {type(rag_stream)}")
             
@@ -261,6 +278,8 @@ async def rag_endpoint(request: RAGRequest):
                     tracer.flush()
                 except Exception as e:
                     print(f"[WARNING] Failed to update Langfuse trace/generation: {e}")
+            
+            # Note: workflow_span is only for multi-agent mode, not standard RAG
                     
         except Exception as e:
             # Update generation and trace with error
@@ -343,7 +362,7 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
     
     if tracer.is_enabled():
         trace = tracer.create_trace(
-            name="multi-agent",
+            name="multi-agent-workflow",
             input=request.question,
             metadata={
                 "endpoint": "/api/v1/langchain/multi-agent",
@@ -357,7 +376,18 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
         # Note: Individual agent generations will be created by each agent
         # No single top-level generation needed for multi-agent mode
     
-    system = MultiAgentSystem(conversation_id=request.conversation_id, trace=trace)
+    # Create multi-agent workflow span for proper hierarchy
+    workflow_span = None
+    if trace:
+        try:
+            if tracer.is_enabled():
+                workflow_span = tracer.create_multi_agent_workflow_span(
+                    trace, "multi-agent", request.selected_agents or []
+                )
+        except Exception as e:
+            print(f"[DEBUG] Failed to create multi-agent workflow span: {e}")
+    
+    system = MultiAgentSystem(conversation_id=request.conversation_id, trace=workflow_span if workflow_span else trace)
     
     async def stream_events_with_tracing():
         collected_output = ""
@@ -439,6 +469,22 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                     tracer.flush()
                 except Exception as e:
                     print(f"[WARNING] Failed to update Langfuse trace/generation: {e}")
+            
+            # End multi-agent workflow span with success
+            if workflow_span:
+                try:
+                    tracer.end_span_with_result(
+                        workflow_span,
+                        {
+                            "agent_count": len(agent_outputs),
+                            "successful_agents": len([a for a in agent_outputs if a.get("content")]),
+                            "final_response_length": len(final_response) if final_response else 0,
+                            "total_output_length": len(collected_output)
+                        },
+                        success=bool(final_response)
+                    )
+                except Exception as e:
+                    print(f"[WARNING] Failed to end multi-agent workflow span: {e}")
                     
         except Exception as e:
             # Update generation and trace with error
@@ -465,6 +511,14 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                     tracer.flush()
                 except:
                     pass  # Don't fail the request if tracing fails
+            
+            # End multi-agent workflow span with error
+            if workflow_span:
+                try:
+                    tracer.end_span_with_result(workflow_span, None, False, str(e))
+                except Exception as span_error:
+                    print(f"[WARNING] Failed to end multi-agent workflow span with error: {span_error}")
+            
             raise
     
     return StreamingResponse(
@@ -493,7 +547,7 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
     
     if tracer.is_enabled():
         trace = tracer.create_trace(
-            name="large-generation",
+            name="large-generation-workflow",
             input=request.task_description,
             metadata={
                 "endpoint": "/api/v1/langchain/large-generation",
@@ -612,6 +666,22 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                     tracer.flush()
                 except Exception as e:
                     print(f"[WARNING] Failed to update Langfuse trace/generation: {e}")
+            
+            # End multi-agent workflow span with success
+            if workflow_span:
+                try:
+                    tracer.end_span_with_result(
+                        workflow_span,
+                        {
+                            "agent_count": len(agent_outputs),
+                            "successful_agents": len([a for a in agent_outputs if a.get("content")]),
+                            "final_response_length": len(final_response) if final_response else 0,
+                            "total_output_length": len(collected_output)
+                        },
+                        success=bool(final_response)
+                    )
+                except Exception as e:
+                    print(f"[WARNING] Failed to end multi-agent workflow span: {e}")
                     
         except Exception as e:
             # Update generation and trace with error
@@ -769,11 +839,11 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
             
             # Let rag_answer handle tool execution internally to avoid duplication
             # This prevents the enhanced question issue that triggers large generation detection
-            from app.langchain.service import rag_answer
             
             try:
                 # Use original question and let rag_answer handle tool execution
                 # The service module already has logic to execute tools when query_type = "TOOLS"
+                from app.langchain.service import rag_answer
                 for chunk in rag_answer(
                     request.question,
                     thinking=request.thinking,
