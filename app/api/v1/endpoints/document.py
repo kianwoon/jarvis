@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -676,12 +676,17 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
         if collection_name:
-            # Validate the provided collection exists
+            # Use user-specified collection (passed from main function)
             collection_info = get_collection_config(collection_name)
             if not collection_info:
                 raise HTTPException(status_code=400, detail=f"Collection '{collection_name}' not found")
             target_collection = collection_name
-            progress.details["collection_method"] = "specified"
+            progress.details["collection_method"] = "user_specified"
+            progress.details["collection_source"] = "frontend_selection"
+            print(f"🎯 BACKEND: Using user-specified collection: {target_collection}")
+            # Skip auto-classification since user specified collection
+            auto_classify = False
+            print(f"🎯 BACKEND: Disabled auto_classify since user specified collection")
         elif auto_classify:
             # Auto-classify document
             classifier = get_document_classifier()
@@ -707,6 +712,9 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
         
         progress.details["target_collection"] = target_collection
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        print(f"🔍 BACKEND: About to check duplicates for collection: {target_collection}")
+        print(f"🔍 BACKEND: Number of chunks to process: {len(chunks)}")
         
         # Step 6: Check for duplicates
         progress.update(6, "Checking for duplicates", {"deduplication": "in_progress"})
@@ -738,6 +746,44 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
                 'collection_name': target_collection
             })
             
+            # Add collection-specific fields
+            if target_collection == 'training_materials':
+                chunk.metadata.update({
+                    'training_type': 'general',
+                    'target_audience': 'all',
+                    'certification_required': 'no'
+                })
+            elif target_collection == 'regulatory_compliance':
+                chunk.metadata.update({
+                    'regulations': 'general',
+                    'compliance_year': str(datetime.now().year),
+                    'regulatory_body': 'unknown'
+                })
+            elif target_collection == 'product_documentation':
+                chunk.metadata.update({
+                    'product_name': 'general',
+                    'product_category': 'unknown',
+                    'rates': 'n/a'
+                })
+            elif target_collection == 'risk_management':
+                chunk.metadata.update({
+                    'risk_types': 'general',
+                    'risk_level': 'medium',
+                    'control_framework': 'standard'
+                })
+            elif target_collection == 'audit_reports':
+                chunk.metadata.update({
+                    'audit_type': 'general',
+                    'audit_period': str(datetime.now().year),
+                    'audit_status': 'completed'
+                })
+            elif target_collection == 'customer_support':
+                chunk.metadata.update({
+                    'issue_category': 'general',
+                    'resolution_status': 'resolved',
+                    'product_area': 'general'
+                })
+            
             # Add BM25 preprocessing
             bm25_metadata = bm25_processor.prepare_document_for_bm25(chunk.page_content, chunk.metadata)
             chunk.metadata.update(bm25_metadata)
@@ -750,9 +796,9 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
         collection_name = target_collection  # Use the determined target collection
         vector_dim = int(milvus_cfg.get("dimension", 2560))
         
-        ensure_milvus_collection(collection_name, vector_dim=vector_dim, uri=uri, token=token)
+        ensure_milvus_collection(target_collection, vector_dim=vector_dim, uri=uri, token=token)
         
-        collection = Collection(collection_name)
+        collection = Collection(target_collection)
         collection.load()
         existing_hashes = get_existing_hashes(collection)
         existing_doc_ids = get_existing_doc_ids(collection)
@@ -844,7 +890,7 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
             "total_chunks": len(chunks),
             "unique_chunks_inserted": len(unique_chunks),
             "duplicates_filtered": duplicate_count,
-            "collection": collection_name,
+            "collection": target_collection,
             "file_id": file_id,
             "classified_type": classified_type,
             "auto_classified": bool(classified_type)
@@ -873,7 +919,8 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
 @router.post("/upload_pdf_progress")
 async def upload_pdf_with_progress(
     file: UploadFile = File(...),
-    collection_name: Optional[str] = None,
+    collection_name: Optional[str] = Form(None),
+    force_collection: Optional[str] = Form(None),
     auto_classify: bool = True
 ):
     """Upload PDF with real-time progress updates via SSE"""
@@ -885,6 +932,11 @@ async def upload_pdf_with_progress(
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
     print(f"[INFO] Starting upload for file: {file.filename}")
+    print(f"🚨 BACKEND: collection_name={collection_name}, force_collection={force_collection}, auto_classify={auto_classify}")
+    
+    # Determine target collection - prioritize force_collection
+    target_collection = force_collection or collection_name
+    print(f"🚨 BACKEND: target_collection={target_collection}")
     
     # Read the file content here before passing to generator
     try:
@@ -917,7 +969,7 @@ async def upload_pdf_with_progress(
     progress = UploadProgress()
     
     return StreamingResponse(
-        progress_generator(wrapped_file, progress, collection_name, auto_classify),
+        progress_generator(wrapped_file, progress, target_collection, auto_classify),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

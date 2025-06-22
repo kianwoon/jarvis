@@ -14,6 +14,10 @@ from app.core.collection_registry_cache import (
     invalidate_collection_cache
 )
 from app.core.milvus_stats import MilvusStats
+from app.core.collection_initializer import (
+    initialize_default_collection,
+    get_collection_status
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -60,12 +64,26 @@ def get_milvus_connection():
     
     milvus_config = vector_db_settings.get('milvus', {})
     try:
-        connections.connect(
-            alias="default",
-            host=milvus_config.get('host', 'localhost'),
-            port=milvus_config.get('port', 19530),
-            timeout=5
-        )
+        # Check if using cloud Milvus (Zilliz) with URI and token
+        milvus_uri = milvus_config.get('MILVUS_URI')
+        milvus_token = milvus_config.get('MILVUS_TOKEN')
+        
+        if milvus_uri and milvus_token:
+            # Cloud Milvus connection
+            connections.connect(
+                alias="default",
+                uri=milvus_uri,
+                token=milvus_token,
+                timeout=10
+            )
+        else:
+            # Local Milvus connection
+            connections.connect(
+                alias="default",
+                host=milvus_config.get('host', 'localhost'),
+                port=milvus_config.get('port', 19530),
+                timeout=5
+            )
         return True
     except Exception as e:
         logger.error(f"Failed to connect to Milvus: {e}")
@@ -94,18 +112,9 @@ def create_milvus_collection(collection_name: str, metadata_schema: Dict[str, An
             FieldSchema(name="bm25_top_terms", dtype=DataType.VARCHAR, max_length=1000),
         ]
         
-        # Add any custom fields from metadata_schema
-        custom_fields = metadata_schema.get('fields', [])
-        for field in custom_fields:
-            if field['name'] not in [f.name for f in fields]:
-                dtype = DataType.VARCHAR if field['type'] == 'string' else DataType.INT64
-                max_length = field.get('max_length', 255) if field['type'] == 'string' else None
-                field_schema = FieldSchema(
-                    name=field['name'],
-                    dtype=dtype,
-                    max_length=max_length
-                )
-                fields.append(field_schema)
+        # FIXED: Do NOT add custom fields from metadata_schema to Milvus
+        # All collections MUST use the same unified 15-field schema
+        # Custom metadata fields stay in PostgreSQL only, not in Milvus
         
         # Create collection schema
         schema = CollectionSchema(
@@ -220,6 +229,119 @@ async def list_collections(db=Depends(get_db), include_stats: bool = False):
     except Exception as e:
         logger.error(f"Failed to list collections: {e}")
         raise HTTPException(status_code=500, detail="Failed to list collections")
+
+@router.get("/cache")
+async def get_collections_cache():
+    """
+    Get all collections from Redis cache with database fallback.
+    
+    This endpoint provides faster access to collection data by using
+    Redis cache when available, falling back to PostgreSQL when needed.
+    
+    Returns:
+        List of collections with their configurations and statistics
+    """
+    try:
+        from app.core.collection_registry_cache import get_all_collections
+        collections = get_all_collections()
+        return collections
+    except Exception as e:
+        logger.error(f"Failed to get collections from cache: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get collections from cache: {str(e)}")
+
+@router.post("/sync-milvus")
+async def sync_collections_to_milvus(db=Depends(get_db)):
+    """
+    Synchronize all PostgreSQL collections to Milvus.
+    
+    This endpoint creates missing Milvus collections for all collections
+    that exist in PostgreSQL but not in Milvus.
+    
+    Returns:
+        Dict with synchronization results
+    """
+    try:
+        # Get all collections from PostgreSQL
+        query = """
+            SELECT collection_name, metadata_schema 
+            FROM collection_registry 
+            ORDER BY created_at ASC
+        """
+        result = db.execute(text(query)).fetchall()
+        
+        sync_results = {
+            "total_collections": len(result),
+            "created": [],
+            "already_existed": [],
+            "failed": [],
+            "milvus_available": False
+        }
+        
+        # Try to connect to Milvus
+        try:
+            get_milvus_connection()
+            sync_results["milvus_available"] = True
+        except Exception as e:
+            logger.error(f"Milvus not available for sync: {e}")
+            raise HTTPException(status_code=500, detail="Milvus vector database not available")
+        
+        # Create each collection in Milvus
+        for row in result:
+            collection_name = row[0]
+            metadata_schema = row[1] if isinstance(row[1], dict) else (json.loads(row[1]) if row[1] else {})
+            
+            try:
+                # Check if collection already exists in Milvus
+                if utility.has_collection(collection_name):
+                    sync_results["already_existed"].append(collection_name)
+                    logger.info(f"Collection {collection_name} already exists in Milvus")
+                    continue
+                
+                # Create the collection in Milvus
+                success = create_milvus_collection(collection_name, metadata_schema)
+                if success:
+                    sync_results["created"].append(collection_name)
+                    logger.info(f"Successfully created Milvus collection: {collection_name}")
+                else:
+                    sync_results["failed"].append(collection_name)
+                    logger.error(f"Failed to create Milvus collection: {collection_name}")
+                    
+            except Exception as e:
+                logger.error(f"Error creating collection {collection_name}: {e}")
+                sync_results["failed"].append(collection_name)
+        
+        # Return results
+        return {
+            "message": f"Sync completed: {len(sync_results['created'])} created, {len(sync_results['already_existed'])} existed, {len(sync_results['failed'])} failed",
+            "results": sync_results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to sync collections to Milvus: {e}")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+@router.get("/status")
+async def get_collections_status():
+    """
+    Get the current status of the collections system.
+    
+    This endpoint provides information about:
+    - Whether database tables exist
+    - Whether the default collection exists
+    - Milvus availability
+    - Total collection count
+    
+    Returns:
+        Dict with system status information
+    """
+    try:
+        status = get_collection_status()
+        return status
+    except Exception as e:
+        logger.error(f"Failed to get collections status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
 
 @router.get("/{collection_name}", response_model=CollectionResponse)
 async def get_collection(collection_name: str, db=Depends(get_db), include_stats: bool = False):
@@ -506,3 +628,38 @@ async def get_collection_stats(collection_name: str):
         raise HTTPException(status_code=500, detail=f"Failed to get statistics: {stats.get('error', 'Unknown error')}")
     
     return stats
+
+@router.post("/initialize-default")
+async def initialize_default_collection_endpoint(db=Depends(get_db)):
+    """
+    Initialize the default_knowledge collection if it doesn't exist.
+    
+    This endpoint can be called manually to ensure the default collection
+    is properly set up. It's safe to call multiple times.
+    
+    Returns:
+        Dict with initialization results and status
+    """
+    try:
+        result = initialize_default_collection(db)
+        
+        if result["success"]:
+            return {
+                "message": result["message"],
+                "collection_name": result["collection_name"],
+                "already_exists": result["already_exists"],
+                "database_created": result["database_created"],
+                "milvus_created": result["milvus_created"],
+                "milvus_available": result["milvus_available"]
+            }
+        else:
+            raise HTTPException(
+                status_code=500 if result["error"] else 409,
+                detail=result["message"] or result["error"]
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to initialize default collection: {e}")
+        raise HTTPException(status_code=500, detail=f"Initialization failed: {str(e)}")

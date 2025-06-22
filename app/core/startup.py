@@ -34,9 +34,39 @@ async def initialize_models():
             print("[Startup] Reranker is disabled in this environment")
 
 
+async def initialize_default_collection():
+    """Initialize the default knowledge collection at startup"""
+    try:
+        print("[Startup] Initializing default collection...")
+        from app.core.collection_initializer import initialize_default_collection_async
+        
+        # Run in executor to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: initialize_default_collection_async())
+        
+        result_data = await result if asyncio.iscoroutine(result) else result
+        
+        if result_data["success"]:
+            if result_data["already_exists"]:
+                print("[Startup] Default collection 'default_knowledge' already exists")
+            else:
+                print(f"[Startup] {result_data['message']}")
+                print(f"[Startup] - Database created: {result_data['database_created']}")
+                print(f"[Startup] - Milvus created: {result_data['milvus_created']}")
+                print(f"[Startup] - Milvus available: {result_data['milvus_available']}")
+        else:
+            print(f"[Startup] Failed to initialize default collection: {result_data.get('error', 'Unknown error')}")
+            print("[Startup] Collection initialization will be available via API endpoint")
+            
+    except Exception as e:
+        print(f"[Startup] Error during collection initialization: {e}")
+        print("[Startup] Collection initialization will be available via API endpoint")
+
+
 async def startup_tasks():
     """Run all startup tasks"""
     await initialize_models()
+    await initialize_default_collection()
     print("[Startup] All startup tasks completed")
 
 

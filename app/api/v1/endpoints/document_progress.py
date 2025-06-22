@@ -1,7 +1,7 @@
 """
 Enhanced document upload with progress tracking via SSE
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from typing import Optional, List, Dict, Any
 import json
@@ -51,7 +51,7 @@ class UploadProgress:
             "error": self.error
         }
 
-async def progress_generator(file: UploadFile, progress: UploadProgress):
+async def progress_generator(file: UploadFile, progress: UploadProgress, upload_params: Dict[str, Any] = None):
     """Generate SSE events for upload progress"""
     
     try:
@@ -168,7 +168,17 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
         milvus_cfg = vector_db_cfg["milvus"]
         uri = milvus_cfg.get("MILVUS_URI")
         token = milvus_cfg.get("MILVUS_TOKEN")
-        collection_name = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
+        # Use user-specified collection or fall back to default
+        if upload_params and upload_params.get('target_collection'):
+            collection_name = upload_params['target_collection']
+            progress.details["collection_method"] = "user_specified"
+            progress.details["collection_source"] = "frontend_selection"
+        else:
+            collection_name = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
+            progress.details["collection_method"] = "default_fallback"
+            progress.details["collection_source"] = "milvus_config"
+        
+        progress.details["target_collection"] = collection_name
         vector_dim = int(milvus_cfg.get("dimension", 2560))
         
         ensure_milvus_collection(collection_name, vector_dim=vector_dim, uri=uri, token=token)
@@ -284,16 +294,60 @@ async def progress_generator(file: UploadFile, progress: UploadProgress):
                 pass
 
 @router.post("/upload_pdf_progress")
-async def upload_pdf_with_progress(file: UploadFile = File(...)):
+async def upload_pdf_with_progress(
+    file: UploadFile = File(...),
+    collection_name: Optional[str] = Form(None),
+    disable_auto_classification: Optional[str] = Form(None),
+    force_collection: Optional[str] = Form(None),
+    chunk_size: Optional[str] = Form(None),
+    chunk_overlap: Optional[str] = Form(None),
+    enable_bm25: Optional[str] = Form(None),
+    bm25_weight: Optional[str] = Form(None)
+):
     """Upload PDF with real-time progress updates via SSE"""
+    
+    print("=" * 60)
+    print("🚨 BACKEND ENDPOINT HIT: upload_pdf_progress")
+    print("=" * 60)
+    
+    # DEBUG: Log all received parameters
+    print(f"BACKEND DEBUG: Received parameters:")
+    print(f"  file.filename: {file.filename}")
+    print(f"  collection_name: {collection_name}")
+    print(f"  force_collection: {force_collection}")
+    print(f"  disable_auto_classification: {disable_auto_classification}")
+    print(f"  chunk_size: {chunk_size}")
+    print(f"  chunk_overlap: {chunk_overlap}")
+    print(f"  enable_bm25: {enable_bm25}")
+    print(f"  bm25_weight: {bm25_weight}")
     
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
     progress = UploadProgress()
     
+    # Determine target collection
+    target_collection = None
+    if force_collection:
+        target_collection = force_collection
+        print(f"BACKEND DEBUG: Using force_collection: {force_collection}")
+    elif collection_name:
+        target_collection = collection_name
+        print(f"BACKEND DEBUG: Using collection_name: {collection_name}")
+    else:
+        print(f"BACKEND DEBUG: No collection specified, will use default")
+    
+    # Create upload parameters
+    upload_params = {
+        'target_collection': target_collection,
+        'chunk_size': int(chunk_size) if chunk_size else None,
+        'chunk_overlap': int(chunk_overlap) if chunk_overlap else None,
+        'enable_bm25': enable_bm25 == 'true' if enable_bm25 else None,
+        'bm25_weight': float(bm25_weight) if bm25_weight else None,
+    }
+    
     return StreamingResponse(
-        progress_generator(file, progress),
+        progress_generator(file, progress, upload_params),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

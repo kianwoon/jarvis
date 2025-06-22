@@ -1,7 +1,7 @@
 """
 Enhanced document upload endpoint with progress tracking for multiple file types
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Form
 from fastapi.responses import StreamingResponse
 from typing import Optional, List, Dict, Any
 import os
@@ -78,9 +78,9 @@ DOCUMENT_HANDLERS = None  # Will be lazy-loaded
 # Allowed file extensions  
 ALLOWED_EXTENSIONS = {'.pdf', '.xlsx', '.xls', '.docx', '.pptx', '.ppt'}  # .doc not fully supported yet
 
-async def progress_generator(file_path: str, file_name: str, file_ext: str, options: Dict[str, Any]):
+async def progress_generator(file_path: str, file_name: str, file_ext: str, options: Dict[str, Any], upload_params: Dict[str, Any] = None):
     """Generate progress updates for document processing"""
-    total_steps = 5
+    total_steps = 6
     current_step = 0
     
     try:
@@ -141,7 +141,11 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
         milvus_cfg = vector_db_cfg["milvus"]
         uri = milvus_cfg.get("MILVUS_URI")
         token = milvus_cfg.get("MILVUS_TOKEN")
-        collection_name = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
+        # Use user-specified collection or fall back to default
+        if upload_params and upload_params.get('target_collection'):
+            collection_name = upload_params['target_collection']
+        else:
+            collection_name = milvus_cfg.get("MILVUS_DEFAULT_COLLECTION", "default_knowledge")
         vector_dim = int(milvus_cfg.get("dimension", 2560))
         
         # Ensure collection exists
@@ -182,16 +186,37 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
             yield f"data: {json.dumps({'current_step': total_steps, 'total_steps': total_steps, 'step_name': 'Complete', 'progress_percent': 100, 'details': {'status': 'skipped', 'reason': 'All chunks are duplicates', 'total_chunks': len(chunks), 'duplicates_filtered': duplicate_count}})}\n\n"
             return
         
-        # Step 5: Store in vector database
+        # Step 5: Generate embeddings
         current_step += 1
-        yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Storing in vector database', 'progress_percent': int(current_step / total_steps * 100), 'details': {'unique_chunks': len(unique_chunks), 'duplicates': duplicate_count}})}\n\n"
+        yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Generating embeddings', 'progress_percent': int(current_step / total_steps * 100), 'details': {'embedding_progress': 0, 'total_embeddings': len(unique_chunks), 'unique_chunks': len(unique_chunks), 'duplicates': duplicate_count}})}\n\n"
         await asyncio.sleep(0.1)
         
-        # Generate embeddings
+        # Generate embeddings in batches for progress updates
         unique_ids = [str(uuid4()) for _ in unique_chunks]
         unique_texts = [chunk.content for chunk in unique_chunks]
         
-        embeddings_list = embeddings.embed_documents(unique_texts)
+        batch_size = 10
+        all_embeddings = []
+        
+        for i in range(0, len(unique_chunks), batch_size):
+            batch = unique_chunks[i:i + batch_size]
+            batch_texts = [chunk.content for chunk in batch]
+            
+            batch_embeddings = embeddings.embed_documents(batch_texts)
+            all_embeddings.extend(batch_embeddings)
+            
+            # Update embedding progress
+            yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Generating embeddings', 'progress_percent': int(current_step / total_steps * 100), 'details': {'embedding_progress': len(all_embeddings), 'total_embeddings': len(unique_chunks), 'unique_chunks': len(unique_chunks), 'duplicates': duplicate_count}})}\n\n"
+            
+            # Small delay to prevent overwhelming the client
+            await asyncio.sleep(0.1)
+        
+        embeddings_list = all_embeddings
+        
+        # Step 5 final step: Insert into vector database
+        current_step += 1
+        yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Inserting into vector database', 'progress_percent': int(current_step / total_steps * 100), 'details': {'insertion': 'in_progress', 'unique_chunks': len(unique_chunks), 'duplicates': duplicate_count}})}\n\n"
+        await asyncio.sleep(0.1)
         
         # Prepare data for insertion
         data = [
@@ -261,6 +286,13 @@ async def upload_document_with_progress(
     file: UploadFile = File(...),
     sheets: Optional[str] = Query(None, description="Comma-separated sheet names for Excel"),
     exclude_sheets: Optional[str] = Query(None, description="Sheets to exclude"),
+    collection_name: Optional[str] = Form(None),
+    disable_auto_classification: Optional[str] = Form(None),
+    force_collection: Optional[str] = Form(None),
+    chunk_size: Optional[str] = Form(None),
+    chunk_overlap: Optional[str] = Form(None),
+    enable_bm25: Optional[str] = Form(None),
+    bm25_weight: Optional[str] = Form(None)
 ):
     """
     Upload and process various document types with progress tracking
@@ -281,6 +313,22 @@ async def upload_document_with_progress(
             detail="Please use /upload_pdf_progress endpoint for PDF files"
         )
     
+    # Determine target collection
+    target_collection = None
+    if force_collection:
+        target_collection = force_collection
+    elif collection_name:
+        target_collection = collection_name
+    
+    # Create upload parameters
+    upload_params = {
+        'target_collection': target_collection,
+        'chunk_size': int(chunk_size) if chunk_size else None,
+        'chunk_overlap': int(chunk_overlap) if chunk_overlap else None,
+        'enable_bm25': enable_bm25 == 'true' if enable_bm25 else None,
+        'bm25_weight': float(bm25_weight) if bm25_weight else None,
+    }
+    
     # Save uploaded file temporarily
     temp_dir = tempfile.mkdtemp()
     temp_path = os.path.join(temp_dir, file.filename)
@@ -300,7 +348,7 @@ async def upload_document_with_progress(
         # Create async generator for progress updates
         async def cleanup_and_stream():
             try:
-                async for chunk in progress_generator(temp_path, file.filename.lower(), file_ext, extraction_options):
+                async for chunk in progress_generator(temp_path, file.filename.lower(), file_ext, extraction_options, upload_params):
                     yield chunk
             finally:
                 # Cleanup
