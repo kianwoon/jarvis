@@ -63,10 +63,25 @@ async def initialize_default_collection():
         print("[Startup] Collection initialization will be available via API endpoint")
 
 
+async def register_internal_mcp_tools():
+    """Register internal MCP tools at startup"""
+    try:
+        print("[Startup] Registering internal MCP tools...")
+        from app.mcp_services.rag_tool_registration import register_rag_mcp_tool
+        
+        # Run in executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, register_rag_mcp_tool)
+        
+        print("[Startup] Internal MCP tools registered successfully")
+    except Exception as e:
+        print(f"[Startup] Failed to register internal MCP tools: {e}")
+
 async def startup_tasks():
     """Run all startup tasks"""
     await initialize_models()
     await initialize_default_collection()
+    await register_internal_mcp_tools()
     print("[Startup] All startup tasks completed")
 
 

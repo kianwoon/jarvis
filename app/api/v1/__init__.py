@@ -1,9 +1,10 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import document, document_upload_fix, document_multi, document_multi_progress, document_preview, document_classify
+from app.api.v1.endpoints import document, document_upload_fix, document_multi, document_multi_progress, document_preview, document_classify, document_intelligent
 from app.api.routes import llm
 from app.api.v1.endpoints import settings
 from app.api.v1.endpoints import mcp_tools
 from app.api.v1.endpoints import mcp_servers
+from app.api.v1.endpoints import system_tools
 from app.api.v1.endpoints import langchain
 from app.api.v1.endpoints import intelligent_chat
 from app.api.v1.endpoints import langgraph_agents
@@ -61,6 +62,12 @@ api_router.include_router(
 )
 
 api_router.include_router(
+    system_tools.router,
+    prefix="/mcp",
+    tags=["system-tools"]
+)
+
+api_router.include_router(
     langchain.router,
     prefix="/langchain",
     tags=["langchain"]
@@ -101,6 +108,12 @@ api_router.include_router(
     document_classify.router,
     prefix="/document",
     tags=["document-classification"]
+)
+
+api_router.include_router(
+    document_intelligent.router,
+    prefix="/documents",
+    tags=["intelligent-documents"]
 )
 
 logger.info("Including collections router...")
@@ -163,4 +176,6 @@ api_router.include_router(
     pipeline_execution_ws.router,
     prefix="",
     tags=["pipeline-websockets"]
-) 
+)
+
+ 

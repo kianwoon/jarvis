@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Any
 import json
 import logging
 import asyncio
+from datetime import datetime
 
 from app.core.llm_settings_cache import get_llm_settings
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
@@ -260,7 +261,7 @@ async def execute_rag_search(query: str, collections: List[str] = None, trace=No
         
         result = {
             "query": query,
-            "collections": collections or "all",
+            "collections": collections or "auto",
             "context": context[:1000] + "..." if len(context) > 1000 else context,  # Truncate for response
             "documents": documents,
             "success": True,
@@ -782,17 +783,26 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 source += "+RAG"
                 rag_searches_made = rag_results
             
+            # Extract documents from RAG results for transparency
+            all_documents = []
+            if rag_results:
+                for rag_result in rag_results:
+                    if rag_result.get("success") and rag_result.get("documents"):
+                        all_documents.extend(rag_result["documents"])
+            
             final_answer = final_response
             collected_output += json.dumps({
                 "answer": final_response,
                 "source": source,
-                "conversation_id": request.conversation_id
+                "conversation_id": request.conversation_id,
+                "documents": all_documents
             })
             
             yield json.dumps({
                 "answer": final_response,
                 "source": source,
-                "conversation_id": request.conversation_id
+                "conversation_id": request.conversation_id,
+                "documents": all_documents
             }) + "\n"
             
             # Update Langfuse generation and trace with the final output

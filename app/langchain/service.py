@@ -415,7 +415,7 @@ def unified_llm_synthesis(
     sources = []
     if rag_context:
         sources.append("RAG")
-    if tool_context or query_type == "TOOLS":
+    if tool_context or query_type in ["TOOLS", "HYBRID_LLM_TOOLS"]:
         sources.append("TOOLS")
     sources.append("LLM")  # LLM synthesis is always involved
     source_label = "+".join(sources)
@@ -1566,8 +1566,11 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
     # Retrieve relevant documents - optimized for performance
     # IMPORTANT: Milvus with COSINE distance returns lower scores for more similar vectors
     # Score range: 0 (identical) to 2 (opposite)
-    SIMILARITY_THRESHOLD = 1.5  # Very inclusive for initial retrieval (let re-ranking filter)
-    NUM_DOCS = 20  # Reduced from 50 to 20 for better performance while maintaining quality
+    # Get similarity threshold from settings to avoid hardcoding
+    llm_settings = get_llm_settings()
+    rag_config = llm_settings.get('rag_settings', {})
+    SIMILARITY_THRESHOLD = rag_config.get('similarity_threshold', 1.5)  # Very inclusive for initial retrieval (let re-ranking filter)
+    NUM_DOCS = rag_config.get('num_docs_retrieve', 20)  # Configurable document retrieval count
     
     # Use LLM to expand queries for better recall
     queries_to_try = llm_expand_query(question, llm_cfg)
@@ -1907,7 +1910,8 @@ Documents to score:
             seen_content_hashes.add(content_hash)
             filtered_docs.append(doc)
             
-        if len(filtered_docs) >= 8:  # Take up to 8 diverse documents
+        max_final_docs = rag_config.get('max_final_docs', 8)
+        if len(filtered_docs) >= max_final_docs:  # Take up to configurable number of diverse documents
             break
     
     print(f"[DEBUG] handle_rag_query: After filtering and reranking: {len(filtered_docs)} documents")
@@ -1915,10 +1919,16 @@ Documents to score:
     
     context = "\n\n".join([doc.page_content for doc in filtered_docs])
     
-    # Extract sources with collection information
+    # Extract sources with collection information and content
+    # Get content limits from settings to avoid hardcoding
+    llm_settings = get_llm_settings()
+    rag_config = llm_settings.get('rag_settings', {})
+    content_preview_limit = rag_config.get('content_preview_limit', 500)
+    
     sources = []
     for doc in filtered_docs:
         source_info = {
+            "content": doc.page_content[:content_preview_limit] + "..." if len(doc.page_content) > content_preview_limit else doc.page_content,
             "file": doc.metadata.get("source", "Unknown"),
             "page": doc.metadata.get("page", 0),
             "collection": doc.metadata.get("source_collection", "default_knowledge")
@@ -1952,24 +1962,32 @@ Documents to score:
         print(f"[RAG DEBUG] Overlapping words: {clean_query_keywords.intersection(clean_context_words)}")
         
         # If relevance is very low, return no context (will trigger LLM fallback)
+        # Get relevance thresholds from settings to avoid hardcoding
+        llm_settings = get_llm_settings()
+        rag_config = llm_settings.get('rag_settings', {})
+        
         # Dynamic threshold based on query complexity
-        min_relevance = 0.15 if len(query_keywords) > 2 else 0.25
+        min_relevance_complex = rag_config.get('min_relevance_complex_query', 0.15)
+        min_relevance_simple = rag_config.get('min_relevance_simple_query', 0.25)
+        query_complexity_threshold = rag_config.get('query_complexity_threshold', 2)
+        
+        min_relevance = min_relevance_complex if len(query_keywords) > query_complexity_threshold else min_relevance_simple
         if relevance_score < min_relevance:
             print(f"[RAG DEBUG] Low relevance detected ({relevance_score:.2f} < {min_relevance}), no context returned")
-            result = ("", "")
+            result = ("", [])
             # Cache the result for performance
             _cache_rag_result(query_hash, result, current_time)
             return result
         
         # Context is relevant, return it for hybrid processing
         print(f"[RAG DEBUG] Good relevance ({relevance_score:.2f}), returning context for hybrid approach")
-        result = (context, "")  # Return empty string for prompt since we handle prompting in main function
+        result = (context, sources)  # Return sources for frontend transparency
         # Cache the result for performance
         _cache_rag_result(query_hash, result, current_time)
         return result
     else:
         print(f"[RAG DEBUG] No relevant documents found")
-        result = ("", "")
+        result = ("", [])
         # Cache the result for performance
         _cache_rag_result(query_hash, result, current_time)
         return result
@@ -2206,20 +2224,57 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
         # Initialize tool variables for potential fallback use
         tool_calls = []
         tool_context = ""
+        rag_sources = []  # Initialize sources list for documents transparency
         
-        # STEP 2a: Skip RAG based on query classification to optimize performance
+        # STEP 2a: Enhanced hybrid approach - always consider both RAG and TOOLS
         if query_type == "TOOLS":
-            print(f"[DEBUG] rag_answer: TOOLS query detected - skipping RAG retrieval")
-            rag_context = ""  # No RAG needed for tool queries
+            print(f"[DEBUG] rag_answer: TOOLS query detected - executing tools, then LLM synthesis")
+            rag_context = ""  # Start with no RAG, but will execute tools and synthesize
+            
+            # ENHANCED: Always execute tools and prepare for synthesis
+            try:
+                print(f"[DEBUG] rag_answer: Executing tools for TOOLS query")
+                search_results, _, search_context = execute_tools_first(question, thinking)
+                if search_results and search_context:
+                    print(f"[DEBUG] rag_answer: TOOLS execution successful, will synthesize with LLM")
+                    tool_calls = search_results
+                    tool_context = search_context
+                    # Keep query_type as TOOLS but ensure synthesis happens
+                else:
+                    print(f"[DEBUG] rag_answer: TOOLS execution returned no results, falling back to LLM")
+            except Exception as e:
+                print(f"[DEBUG] rag_answer: TOOLS execution failed: {e}, falling back to LLM")
         elif query_type == "LLM":
-            print(f"[DEBUG] rag_answer: LLM query detected - skipping RAG retrieval (general knowledge sufficient)")
-            rag_context = ""  # No RAG needed for general knowledge queries
+            print(f"[DEBUG] rag_answer: LLM query detected - checking for tool enhancement opportunities")
+            rag_context = ""  # Start with no RAG, but may add tool enhancement
+            
+            # ENHANCEMENT: Check if query could benefit from current information
+            # Get keywords from LLM settings to avoid hardcoding
+            llm_settings = get_llm_settings()
+            enhancement_config = llm_settings.get('tool_enhancement', {})
+            current_info_keywords = enhancement_config.get('current_info_keywords', [
+                'latest', 'current', 'recent', 'today', 'now', 'news', 'price', 'weather', 'stock'
+            ])
+            enable_llm_tool_enhancement = enhancement_config.get('enable_llm_enhancement', True)
+            
+            if enable_llm_tool_enhancement and any(keyword in question.lower() for keyword in current_info_keywords):
+                print(f"[DEBUG] rag_answer: LLM query contains current info keywords, adding tool enhancement")
+                try:
+                    # Execute search tools to get current information
+                    search_results, _, search_context = execute_tools_first(question, thinking)
+                    if search_results and search_context:
+                        print(f"[DEBUG] rag_answer: Tool enhancement successful for LLM query")
+                        tool_calls = search_results
+                        tool_context = search_context
+                        query_type = "HYBRID_LLM_TOOLS"  # Mark as hybrid for synthesis
+                except Exception as e:
+                    print(f"[DEBUG] rag_answer: Tool enhancement failed for LLM query: {e}")
         elif query_type == "RAG":
             # Only RAG queries need internal knowledge retrieval
             print(f"[DEBUG] rag_answer: RAG query detected - performing knowledge retrieval")
             import time
             rag_start_time = time.time()
-            rag_context, _ = handle_rag_query(question, thinking, collections, collection_strategy)
+            rag_context, rag_sources = handle_rag_query(question, thinking, collections, collection_strategy)
             rag_end_time = time.time()
             print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
             print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
@@ -2228,7 +2283,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
             print(f"[DEBUG] rag_answer: Unknown query_type '{query_type}' - defaulting to RAG retrieval")
             import time
             rag_start_time = time.time()
-            rag_context, _ = handle_rag_query(question, thinking, collections, collection_strategy)
+            rag_context, rag_sources = handle_rag_query(question, thinking, collections, collection_strategy)
             rag_end_time = time.time()
             print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
             print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
@@ -2329,12 +2384,18 @@ Please generate the requested items incorporating relevant information from the 
         else:
             enhanced_query = question
         
+        # Get conversation history limits from settings to avoid hardcoding
+        llm_settings = get_llm_settings()
+        conversation_config = llm_settings.get('conversation_settings', {})
+        max_history_messages = conversation_config.get('max_history_messages', 3)
+        
         # Get LIMITED conversation history for context to prevent bleeding
-        conversation_history_text = get_limited_conversation_history(conversation_id, max_messages=3) if conversation_id else ""
+        conversation_history_text = get_limited_conversation_history(conversation_id, max_messages=max_history_messages) if conversation_id else ""
         conversation_history_list = get_full_conversation_history(conversation_id) if conversation_id else []
-        # Also limit the list version to prevent bleeding
-        if len(conversation_history_list) > 6:  # 3 user + 3 assistant messages max
-            conversation_history_list = conversation_history_list[-6:]
+        # Also limit the list version to prevent bleeding (2 messages per interaction = user + assistant)
+        max_list_messages = max_history_messages * 2
+        if len(conversation_history_list) > max_list_messages:
+            conversation_history_list = conversation_history_list[-max_list_messages:]
         
         # Stream chunked generation events, converting them to RAG format
         def chunked_generation_stream():
@@ -2653,8 +2714,13 @@ Please generate the requested items incorporating relevant information from the 
     conversation_history = ""
     history_prompt = ""
     if conversation_id:
-        # ALWAYS use limited conversation history to prevent context bleeding
-        conversation_history = get_limited_conversation_history(conversation_id, max_messages=3)
+        # Get conversation history limits from settings to avoid hardcoding
+        llm_settings = get_llm_settings()
+        conversation_config = llm_settings.get('conversation_settings', {})
+        max_history_messages = conversation_config.get('max_history_messages', 3)
+        
+        # Use configurable conversation history to prevent context bleeding
+        conversation_history = get_limited_conversation_history(conversation_id, max_messages=max_history_messages)
         
         if conversation_history:
             history_prompt = f"Previous conversation:\n{conversation_history}\n\n"
@@ -2800,11 +2866,31 @@ Based on these search results, provide a comprehensive answer to the user's ques
                     
                     response_text = final_response
             
+            # Convert rag_sources to frontend format
+            documents = []
+            if rag_sources:
+                for i, source_info in enumerate(rag_sources):
+                    # Create document entry matching frontend interface
+                    doc_entry = {
+                        "content": source_info.get("content", f"Document {i+1} content"),
+                        "source": source_info.get("file", "Unknown"),
+                        "relevance_score": 0.8,  # Default relevance score
+                        "metadata": {
+                            "page": source_info.get("page"),
+                            "doc_id": f"doc_{i+1}",
+                            "collection": source_info.get("collection", "default_knowledge")
+                        }
+                    }
+                    documents.append(doc_entry)
+                    
+            print(f"[DEBUG] rag_answer: Including {len(documents)} documents in response")
+            
             # Send completion event
             yield json.dumps({
                 "answer": response_text,
                 "source": source + ("+TOOLS" if tool_results else ""),
-                "conversation_id": conversation_id
+                "conversation_id": conversation_id,
+                "documents": documents
             }) + "\n"
             
             # Store conversation
@@ -2818,6 +2904,10 @@ Based on these search results, provide a comprehensive answer to the user's ques
         from app.llm.ollama import OllamaLLM
         from app.llm.base import LLMConfig
         import os
+        
+        # Ensure rag_sources is available for non-streaming path
+        if 'rag_sources' not in locals():
+            rag_sources = []
         
         llm_config = LLMConfig(
             model_name=llm_cfg["model"],
@@ -2861,10 +2951,27 @@ Please provide a complete answer using the tool results above."""
         if conversation_id and response_text:
             store_conversation_message(conversation_id, "assistant", response_text)
         
+        # Convert rag_sources to frontend format for non-streaming response
+        documents = []
+        if rag_sources:
+            for i, source_info in enumerate(rag_sources):
+                doc_entry = {
+                    "content": source_info.get("content", f"Document {i+1} content"),
+                    "source": source_info.get("file", "Unknown"),
+                    "relevance_score": 0.8,
+                    "metadata": {
+                        "page": source_info.get("page"),
+                        "doc_id": f"doc_{i+1}",
+                        "collection": source_info.get("collection", "default_knowledge")
+                    }
+                }
+                documents.append(doc_entry)
+        
         return {
             "answer": response_text,
             "source": source,
-            "context": context
+            "context": context,
+            "documents": documents
         }
 
 # Keep existing helper functions
@@ -3068,6 +3175,75 @@ def _map_tool_parameters_service(tool_name: str, params: dict) -> tuple[str, dic
     
     return tool_name, mapped_params
 
+def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> dict:
+    """Handle calls to internal services"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        if tool_name == "rag_search":
+            # Import and call RAG service
+            import asyncio
+            from app.mcp_services.rag_mcp_service import execute_rag_search
+            
+            # Extract parameters with defaults
+            query = parameters.get('query', '')
+            collections = parameters.get('collections')
+            max_documents = parameters.get('max_documents', 8)
+            include_content = parameters.get('include_content', True)
+            
+            # Execute RAG search
+            try:
+                loop = asyncio.get_running_loop()
+                # Run in thread if in async context
+                import threading
+                result_container = {'result': None, 'exception': None}
+                
+                def run_search():
+                    try:
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        result = new_loop.run_until_complete(
+                            execute_rag_search(query, collections, max_documents, include_content)
+                        )
+                        result_container['result'] = result
+                        new_loop.close()
+                    except Exception as e:
+                        result_container['exception'] = e
+                
+                thread = threading.Thread(target=run_search)
+                thread.start()
+                thread.join()
+                
+                if result_container['exception']:
+                    raise result_container['exception']
+                    
+                return result_container['result']
+                
+            except RuntimeError:
+                # No event loop running, safe to call directly
+                return asyncio.run(execute_rag_search(query, collections, max_documents, include_content))
+                
+        else:
+            logger.error(f"Unknown internal service: {tool_name}")
+            return {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32601,
+                    "message": f"Unknown internal service: {tool_name}"
+                }
+            }
+            
+    except Exception as e:
+        logger.error(f"Internal service error for {tool_name}: {e}")
+        return {
+            "jsonrpc": "2.0", 
+            "error": {
+                "code": -32000,
+                "message": f"Internal service failed: {str(e)}"
+            }
+        }
+
 def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
     """
     Call an MCP tool using the unified MCP service with enhanced OAuth handling
@@ -3151,6 +3327,11 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
         try:
             # Clean up parameters (remove agent parameter that shouldn't be sent to tool)
             clean_parameters = {k: v for k, v in parameters.items() if k != "agent"}
+            
+            # Check for internal services first
+            if tool_info.get('endpoint', '').startswith('internal://'):
+                logger.info(f"[INTERNAL] Calling internal service: {tool_name}")
+                return call_internal_service(tool_name, clean_parameters, tool_info)
             
             logger.info(f"[UNIFIED] Calling {tool_name} via unified MCP service")
             

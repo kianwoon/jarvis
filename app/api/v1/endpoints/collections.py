@@ -28,6 +28,23 @@ async def test_collections():
     """Test endpoint to verify collections router is working"""
     return {"message": "Collections API is working"}
 
+@router.get("/test-index")
+async def test_index_endpoint():
+    """Test endpoint to verify index endpoints are working"""
+    try:
+        get_milvus_connection()
+        all_collections = utility.list_collections()
+        return {
+            "message": "Index endpoint working",
+            "total_collections_in_milvus": len(all_collections),
+            "collections": all_collections
+        }
+    except Exception as e:
+        return {
+            "message": "Index endpoint working but Milvus error",
+            "error": str(e)
+        }
+
 # Pydantic models
 class CollectionCreate(BaseModel):
     collection_name: str
@@ -132,8 +149,8 @@ def create_milvus_collection(collection_name: str, metadata_schema: Dict[str, An
         # Create index for vector field
         index_params = {
             "metric_type": "COSINE",
-            "index_type": "IVF_FLAT",
-            "params": {"nlist": 1024}
+            "index_type": "HNSW",
+            "params": {"M": 16, "efConstruction": 256}
         }
         collection.create_index(field_name="vector", index_params=index_params)
         
@@ -321,6 +338,90 @@ async def sync_collections_to_milvus(db=Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to sync collections to Milvus: {e}")
         raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+@router.get("/index-summary")
+async def get_all_collections_index_summary():
+    """Get index type summary for all collections in Milvus"""
+    try:
+        # Connect to Milvus
+        get_milvus_connection()
+        
+        # Get all collections from Milvus
+        all_collections = utility.list_collections()
+        
+        index_summary = {
+            "total_collections": len(all_collections),
+            "hnsw_collections": [],
+            "ivf_flat_collections": [],
+            "other_index_collections": [],
+            "no_index_collections": [],
+            "error_collections": []
+        }
+        
+        for collection_name in all_collections:
+            try:
+                collection = Collection(collection_name)
+                indexes = collection.indexes
+                
+                if not indexes:
+                    index_summary["no_index_collections"].append(collection_name)
+                    continue
+                
+                # Find vector field index
+                vector_index = None
+                for index in indexes:
+                    if index.field_name == "vector":
+                        vector_index = index
+                        break
+                
+                if vector_index:
+                    index_type = vector_index.params.get("index_type", "unknown")
+                    if index_type == "HNSW":
+                        index_summary["hnsw_collections"].append({
+                            "collection_name": collection_name,
+                            "index_type": index_type,
+                            "metric_type": vector_index.params.get("metric_type", "unknown"),
+                            "params": vector_index.params.get("params", {})
+                        })
+                    elif index_type == "IVF_FLAT":
+                        index_summary["ivf_flat_collections"].append({
+                            "collection_name": collection_name,
+                            "index_type": index_type,
+                            "metric_type": vector_index.params.get("metric_type", "unknown"),
+                            "params": vector_index.params.get("params", {})
+                        })
+                    else:
+                        index_summary["other_index_collections"].append({
+                            "collection_name": collection_name,
+                            "index_type": index_type,
+                            "metric_type": vector_index.params.get("metric_type", "unknown"),
+                            "params": vector_index.params.get("params", {})
+                        })
+                else:
+                    index_summary["no_index_collections"].append(collection_name)
+                    
+            except Exception as e:
+                logger.error(f"Error checking index for collection {collection_name}: {e}")
+                index_summary["error_collections"].append({
+                    "collection_name": collection_name,
+                    "error": str(e)
+                })
+        
+        # Add summary counts
+        index_summary["summary"] = {
+            "hnsw_count": len(index_summary["hnsw_collections"]),
+            "ivf_flat_count": len(index_summary["ivf_flat_collections"]),
+            "other_index_count": len(index_summary["other_index_collections"]),
+            "no_index_count": len(index_summary["no_index_collections"]),
+            "error_count": len(index_summary["error_collections"]),
+            "hnsw_percentage": (len(index_summary["hnsw_collections"]) / len(all_collections) * 100) if all_collections else 0
+        }
+        
+        return index_summary
+        
+    except Exception as e:
+        logger.error(f"Failed to get index summary: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get index summary: {str(e)}")
 
 @router.get("/status")
 async def get_collections_status():
@@ -628,6 +729,123 @@ async def get_collection_stats(collection_name: str):
         raise HTTPException(status_code=500, detail=f"Failed to get statistics: {stats.get('error', 'Unknown error')}")
     
     return stats
+
+@router.get("/{collection_name}/index-info")
+async def get_collection_index_info(collection_name: str):
+    """Get detailed index information for a specific collection"""
+    try:
+        # Connect to Milvus
+        get_milvus_connection()
+        
+        # Check if collection exists
+        if not utility.has_collection(collection_name):
+            raise HTTPException(status_code=404, detail="Collection not found in vector database")
+        
+        # Get collection object
+        collection = Collection(collection_name)
+        
+        # Get index information
+        indexes = collection.indexes
+        index_info = []
+        
+        for index in indexes:
+            index_info.append({
+                "field_name": index.field_name,
+                "index_name": index.index_name,
+                "index_type": index.params.get("index_type", "unknown"),
+                "metric_type": index.params.get("metric_type", "unknown"),
+                "index_params": index.params.get("params", {}),
+                "full_params": index.params
+            })
+        
+        return {
+            "collection_name": collection_name,
+            "indexes": index_info,
+            "total_indexes": len(index_info),
+            "has_hnsw": any(idx["index_type"] == "HNSW" for idx in index_info),
+            "vector_index_type": next((idx["index_type"] for idx in index_info if idx["field_name"] == "vector"), "not_found")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get index info for {collection_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get index information: {str(e)}")
+
+@router.post("/rebuild-with-hnsw")
+async def rebuild_collections_with_hnsw(db=Depends(get_db)):
+    """
+    Rebuild all collections with HNSW index (WARNING: This will delete all vector data)
+    
+    This endpoint:
+    1. Gets all collections from PostgreSQL
+    2. Drops existing Milvus collections 
+    3. Recreates them with HNSW index
+    4. Returns rebuild results
+    
+    WARNING: All vector data will be lost and need to be re-uploaded!
+    """
+    try:
+        # Get all collections from PostgreSQL
+        query = """
+            SELECT collection_name, metadata_schema 
+            FROM collection_registry 
+            ORDER BY created_at ASC
+        """
+        result = db.execute(text(query)).fetchall()
+        
+        rebuild_results = {
+            "total_collections": len(result),
+            "rebuilt": [],
+            "failed": [],
+            "milvus_available": False,
+            "warning": "All vector data has been deleted and needs to be re-uploaded!"
+        }
+        
+        # Try to connect to Milvus
+        try:
+            get_milvus_connection()
+            rebuild_results["milvus_available"] = True
+        except Exception as e:
+            logger.error(f"Milvus not available for rebuild: {e}")
+            raise HTTPException(status_code=500, detail="Milvus vector database not available")
+        
+        # Rebuild each collection with HNSW
+        for row in result:
+            collection_name = row[0]
+            metadata_schema = row[1] if isinstance(row[1], dict) else (json.loads(row[1]) if row[1] else {})
+            
+            try:
+                # Drop existing collection if it exists
+                if utility.has_collection(collection_name):
+                    existing_collection = Collection(collection_name)
+                    existing_collection.drop()
+                    logger.info(f"Dropped existing collection: {collection_name}")
+                
+                # Create new collection with HNSW
+                success = create_milvus_collection(collection_name, metadata_schema)
+                if success:
+                    rebuild_results["rebuilt"].append(collection_name)
+                    logger.info(f"Successfully rebuilt collection with HNSW: {collection_name}")
+                else:
+                    rebuild_results["failed"].append(collection_name)
+                    logger.error(f"Failed to rebuild collection: {collection_name}")
+                    
+            except Exception as e:
+                logger.error(f"Error rebuilding collection {collection_name}: {e}")
+                rebuild_results["failed"].append(collection_name)
+        
+        # Return results
+        return {
+            "message": f"Rebuild completed: {len(rebuild_results['rebuilt'])} rebuilt, {len(rebuild_results['failed'])} failed",
+            "results": rebuild_results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to rebuild collections with HNSW: {e}")
+        raise HTTPException(status_code=500, detail=f"Rebuild failed: {str(e)}")
 
 @router.post("/initialize-default")
 async def initialize_default_collection_endpoint(db=Depends(get_db)):
