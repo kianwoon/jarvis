@@ -16,6 +16,7 @@ from datetime import datetime
 from app.core.llm_settings_cache import get_llm_settings
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
 from app.core.collection_registry_cache import get_all_collections
+from app.core.query_classifier_settings_cache import get_query_classifier_settings
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier, QueryType
@@ -623,6 +624,98 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                     "conversation_id": request.conversation_id
                 }) + "\n"
                 return
+            
+            # Step 1.5: Check for high-confidence direct execution bypass
+            confidence = routing_result.get("confidence", 0.0)
+            classification = routing_result.get("classification", "")
+            
+            # Get direct execution threshold from settings
+            classifier_settings = get_query_classifier_settings()
+            direct_execution_threshold = classifier_settings.get("direct_execution_threshold", 0.9)
+            
+            # If high confidence and tool classification, bypass intelligent planning
+            if (confidence >= direct_execution_threshold and 
+                classification.upper() in ["TOOL", "TOOLS"] and 
+                routing_result.get("suggested_tools")):
+                
+                logger.info(f"Direct execution bypass: confidence={confidence:.3f} >= {direct_execution_threshold}, classification={classification}")
+                
+                # Send initial event indicating direct execution
+                yield json.dumps({
+                    "type": "chat_start",
+                    "conversation_id": request.conversation_id,
+                    "model": "direct-execution",
+                    "thinking": request.thinking,
+                    "confidence": confidence,
+                    "classification": classification,
+                    "bypass_planning": True
+                }) + "\n"
+                
+                # Execute the highest-confidence tool directly
+                suggested_tools = routing_result.get("suggested_tools", [])
+                tool_name = suggested_tools[0]  # Use the first/best suggestion
+                
+                # Get basic parameters for the tool (empty for simple tools like datetime)
+                tool_parameters = {}
+                
+                # Create tool call structure
+                direct_tool_calls = [{
+                    "tool": tool_name,
+                    "parameters": tool_parameters
+                }]
+                
+                logger.info(f"Direct execution: {tool_name} with parameters: {tool_parameters}")
+                
+                # Skip to tool execution (Step 5)
+                yield json.dumps({
+                    "type": "tools_start",
+                    "tool_count": 1
+                }) + "\n"
+                
+                # Execute the tool directly
+                for tool_call in direct_tool_calls:
+                    tool_result = await execute_mcp_tool(
+                        tool_call["tool"],
+                        tool_call["parameters"],
+                        trace,
+                        chat_span
+                    )
+                    
+                    yield json.dumps({
+                        "type": "tool_result",
+                        "tool_result": tool_result
+                    }) + "\n"
+                    
+                    # Generate final response from tool result
+                    if tool_result.get("success") and "result" in tool_result:
+                        # For datetime and simple tools, format the result nicely
+                        if tool_name == "get_datetime" and isinstance(tool_result["result"], str):
+                            try:
+                                from datetime import datetime
+                                dt = datetime.fromisoformat(tool_result["result"].replace('Z', '+00:00'))
+                                formatted_date = dt.strftime("%A, %B %d, %Y")
+                                final_answer = f"Today's date is {formatted_date}."
+                            except:
+                                final_answer = f"Today's date is {tool_result['result']}."
+                        else:
+                            # Generic tool result formatting
+                            result_data = tool_result["result"]
+                            if isinstance(result_data, dict):
+                                final_answer = json.dumps(result_data, indent=2)
+                            else:
+                                final_answer = str(result_data)
+                        
+                        yield json.dumps({
+                            "answer": final_answer,
+                            "source": "direct_tool_execution",
+                            "conversation_id": request.conversation_id,
+                            "tool_used": tool_name
+                        }) + "\n"
+                        return
+                    else:
+                        # Tool execution failed, continue with normal flow
+                        logger.warning(f"Direct execution failed for {tool_name}: {tool_result.get('error', 'Unknown error')}")
+                        break
             
             # Step 2: Build lightweight decision prompt - Phase 1 approach
             system_prompt = build_lightweight_decision_prompt()

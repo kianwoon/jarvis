@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from app.langchain.multi_agent_system_simple import MultiAgentSystem
 from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier, QueryType
 from app.core.langfuse_integration import get_tracer
+from app.core.query_classifier_settings_cache import get_query_classifier_settings
 from fastapi.responses import StreamingResponse
 import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any

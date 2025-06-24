@@ -60,7 +60,8 @@
       "Bash(docker rm:*)",
       "Bash(docker run:*)",
       "Bash(npx tsc:*)",
-      "WebFetch(domain:modelcontextprotocol.io)"
+      "WebFetch(domain:modelcontextprotocol.io)",
+      "Bash(time curl:*)"
     ],
     "deny": []
   },

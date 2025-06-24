@@ -10,11 +10,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ../MCP:/mcp-servers
-    environment:
-      - MCP_SERVERS_PATH=/mcp-servers
     env_file:
       - .env.docker
     environment:
+      - MCP_SERVERS_PATH=/mcp-servers
       - ENVIRONMENT=development
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - REDIS_HOST=redis

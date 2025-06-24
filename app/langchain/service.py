@@ -1008,7 +1008,101 @@ Answer with exactly one word: RAG, TOOLS, or LLM"""
     print(f"[DEBUG] classify_query_type: Final classification = {classification}")
     return classification
 
-def execute_tools_first(question: str, thinking: bool = False) -> tuple:
+async def execute_intelligent_planning(question: str, thinking: bool = False, trace=None) -> tuple:
+    """
+    Enhanced intelligent planning system using IntelligentToolPlanner
+    Returns: (tool_results, search_context)
+    """
+    print(f"[DEBUG] execute_intelligent_planning: question = {question}, thinking = {thinking}")
+    
+    try:
+        from app.langchain.intelligent_tool_planner import get_tool_planner
+        from app.langchain.intelligent_tool_executor import IntelligentToolExecutor
+        from app.core.langfuse_integration import get_tracer
+        
+        # Create intelligent planning span
+        planning_span = None
+        if trace:
+            tracer = get_tracer()
+            if tracer.is_enabled():
+                planning_span = tracer.create_span(
+                    trace,
+                    name="intelligent-tool-planning",
+                    metadata={
+                        "operation": "intelligent_planning",
+                        "question": question,
+                        "thinking": thinking
+                    }
+                )
+        
+        # Get tool planner and executor
+        planner = get_tool_planner()
+        executor = IntelligentToolExecutor(trace=trace)
+        
+        print(f"[DEBUG] execute_intelligent_planning: Creating execution plan...")
+        
+        # Create execution plan
+        execution_plan = await planner.plan_tool_execution(
+            task=question,
+            context={"user_question": question, "thinking_mode": thinking},
+            mode="standard"
+        )
+        
+        print(f"[DEBUG] execute_intelligent_planning: Plan created with {len(execution_plan.tools)} tools: {[t.tool_name for t in execution_plan.tools]}")
+        
+        if not execution_plan.tools:
+            print(f"[DEBUG] execute_intelligent_planning: No tools planned, returning empty results")
+            if planning_span:
+                tracer = get_tracer()
+                tracer.end_span_with_result(planning_span, {"tools": [], "reasoning": execution_plan.reasoning}, True)
+            return [], ""
+        
+        # Execute planned tools
+        tool_results = []
+        search_context = ""
+        
+        async for update in executor.execute_task_intelligently(
+            task=question,
+            context={"user_question": question, "thinking_mode": thinking},
+            mode="standard"
+        ):
+            if update.get("type") == "tool_result":
+                result = update.get("result")
+                if result and result.success:
+                    tool_results.append({
+                        "tool": result.tool_name,
+                        "success": True,
+                        "result": result.result,
+                        "execution_time": result.execution_time or 0.5
+                    })
+                    
+                    # Build search context
+                    search_context += f"\n{result.tool_name}: {json.dumps(result.result, indent=2) if isinstance(result.result, dict) else result.result}\n"
+        
+        print(f"[DEBUG] execute_intelligent_planning: Executed {len(tool_results)} tools successfully")
+        
+        if planning_span:
+            tracer = get_tracer()
+            tracer.end_span_with_result(planning_span, {
+                "tools_executed": len(tool_results),
+                "tools": [r["tool"] for r in tool_results],
+                "reasoning": execution_plan.reasoning
+            }, True)
+        
+        return tool_results, search_context
+        
+    except Exception as e:
+        print(f"[DEBUG] execute_intelligent_planning: Failed with error: {e}")
+        logger.error(f"Intelligent planning failed: {e}", exc_info=True)
+        
+        if planning_span:
+            tracer = get_tracer()
+            tracer.end_span_with_result(planning_span, {"error": str(e)}, False)
+        
+        # Fallback to legacy system
+        return execute_tools_first_legacy(question, thinking)
+
+def execute_tools_first_legacy(question: str, thinking: bool = False) -> tuple:
     """
     Execute tools first, then generate answer with tool results
     Returns: (tool_results, updated_question_with_context)
@@ -1078,7 +1172,7 @@ Output the tool call now:"""
         updated_question = question
         results_context = ""
     
-    return tool_results, updated_question, results_context
+    return tool_results, results_context
 
 def llm_expand_query(question: str, llm_cfg: dict) -> list:
     """Use LLM to generate alternative queries for better retrieval"""
@@ -2234,7 +2328,50 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
             # ENHANCED: Always execute tools and prepare for synthesis
             try:
                 print(f"[DEBUG] rag_answer: Executing tools for TOOLS query")
-                search_results, _, search_context = execute_tools_first(question, thinking)
+                
+                # DIRECT EXECUTION BYPASS for high-confidence tool queries
+                search_results = []
+                search_context = ""
+                
+                try:
+                    from app.core.query_classifier_settings_cache import get_query_classifier_settings
+                    from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier
+                    
+                    classifier_settings = get_query_classifier_settings()
+                    threshold = classifier_settings.get("direct_execution_threshold", 0.6)
+                    
+                    classifier = EnhancedQueryClassifier()
+                    results = await classifier.classify(question)
+                    
+                    if results and results[0].confidence >= threshold and results[0].suggested_tools:
+                        # Use LLM-suggested tool (first one is most relevant)
+                        suggested_tools = results[0].suggested_tools
+                        tool_name = suggested_tools[0]  # LLM already ordered by relevance
+                        confidence = results[0].confidence
+                        
+                        print(f"[DEBUG] rag_answer: DIRECT BYPASS triggered - {tool_name} (confidence: {confidence:.3f}) from LLM suggestions: {suggested_tools}")
+                        
+                        # Execute tool directly without intelligent planning
+                        direct_result = call_mcp_tool(tool_name, {}, trace=trace)
+                        
+                        if direct_result and not direct_result.get("error"):
+                            # Create search_results in the expected format
+                            search_results = [{
+                                "tool": tool_name,
+                                "success": True,
+                                "result": direct_result,
+                                "execution_time": 0.5
+                            }]
+                            search_context = f"\n{tool_name}: {json.dumps(direct_result, indent=2) if isinstance(direct_result, dict) else direct_result}\n"
+                            print(f"[DEBUG] rag_answer: DIRECT EXECUTION SUCCESS - bypassing execute_tools_first")
+                        else:
+                            print(f"[DEBUG] rag_answer: Direct execution failed, falling back to execute_tools_first")
+                except Exception as e:
+                    print(f"[DEBUG] rag_answer: Direct bypass failed: {e}, falling back to execute_tools_first")
+                
+                # Only run intelligent planning if direct execution didn't work
+                if not search_results:
+                    search_results, search_context = await execute_intelligent_planning(question, thinking, trace)
                 if search_results and search_context:
                     print(f"[DEBUG] rag_answer: TOOLS execution successful, will synthesize with LLM")
                     tool_calls = search_results
@@ -2261,7 +2398,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                 print(f"[DEBUG] rag_answer: LLM query contains current info keywords, adding tool enhancement")
                 try:
                     # Execute search tools to get current information
-                    search_results, _, search_context = execute_tools_first(question, thinking)
+                    search_results, search_context = await execute_intelligent_planning(question, thinking, trace)
                     if search_results and search_context:
                         print(f"[DEBUG] rag_answer: Tool enhancement successful for LLM query")
                         tool_calls = search_results
@@ -2293,7 +2430,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                 print(f"[DEBUG] rag_answer: No relevant RAG context found, attempting web search fallback")
                 try:
                     # Execute google_search tool to get current information
-                    search_results, _, search_context = execute_tools_first(question, thinking)
+                    search_results, search_context = await execute_intelligent_planning(question, thinking, trace)
                     if search_results and search_context:
                         print(f"[DEBUG] rag_answer: Web search fallback successful, got {len(search_context)} chars")
                         # Keep original empty rag_context, but we'll have search_context for synthesis
@@ -2606,107 +2743,144 @@ Please generate the requested items incorporating relevant information from the 
     if query_type == "TOOLS":
         # Only execute tools if not already executed in web search fallback
         if not tool_calls:  # Check if fallback already populated these
-            # Try intelligent tool executor first
-            try:
-                from app.langchain.intelligent_tool_executor import execute_task_with_intelligent_tools
-                print(f"[DEBUG] rag_answer: Using intelligent tool executor for task: {question}")
-                
-                # Create standard chat span for proper hierarchy
-                chat_span = None
-                if trace:
-                    try:
-                        from app.core.langfuse_integration import get_tracer
-                        tracer = get_tracer()
-                        if tracer.is_enabled():
-                            chat_span = tracer.create_standard_chat_span(trace, question, thinking)
-                    except Exception as e:
-                        logger.warning(f"Failed to create standard chat span: {e}")
-                
-                # Execute task with intelligent planning (pass chat_span as trace for proper nesting)
-                execution_events = await execute_task_with_intelligent_tools(
-                    task=question,
-                    context={
-                        "conversation_id": conversation_id,
-                        "collections": collections,
-                        "collection_strategy": collection_strategy
-                    },
-                    trace=chat_span if chat_span else trace,  # Use chat_span for proper hierarchy
-                    mode="standard"  # Explicitly set mode
-                )
-                
-                # Convert execution events to legacy format for compatibility
-                tool_calls = []
-                tool_context = ""
-                
-                for event in execution_events:
-                    if event.get("type") == "tool_complete" and event.get("success"):
-                        tool_calls.append({
-                            "tool": event.get("tool_name"),
-                            "success": True,
-                            "result": event.get("result"),
-                            "execution_time": event.get("execution_time")
-                        })
-                        
-                        # Build context from successful tool results
-                        if event.get("result"):
-                            tool_context += f"\n{event.get('tool_name')} result: {event.get('result')}\n"
-                    
-                    elif event.get("type") == "execution_complete":
-                        results = event.get("results", {})
-                        if results:
-                            tool_context += f"\nFinal results from {len(results)} tools:\n"
-                            for tool_name, result in results.items():
-                                tool_context += f"- {tool_name}: {result}\n"
-                
-                print(f"[DEBUG] rag_answer: Intelligent executor returned:")
-                print(f"  - tool_calls: {len(tool_calls)} calls")
-                print(f"  - tool_context length: {len(tool_context)}")
-                print(f"  - execution_events: {len(execution_events)} events")
-                
-                # End chat span with results
-                if chat_span:
-                    try:
-                        from app.core.langfuse_integration import get_tracer
-                        tracer = get_tracer()
-                        tracer.end_span_with_result(
-                            chat_span,
-                            {
-                                "tool_calls_count": len(tool_calls),
-                                "execution_events_count": len(execution_events),
-                                "tools_executed": [tc.get('tool') for tc in tool_calls if tc.get('success')],
-                                "context_length": len(tool_context)
-                            },
-                            success=len(tool_calls) > 0
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to end standard chat span: {e}")
-                
-            except Exception as e:
-                print(f"[DEBUG] rag_answer: Intelligent tool executor failed: {e}, trying simple tool executor")
-                
-                # Fallback to simple tool executor
-                try:
-                    from app.langchain.simple_tool_executor import identify_and_execute_tools
-                    tool_calls, tool_context = identify_and_execute_tools(question, trace=trace)
-                    print(f"[DEBUG] rag_answer: Simple tool executor returned:")
-                    print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
-                    print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
-                    if tool_calls:
-                        for tc in tool_calls:
-                            print(f"  - Tool: {tc.get('tool', 'unknown')} - Success: {tc.get('success', False)}")
-                except Exception as e2:
-                    print(f"[DEBUG] rag_answer: Simple tool executor also failed: {e2}, trying original method")
-                # Fallback to original method
-                tool_calls, _, tool_context = execute_tools_first(question, thinking)
-                print(f"[DEBUG] rag_answer: execute_tools_first returned:")
-                print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
-                print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
             
+            # DIRECT EXECUTION BYPASS for high-confidence tool queries
+            print(f"[DEBUG] rag_answer: Checking for direct execution bypass")
+            try:
+                from app.core.query_classifier_settings_cache import get_query_classifier_settings
+                from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier
+                
+                classifier_settings = get_query_classifier_settings()
+                threshold = classifier_settings.get("direct_execution_threshold", 0.6)
+                
+                classifier = EnhancedQueryClassifier()
+                results = await classifier.classify(question)
+                
+                if results and results[0].confidence >= threshold and results[0].suggested_tools:
+                    tool_name = results[0].suggested_tools[0]
+                    confidence = results[0].confidence
+                    print(f"[DEBUG] rag_answer: DIRECT BYPASS triggered - {tool_name} (confidence: {confidence:.3f})")
+                    
+                    # Execute tool directly without intelligent planning
+                    direct_result = call_mcp_tool(tool_name, {}, trace=trace)
+                    
+                    if direct_result and not direct_result.get("error"):
+                        # Populate tool_calls to skip intelligent executor
+                        tool_calls = [{
+                            "tool": tool_name,
+                            "success": True,
+                            "result": direct_result,
+                            "execution_time": 0.5
+                        }]
+                        tool_context = f"\n{tool_name}: {json.dumps(direct_result, indent=2) if isinstance(direct_result, dict) else direct_result}\n"
+                        print(f"[DEBUG] rag_answer: DIRECT EXECUTION SUCCESS - bypassing intelligent executor")
+                    else:
+                        print(f"[DEBUG] rag_answer: Direct execution failed, falling back to intelligent executor")
+            except Exception as e:
+                print(f"[DEBUG] rag_answer: Direct bypass check failed: {e}")
+            
+            # Try intelligent tool executor only if direct execution didn't work
             if not tool_calls:
-                print(f"[DEBUG] rag_answer: No tools actually executed despite TOOLS classification")
-                # For TOOLS queries, we should still prioritize tool-based response
-                # even if tool execution failed
-                tool_context = f"Tool execution was attempted for query: '{question}' but no tools were successfully executed. This may indicate missing tool configuration or execution errors."
+                try:
+                    from app.langchain.intelligent_tool_executor import execute_task_with_intelligent_tools
+                    print(f"[DEBUG] rag_answer: Using intelligent tool executor for task: {question}")
+                    
+                    # Create standard chat span for proper hierarchy
+                    chat_span = None
+                    if trace:
+                        try:
+                            from app.core.langfuse_integration import get_tracer
+                            tracer = get_tracer()
+                            if tracer.is_enabled():
+                                chat_span = tracer.create_standard_chat_span(trace, question, thinking)
+                        except Exception as e:
+                            logger.warning(f"Failed to create standard chat span: {e}")
+                    
+                    # Execute task with intelligent planning (pass chat_span as trace for proper nesting)
+                    execution_events = await execute_task_with_intelligent_tools(
+                        task=question,
+                        context={
+                            "conversation_id": conversation_id,
+                            "collections": collections,
+                            "collection_strategy": collection_strategy
+                        },
+                        trace=chat_span if chat_span else trace,  # Use chat_span for proper hierarchy
+                        mode="standard"  # Explicitly set mode
+                    )
+                    
+                    # Convert execution events to legacy format for compatibility
+                    tool_calls = []
+                    tool_context = ""
+                    
+                    for event in execution_events:
+                        if event.get("type") == "tool_complete" and event.get("success"):
+                            tool_calls.append({
+                                "tool": event.get("tool_name"),
+                                "success": True,
+                                "result": event.get("result"),
+                                "execution_time": event.get("execution_time")
+                            })
+                            
+                            # Build context from successful tool results
+                            if event.get("result"):
+                                tool_context += f"\n{event.get('tool_name')} result: {event.get('result')}\n"
+                        
+                        elif event.get("type") == "execution_complete":
+                            results = event.get("results", {})
+                            if results:
+                                tool_context += f"\nFinal results from {len(results)} tools:\n"
+                                for tool_name, result in results.items():
+                                    tool_context += f"- {tool_name}: {result}\n"
+                    
+                    print(f"[DEBUG] rag_answer: Intelligent executor returned:")
+                    print(f"  - tool_calls: {len(tool_calls)} calls")
+                    print(f"  - tool_context length: {len(tool_context)}")
+                    print(f"  - execution_events: {len(execution_events)} events")
+                    
+                    # End chat span with results
+                    if chat_span:
+                        try:
+                            from app.core.langfuse_integration import get_tracer
+                            tracer = get_tracer()
+                            tracer.end_span_with_result(
+                                chat_span,
+                                {
+                                    "tool_calls_count": len(tool_calls),
+                                    "execution_events_count": len(execution_events),
+                                    "tools_executed": [tc.get('tool') for tc in tool_calls if tc.get('success')],
+                                    "context_length": len(tool_context)
+                                },
+                                success=len(tool_calls) > 0
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to end standard chat span: {e}")
+                    
+                except Exception as e:
+                    print(f"[DEBUG] rag_answer: Intelligent tool executor failed: {e}, trying simple tool executor")
+                    
+                    # Fallback to simple tool executor
+                    try:
+                        from app.langchain.simple_tool_executor import identify_and_execute_tools
+                        tool_calls, tool_context = identify_and_execute_tools(question, trace=trace)
+                        print(f"[DEBUG] rag_answer: Simple tool executor returned:")
+                        print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
+                        print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
+                        if tool_calls:
+                            for tc in tool_calls:
+                                print(f"  - Tool: {tc.get('tool', 'unknown')} - Success: {tc.get('success', False)}")
+                    except Exception as e2:
+                        print(f"[DEBUG] rag_answer: Simple tool executor also failed: {e2}, trying original method")
+                        # Fallback to original method
+                        tool_calls, tool_context = await execute_intelligent_planning(question, thinking, trace)
+                        print(f"[DEBUG] rag_answer: execute_tools_first returned:")
+                        print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
+                        print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
+            
+        if not tool_calls:
+            print(f"[DEBUG] rag_answer: No tools actually executed despite TOOLS classification")
+            # For TOOLS queries, we should still prioritize tool-based response
+            # even if tool execution failed
+            tool_context = f"Tool execution was attempted for query: '{question}' but no tools were successfully executed. This may indicate missing tool configuration or execution errors."
         else:
             print(f"[DEBUG] rag_answer: Tools already executed in web search fallback, skipping duplicate execution")
     

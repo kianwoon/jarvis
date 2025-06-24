@@ -1,25 +1,53 @@
 import redis
 import json
 import os
+import time
 
-REDIS_HOST = os.getenv("REDIS_HOST", "redis") 
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 LANGGRAPH_AGENTS_KEY = "langgraph_agents"
 
 # Don't create connection at import time
 r = None
 
-def _get_redis_client():
-    """Get Redis client with lazy initialization"""
+def _get_redis_client(max_retries: int = 3):
+    """Get Redis client with robust connection pattern matching other working implementations"""
     global r
     if r is None:
-        try:
-            r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-            r.ping()
-            print("Redis connected for LangGraph agents cache")
-        except Exception as e:
-            print(f"Redis connection failed for LangGraph agents: {e}")
-            r = None
+        redis_port = int(os.getenv("REDIS_PORT", 6379))
+        redis_password = os.getenv("REDIS_PASSWORD", None)
+        
+        # Smart host detection - try multiple hosts in order of preference
+        redis_host_env = os.getenv("REDIS_HOST", "redis")
+        
+        # Determine hosts to try based on environment
+        if os.path.exists("/.dockerenv") or "CONTAINER" in os.environ:
+            # Running in Docker - try Docker service name first
+            hosts_to_try = [redis_host_env, "redis", "localhost", "127.0.0.1"]
+        else:
+            # Running locally - try localhost first
+            hosts_to_try = ["localhost", "127.0.0.1", redis_host_env] if redis_host_env != "localhost" else ["localhost", "127.0.0.1"]
+        
+        for host in hosts_to_try:
+            for attempt in range(max_retries):
+                try:
+                    r = redis.Redis(
+                        host=host,
+                        port=redis_port,
+                        password=redis_password,
+                        decode_responses=True,
+                        socket_connect_timeout=2,  # Faster timeout for host testing
+                        socket_timeout=2
+                    )
+                    r.ping()
+                    print(f"✓ Redis connected for LangGraph agents cache (host={host}:{redis_port})")
+                    return r
+                except (redis.ConnectionError, redis.TimeoutError):
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5)  # Short retry delay for host testing
+                    # Continue to next host if all attempts fail
+                    break
+        
+        print(f"Redis connection failed for LangGraph agents after trying hosts {hosts_to_try}")
+        r = None
     return r
 
 def _load_agents_from_database():

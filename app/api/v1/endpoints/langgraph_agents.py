@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
-from app.core.db import get_db, LangGraphAgent as LangGraphAgentDB
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
 import redis
 import json
@@ -11,17 +10,55 @@ import os
 
 router = APIRouter()
 
-# Redis connection for caching
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+# Dependency to get DB session - use local function like working examples
+def get_db():
+    # Lazy import to avoid database connection at startup
+    from app.core.db import SessionLocal
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Redis connection for caching - use robust pattern like other working implementations
 LANGGRAPH_AGENTS_KEY = "langgraph_agents"
 
-try:
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-    r.ping()
-except:
-    print("Warning: Redis not available for LangGraph agents cache")
-    r = None
+def _get_redis_connection():
+    """Get Redis connection using smart host detection like the fixed langgraph_agents_cache"""
+    redis_port = int(os.getenv("REDIS_PORT", 6379))
+    redis_password = os.getenv("REDIS_PASSWORD", None)
+    
+    # Smart host detection - try multiple hosts in order of preference
+    redis_host_env = os.getenv("REDIS_HOST", "redis")
+    
+    # Determine hosts to try based on environment
+    if os.path.exists("/.dockerenv") or "CONTAINER" in os.environ:
+        # Running in Docker - try Docker service name first
+        hosts_to_try = [redis_host_env, "redis", "localhost", "127.0.0.1"]
+    else:
+        # Running locally - try localhost first
+        hosts_to_try = ["localhost", "127.0.0.1", redis_host_env] if redis_host_env != "localhost" else ["localhost", "127.0.0.1"]
+    
+    for host in hosts_to_try:
+        try:
+            client = redis.Redis(
+                host=host,
+                port=redis_port,
+                password=redis_password,
+                decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2
+            )
+            client.ping()
+            print(f"✓ Redis connected for LangGraph agents API (host={host}:{redis_port})")
+            return client
+        except (redis.ConnectionError, redis.TimeoutError):
+            continue
+    
+    print(f"Warning: Redis not available for LangGraph agents cache after trying hosts {hosts_to_try}")
+    return None
+
+r = _get_redis_connection()
 
 # Pydantic models
 class LangGraphAgentBase(BaseModel):
@@ -61,6 +98,9 @@ def update_redis_cache(db: Session):
         return False
     
     try:
+        # Lazy import to avoid database connection at startup
+        from app.core.db import LangGraphAgent as LangGraphAgentDB
+        
         agents = db.query(LangGraphAgentDB).all()
         agents_dict = {}
         
@@ -116,12 +156,18 @@ async def get_available_tools():
 @router.get("/agents", response_model=List[LangGraphAgent])
 async def list_agents(db: Session = Depends(get_db)):
     """List all LangGraph agents"""
+    # Lazy import to avoid database connection at startup
+    from app.core.db import LangGraphAgent as LangGraphAgentDB
+    
     agents = db.query(LangGraphAgentDB).all()
     return agents
 
 @router.get("/agents/{agent_id}", response_model=LangGraphAgent)
 async def get_agent(agent_id: int, db: Session = Depends(get_db)):
     """Get a specific LangGraph agent"""
+    # Lazy import to avoid database connection at startup
+    from app.core.db import LangGraphAgent as LangGraphAgentDB
+    
     agent = db.query(LangGraphAgentDB).filter(LangGraphAgentDB.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -130,6 +176,9 @@ async def get_agent(agent_id: int, db: Session = Depends(get_db)):
 @router.post("/agents", response_model=LangGraphAgent)
 async def create_agent(agent: LangGraphAgentCreate, db: Session = Depends(get_db)):
     """Create a new LangGraph agent"""
+    # Lazy import to avoid database connection at startup
+    from app.core.db import LangGraphAgent as LangGraphAgentDB
+    
     # Check if agent with same name exists
     existing = db.query(LangGraphAgentDB).filter(LangGraphAgentDB.name == agent.name).first()
     if existing:
@@ -155,6 +204,9 @@ async def create_agent(agent: LangGraphAgentCreate, db: Session = Depends(get_db
 @router.put("/agents/{agent_id}", response_model=LangGraphAgent)
 async def update_agent(agent_id: int, agent_update: LangGraphAgentUpdate, db: Session = Depends(get_db)):
     """Update a LangGraph agent"""
+    # Lazy import to avoid database connection at startup
+    from app.core.db import LangGraphAgent as LangGraphAgentDB
+    
     print(f"[DEBUG] Updating agent {agent_id}")
     print(f"[DEBUG] Update data: {agent_update.model_dump()}")
     
@@ -202,6 +254,9 @@ async def update_agent(agent_id: int, agent_update: LangGraphAgentUpdate, db: Se
 @router.delete("/agents/{agent_id}")
 async def delete_agent(agent_id: int, db: Session = Depends(get_db)):
     """Delete a LangGraph agent"""
+    # Lazy import to avoid database connection at startup
+    from app.core.db import LangGraphAgent as LangGraphAgentDB
+    
     db_agent = db.query(LangGraphAgentDB).filter(LangGraphAgentDB.id == agent_id).first()
     if not db_agent:
         raise HTTPException(status_code=404, detail="Agent not found")

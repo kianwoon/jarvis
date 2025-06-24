@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 # Default query classifier settings
 DEFAULT_QUERY_CLASSIFIER_SETTINGS = {
     "min_confidence_threshold": 0.1,
+    "direct_execution_threshold": 0.6,
     "max_classifications": 3,
     "enable_hybrid_detection": True,
     "confidence_decay_factor": 0.8,

@@ -1,4 +1,3 @@
-import redis
 import json
 from app.core.config import get_settings
 
@@ -12,15 +11,11 @@ LLM_SETTINGS_KEY = 'llm_settings_cache'
 r = None
 
 def _get_redis_client():
-    """Get Redis client with lazy initialization"""
+    """Get Redis client using the centralized redis_client"""
     global r
     if r is None:
-        try:
-            r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
-            r.ping()  # Test connection
-        except (redis.ConnectionError, redis.TimeoutError) as e:
-            print(f"Redis connection failed: {e}")
-            r = None
+        from app.core.redis_client import get_redis_client
+        r = get_redis_client()
     return r
 
 def get_llm_settings():

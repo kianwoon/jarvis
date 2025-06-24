@@ -75,31 +75,101 @@ class MultiAgentSystem:
         self.llm_settings = get_llm_settings()
         self.routing_cache = {}  # Simple in-memory cache for routing decisions
         
-        # Agent avatars/emojis for better UI
-        self.agent_avatars = {
-            "router": "🧭",
-            "document_researcher": "📚",
-            "tool_executor": "🔧",
-            "context_manager": "🧠",
-            "sales_strategist": "💼",
-            "technical_architect": "🏗️",
-            "financial_analyst": "💰",
-            "service_delivery_manager": "📋",
-            "synthesizer": "🎯"
+        # Load agent avatars/emojis and descriptions from database configuration
+        self.agent_avatars = self._load_agent_avatars()
+        self.agent_descriptions = self._load_agent_descriptions()
+    
+    def _load_agent_avatars(self) -> Dict[str, str]:
+        """Load agent avatars from database configuration or use defaults"""
+        avatars = {}
+        for agent_name, agent_config in self.agents.items():
+            # Check if avatar is configured in database
+            config = agent_config.get('config', {})
+            if config and isinstance(config, dict) and 'avatar' in config:
+                avatars[agent_name] = config['avatar']
+            else:
+                # Use role-based default avatars
+                role = agent_config.get('role', '').lower()
+                if 'router' in role or 'routing' in role:
+                    avatars[agent_name] = "🧭"
+                elif 'document' in role or 'research' in role:
+                    avatars[agent_name] = "📚"
+                elif 'tool' in role or 'executor' in role:
+                    avatars[agent_name] = "🔧"
+                elif 'context' in role or 'manager' in role:
+                    avatars[agent_name] = "🧠"
+                elif 'sales' in role or 'strategist' in role:
+                    avatars[agent_name] = "💼"
+                elif 'technical' in role or 'architect' in role:
+                    avatars[agent_name] = "🏗️"
+                elif 'financial' in role or 'analyst' in role:
+                    avatars[agent_name] = "💰"
+                elif 'service' in role or 'delivery' in role:
+                    avatars[agent_name] = "📋"
+                elif 'synthesizer' in role or 'synthesis' in role:
+                    avatars[agent_name] = "🎯"
+                else:
+                    avatars[agent_name] = "🤖"  # Default robot emoji
+        return avatars
+    
+    def _load_agent_descriptions(self) -> Dict[str, str]:
+        """Load agent descriptions from database configuration"""
+        descriptions = {}
+        for agent_name, agent_config in self.agents.items():
+            # Use the role as description, or config description if available
+            config = agent_config.get('config', {})
+            if config and isinstance(config, dict) and 'description' in config:
+                descriptions[agent_name] = config['description']
+            else:
+                descriptions[agent_name] = agent_config.get('role', 'AI agent')
+        return descriptions
+    
+    def _get_specialized_agents(self) -> List[str]:
+        """Get list of specialized agents from database configuration"""
+        specialized = []
+        for agent_name, agent_config in self.agents.items():
+            config = agent_config.get('config', {})
+            role = agent_config.get('role', '').lower()
+            
+            # Check if explicitly marked as specialized
+            if config and isinstance(config, dict) and config.get('is_specialized', False):
+                specialized.append(agent_name)
+            # Or check by role content for common specialized roles
+            elif any(keyword in role for keyword in [
+                'sales', 'technical', 'financial', 'architect', 'strategist', 
+                'analyst', 'cto', 'ceo', 'cio', 'compliance', 'roi'
+            ]):
+                specialized.append(agent_name)
+        return specialized
+    
+    def _get_agent_display_order(self) -> List[str]:
+        """Get agent display order from configuration or use intelligent defaults"""
+        # Check if there's a global configuration for agent order
+        display_order = []
+        role_priority = {
+            'sales': 1,
+            'technical': 2, 
+            'architect': 2,
+            'financial': 3,
+            'analyst': 3,
+            'service': 4,
+            'delivery': 4
         }
         
-        # Agent descriptions for hover tooltips
-        self.agent_descriptions = {
-            "router": "Analyzes your query and selects the most appropriate agents to handle it",
-            "document_researcher": "Searches through uploaded documents and knowledge base for relevant information",
-            "tool_executor": "Executes tools and calculations to provide computational results",
-            "context_manager": "Manages conversation history and maintains context across interactions",
-            "sales_strategist": "Provides strategic sales perspectives, value propositions, and client engagement strategies",
-            "technical_architect": "Offers technical architecture insights, system design, and implementation recommendations",
-            "financial_analyst": "Analyzes costs, ROI, pricing models, and financial implications",
-            "service_delivery_manager": "Designs service delivery plans, SLAs, and operational frameworks",
-            "synthesizer": "Combines insights from all agents into a comprehensive, coherent response"
-        }
+        # Sort agents by role priority
+        agent_roles = []
+        for agent_name, agent_config in self.agents.items():
+            role = agent_config.get('role', '').lower()
+            priority = 999  # Default low priority
+            for keyword, prio in role_priority.items():
+                if keyword in role:
+                    priority = prio
+                    break
+            agent_roles.append((priority, agent_name))
+        
+        # Sort by priority and return agent names
+        agent_roles.sort(key=lambda x: x[0])
+        return [agent_name for _, agent_name in agent_roles]
     
     def _get_agent_prompt_with_template(self, agent_name: str, state: AgentState, default_prompt: str) -> str:
         """Get agent prompt, using template instructions if available"""
@@ -162,15 +232,27 @@ class MultiAgentSystem:
         ])
         
         # Default patterns based on agent combinations
-        if "sales_strategist" in selected_agents and "financial_analyst" in selected_agents:
+        # Find agents by role instead of hardcoded names
+        sales_agents = [a for a in selected_agents if 'sales' in self.agents.get(a, {}).get('role', '').lower()]
+        financial_agents = [a for a in selected_agents if 'financial' in self.agents.get(a, {}).get('role', '').lower()]
+        technical_agents = [a for a in selected_agents if 'technical' in self.agents.get(a, {}).get('role', '').lower()]
+        service_agents = [a for a in selected_agents if 'service' in self.agents.get(a, {}).get('role', '').lower()]
+        
+        if sales_agents and financial_agents:
             # Sales often needs financial input first
+            order = financial_agents + sales_agents + technical_agents + service_agents
+            # Remove duplicates while preserving order
+            order = list(dict.fromkeys(order))
+            dependencies = {}
+            if sales_agents and financial_agents:
+                dependencies[sales_agents[0]] = financial_agents
+            if service_agents and technical_agents:
+                dependencies[service_agents[0]] = technical_agents
+            
             return {
                 "pattern": "sequential",
-                "order": ["financial_analyst", "sales_strategist", "technical_architect", "service_delivery_manager"],
-                "dependencies": {
-                    "sales_strategist": ["financial_analyst"],
-                    "service_delivery_manager": ["technical_architect"]
-                }
+                "order": order,
+                "dependencies": dependencies
             }
         elif needs_hierarchical:
             return {
@@ -328,7 +410,7 @@ class MultiAgentSystem:
             # Get agent-specific configuration
             # If agent_config is passed (from pipeline), use it; otherwise get from langgraph cache
             if not agent_config:
-                agent_data = get_agent_by_role(agent_name)
+                agent_data = get_agent_by_name(agent_name)
                 agent_config = agent_data.get("config", {}) if agent_data else {}
             
             # Use agent config with fallbacks to thinking mode settings
@@ -451,15 +533,19 @@ class MultiAgentSystem:
         active_agents = get_active_agents()
         
         # Only include agents that have actual implementations
-        implemented_agents = {
-            "document_researcher": active_agents.get("document_researcher"),
-            "tool_executor": active_agents.get("tool_executor"),
-            "context_manager": active_agents.get("context_manager"),
-            "sales_strategist": active_agents.get("sales_strategist"),
-            "technical_architect": active_agents.get("technical_architect"),
-            "financial_analyst": active_agents.get("financial_analyst"),
-            "service_delivery_manager": active_agents.get("service_delivery_manager")
-        }
+        # Get all active agents from database instead of hardcoded list
+        implemented_agents = {}
+        core_agents = ["document_researcher", "tool_executor", "context_manager"]
+        
+        # Add core agents
+        for agent_name in core_agents:
+            if agent_name in active_agents:
+                implemented_agents[agent_name] = active_agents[agent_name]
+        
+        # Add all other active agents dynamically
+        for agent_name, agent_config in active_agents.items():
+            if agent_name not in core_agents and agent_config:
+                implemented_agents[agent_name] = agent_config
         
         # Remove None values (agents not in cache)
         implemented_agents = {k: v for k, v in implemented_agents.items() if v is not None}
@@ -649,30 +735,52 @@ Important: Only use agent names that exist in the available agents list above.""
         has_client = any(word in query_lower for word in ["client", "customer", "bank", "abc"])
         has_service_model = any(word in query_lower for word in ["t&m", "managed service", "time and material", "msp"])
         
-        # Helper function to find best matching agent
+        # Helper function to find best matching agent - STRICT MATCHING ONLY
         def find_matching_agent(target_names):
             matches = []
             for target in target_names:
-                # First try exact match
+                # Try exact match first
                 if target in available_agents:
                     matches.append(target)
+                    continue
+                    
+                # Try exact case-insensitive match
+                target_lower = target.lower().strip()
+                for available_agent in available_agents:
+                    if target_lower == available_agent.lower().strip():
+                        matches.append(available_agent)
+                        break
                 else:
-                    # Try case-insensitive and partial matching
-                    target_lower = target.lower()
-                    for available_agent in available_agents:
-                        if (target_lower in available_agent.lower() or 
-                            available_agent.lower() in target_lower or
-                            any(word in available_agent.lower() for word in target_lower.split('_'))):
-                            matches.append(available_agent)
-                            break
+                    # Only try specific known synonyms - NO FUZZY MATCHING
+                    agent_synonyms = {
+                        "researcher": "Researcher Agent",
+                        "financial analyst": "financial Analyst",
+                        "business analyst": "BizAnalyst Agent",
+                        "document researcher": "Document Researcher",
+                        "sales strategist": "Sales Strategist",
+                        "technical architect": "Technical Architect", 
+                        "service delivery manager": "Service Delivery Manager"
+                    }
+                    
+                    if target_lower in agent_synonyms and agent_synonyms[target_lower] in available_agents:
+                        matches.append(agent_synonyms[target_lower])
+                        print(f"[INFO] Synonym match: {target} → {agent_synonyms[target_lower]}")
+                    else:
+                        print(f"[WARNING] No exact match found for '{target}' in available agents")
+                        # DO NOT add fuzzy matches - let it fail cleanly
             return matches
         
         # For a proposal discussion or managed services query, we want multiple perspectives
         if (any(word in query_lower for word in ["proposal", "client", "discuss", "counter"]) or
             is_managed_services or
             (has_client and (has_pricing or has_strategy or has_service_model))):
-            # Try to find specialist team agents
-            desired_agents = ["sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager"]
+            # Try to find specialist team agents based on roles
+            desired_roles = ["sales", "technical", "financial", "service"]
+            desired_agents = []
+            for agent_name, agent_config in available_agents.items():
+                role = agent_config.get('role', '').lower()
+                if any(desired_role in role for desired_role in desired_roles):
+                    desired_agents.append(agent_name)
             routing["agents"] = find_matching_agent(desired_agents)
             
             # If we couldn't find the specialist team, look for any strategic agents
@@ -797,27 +905,39 @@ Important: Only use agent names that exist in the available agents list above.""
         agent_config = state.get("metadata", {}).get("pipeline_agent_config", {})
         template_instructions = agent_config.get("default_instructions", "")
         
-        # Check for messages from other agents
-        messages = self.check_agent_messages("sales_strategist", state)
+        # Check for messages from other agents - make dynamic
+        agent_name = "sales_strategist"  # This would be passed as parameter in real dynamic system
+        messages = self.check_agent_messages(agent_name, state)
         financial_insights = ""
         
         for msg in messages:
-            if msg["from"] == "financial_analyst":
+            # Look for messages from financial analysts dynamically
+            from_agent_role = self.agents.get(msg["from"], {}).get('role', '').lower()
+            if 'financial' in from_agent_role and 'analyst' in from_agent_role:
                 financial_insights = f"\n\nFinancial Analyst Insights: {msg['message']}"
                 # Send response back
-                async for event in self.respond_to_message("sales_strategist", msg["id"], "Thank you for the financial analysis. I'll incorporate this into my sales strategy.", state):
+                async for event in self.respond_to_message(agent_name, msg["id"], "Thank you for the financial analysis. I'll incorporate this into my sales strategy.", state):
                     yield event
         
         # Check if we need financial input for pricing strategy
         if ("pricing" in state["query"].lower() or "cost" in state["query"].lower()) and not financial_insights:
-            # Request input from financial analyst
-            async for event in self.send_message_to_agent(
-                "sales_strategist", 
-                "financial_analyst",
-                f"I need cost-benefit analysis for {context['client']} - {context['requirement']}. What are the key financial advantages of managed services over {context['current_model']}?",
-                state
-            ):
-                yield event
+            # Find financial analyst dynamically
+            financial_agent = None
+            for agent_name, agent_config in self.agents.items():
+                role = agent_config.get('role', '').lower()
+                if 'financial' in role and 'analyst' in role:
+                    financial_agent = agent_name
+                    break
+            
+            if financial_agent:
+                # Request input from financial analyst
+                async for event in self.send_message_to_agent(
+                    agent_name,  # Current sales agent
+                    financial_agent,
+                    f"I need cost-benefit analysis for {context['client']} - {context['requirement']}. What are the key financial advantages of managed services over {context['current_model']}?",
+                    state
+                ):
+                    yield event
         
         # Use template instructions if available, otherwise use default prompt
         if template_instructions:
@@ -878,7 +998,8 @@ Your response should cover:
 
 Focus on technical excellence and reliability that banks require. Be specific about technologies and metrics."""
 
-        async for event in self._call_llm_stream(prompt, "technical_architect", temperature=0.6):
+        agent_name = "technical_architect"  # This would be passed as parameter in real dynamic system
+        async for event in self._call_llm_stream(prompt, agent_name, temperature=0.6):
             yield event
     
     async def _financial_analyst_agent(self, state: AgentState):
@@ -886,7 +1007,8 @@ Focus on technical excellence and reliability that banks require. Be specific ab
         context = self._extract_query_context(state["query"])
         
         # Check for messages from other agents
-        messages = self.check_agent_messages("financial_analyst", state)
+        agent_name = "financial_analyst"  # This would be passed as parameter in real dynamic system  
+        messages = self.check_agent_messages(agent_name, state)
         additional_queries = []
         
         for msg in messages:
@@ -929,13 +1051,13 @@ Your analysis should include:
 Use realistic market rates for Singapore/APAC region. Present numbers clearly with executive summary.{''.join(additional_queries)}"""
 
         # First generate our main analysis
-        async for event in self._call_llm_stream(prompt, "financial_analyst", temperature=0.5):
+        async for event in self._call_llm_stream(prompt, agent_name, temperature=0.5):
             yield event
         
         # Then respond to any messages from other agents
         for msg in messages:
             response = f"Key financial insights for {msg['from']}: 1) Managed services typically reduce TCO by 25-35% over 3 years. 2) Predictable monthly costs vs variable T&M billing. 3) Risk mitigation through SLAs and penalties. 4) Access to senior expertise without full-time cost."
-            async for event in self.respond_to_message("financial_analyst", msg["id"], response, state):
+            async for event in self.respond_to_message(agent_name, msg["id"], response, state):
                 yield event
     
     async def _service_delivery_manager_agent(self, state: AgentState):
@@ -984,7 +1106,8 @@ Your plan should detail:
 
 Remember {context['client']} is a major bank requiring highest service standards. Be specific and actionable."""
 
-        async for event in self._call_llm_stream(prompt, "service_delivery_manager", temperature=0.6):
+        agent_name = "service_delivery_manager"  # This would be passed as parameter in real dynamic system
+        async for event in self._call_llm_stream(prompt, agent_name, temperature=0.6):
             yield event
     
     async def _tool_executor_agent(self, state: AgentState) -> Dict[str, Any]:
@@ -1145,8 +1268,7 @@ Remember {context['client']} is a major bank requiring highest service standards
         }
     
     async def _synthesizer_agent(self, state: AgentState) -> str:
-        """Synthesize final response from all agent outputs"""
-        final_parts = []
+        """Synthesize final response from all agent outputs using the configured synthesizer system prompt"""
         
         # Debug: Print what outputs we have
         print(f"[DEBUG] Synthesizer received outputs from agents: {list(state['agent_outputs'].keys())}")
@@ -1159,89 +1281,124 @@ Remember {context['client']} is a major bank requiring highest service standards
             else:
                 print(f"[DEBUG] Agent {agent} output structure: {output}")
         
-        # Check if we have any meaningful responses (including timeout responses)
-        has_meaningful_response = False
-        timeout_responses = 0
-        successful_responses = 0
-        
-        for output in state["agent_outputs"].values():
+        # Check if we have any meaningful responses
+        meaningful_outputs = []
+        for agent_name, output in state["agent_outputs"].items():
             response = output.get("response", "")
-            if response and len(response) > 20:
-                has_meaningful_response = True
-                if "⏰" in response or "timed out" in response.lower():
-                    timeout_responses += 1
-                else:
-                    successful_responses += 1
+            if response and len(response.strip()) > 20:  # Filter out very short responses
+                meaningful_outputs.append({
+                    "agent": agent_name,
+                    "role": self.agents.get(agent_name, {}).get('role', 'Unknown'),
+                    "response": response.strip()
+                })
         
-        print(f"[DEBUG] Synthesizer: {successful_responses} successful responses, {timeout_responses} timeout responses")
-        
-        # Skip the fallback message if we have specialized agents responding
-        # Check both hardcoded and dynamic agents
-        specialized_agents = [
-            "sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager",
-            "PreSalesArchitect", "CTO_Agent", "ROI_Analyst", "ComplianceAgent",
-            "CEO_Agent", "CIO_Agent", "BizAnalystAgent", "Corporate_Strategist"
-        ]
-        has_specialized_agents = any(
-            agent in state["agent_outputs"] 
-            for agent in specialized_agents
-        ) or len(state["agent_outputs"]) > 1  # Multiple agents usually means specialized response
-        
-        if not has_meaningful_response and not has_specialized_agents:
-            # No meaningful responses, provide a helpful default
-            print(f"[DEBUG] Synthesizer: No meaningful responses found. has_meaningful_response={has_meaningful_response}, has_specialized_agents={has_specialized_agents}")
+        if not meaningful_outputs:
+            print(f"[DEBUG] Synthesizer: No meaningful responses found")
             return (
-                "I couldn't find specific information in the knowledge base to help with your query.\n\n"
+                "I couldn't find specific information to help with your query.\n\n"
                 "Please try:\n"
                 "• Uploading relevant documents to the knowledge base\n"
                 "• Asking a more specific question\n"
                 "• Using the standard chat mode for general inquiries"
             )
         
-        # For specialized agents, create a well-formatted comprehensive response
-        if has_specialized_agents:
-            if timeout_responses > 0:
-                final_parts.append(f"Based on the multi-agent analysis (⚠️ {timeout_responses} agents experienced delays), here's a comprehensive response:\n")
+        print(f"[DEBUG] Synthesizer: Processing {len(meaningful_outputs)} meaningful responses")
+        
+        # Get synthesizer configuration from database
+        synthesizer_config = self.agents.get("synthesizer", {})
+        synthesizer_system_prompt = synthesizer_config.get('system_prompt', '')
+        
+        if not synthesizer_system_prompt:
+            print("[WARNING] No synthesizer system prompt found in database, using fallback concatenation")
+            # Fallback to simple concatenation if no system prompt configured
+            return self._fallback_synthesis(meaningful_outputs, state)
+        
+        # Prepare inputs for synthesis
+        agent_inputs = []
+        for output_data in meaningful_outputs:
+            agent_inputs.append(f"**{output_data['agent']} ({output_data['role']}):**\n{output_data['response']}")
+        
+        combined_inputs = "\n\n---\n\n".join(agent_inputs)
+        
+        # Build synthesis prompt - direct and to the point
+        synthesis_prompt = f"""{synthesizer_system_prompt}
+
+**INPUTS TO SYNTHESIZE:**
+
+{combined_inputs}
+
+**ORIGINAL QUERY:** {state['query']}
+
+<think>
+Analyze the inputs and plan the synthesis approach.
+</think>
+
+Now provide your synthesis:"""
+        
+        print(f"[DEBUG] Synthesizer: Using LLM with system prompt ({len(synthesizer_system_prompt)} chars)")
+        print(f"[DEBUG] Synthesizer: Processing {len(combined_inputs)} chars of agent inputs")
+        
+        # Use the LLM to synthesize the response
+        try:
+            print(f"[DEBUG] Synthesizer: Starting LLM call with prompt length {len(synthesis_prompt)}")
+            
+            # Call the LLM with the synthesis prompt
+            synthesis_result = ""
+            event_count = 0
+            # Call synthesizer with special handling - don't strip thinking tags
+            from app.llm.ollama import OllamaLLM
+            from app.llm.base import LLMConfig
+            import os
+            
+            # Get synthesizer config
+            synthesizer_config = self.agents.get("synthesizer", {}).get("config", {})
+            model_config = self.llm_settings.get("thinking_mode", {})
+            
+            config = LLMConfig(
+                model_name=model_config.get("model", "qwen3:30b-a3b"),
+                temperature=synthesizer_config.get("temperature", 0.3),
+                top_p=model_config.get("top_p", 0.9),
+                max_tokens=synthesizer_config.get("max_tokens", 8000)
+            )
+            
+            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            llm = OllamaLLM(config, base_url=ollama_url)
+            
+            print(f"[DEBUG] Synthesizer: Direct LLM call without thinking tag removal")
+            async for response_chunk in llm.generate_stream(synthesis_prompt):
+                synthesis_result += response_chunk.text
+                print(f"[DEBUG] Synthesizer: Raw token: '{response_chunk.text}'")
+            
+            print(f"[DEBUG] Synthesizer: Raw LLM response length: {len(synthesis_result)}")
+            print(f"[DEBUG] Synthesizer: Raw response preview: {synthesis_result[:200]}...")
+            
+            print(f"[DEBUG] Synthesizer: LLM call completed, received {event_count} events")
+            print(f"[DEBUG] Synthesizer: Final synthesis result length: {len(synthesis_result)}")
+            
+            if synthesis_result.strip():
+                print(f"[DEBUG] Synthesizer: Generated {len(synthesis_result)} char synthesis")
+                print(f"[DEBUG] Synthesizer: Preview: {synthesis_result[:200]}...")
+                return synthesis_result.strip()
             else:
-                final_parts.append("Based on the multi-agent analysis, here's a comprehensive response:\n")
-            
-            # Add each specialized agent's response with proper formatting
-            # First try hardcoded agent order for consistency
-            agent_order = ["sales_strategist", "technical_architect", "financial_analyst", "service_delivery_manager"]
-            displayed_agents = set()
-            
-            for agent_name in agent_order:
-                if agent_name in state["agent_outputs"]:
-                    output = state["agent_outputs"][agent_name]
-                    if output.get("response"):
-                        agent_title = agent_name.replace('_', ' ').title()
-                        # Use markdown headers for better structure
-                        final_parts.append(f"## {agent_title} Perspective\n")
-                        final_parts.append(output["response"])
-                        final_parts.append("")  # Add blank line for spacing
-                        displayed_agents.add(agent_name)
-            
-            # Then add any dynamic agents that weren't in the predefined order
-            for agent_name, output in state["agent_outputs"].items():
-                if agent_name not in displayed_agents and output.get("response"):
-                    # Format agent name nicely
-                    agent_title = agent_name.replace('_', ' ').replace('Agent', ' Agent').strip().title()
-                    final_parts.append(f"## {agent_title} Perspective\n")
-                    final_parts.append(output["response"])
-                    final_parts.append("")  # Add blank line for spacing
-        else:
-            # Standard routing with icons
-            if state["routing_decision"] and state["routing_decision"].get("reasoning"):
-                final_parts.append(f"📊 **Analysis**: {state['routing_decision']['reasoning']}\n")
-            
-            # Add agent responses
-            for agent_name, output in state["agent_outputs"].items():
-                if output.get("response"):
-                    agent_title = agent_name.replace('_', ' ').title()
-                    icon = "📄" if "document" in agent_name else "🔧" if "tool" in agent_name else "🧠"
-                    final_parts.append(f"{icon} **{agent_title}**:\n")
-                    final_parts.append(output['response'])
-                    final_parts.append("")  # Add blank line for spacing
+                print("[WARNING] Synthesizer LLM returned empty response, using fallback")
+                print(f"[WARNING] Raw synthesis result: '{synthesis_result}'")
+                return self._fallback_synthesis(meaningful_outputs, state)
+                
+        except Exception as e:
+            print(f"[ERROR] Synthesizer LLM call failed: {e}, using fallback")
+            import traceback
+            print(f"[ERROR] Synthesizer traceback: {traceback.format_exc()}")
+            return self._fallback_synthesis(meaningful_outputs, state)
+    
+    def _fallback_synthesis(self, meaningful_outputs, state):
+        """Fallback synthesis when LLM synthesis fails"""
+        final_parts = ["Based on the multi-agent analysis:\n"]
+        
+        for output_data in meaningful_outputs:
+            agent_title = output_data['agent'].replace('_', ' ').replace('Agent', ' Agent').strip().title()
+            final_parts.append(f"## {agent_title} Perspective")
+            final_parts.append(output_data['response'])
+            final_parts.append("")  # Add spacing
         
         # Add document sources if any
         all_docs = []
@@ -1250,12 +1407,12 @@ Remember {context['client']} is a major bank requiring highest service standards
                 all_docs.extend(output["documents"])
         
         if all_docs:
-            final_parts.append("\n---\n")  # Horizontal rule
-            final_parts.append("📚 **Sources**:")
+            final_parts.append("---\n")
+            final_parts.append("📚 **Sources:**")
             for doc in all_docs[:5]:  # Show up to 5 sources
                 final_parts.append(f"- {doc.get('source', 'Unknown source')}")
         
-        return "\n".join(final_parts) if final_parts else "No response generated."
+        return "\n".join(final_parts)
     
     async def _rag_stream(self, query: str):
         """Stream RAG responses"""
@@ -1529,20 +1686,51 @@ Remember {context['client']} is a major bank requiring highest service standards
                             print(f"[ERROR] Agent {agent_name_local} not found in system")
                             print(f"[ERROR] Available agents: {available_agents}")
                             
-                            # Try case-insensitive and partial matching
+                            # Try strict case-insensitive matching and exact synonym matching only
                             possible_matches = []
-                            agent_name_lower = agent_name_local.lower()
+                            agent_name_lower = agent_name_local.lower().strip()
+                            
+                            # First try exact case-insensitive match
                             for available_agent in available_agents:
-                                if agent_name_lower in available_agent.lower() or available_agent.lower() in agent_name_lower:
+                                if agent_name_lower == available_agent.lower().strip():
                                     possible_matches.append(available_agent)
+                                    break
+                            
+                            # If no exact match, try known synonyms/aliases only
+                            if not possible_matches:
+                                agent_synonyms = {
+                                    # Exact case variations
+                                    "corporate strategist": "Corporate Strategist",
+                                    "business analyst": "BizAnalyst Agent", 
+                                    "researcher": "Researcher Agent",
+                                    "ceo agent": "CEO Agent",
+                                    "financial analyst": "financial Analyst",
+                                    "bizanalyst agent": "BizAnalyst Agent",
+                                    # Handle router mistakes
+                                    "researcher agent": "Researcher Agent",
+                                    "document researcher": "Document Researcher",
+                                    "sales strategist": "Sales Strategist",
+                                    "technical architect": "Technical Architect",
+                                    "service delivery manager": "Service Delivery Manager"
+                                }
+                                
+                                if agent_name_lower in agent_synonyms:
+                                    target_name = agent_synonyms[agent_name_lower]
+                                    if target_name in available_agents:
+                                        possible_matches.append(target_name)
                             
                             if possible_matches:
-                                print(f"[INFO] Possible matches for {agent_name_local}: {possible_matches}")
-                                # Use the first match
                                 suggested_agent = possible_matches[0]
-                                print(f"[INFO] Using {suggested_agent} instead of {agent_name_local}")
+                                print(f"[INFO] Exact match found: {agent_name_local} → {suggested_agent}")
                                 agent_data = get_agent_by_name(suggested_agent)
-                                agent_name_local = suggested_agent  # Update the local agent name
+                                agent_name_local = suggested_agent
+                            else:
+                                print(f"[ERROR] No exact match found for '{agent_name_local}' in available agents: {list(available_agents.keys())[:5]}...")
+                                # Show available agents that might be similar for debugging
+                                similar_agents = [a for a in available_agents.keys() if any(word in a.lower() for word in agent_name_local.lower().split())]
+                                if similar_agents:
+                                    print(f"[INFO] Available agents with similar words: {similar_agents[:3]}")
+                                # DO NOT auto-select - let it fail cleanly
                             
                             if not agent_data:
                                 print(f"[ERROR] Agent {agent_name_local} not found, skipping this agent")
@@ -1713,7 +1901,37 @@ Remember {context['client']} is a major bank requiring highest service standards
                 "start_time": synthesizer_start_time.isoformat()
             }
             
-            final_response = await self._synthesizer_agent(state)
+            # Use same execution path as other agents
+            from app.langchain.dynamic_agent_system import DynamicMultiAgentSystem
+            dynamic_system = DynamicMultiAgentSystem(trace=self.trace)
+            
+            synthesizer_agent_data = self.agents.get("synthesizer")
+            if not synthesizer_agent_data:
+                print("[ERROR] Synthesizer agent not found in agents")
+                final_response = self._fallback_synthesis([], state)
+            else:
+                # Build context for synthesizer with all agent outputs
+                synthesizer_context = {
+                    "agent_outputs": state["agent_outputs"],
+                    "previous_outputs": list(state["agent_outputs"].values())
+                }
+                
+                print(f"[DEBUG] Executing synthesizer via standard agent path")
+                synthesizer_response = ""
+                async for event in dynamic_system.execute_agent(
+                    "synthesizer",
+                    synthesizer_agent_data, 
+                    state["query"],
+                    context=synthesizer_context
+                ):
+                    # Yield all synthesizer events to frontend for streaming display
+                    yield event
+                    
+                    if event.get("type") == "agent_complete":
+                        synthesizer_response = event.get("content", "")
+                        print(f"[DEBUG] Synthesizer completed via standard path: {len(synthesizer_response)} chars")
+                
+                final_response = synthesizer_response if synthesizer_response.strip() else self._fallback_synthesis([], state)
             state["final_response"] = final_response
             
             synthesizer_end_time = datetime.now()
@@ -2321,16 +2539,26 @@ Remember {context['client']} is a major bank requiring highest service standards
     
     def _get_agent_function(self, agent_name: str):
         """Get the agent function by name"""
-        # Map agent names to their functions
+        # Map agent names to their functions - use role-based mapping for dynamic agents
         agent_functions = {
             "document_researcher": self._document_researcher_agent,
             "tool_executor": self._tool_executor_agent,
             "context_manager": self._context_manager_agent,
-            "sales_strategist": self._sales_strategist_agent,
-            "technical_architect": self._technical_architect_agent,
-            "financial_analyst": self._financial_analyst_agent,
-            "service_delivery_manager": self._service_delivery_manager_agent,
         }
+        
+        # Add dynamic agent mappings based on roles
+        for agent_name, agent_config in self.agents.items():
+            if agent_name not in agent_functions:
+                role = agent_config.get('role', '').lower()
+                if 'sales' in role and 'strategist' in role:
+                    agent_functions[agent_name] = self._sales_strategist_agent
+                elif 'technical' in role and 'architect' in role:
+                    agent_functions[agent_name] = self._technical_architect_agent
+                elif 'financial' in role and 'analyst' in role:
+                    agent_functions[agent_name] = self._financial_analyst_agent
+                elif 'service' in role and ('delivery' in role or 'manager' in role):
+                    agent_functions[agent_name] = self._service_delivery_manager_agent
+                # Add more role-based mappings as needed
         
         # Check predefined agents first
         if agent_name in agent_functions:
@@ -2702,6 +2930,10 @@ Remember {context['client']} is a major bank requiring highest service standards
     
     async def _dynamic_agent(self, agent_name: str, agent_info: Dict[str, Any], state: AgentState):
         """Execute a dynamic agent from database"""
+        logger.info(f"[AGENT_EXECUTION] Starting execution of agent: {agent_name}")
+        logger.info(f"[AGENT_EXECUTION] Agent info keys: {list(agent_info.keys()) if agent_info else 'None'}")
+        logger.info(f"[AGENT_EXECUTION] Agent role: {agent_info.get('role', 'Unknown') if agent_info else 'Unknown'}")
+        
         # First check if there's a pipeline-specific configuration in state metadata
         pipeline_agent_config = state.get("metadata", {}).get("pipeline_agent_config", {})
         
@@ -2721,10 +2953,11 @@ Remember {context['client']} is a major bank requiring highest service standards
                 tools = fresh_agent_info.get("tools", [])
                 agent_config_source = "langgraph_cache"
                 
-                # DEBUG: Log detailed agent configuration for failing agents
-                if agent_name == "Researcher Agent":
+                # DEBUG: Log detailed agent configuration for specific agents
+                if agent_name in ["Researcher Agent", "Customer Service Agent", "Customer Support Agent", "Support Agent", "Service Agent"]:
                     logger.info(f"[DEBUG] {agent_name} detailed config from {agent_config_source}:")
                     logger.info(f"[DEBUG] - system_prompt length: {len(system_prompt)} chars")
+                    logger.info(f"[DEBUG] - system_prompt preview: {system_prompt[:200]}...")
                     logger.info(f"[DEBUG] - tools: {tools}")
                     logger.info(f"[DEBUG] - config: {fresh_agent_info.get('config', {})}")
                     logger.info(f"[DEBUG] - is_active: {fresh_agent_info.get('is_active')}")
@@ -2921,12 +3154,20 @@ Remember {context['client']} is a major bank requiring highest service standards
             if tools:
                 prompt += "\n\n**Expected Response**: Execute the necessary tools first (using the JSON format specified above), then provide your analysis based on the results."
         
-        # Debug: Show the full prompt for second agent
-        if "2" in agent_name or len(state.get("metadata", {}).get("previous_outputs", [])) > 0:
+        # Debug: Show the full prompt for specific agents and sequential agents
+        if ("2" in agent_name or 
+            len(state.get("metadata", {}).get("previous_outputs", [])) > 0 or
+            agent_name in ["Customer Service Agent", "Customer Support Agent", "Support Agent", "Service Agent"]):
             print(f"[DEBUG] Full prompt for {agent_name} (length={len(prompt)}):")
             print(f"[DEBUG] First 500 chars: {prompt[:500]}...")
             if len(prompt) > 1000:
                 print(f"[DEBUG] Last 500 chars: ...{prompt[-500:]}")
+            # For customer service agents, show more of the prompt
+            if any(keyword in agent_name.lower() for keyword in ["customer", "service", "support"]):
+                print(f"[DEBUG] CUSTOMER SERVICE AGENT FULL PROMPT:")
+                print(f"[DEBUG] ================================================")
+                print(prompt)
+                print(f"[DEBUG] ================================================")
         
         # Call LLM with appropriate configuration
         response = ""

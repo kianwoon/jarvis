@@ -207,7 +207,7 @@ class EnhancedQueryClassifier:
                     r'\btime\s*(&|and)?\s*date\b'   # Match "time & date" or "time and date"
                 ],
                 'confidence': 0.9,  # Very high confidence for datetime
-                'available_tools': ['datetime', 'time', 'date']
+                'available_tools': []  # Will be populated dynamically from MCP cache
             },
             
             # Weather queries
@@ -234,6 +234,19 @@ class EnhancedQueryClassifier:
         }
         
         for tool_category, config in tool_patterns.items():
+            # Dynamically populate available_tools for any category with empty tools from MCP cache
+            if not config['available_tools']:
+                # For datetime category, filter to datetime-related tools only
+                if tool_category == 'datetime':
+                    # Filter to datetime-related tools from MCP cache
+                    datetime_tools = [t for t in self.mcp_tool_names if 'datetime' in t or 'date' in t or 'time' in t]
+                    config['available_tools'] = datetime_tools
+                    logger.debug(f"Dynamically populated {tool_category} with {len(datetime_tools)} tools: {datetime_tools}")
+                else:
+                    # Use all available MCP tools for other categories
+                    config['available_tools'] = list(self.mcp_tool_names)
+                    logger.debug(f"Dynamically populated {tool_category} tools from MCP cache: {len(self.mcp_tool_names)} tools")
+            
             # Only apply if we have the relevant tools available
             if any(tool in self.mcp_tool_names for tool in config['available_tools']):
                 for pattern_str in config['patterns']:
@@ -623,6 +636,11 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
             query_type = type_mapping.get(query_type_str, QueryType.LLM)
             
             if confidence >= min_confidence:
+                # If LLM classified as TOOL, use LLM to suggest specific tools
+                suggested_tools = []
+                if query_type == QueryType.TOOL:
+                    suggested_tools = await self._llm_suggest_tools(query)
+                
                 result = ClassificationResult(
                     query_type=query_type,
                     confidence=confidence,
@@ -631,7 +649,8 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
                         "available_tools": list(self.mcp_tool_names) if self.mcp_tool_names else [],
                         "available_collections": list(self.rag_collections.keys()) if self.rag_collections else [],
                         "llm_response": response_text
-                    }
+                    },
+                    suggested_tools=suggested_tools
                 )
                 
                 logger.info(f"LLM classification: {query_type.value} (confidence: {confidence:.2f})")
@@ -928,3 +947,104 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
         self.config = self._load_config()
         self.compiled_patterns = self._compile_patterns()
         logger.info("Reloaded query patterns configuration")
+    
+    async def _llm_suggest_tools(self, query: str) -> List[str]:
+        """Use LLM to suggest specific tools for a query based on available MCP tools"""
+        if not self.mcp_tool_names:
+            return []
+        
+        try:
+            from app.core.llm_settings_cache import get_llm_settings
+            llm_settings = get_llm_settings()
+            
+            # Build tool information dynamically from available MCP tools
+            tools_list = []
+            for tool_name in self.mcp_tool_names:
+                # Get tool description from manifest if available
+                description = "Available for use"
+                if hasattr(self, 'available_mcp_tools') and tool_name in self.available_mcp_tools:
+                    tool_info = self.available_mcp_tools[tool_name]
+                    if isinstance(tool_info, dict):
+                        manifest = tool_info.get('manifest', {})
+                        if manifest and 'tools' in manifest:
+                            for tool_def in manifest['tools']:
+                                if tool_def.get('name') == tool_name:
+                                    description = tool_def.get('description', description)
+                                    break
+                
+                tools_list.append(f"- {tool_name}: {description}")
+            
+            tools_text = "\n".join(tools_list)
+            
+            # Get system prompt settings to use same approach as classifier
+            classifier_config = llm_settings.get('query_classifier', {})
+            system_prompt = classifier_config.get('system_prompt', '/NO_THINK')
+            
+            # Create LLM prompt for tool suggestion
+            prompt = f"""{system_prompt}
+
+Given this user query and available tools, suggest the most relevant tool(s) to use.
+
+Query: "{query}"
+
+Available Tools:
+{tools_text}
+
+Instructions:
+- Select only the most relevant tool(s) that can directly answer or help with the query
+- If multiple tools could help, list them in order of relevance
+- Return only tool names, one per line
+- If no tools are relevant, return "none"
+
+Most relevant tool(s):"""
+
+            # Use same LLM configuration as classification
+            from app.llm.ollama import OllamaLLM
+            from app.llm.base import LLMConfig
+            
+            non_thinking_mode = llm_settings.get('non_thinking_mode', {})
+            llm_config = LLMConfig(
+                model_name=llm_settings.get('model'),
+                temperature=float(non_thinking_mode.get('temperature', 0.1)),
+                max_tokens=200,  # Allow enough tokens for response
+                top_p=float(non_thinking_mode.get('top_p', 0.9))
+            )
+            
+            # Use same model server detection as main classifier
+            import os
+            model_server = os.environ.get("OLLAMA_BASE_URL")
+            if not model_server:
+                model_server = llm_settings.get('model_server', '').strip()
+                if not model_server:
+                    model_server = "http://ollama:11434"
+            
+            llm = OllamaLLM(llm_config, base_url=model_server)
+            response = await llm.generate(prompt)
+            response_text = response.text.strip()
+            
+            # Clean response - remove thinking tags
+            clean_response = response_text
+            if '<think>' in clean_response and '</think>' in clean_response:
+                import re
+                clean_response = re.sub(r'<think>.*?</think>', '', clean_response, flags=re.DOTALL).strip()
+            
+            logger.info(f"LLM tool suggestion for '{query}': {clean_response}")
+            
+            # Parse LLM response to extract tool names
+            suggested_tools = []
+            if clean_response.lower() != "none":
+                lines = clean_response.strip().split('\n')
+                for line in lines:
+                    line = line.strip()
+                    # Remove bullet points, numbers, etc.
+                    line = re.sub(r'^[-*•\d+.)\s]+', '', line).strip()
+                    # Only include if it's a valid tool name
+                    if line in self.mcp_tool_names:
+                        suggested_tools.append(line)
+            
+            logger.info(f"Parsed suggested tools: {suggested_tools}")
+            return suggested_tools
+            
+        except Exception as e:
+            logger.error(f"Failed to get LLM tool suggestions: {e}", exc_info=True)
+            return []
