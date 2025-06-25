@@ -1,9 +1,10 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from app.langchain.multi_agent_system_simple import MultiAgentSystem
 from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier, QueryType
 from app.core.langfuse_integration import get_tracer
 from app.core.query_classifier_settings_cache import get_query_classifier_settings
+from app.core.temp_document_manager import TempDocumentManager
 from fastapi.responses import StreamingResponse
 import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any
@@ -17,6 +18,9 @@ router = APIRouter()
 # Initialize enhanced query classifier
 query_classifier = EnhancedQueryClassifier()
 
+# Initialize temp document manager
+temp_doc_manager = TempDocumentManager()
+
 class RAGRequest(BaseModel):
     question: str
     thinking: bool = False
@@ -26,6 +30,8 @@ class RAGRequest(BaseModel):
     collections: Optional[List[str]] = None  # Specific collections to search
     collection_strategy: str = "auto"  # "auto", "specific", or "all"
     skip_classification: bool = False  # Allow bypassing classification if needed
+    include_temp_docs: Optional[bool] = None  # Include temporary documents in search
+    active_temp_doc_ids: Optional[List[str]] = None  # Specific temp doc IDs to include
 
 class RAGResponse(BaseModel):
     answer: str
@@ -102,27 +108,40 @@ async def rag_endpoint(request: RAGRequest):
     # Classify the query unless explicitly skipped
     routing = None
     if not request.skip_classification:
-        routing = await query_classifier.get_routing_recommendation(request.question)
+        # Get classification thresholds from settings
+        classifier_settings = get_query_classifier_settings()
+        tool_threshold = classifier_settings.get('direct_execution_threshold', 0.55)
+        llm_threshold = classifier_settings.get('llm_direct_threshold', 0.8)
+        multi_agent_threshold = classifier_settings.get('multi_agent_threshold', 0.6)
+        
+        routing = await query_classifier.get_routing_recommendation(request.question, trace=trace)
         logger.info(f"Query routing: {routing['primary_type']} (confidence: {routing['confidence']:.2f})")
         
         # Handle based on classification (using enhanced classifier types)
         primary_type = routing['primary_type']
         is_hybrid = routing.get('is_hybrid', False)
+        confidence = routing['confidence']
+        
+        logger.info(f"[ROUTING DEBUG] primary_type='{primary_type}', QueryType.TOOL.value='{QueryType.TOOL.value}', confidence={confidence}, tool_threshold={tool_threshold}, is_hybrid={is_hybrid}")
         
         # Check for hybrid queries that need multiple handlers
         if is_hybrid:
+            logger.info(f"[ROUTING DEBUG] Taking hybrid query path")
             # Handle hybrid queries (TOOL_RAG, TOOL_LLM, RAG_LLM, TOOL_RAG_LLM)
             return handle_hybrid_query(request, routing)
-        elif primary_type == QueryType.TOOL.value and routing['confidence'] > 0.7:
-            # Let main rag_answer handle tool queries to maintain streaming integrity
-            # handle_tool_query causes streaming issues due to duplicate tool execution
-            pass  # Fall through to main stream() function
-        elif primary_type == QueryType.LLM.value and routing['confidence'] > 0.8:
+        elif primary_type == QueryType.TOOL.value and confidence >= tool_threshold:
+            logger.info(f"[ROUTING DEBUG] Taking direct tool execution path")
+            # Direct tool execution for confident classifications
+            # Use the suggested tool from classification instead of planning
+            return handle_direct_tool_query(request, routing, trace=trace)
+        elif primary_type == QueryType.LLM.value and confidence > llm_threshold:
             # Route to direct LLM only if high confidence
             return handle_direct_llm_query(request, routing)
-        elif primary_type == QueryType.MULTI_AGENT.value and routing['confidence'] > 0.6:
+        elif primary_type == QueryType.MULTI_AGENT.value and confidence > multi_agent_threshold:
             # Route to multi-agent system
             return handle_multi_agent_query(request, routing)
+        else:
+            logger.info(f"[ROUTING DEBUG] Taking fallback RAG path")
         # Fall through to RAG for RAG_SEARCH or low confidence cases
     
     async def stream():
@@ -157,9 +176,60 @@ async def rag_endpoint(request: RAGRequest):
                 simple_query_type = type_mapping.get(enhanced_type, "LLM")
                 print(f"[DEBUG] API endpoint - Mapped '{enhanced_type}' to '{simple_query_type}'")
             
+            # Get temporary document context if available and modify question
+            enhanced_question = request.question
+            if conversation_id and (request.include_temp_docs is not False):
+                try:
+                    logger.info(f"[TEMP DOC DEBUG] Searching for temp docs with conversation_id: {conversation_id}")
+                    
+                    # First check if any temp docs exist for this conversation
+                    all_docs = await temp_doc_manager.get_conversation_documents(conversation_id)
+                    logger.info(f"[TEMP DOC DEBUG] Found {len(all_docs)} total temp documents for conversation")
+                    
+                    for doc in all_docs:
+                        logger.info(f"[TEMP DOC DEBUG] Doc: {doc.get('filename', 'Unknown')} - included: {doc.get('is_included', False)}")
+                    
+                    # Query temp documents if they exist
+                    temp_results = await temp_doc_manager.query_conversation_documents(
+                        conversation_id=conversation_id,
+                        query=request.question,
+                        include_all=False,  # Only active documents
+                        top_k=5
+                    )
+                    
+                    logger.info(f"[TEMP DOC DEBUG] Query returned {len(temp_results)} results")
+                    
+                    if temp_results:
+                        logger.info(f"Found {len(temp_results)} temporary document results")
+                        temp_context_parts = []
+                        for result in temp_results:
+                            filename = result.get('filename', 'Unknown document')
+                            content = result.get('content', '')
+                            logger.info(f"[TEMP DOC DEBUG] Result from {filename}: {content[:100]}...")
+                            temp_context_parts.append(f"From {filename}:\n{content}")
+                        
+                        temp_doc_context = "\n\n=== TEMPORARY DOCUMENTS ===\n" + "\n\n".join(temp_context_parts) + "\n=== END TEMPORARY DOCUMENTS ===\n\n"
+                        
+                        # Enhance the question with temp document context
+                        enhanced_question = f"""Context from uploaded documents:
+{temp_doc_context}
+
+User question: {request.question}
+
+Please answer the user's question using the information from the uploaded documents above, along with any other relevant knowledge."""
+                        
+                        logger.info(f"[TEMP DOC DEBUG] Enhanced question length: {len(enhanced_question)}")
+                    else:
+                        logger.info(f"[TEMP DOC DEBUG] No temp document results found for query")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to get temporary document context: {e}")
+                    import traceback
+                    logger.warning(f"Full traceback: {traceback.format_exc()}")
+            
             from app.langchain.service import rag_answer
             rag_stream = await rag_answer(
-                request.question, 
+                enhanced_question, 
                 thinking=request.thinking, 
                 stream=True,
                 conversation_id=conversation_id,
@@ -208,6 +278,7 @@ async def rag_endpoint(request: RAGRequest):
     
     # Create a wrapper to capture the output for Langfuse tracing
     async def stream_with_tracing():
+        logger.info(f"[TRACE DEBUG] Stream wrapper started for tracing")
         collected_output = ""
         final_answer = ""
         source_info = ""
@@ -217,6 +288,7 @@ async def rag_endpoint(request: RAGRequest):
                 # Collect the streamed data
                 if chunk and chunk.strip():
                     collected_output += chunk
+                    logger.info(f"[TRACE DEBUG] Chunk received: {chunk[:200]}...")
                     
                     # Try to extract the final answer from the response chunks
                     if '"answer"' in chunk:
@@ -224,22 +296,28 @@ async def rag_endpoint(request: RAGRequest):
                             chunk_data = json_module.loads(chunk.strip())
                             if "answer" in chunk_data:
                                 final_answer = chunk_data["answer"]
+                                logger.info(f"[TRACE DEBUG] Extracted final answer: {final_answer[:100]}...")
                                 # Clean up thinking tags from the answer for cleaner output
                                 import re
                                 if final_answer:
                                     final_answer = re.sub(r'<think>.*?</think>', '', final_answer, flags=re.DOTALL).strip()
+                                    logger.info(f"[TRACE DEBUG] Cleaned final answer: {final_answer[:100]}...")
                             if "source" in chunk_data:
                                 source_info = chunk_data["source"]
-                        except:
+                                logger.info(f"[TRACE DEBUG] Extracted source info: {source_info}")
+                        except Exception as e:
+                            logger.warning(f"[TRACE DEBUG] Failed to parse chunk: {e}")
                             pass  # Continue streaming even if parsing fails
                 
                 yield chunk
             
             # Update Langfuse generation and trace with the final output
+            logger.info(f"[TRACE DEBUG] Stream completed, updating trace. Final answer length: {len(final_answer) if final_answer else 0}")
             if tracer.is_enabled():
                 try:
                     # Ensure we have meaningful output for the generation
                     generation_output = final_answer if final_answer else "Response generated successfully"
+                    logger.info(f"[TRACE DEBUG] Final generation output for tracing: {len(generation_output)} chars, has_final_answer: {bool(final_answer)}")
                     
                     # Estimate token usage for cost tracking
                     usage = tracer.estimate_token_usage(request.question, generation_output)
@@ -248,7 +326,7 @@ async def rag_endpoint(request: RAGRequest):
                     if generation:
                         generation.end(
                             output=generation_output,
-                            usage_details=usage,
+                            usage=usage,
                             metadata={
                                 "response_length": len(final_answer) if final_answer else len(collected_output),
                                 "source": source_info or "rag-chat",
@@ -294,7 +372,7 @@ async def rag_endpoint(request: RAGRequest):
                     if generation:
                         generation.end(
                             output=error_output,
-                            usage_details=usage,
+                            usage=usage,
                             metadata={
                                 "success": False,
                                 "error": str(e),
@@ -438,7 +516,7 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                     if generation:
                         generation.end(
                             output=generation_output,
-                            usage_details=usage,
+                            usage=usage,
                             metadata={
                                 "response_length": len(final_response) if final_response else len(collected_output),
                                 "source": "multi-agent",
@@ -634,7 +712,7 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                     if generation:
                         generation.end(
                             output=generation_output,
-                            usage_details=usage,
+                            usage=usage,
                             metadata={
                                 "response_length": len(final_result) if final_result else len(collected_output),
                                 "source": "large-generation",
@@ -696,7 +774,7 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                     if generation:
                         generation.end(
                             output=error_output,
-                            usage_details=usage,
+                            usage=usage,
                             metadata={
                                 "success": False,
                                 "error": str(e),
@@ -880,6 +958,320 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
             logger.error(f"Tool handler error: {e}")
             yield json_module.dumps({"error": f"Tool handling failed: {str(e)}"}) + "\n"
             
+    # Create a wrapper to capture the output for Langfuse tracing in direct tool execution
+    async def stream_with_tracing():
+        logger.info(f"[TRACE DEBUG] Direct tool stream wrapper started")
+        collected_output = ""
+        final_answer = ""
+        source_info = ""
+        
+        try:
+            async for chunk in stream():
+                # Collect the streamed data
+                if chunk and chunk.strip():
+                    collected_output += chunk
+                    logger.info(f"[TRACE DEBUG] Direct tool chunk received: {chunk[:200]}...")
+                    
+                    # Try to extract the final answer from the response chunks
+                    if '"answer"' in chunk:
+                        try:
+                            chunk_data = json_module.loads(chunk.strip())
+                            if "answer" in chunk_data:
+                                final_answer = chunk_data["answer"]
+                                logger.info(f"[TRACE DEBUG] Direct tool extracted final answer: {final_answer[:100]}...")
+                                # Clean up thinking tags from the answer for cleaner output
+                                import re
+                                if final_answer:
+                                    final_answer = re.sub(r'<think>.*?</think>', '', final_answer, flags=re.DOTALL).strip()
+                                    logger.info(f"[TRACE DEBUG] Direct tool cleaned final answer: {final_answer[:100]}...")
+                            if "source" in chunk_data:
+                                source_info = chunk_data["source"]
+                                logger.info(f"[TRACE DEBUG] Direct tool extracted source info: {source_info}")
+                        except Exception as e:
+                            logger.warning(f"[TRACE DEBUG] Direct tool failed to parse chunk: {e}")
+                            pass  # Continue streaming even if parsing fails
+                
+                yield chunk
+            
+            logger.info(f"[TRACE DEBUG] Direct tool stream completed, final answer length: {len(final_answer) if final_answer else 0}")
+            
+        except Exception as e:
+            logger.error(f"Direct tool streaming error: {e}")
+            yield json_module.dumps({"error": f"Direct tool streaming failed: {str(e)}"}) + "\n"
+    
+    return StreamingResponse(stream_with_tracing(), media_type="application/json")
+
+def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
+    """Handle confident tool classifications with direct execution"""
+    logger.info(f"[DIRECT HANDLER DEBUG] Function called! routing: {routing}")
+    logger.info(f"[DIRECT HANDLER] handle_direct_tool_query called for tool query")
+    conversation_id = request.conversation_id or request.session_id
+    
+    async def stream():
+        logger.info(f"[DIRECT HANDLER] stream() function started")
+        try:
+            logger.info(f"[DIRECT HANDLER] About to send classification info")
+            # Send classification info
+            yield json_module.dumps({
+                "type": "classification",
+                "routing": routing,
+                "handler": "direct_tool_execution",
+                "message": f"Directly executing tool with {routing['confidence']:.2f} confidence"
+            }) + "\n"
+            
+            # Get the suggested tool from classification
+            logger.info(f"[DIRECT HANDLER] Full routing structure: {routing}")
+            suggested_tools = routing.get('suggested_tools', [])
+            # Also check nested structure
+            if not suggested_tools and 'routing' in routing:
+                suggested_tools = routing['routing'].get('suggested_tools', [])
+            logger.info(f"[DIRECT HANDLER] Suggested tools: {suggested_tools}")
+            if not suggested_tools:
+                # Fallback to rag_answer if no tools suggested  
+                logger.info(f"[DIRECT HANDLER] No suggested tools found, falling back to regular rag_answer flow")
+                yield json_module.dumps({
+                    "type": "status", 
+                    "message": "No specific tool suggested, falling back to planning..."
+                }) + "\n"
+                
+                from app.langchain.service import rag_answer
+                rag_stream = await rag_answer(
+                    request.question,
+                    thinking=request.thinking,
+                    stream=True,
+                    conversation_id=conversation_id,
+                    use_langgraph=request.use_langgraph,
+                    collections=request.collections,
+                    collection_strategy=request.collection_strategy,
+                    query_type="TOOLS",
+                    trace=trace
+                )
+                async for chunk in rag_stream:
+                    yield chunk
+                return
+            
+            # Execute tools directly without redundant classification
+            logger.info(f"[DIRECT HANDLER] Executing tools directly: {suggested_tools}")
+            
+            yield json_module.dumps({
+                "type": "status", 
+                "message": f"Executing {suggested_tools[0]} directly..."
+            }) + "\n"
+            
+            # Import tool execution function
+            from app.langchain.service import call_mcp_tool
+            
+            tool_results = []
+            for tool_name in suggested_tools[:1]:  # Execute primary tool only
+                try:
+                    logger.info(f"[DIRECT HANDLER] Executing tool: {tool_name}")
+                    # Use existing intelligent tool planner for parameter generation
+                    from app.langchain.intelligent_tool_planner import get_tool_planner
+                    planner = get_tool_planner()
+                    
+                    # Create execution plan for this single tool
+                    execution_plan = await planner.plan_tool_execution(
+                        task=request.question,
+                        context={"user_query": request.question},
+                        mode="standard"
+                    )
+                    
+                    # Find the matching tool in the plan
+                    tool_plan = None
+                    for planned_tool in execution_plan.tools:
+                        if planned_tool.tool_name == tool_name:
+                            tool_plan = planned_tool
+                            break
+                    
+                    # Use planned parameters or empty dict as fallback
+                    parameters = tool_plan.parameters if tool_plan else {}
+                    
+                    logger.info(f"[DIRECT HANDLER] Using planned parameters for {tool_name}: {parameters}")
+                    
+                    result = call_mcp_tool(
+                        tool_name=tool_name,
+                        parameters=parameters,
+                        trace=trace
+                    )
+                    
+                    tool_results.append({
+                        "tool": tool_name,
+                        "success": True,
+                        "result": result
+                    })
+                    
+                    yield json_module.dumps({
+                        "type": "tool_execution",
+                        "tool": tool_name,
+                        "success": True,
+                        "result": result
+                    }) + "\n"
+                    
+                except Exception as e:
+                    logger.error(f"[DIRECT HANDLER] Tool {tool_name} failed: {e}")
+                    tool_results.append({
+                        "tool": tool_name,
+                        "success": False,
+                        "error": str(e)
+                    })
+            
+            # Generate final response with tool results
+            logger.info(f"[DIRECT HANDLER] Processing {len(tool_results)} tool results")
+            if tool_results and any(r.get('success') for r in tool_results):
+                try:
+                    # Build context from tool results
+                    tool_context = ""
+                    for tr in tool_results:
+                        if tr.get('success'):
+                            tool_context += f"\n{tr['tool']}: {tr['result']}\n"
+                    
+                    logger.info(f"[DIRECT HANDLER] Tool context built: {tool_context[:200]}...")
+                    
+                    # Create synthesis prompt
+                    synthesis_prompt = f"""Based on the tool results below, provide a comprehensive answer to the user's question.
+
+Question: {request.question}
+
+Tool Results:
+{tool_context}
+
+Please provide a clear, direct answer based on the tool results."""
+                    
+                    logger.info(f"[DIRECT HANDLER] About to stream synthesis response")
+                    
+                    # Get LLM settings first
+                    from app.llm.ollama import OllamaLLM
+                    from app.llm.base import LLMConfig
+                    from app.core.llm_settings_cache import get_llm_settings
+                    
+                    llm_settings = get_llm_settings()
+                    
+                    # Create synthesis generation span for Langfuse tracing
+                    synthesis_generation_span = None
+                    if trace:
+                        try:
+                            from app.core.langfuse_integration import get_tracer
+                            tracer = get_tracer()
+                            if tracer.is_enabled():
+                                synthesis_generation_span = tracer.create_llm_generation_span(
+                                    trace,
+                                    model=llm_settings.get('model'),
+                                    prompt=synthesis_prompt,
+                                    operation="direct_tool_synthesis"
+                                )
+                                logger.info(f"[DIRECT HANDLER] Created synthesis generation span")
+                        except Exception as e:
+                            logger.warning(f"Failed to create synthesis generation span: {e}")
+                    
+                    # Configure LLM for streaming
+                    thinking_mode = llm_settings.get('thinking_mode', {})
+                    
+                    llm_config = LLMConfig(
+                        model_name=llm_settings.get('model'),
+                        temperature=float(thinking_mode.get('temperature', 0.8)),
+                        max_tokens=int(thinking_mode.get('max_tokens', 4000)),
+                        top_p=float(thinking_mode.get('top_p', 0.9))
+                    )
+                    
+                    # Use same model server detection as service
+                    import os
+                    model_server = os.environ.get("OLLAMA_BASE_URL")
+                    if not model_server:
+                        model_server = llm_settings.get('model_server', '').strip()
+                        if not model_server:
+                            model_server = "http://ollama:11434"
+                    
+                    llm = OllamaLLM(llm_config, base_url=model_server)
+                    
+                    # Stream synthesis response token by token
+                    final_response = ""
+                    async for response_chunk in llm.generate_stream(synthesis_prompt):
+                        final_response += response_chunk.text
+                        if response_chunk.text.strip():
+                            yield json_module.dumps({
+                                "token": response_chunk.text
+                            }) + "\n"
+                    
+                    logger.info(f"[DIRECT HANDLER] Synthesis completed, response length: {len(final_response)}")
+                    
+                    # End synthesis generation span with output
+                    if synthesis_generation_span:
+                        try:
+                            tracer = get_tracer()
+                            usage = tracer.estimate_token_usage(synthesis_prompt, final_response)
+                            synthesis_generation_span.end(
+                                output=final_response,
+                                usage=usage,
+                                metadata={
+                                    "response_length": len(final_response),
+                                    "operation": "direct_tool_synthesis",
+                                    "tool_results_count": len(tool_results),
+                                    "optimization": "direct_execution"
+                                }
+                            )
+                            logger.info(f"[DIRECT HANDLER] Synthesis generation span ended with output")
+                        except Exception as e:
+                            logger.warning(f"Failed to end synthesis generation span: {e}")
+                    
+                    # Send final answer 
+                    yield json_module.dumps({
+                        "answer": final_response,
+                        "source": "DIRECT_TOOL_EXECUTION", 
+                        "context": tool_context,
+                        "query_type": "TOOLS",
+                        "metadata": {
+                            "tools_executed": [tr['tool'] for tr in tool_results if tr.get('success')],
+                            "direct_execution": True,
+                            "optimization": "eliminated_redundant_classification"
+                        }
+                    }) + "\n"
+                    
+                    logger.info(f"[DIRECT HANDLER] Final answer sent to frontend")
+                    
+                except Exception as synthesis_error:
+                    logger.error(f"[DIRECT HANDLER] Synthesis failed: {synthesis_error}")
+                    yield json_module.dumps({
+                        "type": "error",
+                        "message": f"Response synthesis failed: {str(synthesis_error)}"
+                    }) + "\n"
+            else:
+                # Fallback if tools failed
+                logger.warning(f"[DIRECT HANDLER] No successful tool results")
+                yield json_module.dumps({
+                    "type": "error",
+                    "message": "Tool execution failed, please try again"
+                }) + "\n"
+                    
+        except Exception as e:
+            yield json_module.dumps({
+                "type": "handler_error",
+                "error": str(e),
+                "message": "Direct tool execution failed, falling back to planning..."
+            }) + "\n"
+            
+            # Fallback to regular rag_answer
+            from app.langchain.service import rag_answer
+            rag_stream = await rag_answer(
+                request.question,
+                thinking=request.thinking,
+                stream=True,
+                conversation_id=conversation_id,
+                use_langgraph=request.use_langgraph,
+                collections=request.collections,
+                collection_strategy=request.collection_strategy,
+                query_type="TOOLS",
+                trace=trace
+            )
+            async for chunk in rag_stream:
+                yield chunk
+                    
+        except Exception as e:
+            yield json_module.dumps({
+                "type": "handler_error",
+                "error": str(e),
+                "message": "Direct tool handler failed completely"
+            }) + "\n"
+    
     return StreamingResponse(stream(), media_type="application/json")
 
 def handle_direct_llm_query(request: RAGRequest, routing: Dict):
@@ -921,7 +1313,7 @@ def handle_multi_agent_query(request: RAGRequest, routing: Dict):
     """Handle complex queries that need multiple agents"""
     conversation_id = request.conversation_id or request.session_id
     
-    def stream():
+    async def stream():
         try:
             # Send classification info
             yield json_module.dumps({
@@ -1132,4 +1524,82 @@ def build_hybrid_prompt(question: str, results: Dict, components: List[str]) -> 
     prompt_parts.append("3. Synthesizes all information into a coherent response")
     prompt_parts.append("4. Clearly indicates which information comes from which source")
     
-    return "\n".join(prompt_parts) 
+    return "\n".join(prompt_parts)
+
+# ===== TEMPORARY DOCUMENT ENDPOINTS =====
+
+@router.post("/upload-document")
+async def upload_temp_document(
+    file: UploadFile = File(...),
+    conversation_id: str = Form(...),
+    ttl_hours: int = Form(2),
+    auto_include: bool = Form(True)
+):
+    """Upload a temporary document for conversation-scoped indexing."""
+    try:
+        # Read file content
+        file_content = await file.read()
+        
+        # Process document
+        result = await temp_doc_manager.upload_and_process_document(
+            file_content=file_content,
+            filename=file.filename,
+            conversation_id=conversation_id,
+            ttl_hours=ttl_hours,
+            auto_include=auto_include
+        )
+        
+        if result['success']:
+            return {
+                "success": True,
+                "temp_doc_id": result['temp_doc_id'],
+                "message": f"Document '{file.filename}' uploaded and indexed successfully",
+                "metadata": result['metadata']
+            }
+        else:
+            raise HTTPException(status_code=400, detail=result['error'])
+            
+    except Exception as e:
+        logger.error(f"Document upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Document upload failed: {str(e)}")
+
+@router.get("/temp-documents/{conversation_id}")
+async def get_temp_documents(conversation_id: str):
+    """Get all temporary documents for a conversation."""
+    try:
+        documents = await temp_doc_manager.get_conversation_documents(conversation_id)
+        return {
+            "conversation_id": conversation_id,
+            "documents": documents,
+            "total_count": len(documents),
+            "active_count": len([doc for doc in documents if doc.get('is_included', False)])
+        }
+    except Exception as e:
+        logger.error(f"Failed to get temp documents: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/temp-documents/{temp_doc_id}")
+async def delete_temp_document(temp_doc_id: str):
+    """Delete a temporary document."""
+    try:
+        success = await temp_doc_manager.delete_document(temp_doc_id)
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Failed to delete temp document: {str(e)}")
+        return {"success": True}  # Idempotent - return success even if not found
+
+@router.put("/temp-documents/{temp_doc_id}/preferences")
+async def update_temp_document_preferences(
+    temp_doc_id: str,
+    preferences: Dict[str, Any]
+):
+    """Update preferences for a temporary document."""
+    try:
+        success = await temp_doc_manager.update_document_preferences(temp_doc_id, preferences)
+        if success:
+            return {"success": True, "message": "Preferences updated"}
+        else:
+            raise HTTPException(status_code=404, detail="Document not found")
+    except Exception as e:
+        logger.error(f"Failed to update preferences: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e)) 

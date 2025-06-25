@@ -10,8 +10,6 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from app.core.redis_base import RedisCache
-from app.core.db import SessionLocal
-from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +39,13 @@ class CollectionRegistryCache(RedisCache):
             return cached_data
         
         # Fetch from database
-        db = SessionLocal()
+        try:
+            from app.core.db import SessionLocal
+            from sqlalchemy import text
+            db = SessionLocal()
+        except Exception as db_error:
+            logger.error(f"Database connection failed: {db_error}")
+            return []
         try:
             query = """
                 SELECT c.*, 
@@ -98,7 +102,13 @@ class CollectionRegistryCache(RedisCache):
             return cached_data
         
         # Fetch from database
-        db = SessionLocal()
+        try:
+            from app.core.db import SessionLocal
+            from sqlalchemy import text
+            db = SessionLocal()
+        except Exception as db_error:
+            logger.error(f"Database connection failed: {db_error}")
+            return []
         try:
             query = """
                 SELECT c.*, 

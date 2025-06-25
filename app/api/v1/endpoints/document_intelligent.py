@@ -608,10 +608,16 @@ async def intelligent_upload_with_progress(
                 from langchain.schema import Document
                 chunks = []
                 chunk_counter = 0  # Global chunk counter across all documents
+                
+                logger.info(f"Processing {len(docs)} documents into chunks")
+                
                 for i, doc in enumerate(docs):
                     doc_chunks = text_splitter.split_text(doc.page_content)
+                    logger.info(f"Document {i}: split into {len(doc_chunks)} chunks, content length: {len(doc.page_content)}")
+                    
                     for j, chunk_text in enumerate(doc_chunks):
                         if len(chunk_text.strip()) < 50:  # Skip very short chunks
+                            logger.info(f"Skipping short chunk {j} (length: {len(chunk_text.strip())})")
                             continue
                         
                         # Create Document object with full metadata
@@ -629,6 +635,8 @@ async def intelligent_upload_with_progress(
                         )
                         chunks.append(chunk_doc)
                         chunk_counter += 1
+                
+                logger.info(f"Final chunk processing result: {len(chunks)} chunks created")
                 
                 # Add complete metadata processing like the real upload
                 import hashlib
@@ -766,6 +774,26 @@ async def intelligent_upload_with_progress(
                     [chunk.metadata.get('creation_date', '') for chunk in chunks],      # 16. creation_date
                     [chunk.metadata.get('last_modified_date', '') for chunk in chunks], # 17. last_modified_date
                 ]
+                
+                # Validate data before insert
+                if not chunks or len(chunks) == 0:
+                    error_msg = "No valid chunks were created from the document. Please check if the document contains readable text."
+                    yield f"data: {json.dumps({'error': True, 'message': error_msg})}\n\n"
+                    return
+                
+                # Check if any data arrays are empty
+                if any(len(arr) == 0 for arr in data):
+                    error_msg = "Generated data arrays are empty. Cannot insert into vector database."
+                    yield f"data: {json.dumps({'error': True, 'message': error_msg})}\n\n"
+                    return
+                
+                # Check if all arrays have the same length
+                expected_length = len(chunks)
+                for i, arr in enumerate(data):
+                    if len(arr) != expected_length:
+                        error_msg = f"Data array mismatch: field {i} has {len(arr)} items but expected {expected_length}"
+                        yield f"data: {json.dumps({'error': True, 'message': error_msg})}\n\n"
+                        return
                 
                 yield f"data: {json.dumps({'current_step': 8, 'total_steps': 8, 'progress_percent': 95, 'step_name': 'Inserting into vector database', 'details': {'message': f'Storing {len(chunks)} chunks in {collection_name}'}})}\n\n"
                 

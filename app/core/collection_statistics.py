@@ -5,7 +5,6 @@ This module handles updating and retrieving statistics for vector collections.
 """
 
 from typing import Dict, Any, Optional
-from app.core.db import SessionLocal, CollectionStatistics
 from pymilvus import Collection, connections, utility
 from datetime import datetime
 import logging
@@ -30,6 +29,12 @@ def update_collection_statistics(
     Returns:
         Updated statistics
     """
+    try:
+        from app.core.db import SessionLocal, CollectionStatistics
+    except Exception as e:
+        logger.error(f"Database import failed: {e}")
+        return {}
+        
     db = SessionLocal()
     try:
         # Get or create statistics record
@@ -107,6 +112,12 @@ def get_collection_statistics(collection_name: str) -> Optional[Dict[str, Any]]:
     Returns:
         Statistics dict or None if not found
     """
+    try:
+        from app.core.db import SessionLocal, CollectionStatistics
+    except Exception as e:
+        logger.error(f"Database import failed: {e}")
+        return {}
+        
     db = SessionLocal()
     try:
         stats = db.query(CollectionStatistics).filter(
@@ -200,6 +211,12 @@ def update_search_latency(collection_name: str, latency_ms: int):
         collection_name: Name of the collection
         latency_ms: Search latency in milliseconds
     """
+    try:
+        from app.core.db import SessionLocal, CollectionStatistics
+    except Exception as e:
+        logger.error(f"Database import failed: {e}")
+        return {}
+        
     db = SessionLocal()
     try:
         stats = db.query(CollectionStatistics).filter(

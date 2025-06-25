@@ -4,7 +4,7 @@ Uses LLM-driven decision making with structured function calling
 No hardcoded JSON parsing - lets LLM decide what tools/RAG to use
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -20,6 +20,11 @@ from app.core.query_classifier_settings_cache import get_query_classifier_settin
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier, QueryType
+from app.core.temp_document_manager import TempDocumentManager
+from app.models.temp_document_models import (
+    TempDocumentUploadRequest, TempDocumentUploadResponse, TempDocumentResponse,
+    ChatContextRequest, TempDocumentContextInfo
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,6 +33,8 @@ class IntelligentChatRequest(BaseModel):
     question: str
     conversation_id: Optional[str] = None
     thinking: bool = False
+    include_temp_docs: Optional[bool] = None
+    active_temp_doc_ids: Optional[List[str]] = None
 
 class IntelligentChatResponse(BaseModel):
     answer: str
@@ -198,7 +205,7 @@ def validate_nested_parameters(parameters: Dict[str, Any], schema: Dict[str, Any
         logger.warning(f"Parameter validation failed: {e}, using original parameters")
         return parameters
 
-async def execute_rag_search(query: str, collections: List[str] = None, trace=None, parent_span=None) -> Dict[str, Any]:
+async def execute_rag_search(query: str, collections: List[str] = None, conversation_id: str = None, include_temp_docs: bool = None, trace=None, parent_span=None) -> Dict[str, Any]:
     """Phase 2: Execute RAG search with just-in-time collection validation"""
     # Import here to avoid circular imports
     from app.langchain.service import handle_rag_query
@@ -215,6 +222,28 @@ async def execute_rag_search(query: str, collections: List[str] = None, trace=No
     
     try:
         logger.info(f"Phase 2 - Performing RAG search for: {query[:100]}...")
+        
+        # Enhanced RAG search with temporary document support
+        temp_results = []
+        temp_docs_included = False
+        
+        # Check for temporary documents if conversation_id provided
+        if conversation_id and include_temp_docs:
+            try:
+                temp_manager = TempDocumentManager()
+                temp_results = await temp_manager.query_conversation_documents(
+                    conversation_id=conversation_id,
+                    query=query,
+                    include_all=False,  # Only active documents
+                    top_k=3  # Limit temp doc results
+                )
+                
+                if temp_results:
+                    temp_docs_included = True
+                    logger.info(f"Found {len(temp_results)} results from temporary documents")
+                
+            except Exception as e:
+                logger.warning(f"Failed to query temporary documents: {e}")
         
         # Just-in-time: Validate collections against available collections
         if collections:
@@ -246,6 +275,24 @@ async def execute_rag_search(query: str, collections: List[str] = None, trace=No
         
         # Parse sources to extract document information
         documents = []
+        
+        # Add temporary document results first (higher priority)
+        if temp_results:
+            for temp_source in temp_results[:3]:  # Limit temp results
+                doc_info = {
+                    "content": temp_source.get("content", "")[:500] + "..." if len(temp_source.get("content", "")) > 500 else temp_source.get("content", ""),
+                    "source": f"[TEMP] {temp_source.get('filename', 'Temporary Document')}",
+                    "relevance_score": temp_source.get("score", 1.0),
+                    "metadata": {
+                        "temp_doc_id": temp_source.get("temp_doc_id"),
+                        "filename": temp_source.get("filename"),
+                        "is_temporary": True,
+                        **temp_source.get("metadata", {})
+                    }
+                }
+                documents.append(doc_info)
+        
+        # Add regular collection sources
         if sources:
             for source in sources[:5]:  # Limit to top 5 sources
                 doc_info = {
@@ -255,18 +302,29 @@ async def execute_rag_search(query: str, collections: List[str] = None, trace=No
                     "metadata": {
                         "page": source.get("page"),
                         "doc_id": source.get("doc_id"),
-                        "collection": source.get("collection_name")
+                        "collection": source.get("collection_name"),
+                        "is_temporary": False
                     }
                 }
                 documents.append(doc_info)
         
+        # Combine context from temporary documents and regular sources
+        combined_context = context
+        if temp_results:
+            temp_context = "\n\n[TEMPORARY DOCUMENT CONTEXT]\n"
+            for temp_source in temp_results[:2]:  # Limit for context
+                temp_context += f"From {temp_source.get('filename', 'document')}: {temp_source.get('content', '')[:300]}\n"
+            combined_context = temp_context + "\n\n[REGULAR KNOWLEDGE BASE]\n" + context
+        
         result = {
             "query": query,
             "collections": collections or "auto",
-            "context": context[:1000] + "..." if len(context) > 1000 else context,  # Truncate for response
+            "context": combined_context[:1000] + "..." if len(combined_context) > 1000 else combined_context,  # Truncate for response
             "documents": documents,
             "success": True,
-            "document_count": len(documents)
+            "document_count": len(documents),
+            "temp_docs_included": temp_docs_included,
+            "temp_doc_count": len(temp_results) if temp_results else 0
         }
         
         # End RAG span with result
@@ -598,8 +656,38 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
         final_answer = ""
         tool_calls_made = []
         rag_searches_made = []
+        temp_doc_context = None
         
         try:
+            # Initialize temp document manager
+            temp_manager = TempDocumentManager()
+            
+            # Get temporary document context if conversation_id provided
+            if request.conversation_id:
+                try:
+                    active_temp_docs = await temp_manager.get_active_documents_for_chat(request.conversation_id)
+                    if active_temp_docs:
+                        temp_doc_context = TempDocumentContextInfo(
+                            has_temp_docs=True,
+                            total_docs=len(await temp_manager.get_conversation_documents(request.conversation_id)),
+                            active_docs=len(active_temp_docs),
+                            active_doc_ids=[doc['temp_doc_id'] for doc in active_temp_docs],
+                            last_updated=datetime.now()
+                        )
+                        logger.info(f"Found {len(active_temp_docs)} active temporary documents for conversation {request.conversation_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to get temporary document context: {e}")
+            
+            # Determine if we should include temp docs
+            should_include_temp_docs = False
+            if temp_doc_context and temp_doc_context.has_temp_docs:
+                if request.include_temp_docs is not None:
+                    should_include_temp_docs = request.include_temp_docs
+                else:
+                    # Get user preference
+                    prefs = await temp_manager.get_conversation_preferences(request.conversation_id)
+                    should_include_temp_docs = prefs.get('include_temp_docs_in_chat', True)
+            
             # Step 1: Use intelligent routing to check confidence
             routing_result = await intelligent_routing(request.question)
             
@@ -810,6 +898,8 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                     rag_result = await execute_rag_search(
                         rag_search_request["query"],
                         rag_search_request["collections"],
+                        request.conversation_id,  # Pass conversation_id for temp docs
+                        should_include_temp_docs,  # Pass temp doc inclusion preference
                         trace,  # Pass trace for span creation
                         chat_span  # Pass chat_span as parent for proper hierarchy
                     )
@@ -895,7 +985,8 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 "answer": final_response,
                 "source": source,
                 "conversation_id": request.conversation_id,
-                "documents": all_documents
+                "documents": all_documents,
+                "temp_doc_context": temp_doc_context.dict() if temp_doc_context else None
             }) + "\n"
             
             # Update Langfuse generation and trace with the final output
@@ -993,6 +1084,108 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
     
     return StreamingResponse(stream(), media_type="application/json")
 
+@router.post("/intelligent-chat/upload-document")
+async def upload_temporary_document(
+    file: UploadFile = File(...),
+    conversation_id: str = Form(...),
+    ttl_hours: int = Form(2),
+    auto_include: bool = Form(True)
+):
+    """Upload a temporary document for use in chat context"""
+    try:
+        # Validate file
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No filename provided")
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Initialize temp document manager
+        temp_manager = TempDocumentManager()
+        
+        # Process document
+        result = await temp_manager.upload_and_process_document(
+            file_content=file_content,
+            filename=file.filename,
+            conversation_id=conversation_id,
+            ttl_hours=ttl_hours,
+            auto_include=auto_include
+        )
+        
+        if result['success']:
+            return TempDocumentUploadResponse(
+                success=True,
+                temp_doc_id=result['temp_doc_id'],
+                message="Document uploaded and indexed successfully",
+                metadata=TempDocumentResponse(**result['metadata'])
+            )
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail=result.get('error', 'Upload failed')
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Document upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+@router.get("/intelligent-chat/temp-documents/{conversation_id}")
+async def get_conversation_temp_documents(conversation_id: str):
+    """Get all temporary documents for a conversation"""
+    try:
+        temp_manager = TempDocumentManager()
+        documents = await temp_manager.get_conversation_documents(conversation_id)
+        
+        from app.models.temp_document_models import TempDocumentListResponse
+        return TempDocumentListResponse(
+            conversation_id=conversation_id,
+            documents=[TempDocumentResponse(**doc) for doc in documents],
+            total_count=len(documents),
+            active_count=len([doc for doc in documents if doc.get('is_included', False)])
+        )
+    except Exception as e:
+        logger.error(f"Failed to get temp documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/intelligent-chat/temp-documents/{temp_doc_id}/preferences")
+async def update_temp_document_preferences(
+    temp_doc_id: str,
+    preferences: dict
+):
+    """Update preferences for a temporary document"""
+    try:
+        temp_manager = TempDocumentManager()
+        success = await temp_manager.update_document_preferences(temp_doc_id, preferences)
+        
+        if success:
+            return {"success": True, "message": "Preferences updated successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Document not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update preferences: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/intelligent-chat/temp-documents/{temp_doc_id}")
+async def delete_temp_document(temp_doc_id: str):
+    """Delete a temporary document"""
+    try:
+        temp_manager = TempDocumentManager()
+        success = await temp_manager.delete_document(temp_doc_id)
+        
+        # Always return success for DELETE operations - idempotent
+        # Whether the document existed or not, it's now "deleted"
+        return {"success": True, "message": "Document deleted successfully"}
+            
+    except Exception as e:
+        logger.error(f"Failed to delete document: {e}")
+        # Even on error, return success for DELETE idempotency
+        return {"success": True, "message": "Document cleanup attempted"}
+
 @router.get("/intelligent-chat/status")
 async def get_intelligent_chat_status():
     """Get current intelligent chat system status"""
@@ -1018,7 +1211,8 @@ async def get_intelligent_chat_status():
                 "structured_function_calling", 
                 "confidence_based_fallback",
                 "online_search_fallback",
-                "nested_parameter_support"
+                "nested_parameter_support",
+                "temporary_document_indexing"
             ]
         }
     except Exception as e:

@@ -1548,7 +1548,7 @@ def analyze_query_type(question: str) -> dict:
     
     return analysis
 
-def handle_rag_query(question: str, thinking: bool = False, collections: List[str] = None, collection_strategy: str = "auto") -> tuple:
+def handle_rag_query(question: str, thinking: bool = False, collections: List[str] = None, collection_strategy: str = "auto", trace=None) -> tuple:
     """Handle RAG queries with hybrid search (vector + keyword) - returns context only
     
     Args:
@@ -1558,6 +1558,18 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
         collection_strategy: "auto", "specific", or "all"
     """
     print(f"[DEBUG] handle_rag_query: question = {question}, thinking = {thinking}, collections = {collections}, strategy = {collection_strategy}")
+    
+    # Create RAG span for tracing
+    rag_span = None
+    tracer = None
+    if trace:
+        try:
+            from app.core.langfuse_integration import get_tracer
+            tracer = get_tracer()
+            if tracer.is_enabled():
+                rag_span = tracer.create_rag_span(trace, question, collections)
+        except Exception as e:
+            logger.warning(f"Failed to create RAG span: {e}")
     
     # Check cache first for performance
     query_hash = hash(question.lower().strip())
@@ -1632,6 +1644,27 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
         collections_to_search = [col["collection_name"] for col in all_collections]
         print(f"[DEBUG] Searching all collections: {collections_to_search}")
     else:  # "auto" strategy
+        pass
+    
+    # Create collection analysis span for all strategies
+    collection_analysis_span = None
+    if rag_span and tracer:
+        try:
+            collection_analysis_span = tracer.create_nested_span(
+                rag_span,
+                name="collection-analysis",
+                metadata={
+                    "operation": "collection_selection",
+                    "strategy": collection_strategy,
+                    "query_length": len(question)
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create collection analysis span: {e}")
+    
+    if collection_strategy == "auto":
+        # Auto collection selection logic
+        
         # Auto-detect relevant collections based on query
         from app.core.document_classifier import get_document_classifier
         classifier = get_document_classifier()
@@ -1639,6 +1672,17 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
         # Use query analysis to determine collection type
         collection_type = classifier.classify_document(question, {"query": True})
         target_collection = classifier.get_target_collection(collection_type)
+        
+        # End collection analysis span
+        if collection_analysis_span and tracer:
+            try:
+                tracer.end_span_with_result(collection_analysis_span, {
+                    "collection_type": collection_type,
+                    "target_collection": target_collection,
+                    "classification_success": True
+                }, True)
+            except Exception as e:
+                logger.warning(f"Failed to end collection analysis span: {e}")
         
         if target_collection:
             collections_to_search = [target_collection]
@@ -1691,9 +1735,39 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
                 try:
                     # Normalize query to lowercase for consistent vector search
                     normalized_query = query.lower().strip()
+                    
+                    # Create vector search span for tracing
+                    vector_search_span = None
+                    if collection_analysis_span and tracer:
+                        try:
+                            vector_search_span = tracer.create_nested_span(
+                                collection_analysis_span,
+                                name="vector-search",
+                                metadata={
+                                    "operation": "milvus_similarity_search",
+                                    "collection": collection_name,
+                                    "query": normalized_query[:100],
+                                    "k": NUM_DOCS
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to create vector search span: {e}")
+                    
                     vector_search_start = time.time()
                     docs = milvus_store.similarity_search_with_score(normalized_query, k=NUM_DOCS) if hasattr(milvus_store, 'similarity_search_with_score') else [(doc, 0.0) for doc in milvus_store.similarity_search(normalized_query, k=NUM_DOCS)]
                     vector_search_end = time.time()
+                    
+                    # End vector search span with results
+                    if vector_search_span:
+                        try:
+                            tracer.end_span_with_result(
+                                vector_search_span,
+                                {"docs_found": len(docs), "search_time": vector_search_end - vector_search_start},
+                                success=True
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to end vector search span: {e}")
+                    
                     print(f"[DEBUG] Vector search in {collection_name} for '{normalized_query[:50]}...' took {vector_search_end - vector_search_start:.2f} seconds, found {len(docs)} docs")
                     
                     # Add unique documents with collection metadata
@@ -1714,12 +1788,42 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
             
             # 2. ALWAYS perform keyword search in parallel (not just as fallback)
             print(f"[DEBUG] Running keyword search in {collection_name}")
+            
+            # Create keyword search span for tracing
+            keyword_search_span = None
+            if collection_analysis_span and tracer:
+                try:
+                    keyword_search_span = tracer.create_nested_span(
+                        collection_analysis_span,
+                        name="keyword-search",
+                        metadata={
+                            "operation": "milvus_keyword_search",
+                            "collection": collection_name,
+                            "query": question[:100]
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create keyword search span: {e}")
+            
+            keyword_search_start = time.time()
             keyword_docs = keyword_search_milvus(
                 question,
                 collection_name,
                 uri=milvus_cfg.get("MILVUS_URI"),
                 token=milvus_cfg.get("MILVUS_TOKEN")
             )
+            keyword_search_end = time.time()
+            
+            # End keyword search span with results
+            if keyword_search_span:
+                try:
+                    tracer.end_span_with_result(
+                        keyword_search_span,
+                        {"docs_found": len(keyword_docs), "search_time": keyword_search_end - keyword_search_start},
+                        success=True
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to end keyword search span: {e}")
             
             print(f"[DEBUG] Keyword search in {collection_name} found {len(keyword_docs)} docs")
             
@@ -1801,6 +1905,23 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
                     print(f"[ERROR] Fallback search failed: {str(e)}")
             
             if not all_docs:
+                # End collection analysis span and RAG span with no results
+                if collection_analysis_span and tracer:
+                    try:
+                        tracer.end_span_with_result(
+                            collection_analysis_span,
+                            {"documents_found": 0, "fallback_attempted": True},
+                            success=False,
+                            error="No documents found after vector, keyword, and fallback search"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to end collection analysis span: {e}")
+                
+                if rag_span and tracer:
+                    try:
+                        tracer.end_span_with_result(rag_span, {"documents_found": 0}, True)
+                    except Exception as e:
+                        logger.warning(f"Failed to end RAG span: {e}")
                 return "", ""
             
         print(f"[DEBUG] Total unique documents found: {len(all_docs)} (vector + keyword)")
@@ -1810,6 +1931,23 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
         
     except Exception as e:
         print(f"[ERROR] handle_rag_query: Failed to search vector store: {str(e)}")
+        # End collection analysis span and RAG span with error
+        if collection_analysis_span and tracer:
+            try:
+                tracer.end_span_with_result(
+                    collection_analysis_span,
+                    None,
+                    success=False,
+                    error=str(e)
+                )
+            except Exception as span_error:
+                logger.warning(f"Failed to end collection analysis span with error: {span_error}")
+        
+        if rag_span and tracer:
+            try:
+                tracer.end_span_with_result(rag_span, {"error": str(e)}, False, str(e))
+            except Exception as e:
+                logger.warning(f"Failed to end RAG span: {e}")
         return "", ""
     
     print(f"[DEBUG] handle_rag_query: Retrieved {len(docs)} documents")
@@ -1822,6 +1960,23 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
             print(f"  Doc {i}: score={score:.4f}, content_preview='{doc.page_content[:100]}...'")
     else:
         print(f"[DEBUG] handle_rag_query: No documents retrieved from vector store!")
+        # End collection analysis span and RAG span with no documents
+        if collection_analysis_span and tracer:
+            try:
+                tracer.end_span_with_result(
+                    collection_analysis_span,
+                    {"documents_found": 0, "message": "No documents retrieved from vector store"},
+                    success=False,
+                    error="No documents found in any collection"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to end collection analysis span: {e}")
+        
+        if rag_span and tracer:
+            try:
+                tracer.end_span_with_result(rag_span, {"documents_found": 0}, True)
+            except Exception as e:
+                logger.warning(f"Failed to end RAG span: {e}")
         return "", ""
     
     # Fix: For COSINE distance metric, LOWER scores are BETTER matches
@@ -2070,17 +2225,48 @@ Documents to score:
             print(f"[RAG DEBUG] Low relevance detected ({relevance_score:.2f} < {min_relevance}), no context returned")
             result = ("", [])
             # Cache the result for performance
+            # End RAG span with success
+            if rag_span and tracer:
+                try:
+                    tracer.end_span_with_result(rag_span, {
+                        "documents_found": len([doc for doc, _, _, _, _ in filtered_and_ranked]),
+                        "context_length": len(final_context),
+                        "search_context_length": len(search_context)
+                    }, True)
+                except Exception as e:
+                    logger.warning(f"Failed to end RAG span: {e}")
+            
             _cache_rag_result(query_hash, result, current_time)
             return result
         
         # Context is relevant, return it for hybrid processing
         print(f"[RAG DEBUG] Good relevance ({relevance_score:.2f}), returning context for hybrid approach")
         result = (context, sources)  # Return sources for frontend transparency
+        
+        # End RAG span with success
+        if rag_span and tracer:
+            try:
+                tracer.end_span_with_result(rag_span, {
+                    "documents_found": len([doc for doc, _, _, _, _ in filtered_and_ranked]) if 'filtered_and_ranked' in locals() else 0,
+                    "context_length": len(context),
+                    "search_context_length": len(sources)
+                }, True)
+            except Exception as e:
+                logger.warning(f"Failed to end RAG span: {e}")
+        
         # Cache the result for performance
         _cache_rag_result(query_hash, result, current_time)
         return result
     else:
         print(f"[RAG DEBUG] No relevant documents found")
+        
+        # End RAG span with no relevant documents
+        if rag_span and tracer:
+            try:
+                tracer.end_span_with_result(rag_span, {"documents_found": 0, "relevance_issue": True}, True)
+            except Exception as e:
+                logger.warning(f"Failed to end RAG span: {e}")
+        
         result = ("", [])
         # Cache the result for performance
         _cache_rag_result(query_hash, result, current_time)
@@ -2343,6 +2529,8 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                     classifier = EnhancedQueryClassifier()
                     results = await classifier.classify(question)
                     
+                    logger.info(f"[DEBUG] Direct execution threshold: {threshold}, confidence: {results[0].confidence if results else 'no results'}")
+                    
                     if results and results[0].confidence >= threshold and results[0].suggested_tools:
                         # Use LLM-suggested tool (first one is most relevant)
                         suggested_tools = results[0].suggested_tools
@@ -2370,8 +2558,12 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                     print(f"[DEBUG] rag_answer: Direct bypass failed: {e}, falling back to execute_tools_first")
                 
                 # Only run intelligent planning if direct execution didn't work
+                print(f"[DEBUG] rag_answer: Checking if intelligent planning needed. search_results: {len(search_results) if search_results else 0}")
                 if not search_results:
+                    print(f"[DEBUG] rag_answer: Running intelligent planning since search_results is empty")
                     search_results, search_context = await execute_intelligent_planning(question, thinking, trace)
+                else:
+                    print(f"[DEBUG] rag_answer: Skipping intelligent planning - direct execution already provided {len(search_results)} results")
                 if search_results and search_context:
                     print(f"[DEBUG] rag_answer: TOOLS execution successful, will synthesize with LLM")
                     tool_calls = search_results
@@ -2411,7 +2603,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
             print(f"[DEBUG] rag_answer: RAG query detected - performing knowledge retrieval")
             import time
             rag_start_time = time.time()
-            rag_context, rag_sources = handle_rag_query(question, thinking, collections, collection_strategy)
+            rag_context, rag_sources = handle_rag_query(question, thinking, collections, collection_strategy, trace=trace)
             rag_end_time = time.time()
             print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
             print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
@@ -2420,7 +2612,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
             print(f"[DEBUG] rag_answer: Unknown query_type '{query_type}' - defaulting to RAG retrieval")
             import time
             rag_start_time = time.time()
-            rag_context, rag_sources = handle_rag_query(question, thinking, collections, collection_strategy)
+            rag_context, rag_sources = handle_rag_query(question, thinking, collections, collection_strategy, trace=trace)
             rag_end_time = time.time()
             print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
             print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
@@ -2981,6 +3173,22 @@ Please generate the requested items incorporating relevant information from the 
             # Create LLM instance
             llm = OllamaLLM(llm_config, base_url=ollama_url)
             
+            # Create LLM generation span for main response
+            llm_generation_span = None
+            if trace:
+                try:
+                    from app.core.langfuse_integration import get_tracer
+                    tracer = get_tracer()
+                    if tracer.is_enabled():
+                        llm_generation_span = tracer.create_llm_generation_span(
+                            trace,
+                            model=llm_config.model_name,
+                            prompt=prompt,
+                            operation="main_generation"
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to create LLM generation span: {e}")
+            
             # Stream tokens exactly like multi-agent
             response_text = ""
             
@@ -2992,6 +3200,25 @@ Please generate the requested items incorporating relevant information from the 
                     yield json.dumps({
                         "token": response_chunk.text
                     }) + "\n"
+            
+            # End LLM generation span with actual output
+            if llm_generation_span:
+                try:
+                    tracer = get_tracer()
+                    usage = tracer.estimate_token_usage(prompt, response_text)
+                    # Update the generation with output and usage
+                    llm_generation_span.end(
+                        output=response_text,
+                        usage=usage,
+                        metadata={
+                            "response_length": len(response_text),
+                            "operation": "main_generation",
+                            "success": True
+                        }
+                    )
+                    logger.info(f"[LANGFUSE DEBUG] Main generation span ended with output length: {len(response_text)}")
+                except Exception as e:
+                    logger.warning(f"Failed to end LLM generation span: {e}")
             
             # Parse and execute tool calls using enhanced error handling
             tool_results = extract_and_execute_tool_calls(response_text, trace=trace, use_enhanced_error_handling=True)
@@ -3029,6 +3256,22 @@ Please generate the requested items incorporating relevant information from the 
 
 Based on these search results, provide a comprehensive answer to the user's question about latest AI news. Format the information clearly and include the most relevant findings."""
                     
+                    # Create LLM generation span for synthesis
+                    synthesis_generation_span = None
+                    if trace:
+                        try:
+                            from app.core.langfuse_integration import get_tracer
+                            tracer = get_tracer()
+                            if tracer.is_enabled():
+                                synthesis_generation_span = tracer.create_llm_generation_span(
+                                    trace,
+                                    model=llm_config.model_name,
+                                    prompt=synthesis_prompt,
+                                    operation="tool_synthesis"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to create synthesis generation span: {e}")
+                    
                     # Generate final response with tool results
                     final_response = ""
                     async for response_chunk in llm.generate_stream(synthesis_prompt):
@@ -3037,6 +3280,24 @@ Based on these search results, provide a comprehensive answer to the user's ques
                             yield json.dumps({
                                 "token": response_chunk.text
                             }) + "\n"
+                    
+                    # End synthesis generation span
+                    if synthesis_generation_span:
+                        try:
+                            tracer = get_tracer()
+                            usage = tracer.estimate_token_usage(synthesis_prompt, final_response)
+                            synthesis_generation_span.end(
+                                output=final_response,
+                                usage=usage,
+                                metadata={
+                                    "response_length": len(final_response),
+                                    "tool_results_count": len(tool_results),
+                                    "operation": "llm_tool_synthesis",
+                                    "result_type": "dict" if tool_results else "text"
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to end synthesis generation span: {e}")
                     
                     response_text = final_response
             
@@ -3093,9 +3354,37 @@ Based on these search results, provide a comprehensive answer to the user's ques
         ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
         llm = OllamaLLM(llm_config, base_url=ollama_url)
         
+        # Create LLM generation span for non-streaming response
+        llm_generation_span = None
+        if trace:
+            try:
+                from app.core.langfuse_integration import get_tracer
+                tracer = get_tracer()
+                if tracer.is_enabled():
+                    llm_generation_span = tracer.create_llm_generation_span(
+                        trace,
+                        model=llm_config.model_name,
+                        prompt=prompt,
+                        operation="non_streaming_generation"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to create LLM generation span: {e}")
+        
         response_text = ""
         async for response_chunk in llm.generate_stream(prompt):
             response_text += response_chunk.text
+        
+        # End LLM generation span
+        if llm_generation_span:
+            try:
+                tracer = get_tracer()
+                usage = tracer.estimate_token_usage(prompt, response_text)
+                tracer.end_span_with_result(llm_generation_span, {
+                    "response_length": len(response_text),
+                    "usage": usage
+                }, True)
+            except Exception as e:
+                logger.warning(f"Failed to end LLM generation span: {e}")
         
         # Parse and execute tool calls using enhanced error handling
         tool_results = extract_and_execute_tool_calls(response_text, trace=trace, use_enhanced_error_handling=True)
@@ -3114,10 +3403,39 @@ Based on these search results, provide a comprehensive answer to the user's ques
 
 Please provide a complete answer using the tool results above."""
             
+            # Create LLM generation span for final synthesis
+            final_synthesis_span = None
+            if trace:
+                try:
+                    from app.core.langfuse_integration import get_tracer
+                    tracer = get_tracer()
+                    if tracer.is_enabled():
+                        final_synthesis_span = tracer.create_llm_generation_span(
+                            trace,
+                            model=llm_config.model_name,
+                            prompt=synthesis_prompt,
+                            operation="final_synthesis"
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to create final synthesis span: {e}")
+            
             # Generate final response with tool results
             final_response = ""
             async for response_chunk in llm.generate_stream(synthesis_prompt):
                 final_response += response_chunk.text
+            
+            # End final synthesis span
+            if final_synthesis_span:
+                try:
+                    tracer = get_tracer()
+                    usage = tracer.estimate_token_usage(synthesis_prompt, final_response)
+                    tracer.end_span_with_result(final_synthesis_span, {
+                        "response_length": len(final_response),
+                        "usage": usage,
+                        "tool_results_count": len(tool_results)
+                    }, True)
+                except Exception as e:
+                    logger.warning(f"Failed to end final synthesis span: {e}")
             
             response_text = final_response
             source = source + "+TOOLS"
@@ -3437,6 +3755,7 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
         try:
             from app.core.langfuse_integration import get_tracer
             tracer = get_tracer()
+            logger.info(f"[TOOL SPAN DEBUG] Tracer enabled: {tracer.is_enabled()}, Tool: {tool_name}, Trace: {trace is not None}")
             if tracer.is_enabled():
                 # Sanitize parameters for Langfuse
                 safe_parameters = {}
@@ -3447,10 +3766,15 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
                         safe_value = str(value)[:500] if value is not None else ""
                         safe_parameters[safe_key] = safe_value
                 tool_span = tracer.create_tool_span(trace, str(tool_name), safe_parameters)
+                logger.info(f"[TOOL SPAN DEBUG] Tool span created successfully for {tool_name}: {tool_span is not None}")
+            else:
+                logger.info(f"[TOOL SPAN DEBUG] Tracer not enabled, skipping span creation for {tool_name}")
         except Exception as e:
             logger.warning(f"Failed to create tool span for {tool_name}: {e}")
             tool_span = None
             tracer = None
+    else:
+        logger.info(f"[TOOL SPAN DEBUG] Skipping span creation - trace: {trace is not None}, skip: {_skip_span_creation}, tool: {tool_name}")
     
     # Apply parameter mapping for common mismatches
     tool_name, parameters = _map_tool_parameters_service(tool_name, parameters)
@@ -3549,9 +3873,13 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
             if tool_span and tracer:
                 try:
                     success = "error" not in result
+                    logger.info(f"[TOOL SPAN DEBUG] Ending tool span for {tool_name}, success: {success}, result keys: {list(result.keys()) if isinstance(result, dict) else 'not dict'}")
                     tracer.end_span_with_result(tool_span, result, success, result.get("error"))
+                    logger.info(f"[TOOL SPAN DEBUG] Tool span ended successfully for {tool_name}")
                 except Exception as e:
                     logger.warning(f"Failed to end tool span for {tool_name}: {e}")
+            else:
+                logger.info(f"[TOOL SPAN DEBUG] No tool span to end for {tool_name} - span: {tool_span is not None}, tracer: {tracer is not None}")
             
             logger.info(f"[UNIFIED] Tool {tool_name} completed via unified service")
             return result

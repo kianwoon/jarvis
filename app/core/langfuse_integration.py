@@ -4,10 +4,16 @@ Provides centralized Langfuse tracing for LLM operations
 """
 
 from typing import Optional, Dict, Any, List
-from langfuse import Langfuse
 from functools import wraps
 import logging
 import time
+
+try:
+    from langfuse import Langfuse
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+    Langfuse = None
 
 from app.core.langfuse_settings_cache import get_langfuse_settings
 

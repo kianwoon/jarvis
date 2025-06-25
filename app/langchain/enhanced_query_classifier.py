@@ -193,45 +193,8 @@ class EnhancedQueryClassifier:
     def _apply_mcp_tool_patterns(self, query_lower: str, scores: Dict, metadata: Dict):
         """Apply MCP tool-specific patterns for better classification"""
         
-        # High-confidence tool patterns based on available MCP tools
-        tool_patterns = {
-            # Date/Time queries - should always be TOOL
-            'datetime': {
-                'patterns': [
-                    r'\b(what|whats|what\'s)\s+(is\s+)?(today|todays|today\'s)\s+(date|time)',
-                    r'\b(current|what)\s+(date|time)',
-                    r'\bwhat\s+time\s+is\s+it\b',
-                    r'\btoday\s+(date|time)\b',
-                    r'\bnow\s+(date|time)\b',
-                    r'\bdate\s*(&|and)?\s*time\b',  # Match "date & time" or "date and time"
-                    r'\btime\s*(&|and)?\s*date\b'   # Match "time & date" or "time and date"
-                ],
-                'confidence': 0.9,  # Very high confidence for datetime
-                'available_tools': []  # Will be populated dynamically from MCP cache
-            },
-            
-            # Weather queries
-            'weather': {
-                'patterns': [
-                    r'\b(weather|temperature|forecast)\b',
-                    r'\bhow\s+(hot|cold|warm)\b',
-                    r'\bwill\s+it\s+rain\b'
-                ],
-                'confidence': 0.8,
-                'available_tools': ['weather', 'openweathermap']
-            },
-            
-            # Web search queries  
-            'web_search': {
-                'patterns': [
-                    r'\b(search|find|look\s+up|google)\b',
-                    r'\blatest\s+(news|information)\b',
-                    r'\bwhat\s+happened\b'
-                ],
-                'confidence': 0.7,
-                'available_tools': ['web_search', 'google_search', 'tavily']
-            }
-        }
+        # Get tool patterns from configuration
+        tool_patterns = self.config.get("mcp_tool_patterns", {})
         
         for tool_category, config in tool_patterns.items():
             # Dynamically populate available_tools for any category with empty tools from MCP cache
@@ -266,7 +229,9 @@ class EnhancedQueryClassifier:
         """Apply RAG collection matching for intelligent routing"""
         if not self.rag_collections:
             # No RAG collections available - boost TOOL score for all queries
-            scores[QueryType.TOOL] += 0.3
+            settings = self.config.get("settings", {})
+            no_rag_boost = float(settings.get("no_rag_tool_boost", 0.3))
+            scores[QueryType.TOOL] += no_rag_boost
             metadata[QueryType.TOOL]["matched_patterns"].append(("no_rag_collections", "fallback_to_tools"))
             metadata[QueryType.TOOL]["pattern_groups"].add("no_rag_fallback")
             logger.debug(f"No RAG collections available - boosting TOOL score for query: {query_lower}")
@@ -296,7 +261,10 @@ class EnhancedQueryClassifier:
             best_match = rag_matches[0]
             
             # Boost RAG score based on collection relevance
-            rag_boost = min(0.6, best_match['overlap_score'] * 0.8)  # Cap at 0.6
+            settings = self.config.get("settings", {})
+            rag_boost_cap = float(settings.get("rag_boost_cap", 0.6))
+            rag_boost_multiplier = float(settings.get("rag_boost_multiplier", 0.8))
+            rag_boost = min(rag_boost_cap, best_match['overlap_score'] * rag_boost_multiplier)
             scores[QueryType.RAG] += rag_boost
             
             metadata[QueryType.RAG]["matched_patterns"].append((
@@ -321,14 +289,17 @@ class EnhancedQueryClassifier:
             has_comparison = bool(query_keywords.intersection(comparison_keywords))
             
             # Default bias toward fresh web search when no RAG collections match
-            freshness_boost = 0.4  # Base boost for freshness
+            settings = self.config.get("settings", {})
+            freshness_boost = float(settings.get("freshness_base_boost", 0.4))
             
             if has_temporal:
-                freshness_boost += 0.3  # Additional boost for temporal queries
+                temporal_boost = float(settings.get("temporal_boost", 0.3))
+                freshness_boost += temporal_boost
                 metadata[QueryType.TOOL]["pattern_groups"].add("temporal_freshness")
                 
             if has_comparison:
-                freshness_boost += 0.2  # Additional boost for comparisons
+                comparison_boost = float(settings.get("comparison_boost", 0.2))
+                freshness_boost += comparison_boost
                 metadata[QueryType.TOOL]["pattern_groups"].add("comparison_freshness")
             
             scores[QueryType.TOOL] += freshness_boost
@@ -349,12 +320,25 @@ class EnhancedQueryClassifier:
             "multi_agent_patterns": {},
             "direct_llm_patterns": {},
             "hybrid_indicators": {},
+            "mcp_tool_patterns": {},
             "settings": {
                 "min_confidence_threshold": 0.1,
                 "max_classifications": 3,
                 "enable_hybrid_detection": True,
                 "confidence_decay_factor": 0.8,
-                "pattern_combination_bonus": 0.15
+                "pattern_combination_bonus": 0.15,
+                "no_rag_tool_boost": 0.3,
+                "rag_boost_cap": 0.6,
+                "rag_boost_multiplier": 0.8,
+                "freshness_base_boost": 0.4,
+                "temporal_boost": 0.3,
+                "comparison_boost": 0.2,
+                "hybrid_component_multiplier": 0.5,
+                "strong_results_threshold": 0.2,
+                "hybrid_confidence_multiplier": 0.6,
+                "three_way_hybrid_multiplier": 0.5,
+                "fallback_default_confidence": 0.5,
+                "fallback_tool_confidence": 0.6
             }
         }
     
@@ -412,117 +396,42 @@ class EnhancedQueryClassifier:
         
         return compiled
     
-    async def classify(self, query: str) -> List[ClassificationResult]:
+    async def classify(self, query: str, trace=None) -> List[ClassificationResult]:
         """
-        Classify a query and return multiple classifications with confidence scores
+        Classify a query using LLM-based classification only
         
         Returns:
             List of ClassificationResult objects sorted by confidence
         """
-        # Use LLM-based classification if configured in settings
+        # Use LLM-based classification only - no pattern fallback
         if hasattr(self, 'use_llm_classification') and self.use_llm_classification:
-            return await self._llm_classify(query)
-        
-        # Fall back to pattern-based classification
-        query_lower = query.lower()
-        settings = self.config.get("settings", {})
-        
-        # Initialize scores for each query type
-        scores = {qt: 0.0 for qt in QueryType}
-        metadata = {qt: {
-            "matched_patterns": [],
-            "suggested_tools": set(),
-            "suggested_agents": set(),
-            "pattern_groups": set()
-        } for qt in QueryType}
-        
-        # Check for hybrid patterns first if enabled
-        if settings.get("enable_hybrid_detection", True):
-            hybrid_detected = self._detect_hybrid_patterns(query_lower)
-            if hybrid_detected:
-                # Boost component types for detected hybrid patterns
-                for _, components, confidence in hybrid_detected:
-                    for component in components:
-                        component_type = QueryType[component]
-                        scores[component_type] += confidence * 0.5
-                        metadata[component_type]["hybrid_indicator"] = True
-        
-        # Enhanced pattern matching with MCP tool awareness
-        self._apply_mcp_tool_patterns(query_lower, scores, metadata)
-        
-        # Apply collection-aware RAG routing
-        self._apply_rag_collection_matching(query_lower, scores, metadata)
-        
-        # Process regular patterns
-        for query_type_str, patterns in self.compiled_patterns.items():
-            if query_type_str == "hybrid":
-                continue
-                
-            query_type = QueryType(query_type_str)
-            
-            for pattern, config in patterns:
-                if pattern.search(query_lower):
-                    # Apply confidence boost
-                    scores[query_type] += config["confidence_boost"]
-                    
-                    # Track metadata
-                    metadata[query_type]["matched_patterns"].append((config["group"], pattern.pattern))
-                    metadata[query_type]["pattern_groups"].add(config["group"])
-                    
-                    # Add suggested tools/agents
-                    if config.get("suggested_tools"):
-                        metadata[query_type]["suggested_tools"].update(config["suggested_tools"])
-                    if config.get("suggested_agents"):
-                        metadata[query_type]["suggested_agents"].update(config["suggested_agents"])
-        
-        # Apply pattern combination bonus
-        combination_bonus = float(settings.get("pattern_combination_bonus", 0.15))
-        for query_type, meta in metadata.items():
-            if len(meta["pattern_groups"]) > 1:
-                scores[query_type] += combination_bonus * (len(meta["pattern_groups"]) - 1)
-        
-        # Normalize scores
-        total_score = sum(scores.values())
-        if total_score > 0:
-            for query_type in scores:
-                scores[query_type] /= total_score
-        
-        # Build classification results
-        results = []
-        for query_type, score in scores.items():
-            if score >= float(settings.get("min_confidence_threshold", 0.1)):
-                result = ClassificationResult(
-                    query_type=query_type,
-                    confidence=score,
-                    metadata={
-                        "query_length": len(query.split()),
-                        "has_question_words": any(word in query_lower.split() for word in ['what', 'who', 'when', 'where', 'why', 'how']),
-                        "pattern_groups": list(metadata[query_type]["pattern_groups"]),
-                        "is_hybrid_component": metadata[query_type].get("hybrid_indicator", False)
-                    },
-                    suggested_tools=list(metadata[query_type]["suggested_tools"]),
-                    suggested_agents=list(metadata[query_type]["suggested_agents"]),
-                    matched_patterns=metadata[query_type]["matched_patterns"]
-                )
-                results.append(result)
-        
-        # Detect and add hybrid types based on component scores
-        hybrid_results = self._create_hybrid_classifications(results, settings)
-        results.extend(hybrid_results)
-        
-        # Sort by confidence and return top N
-        results.sort(key=lambda x: x.confidence, reverse=True)
-        max_classifications = int(settings.get("max_classifications", 3))
-        
-        # Log classification results
-        logger.info(f"Query classifications for '{query[:50]}...':")
-        for i, result in enumerate(results[:max_classifications]):
-            logger.info(f"  {i+1}. {result.query_type.value} (confidence: {result.confidence:.2f})")
-        
-        return results[:max_classifications]
+            return await self._llm_classify(query, trace=trace)
+        else:
+            logger.error("LLM classification not enabled - cannot classify queries without LLM")
+            return await self._retry_llm_classification(query, "llm_not_enabled")
     
-    async def _llm_classify(self, query: str) -> List[ClassificationResult]:
+    async def _llm_classify(self, query: str, trace=None) -> List[ClassificationResult]:
         """Use LLM-based classification with your configured settings"""
+        # Create classification span for tracing
+        classification_span = None
+        tracer = None
+        if trace:
+            try:
+                from app.core.langfuse_integration import get_tracer
+                tracer = get_tracer()
+                if tracer.is_enabled():
+                    classification_span = tracer.create_span(
+                        trace,
+                        name="query-classification",
+                        metadata={
+                            "operation": "query_classification",
+                            "classifier_type": "llm",
+                            "query_length": len(query)
+                        }
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to create classification span: {e}")
+        
         try:
             from app.core.llm_settings_cache import get_llm_settings
             llm_settings = get_llm_settings()
@@ -552,7 +461,11 @@ class EnhancedQueryClassifier:
 
 Query: "{query}"
 
-Respond with only the classification type (tool, rag, llm, or multi_agent)."""
+Respond with the classification type and confidence score in this exact format: TYPE|CONFIDENCE
+Where TYPE is one of: tool, rag, llm, multi_agent
+Where CONFIDENCE is a decimal between 0.0 and 1.0 indicating your certainty
+
+Example: tool|0.85"""
                 
                 # Debug log the prompt
                 logger.info(f"LLM Classifier prompt length: {len(prompt)} chars")
@@ -593,29 +506,58 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
             logger.info(f"LLM Classifier using model: {llm_config.model_name}")
             
             llm = OllamaLLM(llm_config, base_url=model_server)
+            
+            # Create LLM generation span for classification
+            generation_span = None
+            if classification_span and tracer:
+                try:
+                    generation_span = tracer.create_llm_generation_span(
+                        classification_span,
+                        model=llm_config.model_name,
+                        prompt=prompt,
+                        operation="classification"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create classification generation span: {e}")
+            
             response = await llm.generate(prompt)
             response_text = response.text
+            
+            # End generation span with result
+            if generation_span and tracer:
+                try:
+                    usage = tracer.estimate_token_usage(prompt, response_text)
+                    tracer.end_span_with_result(generation_span, {
+                        "raw_response": response_text[:500],
+                        "usage": usage
+                    }, True)
+                except Exception as e:
+                    logger.warning(f"Failed to end classification generation span: {e}")
             
             logger.info(f"LLM Classifier raw response: '{response_text}'")
             
             # Clean response - remove thinking tags and extract classification
             clean_response = response_text
+            logger.info(f"[CLASSIFIER DEBUG] Raw response length: {len(response_text)}, has_think_tags: {'<think>' in clean_response and '</think>' in clean_response}")
             if '<think>' in clean_response and '</think>' in clean_response:
                 import re
                 clean_response = re.sub(r'<think>.*?</think>', '', clean_response, flags=re.DOTALL).strip()
+                logger.info(f"[CLASSIFIER DEBUG] After cleaning: '{clean_response}'")
             
-            # Parse LLM response - handle both old format (TYPE|confidence) and new format (just TYPE)
+            # Parse LLM response - require TYPE|CONFIDENCE format
             if '|' in clean_response:
                 parts = clean_response.strip().split('|')
                 query_type_str = parts[0].strip().upper()
                 try:
                     confidence = float(parts[1].strip())
-                except ValueError:
-                    confidence = min_confidence  # Use configured minimum confidence
+                    # Clamp confidence to valid range
+                    confidence = max(0.0, min(1.0, confidence))
+                except (ValueError, IndexError) as e:
+                    logger.error(f"LLM provided invalid confidence in response: '{clean_response}', error: {e}")
+                    return await self._retry_llm_classification(query, "invalid_confidence")
             else:
-                # New format - just the classification type
-                query_type_str = clean_response.strip().upper()
-                confidence = min_confidence  # Use configured minimum confidence
+                logger.error(f"LLM did not follow required TYPE|CONFIDENCE format: '{clean_response}', no '|' found")
+                return await self._retry_llm_classification(query, "missing_confidence")
             
             # Handle combinations (e.g., "TOOLS+WEB_SEARCH")
             if '+' in query_type_str:
@@ -645,35 +587,77 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
                     query_type=query_type,
                     confidence=confidence,
                     metadata={
-                        "classification_method": "llm",
-                        "available_tools": list(self.mcp_tool_names) if self.mcp_tool_names else [],
-                        "available_collections": list(self.rag_collections.keys()) if self.rag_collections else [],
+                        "available_tools": self._build_tools_info(),
+                        "available_collections": self._build_collections_info(),
                         "llm_response": response_text
                     },
                     suggested_tools=suggested_tools
                 )
                 
                 logger.info(f"LLM classification: {query_type.value} (confidence: {confidence:.2f})")
+                
+                # End classification span with success
+                if classification_span and tracer:
+                    try:
+                        tracer.end_span_with_result(classification_span, {
+                            "classification_type": query_type.value,
+                            "confidence": confidence,
+                            "suggested_tools": suggested_tools
+                        }, True)
+                    except Exception as e:
+                        logger.warning(f"Failed to end classification span: {e}")
+                
                 return [result]
             
             # Fallback if parsing fails
-            logger.warning(f"Failed to parse LLM classification response: {response_text}")
-            return await self._pattern_classify_fallback(query)
+            logger.error(f"Failed to parse LLM classification response: {response_text}")
+            
+            # End classification span with error
+            if classification_span and tracer:
+                try:
+                    tracer.end_span_with_result(classification_span, {"error": "parse_failed"}, False, "Failed to parse LLM response")
+                except Exception as e:
+                    logger.warning(f"Failed to end classification span: {e}")
+            
+            return await self._retry_llm_classification(query, "parse_failed")
             
         except Exception as e:
             logger.error(f"LLM classification failed: {e}", exc_info=True)
-            return await self._pattern_classify_fallback(query)
+            
+            # End classification span with error
+            if classification_span and tracer:
+                try:
+                    tracer.end_span_with_result(classification_span, {"error": str(e)}, False, str(e))
+                except Exception as e:
+                    logger.warning(f"Failed to end classification span: {e}")
+            
+            return await self._retry_llm_classification(query, "exception")
     
-    async def _pattern_classify_fallback(self, query: str) -> List[ClassificationResult]:
-        """Fallback to pattern-based classification"""
-        logger.info("Using pattern-based classification fallback")
-        # Temporarily disable LLM classification for this call
-        original_setting = getattr(self, 'use_llm_classification', False)
-        self.use_llm_classification = False
-        try:
-            return await self.classify(query)
-        finally:
-            self.use_llm_classification = original_setting
+    async def _retry_llm_classification(self, query: str, reason: str) -> List[ClassificationResult]:
+        """Retry LLM classification with a simpler prompt or return error result"""
+        logger.warning(f"LLM classification failed ({reason}), creating error result")
+        
+        # Return a default tool classification with low confidence to indicate uncertainty
+        from app.core.llm_settings_cache import get_llm_settings
+        llm_settings = get_llm_settings()
+        classifier_config = llm_settings.get('query_classifier', {})
+        min_confidence = float(classifier_config.get('min_confidence_threshold', 0.1))
+        
+        result = ClassificationResult(
+            query_type=QueryType.TOOL,
+            confidence=min_confidence,
+            metadata={
+                "llm_error": True,
+                "error_reason": reason,
+                "fallback_classification": True,
+                "available_tools": self._build_tools_info(),
+                "available_collections": self._build_collections_info()
+            },
+            suggested_tools=[]
+        )
+        
+        logger.info(f"Fallback classification: {result.query_type.value} (confidence: {result.confidence:.2f}) due to {reason}")
+        return [result]
     
     def _build_tools_info(self) -> str:
         """Build detailed information about available MCP tools"""
@@ -734,7 +718,8 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
         hybrid_results = []
         
         # Only create hybrids if multiple strong signals exist
-        strong_results = [r for r in results if r.confidence > 0.2]
+        strong_threshold = float(settings.get("strong_results_threshold", 0.2))
+        strong_results = [r for r in results if r.confidence > strong_threshold]
         
         if len(strong_results) < 2:
             return hybrid_results
@@ -747,7 +732,8 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
             tool_result = type_map[QueryType.TOOL]
             rag_result = type_map[QueryType.RAG]
             
-            hybrid_confidence = (tool_result.confidence + rag_result.confidence) * 0.6
+            hybrid_multiplier = float(settings.get("hybrid_confidence_multiplier", 0.6))
+            hybrid_confidence = (tool_result.confidence + rag_result.confidence) * hybrid_multiplier
             
             if hybrid_confidence > float(settings.get("min_confidence_threshold", 0.1)):
                 hybrid_results.append(ClassificationResult(
@@ -769,7 +755,8 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
             tool_result = type_map[QueryType.TOOL]
             llm_result = type_map[QueryType.LLM]
             
-            hybrid_confidence = (tool_result.confidence + llm_result.confidence) * 0.6
+            hybrid_multiplier = float(settings.get("hybrid_confidence_multiplier", 0.6))
+            hybrid_confidence = (tool_result.confidence + llm_result.confidence) * hybrid_multiplier
             
             if hybrid_confidence > float(settings.get("min_confidence_threshold", 0.1)):
                 hybrid_results.append(ClassificationResult(
@@ -791,7 +778,8 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
             rag_result = type_map[QueryType.RAG]
             llm_result = type_map[QueryType.LLM]
             
-            hybrid_confidence = (rag_result.confidence + llm_result.confidence) * 0.6
+            hybrid_multiplier = float(settings.get("hybrid_confidence_multiplier", 0.6))
+            hybrid_confidence = (rag_result.confidence + llm_result.confidence) * hybrid_multiplier
             
             if hybrid_confidence > float(settings.get("min_confidence_threshold", 0.1)):
                 hybrid_results.append(ClassificationResult(
@@ -814,7 +802,8 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
             rag_result = type_map[QueryType.RAG]
             llm_result = type_map[QueryType.LLM]
             
-            hybrid_confidence = (tool_result.confidence + rag_result.confidence + llm_result.confidence) * 0.5
+            three_way_multiplier = float(settings.get("three_way_hybrid_multiplier", 0.5))
+            hybrid_confidence = (tool_result.confidence + rag_result.confidence + llm_result.confidence) * three_way_multiplier
             
             if hybrid_confidence > float(settings.get("min_confidence_threshold", 0.1)):
                 hybrid_results.append(ClassificationResult(
@@ -834,22 +823,23 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
         
         return hybrid_results
     
-    async def get_routing_recommendation(self, query: str) -> Dict[str, any]:
+    async def get_routing_recommendation(self, query: str, trace=None) -> Dict[str, any]:
         """
         Get complete routing recommendation for a query with support for hybrid routing
         
         Returns:
             Dict with routing information including multiple classifications
         """
-        classifications = await self.classify(query)
+        classifications = await self.classify(query, trace=trace)
         settings = self.config.get("settings", {})
         min_confidence = float(settings.get("min_confidence_threshold", 0.1))
         
         if not classifications:
             # Default fallback to tool search if no classification
+            fallback_confidence = float(settings.get("fallback_default_confidence", 0.5))
             primary_classification = ClassificationResult(
                 query_type=QueryType.TOOL,
-                confidence=0.5,
+                confidence=fallback_confidence,
                 metadata={"fallback_reason": "no_classification", "suggested_action": "web_search"}
             )
         else:
@@ -858,9 +848,10 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
             # Implement fallback strategy: if confidence too low, fallback to tools
             if primary_classification.confidence < min_confidence:
                 logger.info(f"Confidence {primary_classification.confidence:.2f} below threshold {min_confidence}, falling back to tools")
+                fallback_tool_confidence = float(settings.get("fallback_tool_confidence", 0.6))
                 primary_classification = ClassificationResult(
                     query_type=QueryType.TOOL,
-                    confidence=0.6,
+                    confidence=fallback_tool_confidence,
                     metadata={
                         "fallback_reason": "low_confidence", 
                         "original_type": primary_classification.query_type.value,
@@ -957,46 +948,12 @@ Respond with only the classification type (tool, rag, llm, or multi_agent)."""
             from app.core.llm_settings_cache import get_llm_settings
             llm_settings = get_llm_settings()
             
-            # Build tool information dynamically from available MCP tools
-            tools_list = []
-            for tool_name in self.mcp_tool_names:
-                # Get tool description from manifest if available
-                description = "Available for use"
-                if hasattr(self, 'available_mcp_tools') and tool_name in self.available_mcp_tools:
-                    tool_info = self.available_mcp_tools[tool_name]
-                    if isinstance(tool_info, dict):
-                        manifest = tool_info.get('manifest', {})
-                        if manifest and 'tools' in manifest:
-                            for tool_def in manifest['tools']:
-                                if tool_def.get('name') == tool_name:
-                                    description = tool_def.get('description', description)
-                                    break
-                
-                tools_list.append(f"- {tool_name}: {description}")
-            
-            tools_text = "\n".join(tools_list)
-            
-            # Get system prompt settings to use same approach as classifier
-            classifier_config = llm_settings.get('query_classifier', {})
-            system_prompt = classifier_config.get('system_prompt', '/NO_THINK')
-            
-            # Create LLM prompt for tool suggestion
-            prompt = f"""{system_prompt}
+            # Create simple, direct prompt
+            prompt = f"""Query: {query}
 
-Given this user query and available tools, suggest the most relevant tool(s) to use.
+Tools: {', '.join(self.mcp_tool_names)}
 
-Query: "{query}"
-
-Available Tools:
-{tools_text}
-
-Instructions:
-- Select only the most relevant tool(s) that can directly answer or help with the query
-- If multiple tools could help, list them in order of relevance
-- Return only tool names, one per line
-- If no tools are relevant, return "none"
-
-Most relevant tool(s):"""
+Output only the most relevant tool name (no explanations):/NO_THINK"""
 
             # Use same LLM configuration as classification
             from app.llm.ollama import OllamaLLM
@@ -1006,7 +963,7 @@ Most relevant tool(s):"""
             llm_config = LLMConfig(
                 model_name=llm_settings.get('model'),
                 temperature=float(non_thinking_mode.get('temperature', 0.1)),
-                max_tokens=200,  # Allow enough tokens for response
+                max_tokens=50,  # Short response needed - just tool names
                 top_p=float(non_thinking_mode.get('top_p', 0.9))
             )
             
@@ -1025,7 +982,6 @@ Most relevant tool(s):"""
             # Clean response - remove thinking tags
             clean_response = response_text
             if '<think>' in clean_response and '</think>' in clean_response:
-                import re
                 clean_response = re.sub(r'<think>.*?</think>', '', clean_response, flags=re.DOTALL).strip()
             
             logger.info(f"LLM tool suggestion for '{query}': {clean_response}")

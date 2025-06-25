@@ -3,118 +3,143 @@ Query Classifier Settings Cache
 Manages query classifier configuration with Redis caching and database persistence
 """
 
+import redis
 import json
 import logging
 from typing import Dict, Optional
-from app.core.db import get_db
-from app.core.redis_client import get_redis_client
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+config = get_settings()
+REDIS_HOST = config.REDIS_HOST
+REDIS_PORT = config.REDIS_PORT
+REDIS_PASSWORD = config.REDIS_PASSWORD
+CACHE_KEY = "query_classifier_settings"
+
+# Don't create connection at import time
+r = None
 
 # Default query classifier settings
 DEFAULT_QUERY_CLASSIFIER_SETTINGS = {
     "min_confidence_threshold": 0.1,
-    "direct_execution_threshold": 0.6,
+    "direct_execution_threshold": 0.55,  # For TOOL queries
+    "llm_direct_threshold": 0.8,  # For LLM queries
+    "multi_agent_threshold": 0.6,  # For MULTI_AGENT queries
     "max_classifications": 3,
     "enable_hybrid_detection": True,
     "confidence_decay_factor": 0.8,
     "pattern_combination_bonus": 0.15
 }
 
-CACHE_KEY = "query_classifier_settings"
-CACHE_TTL = 3600  # 1 hour
+def _get_redis_client():
+    """Get Redis client with lazy initialization"""
+    global r
+    if r is None:
+        try:
+            r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
+            r.ping()  # Test connection
+        except (redis.ConnectionError, redis.TimeoutError) as e:
+            logger.warning(f"Redis connection failed: {e}")
+            r = None
+    return r
 
 def get_query_classifier_settings() -> Dict:
     """Get query classifier settings from cache or database"""
-    # Try Redis first
-    redis_client = get_redis_client()
+    # Try to get from Redis cache first
+    redis_client = _get_redis_client()
     if redis_client:
         try:
             cached = redis_client.get(CACHE_KEY)
             if cached:
-                logger.debug(f"Retrieved query classifier settings from Redis cache")
-                return json.loads(cached)
+                settings = json.loads(cached)
+                return settings
         except Exception as e:
-            logger.warning(f"Redis error when getting query classifier settings: {e}")
+            logger.warning(f"Redis error: {e}, falling back to database")
     
-    # Fallback to database
+    # If not cached or Redis failed, load from DB
+    return reload_query_classifier_settings()
+
+def set_query_classifier_settings(settings_dict):
+    redis_client = _get_redis_client()
+    if redis_client:
+        try:
+            redis_client.set(CACHE_KEY, json.dumps(settings_dict))
+        except Exception as e:
+            logger.warning(f"Failed to cache settings in Redis: {e}")
+
+def reload_query_classifier_settings():
+    """Call this after updating settings in DB"""
     try:
-        session = next(get_db())
-        from sqlalchemy import text
+        # Lazy import to avoid database connection at startup
+        from app.core.db import SessionLocal, Settings as SettingsModel
         
-        result = session.execute(
-            text("SELECT settings FROM settings WHERE category = 'llm'")
-        ).fetchone()
-        
-        if result and result[0]:
-            settings = result[0] if isinstance(result[0], dict) else json.loads(result[0])
-            query_classifier_settings = settings.get('query_classifier', DEFAULT_QUERY_CLASSIFIER_SETTINGS)
-            
-            # Cache in Redis
-            if redis_client:
-                try:
-                    redis_client.setex(
-                        CACHE_KEY,
-                        CACHE_TTL,
-                        json.dumps(query_classifier_settings)
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to cache query classifier settings in Redis: {e}")
-            
-            return query_classifier_settings
-        
-        session.close()
+        db = SessionLocal()
+        try:
+            row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
+            if row and 'query_classifier' in row.settings:
+                settings = row.settings['query_classifier']
+                
+                # Try to cache in Redis
+                redis_client = _get_redis_client()
+                if redis_client:
+                    try:
+                        redis_client.set(CACHE_KEY, json.dumps(settings))
+                    except Exception as e:
+                        logger.warning(f"Failed to cache settings in Redis: {e}")
+                
+                return settings
+            else:
+                # No user-defined settings, return defaults
+                redis_client = _get_redis_client()
+                if redis_client:
+                    try:
+                        redis_client.set(CACHE_KEY, json.dumps(DEFAULT_QUERY_CLASSIFIER_SETTINGS))
+                    except Exception as e:
+                        logger.warning(f"Failed to cache default settings in Redis: {e}")
+                return DEFAULT_QUERY_CLASSIFIER_SETTINGS
+        finally:
+            db.close()
     except Exception as e:
-        logger.error(f"Database error when getting query classifier settings: {e}")
-    
-    logger.info("Using default query classifier settings")
-    return DEFAULT_QUERY_CLASSIFIER_SETTINGS
+        logger.error(f"Failed to load query classifier settings from database: {e}")
+        # Return default settings to prevent complete failure
+        return DEFAULT_QUERY_CLASSIFIER_SETTINGS
 
 def update_query_classifier_settings(settings: Dict) -> bool:
     """Update query classifier settings in database and cache"""
     try:
-        session = next(get_db())
-        from sqlalchemy import text
+        # Lazy import to avoid database connection at startup
+        from app.core.db import SessionLocal, Settings as SettingsModel
         
-        # Get current LLM settings
-        result = session.execute(
-            text("SELECT settings FROM settings WHERE category = 'llm'")
-        ).fetchone()
-        
-        if result:
-            current_settings = result[0] if isinstance(result[0], dict) else json.loads(result[0])
-            current_settings['query_classifier'] = settings
-            
-            # Update database
-            session.execute(
-                text("UPDATE settings SET settings = :settings WHERE category = 'llm'"),
-                {"settings": json.dumps(current_settings)}
-            )
-            session.commit()
-            
-            # Update Redis cache
-            redis_client = get_redis_client()
-            if redis_client:
-                try:
-                    redis_client.setex(
-                        CACHE_KEY,
-                        CACHE_TTL,
-                        json.dumps(settings)
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to update Redis cache: {e}")
-            
-            logger.info("Query classifier settings updated successfully")
-            return True
-        
-        session.close()
+        db = SessionLocal()
+        try:
+            row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
+            if row:
+                current_settings = row.settings
+                current_settings['query_classifier'] = settings
+                row.settings = current_settings
+                db.commit()
+                
+                # Update Redis cache
+                redis_client = _get_redis_client()
+                if redis_client:
+                    try:
+                        redis_client.set(CACHE_KEY, json.dumps(settings))
+                    except Exception as e:
+                        logger.warning(f"Failed to update Redis cache: {e}")
+                
+                logger.info("Query classifier settings updated successfully")
+                return True
+            return False
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Failed to update query classifier settings: {e}")
         return False
 
 def clear_cache():
     """Clear the query classifier settings cache"""
-    redis_client = get_redis_client()
+    redis_client = _get_redis_client()
     if redis_client:
         try:
             redis_client.delete(CACHE_KEY)

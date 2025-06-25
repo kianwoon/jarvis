@@ -49,6 +49,10 @@ class ConversationMessage:
     parent_message_id: Optional[str] = None
     thread_id: Optional[str] = None
     
+    # Temporary document references
+    temp_doc_ids: Optional[List[str]] = None
+    temp_doc_context: Optional[Dict[str, Any]] = None
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage"""
         return {

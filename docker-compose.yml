@@ -3,16 +3,14 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    network_mode: "host"
+    ports:
+      - "8000:8000"
     privileged: true
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ../MCP:/mcp-servers
-      - /Users/kianwoonwong:/Users/kianwoonwong:ro
-      - /opt/homebrew:/opt/homebrew:ro
-      - /opt/homebrew/Cellar/node/23.9.0:/opt/homebrew/Cellar/node/23.9.0:ro
     env_file:
       - .env.docker
     environment:

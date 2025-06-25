@@ -116,6 +116,19 @@ class RedisCache:
         except Exception as e:
             print(f"Redis exists error: {e}")
             return False
+    
+    def expire(self, key: str, ttl_seconds: int) -> bool:
+        """Set TTL for existing key"""
+        client = self._get_client()
+        if not client:
+            return False
+            
+        try:
+            full_key = f"{self.key_prefix}{key}"
+            return bool(client.expire(full_key, ttl_seconds))
+        except Exception as e:
+            print(f"Redis expire error: {e}")
+            return False
 
 def cache_fallback(func):
     """Decorator that provides fallback when Redis is not available"""

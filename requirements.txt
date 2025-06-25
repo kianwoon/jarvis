@@ -47,3 +47,6 @@ apscheduler>=3.10.0
 docker>=7.0.0
 spacy>=3.7.0
 langfuse>=2.0.0,<3.0.0
+llama-index
+llama-index-llms-ollama 
+llama-index-embeddings-ollama
