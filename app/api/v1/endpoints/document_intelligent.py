@@ -26,6 +26,7 @@ from app.core.collection_registry_cache import get_collection_config, get_all_co
 from app.core.collection_statistics import update_collection_statistics
 from app.document_handlers.base import DocumentHandler, ExtractedChunk
 from app.rag.bm25_processor import BM25Processor
+from app.utils.metadata_extractor import MetadataExtractor
 from utils.deduplication import filter_new_chunks
 
 # Import new RAG agent components - use lazy imports to avoid circular dependencies
@@ -606,6 +607,7 @@ async def intelligent_upload_with_progress(
                 # Process documents into chunks with full metadata schema
                 from langchain.schema import Document
                 chunks = []
+                chunk_counter = 0  # Global chunk counter across all documents
                 for i, doc in enumerate(docs):
                     doc_chunks = text_splitter.split_text(doc.page_content)
                     for j, chunk_text in enumerate(doc_chunks):
@@ -620,12 +622,13 @@ async def intelligent_upload_with_progress(
                                 'page': doc.metadata.get('page', i),
                                 'doc_type': file.content_type.split('/')[-1] if file.content_type else 'unknown',
                                 'uploaded_at': datetime.now().isoformat(),
-                                'section': f"chunk_{j}",
+                                'section': f"chunk_{chunk_counter}",
                                 'author': '',
-                                'chunk_index': j,
+                                'chunk_index': chunk_counter,
                             }
                         )
                         chunks.append(chunk_doc)
+                        chunk_counter += 1
                 
                 # Add complete metadata processing like the real upload
                 import hashlib
@@ -636,6 +639,9 @@ async def intelligent_upload_with_progress(
                 file_id = hashlib.sha256(file_content).hexdigest()[:12]
                 bm25_processor = BM25Processor()
                 
+                # Extract file metadata
+                file_metadata = MetadataExtractor.extract_metadata(temp_file_path, file.filename)
+                
                 # Process each chunk with full metadata
                 for i, chunk in enumerate(chunks):
                     original_page = chunk.metadata.get('page', 0)
@@ -644,8 +650,10 @@ async def intelligent_upload_with_progress(
                     chunk.metadata.update({
                         'file_id': file_id,
                         'hash': hash_text(chunk.page_content),
-                        'doc_id': f"{file_id}_p{original_page}_c{i}",
-                        'collection_name': collection_name
+                        'doc_id': f"{file_id}_p{original_page}_c{chunk.metadata['chunk_index']}",
+                        'collection_name': collection_name,
+                        'creation_date': file_metadata['creation_date'],
+                        'last_modified_date': file_metadata['last_modified_date']
                     })
                     
                     # Add collection-specific fields based on collection type
@@ -755,6 +763,8 @@ async def intelligent_upload_with_progress(
                     [chunk.metadata.get('bm25_term_count', 0) for chunk in chunks],     # 13. bm25_term_count
                     [chunk.metadata.get('bm25_unique_terms', 0) for chunk in chunks],   # 14. bm25_unique_terms
                     [chunk.metadata.get('bm25_top_terms', '') for chunk in chunks],     # 15. bm25_top_terms
+                    [chunk.metadata.get('creation_date', '') for chunk in chunks],      # 16. creation_date
+                    [chunk.metadata.get('last_modified_date', '') for chunk in chunks], # 17. last_modified_date
                 ]
                 
                 yield f"data: {json.dumps({'current_step': 8, 'total_steps': 8, 'progress_percent': 95, 'step_name': 'Inserting into vector database', 'details': {'message': f'Storing {len(chunks)} chunks in {collection_name}'}})}\n\n"

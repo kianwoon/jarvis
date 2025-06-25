@@ -183,6 +183,9 @@ def create_milvus_collection(collection_name: str, metadata_schema: Dict[str, An
             FieldSchema(name="bm25_term_count", dtype=DataType.INT64),
             FieldSchema(name="bm25_unique_terms", dtype=DataType.INT64),
             FieldSchema(name="bm25_top_terms", dtype=DataType.VARCHAR, max_length=1000),
+            # Date metadata fields
+            FieldSchema(name="creation_date", dtype=DataType.VARCHAR, max_length=100),
+            FieldSchema(name="last_modified_date", dtype=DataType.VARCHAR, max_length=100),
         ]
         
         # Create collection schema

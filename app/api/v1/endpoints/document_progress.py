@@ -23,6 +23,7 @@ from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.api.v1.endpoints.document import HTTPEmbeddingFunction, ensure_milvus_collection
 from utils.deduplication import hash_text, get_existing_hashes, get_existing_doc_ids
 from app.rag.bm25_processor import BM25Processor
+from app.utils.metadata_extractor import MetadataExtractor
 
 router = APIRouter()
 
@@ -140,6 +141,9 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
         # Initialize BM25 processor
         bm25_processor = BM25Processor()
         
+        # Extract file metadata
+        file_metadata = MetadataExtractor.extract_metadata(temp_path, file.filename)
+        
         # Add metadata to chunks
         for i, chunk in enumerate(chunks):
             if not hasattr(chunk, 'metadata') or chunk.metadata is None:
@@ -156,7 +160,9 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
                 'chunk_index': i,
                 'file_id': file_id,
                 'hash': hash_text(chunk.page_content),
-                'doc_id': f"{file_id}_p{original_page}_c{i}"
+                'doc_id': f"{file_id}_p{original_page}_c{i}",
+                'creation_date': file_metadata['creation_date'],
+                'last_modified_date': file_metadata['last_modified_date']
             })
             
             # Add BM25 preprocessing
@@ -264,6 +270,9 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
             [chunk.metadata.get('bm25_term_count', 0) for chunk in unique_chunks],
             [chunk.metadata.get('bm25_unique_terms', 0) for chunk in unique_chunks],
             [chunk.metadata.get('bm25_top_terms', '') for chunk in unique_chunks],
+            # Date metadata fields
+            [chunk.metadata.get('creation_date', '') for chunk in unique_chunks],
+            [chunk.metadata.get('last_modified_date', '') for chunk in unique_chunks],
         ]
         
         insert_result = collection.insert(data)

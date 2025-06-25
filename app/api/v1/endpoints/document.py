@@ -20,6 +20,7 @@ from utils.deduplication import hash_text, get_existing_hashes, get_existing_doc
 from app.rag.bm25_processor import BM25Processor
 from app.core.document_classifier import get_document_classifier
 from app.core.collection_registry_cache import get_collection_config
+from app.utils.metadata_extractor import MetadataExtractor
 
 router = APIRouter()
 
@@ -73,6 +74,9 @@ def ensure_milvus_collection(collection_name: str, vector_dim: int, uri: str, to
             FieldSchema(name="bm25_term_count", dtype=DataType.INT64),
             FieldSchema(name="bm25_unique_terms", dtype=DataType.INT64),
             FieldSchema(name="bm25_top_terms", dtype=DataType.VARCHAR, max_length=1000),
+            # Date metadata fields
+            FieldSchema(name="creation_date", dtype=DataType.VARCHAR, max_length=100),
+            FieldSchema(name="last_modified_date", dtype=DataType.VARCHAR, max_length=100),
         ]
         schema = CollectionSchema(fields, description="Knowledge base with metadata, deduplication support")
         collection = Collection(collection_name, schema)
@@ -207,6 +211,9 @@ async def upload_pdf(
     # Initialize BM25 processor
     bm25_processor = BM25Processor()
     
+    # Extract file metadata
+    file_metadata = MetadataExtractor.extract_metadata(temp_path, file.filename)
+    
     # Enhanced metadata setting - preserve original page numbers from PyPDFLoader
     for i, chunk in enumerate(chunks):
         if not hasattr(chunk, 'metadata') or chunk.metadata is None:
@@ -224,6 +231,8 @@ async def upload_pdf(
             'author': '',
             'chunk_index': i,
             'file_id': file_id,
+            'creation_date': file_metadata['creation_date'],
+            'last_modified_date': file_metadata['last_modified_date']
         })
         
         # Add hash and robust doc_id
@@ -365,6 +374,9 @@ async def upload_pdf(
             [chunk.metadata.get('bm25_term_count', 0) for chunk in unique_chunks],
             [chunk.metadata.get('bm25_unique_terms', 0) for chunk in unique_chunks],
             [chunk.metadata.get('bm25_top_terms', '') for chunk in unique_chunks],
+            # Date metadata fields
+            [chunk.metadata.get('creation_date', '') for chunk in unique_chunks],
+            [chunk.metadata.get('last_modified_date', '') for chunk in unique_chunks],
         ]
         
         print(f"🔄 Inserting {len(unique_chunks)} chunks into Milvus collection '{collection}'...")
@@ -726,6 +738,9 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
         # Initialize BM25 processor
         bm25_processor = BM25Processor()
         
+        # Extract file metadata
+        file_metadata = MetadataExtractor.extract_metadata(temp_path, file.filename)
+        
         # Add metadata to chunks
         for i, chunk in enumerate(chunks):
             if not hasattr(chunk, 'metadata') or chunk.metadata is None:
@@ -743,7 +758,9 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
                 'file_id': file_id,
                 'hash': hash_text(chunk.page_content),
                 'doc_id': f"{file_id}_p{original_page}_c{i}",
-                'collection_name': target_collection
+                'collection_name': target_collection,
+                'creation_date': file_metadata['creation_date'],
+                'last_modified_date': file_metadata['last_modified_date']
             })
             
             # Add collection-specific fields
@@ -879,6 +896,9 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, collect
             [chunk.metadata.get('bm25_term_count', 0) for chunk in unique_chunks],
             [chunk.metadata.get('bm25_unique_terms', 0) for chunk in unique_chunks],
             [chunk.metadata.get('bm25_top_terms', '') for chunk in unique_chunks],
+            # Date metadata fields
+            [chunk.metadata.get('creation_date', '') for chunk in unique_chunks],
+            [chunk.metadata.get('last_modified_date', '') for chunk in unique_chunks],
         ]
         
         insert_result = collection.insert(data)

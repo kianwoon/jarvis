@@ -3,13 +3,16 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    ports:
-      - "8000:8000"
+    network_mode: "host"
+    privileged: true
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ../MCP:/mcp-servers
+      - /Users/kianwoonwong:/Users/kianwoonwong:ro
+      - /opt/homebrew:/opt/homebrew:ro
+      - /opt/homebrew/Cellar/node/23.9.0:/opt/homebrew/Cellar/node/23.9.0:ro
     env_file:
       - .env.docker
     environment:
@@ -21,6 +24,7 @@ services:
       - DOCKER_HOST=unix:///var/run/docker.sock
       - ENABLE_QWEN_RERANKER=false
       - PRELOAD_QWEN_RERANKER=false
+      - PATH=/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/sbin:/bin
     user: root
     depends_on:
       - postgres

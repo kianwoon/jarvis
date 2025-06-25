@@ -47,21 +47,13 @@ class UnifiedMCPService:
         args = server_config.get("args", [])
         
         if command == "docker" and args:
-            # Handle Docker-based stdio servers
+            # Handle Docker-based stdio servers - use stdio bridge instead of MCPClient
             if len(args) >= 4 and args[0] == "exec":
-                container_name = args[2]
-                docker_command = args[3:]
-                
-                client_key = f"{container_name}:{':'.join(docker_command)}"
+                client_key = f"{command}:{':'.join(args)}"
                 
                 if client_key not in self.stdio_clients:
-                    config = MCPServerConfig(
-                        name=f"stdio_{container_name}",
-                        container_name=container_name,
-                        command=docker_command,
-                        environment=server_config.get("env", {})
-                    )
-                    self.stdio_clients[client_key] = MCPClient(config)
+                    # Store server config for stdio bridge (same as npx/node path)
+                    self.stdio_clients[client_key] = server_config
                 
                 return self.stdio_clients[client_key]
         elif command in ['npx', 'node', 'python', 'python3']:

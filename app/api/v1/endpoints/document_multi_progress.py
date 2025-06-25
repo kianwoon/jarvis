@@ -31,6 +31,7 @@ from app.api.v1.endpoints.document import (
 from app.rag.bm25_processor import BM25Processor
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
+from app.utils.metadata_extractor import MetadataExtractor
 from pymilvus import Collection
 from uuid import uuid4
 
@@ -108,6 +109,16 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
         if not chunks:
             yield f"data: {json.dumps({'error': 'No content extracted from file'})}\n\n"
             return
+        
+        # Extract file metadata
+        file_metadata = MetadataExtractor.extract_metadata(file_path, filename)
+        
+        # Add metadata to all chunks
+        for chunk in chunks:
+            if not hasattr(chunk, 'metadata') or chunk.metadata is None:
+                chunk.metadata = {}
+            chunk.metadata['creation_date'] = file_metadata['creation_date']
+            chunk.metadata['last_modified_date'] = file_metadata['last_modified_date']
         
         # Step 3: Generate embeddings
         current_step += 1
@@ -236,6 +247,9 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
             [chunk.metadata.get('bm25_term_count', 0) for chunk in unique_chunks],
             [chunk.metadata.get('bm25_unique_terms', 0) for chunk in unique_chunks],
             [chunk.metadata.get('bm25_top_terms', '') for chunk in unique_chunks],
+            # Date metadata fields
+            [chunk.metadata.get('creation_date', '') for chunk in unique_chunks],
+            [chunk.metadata.get('last_modified_date', '') for chunk in unique_chunks],
         ]
         
         insert_result = collection_obj.insert(data)
