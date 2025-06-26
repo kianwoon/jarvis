@@ -425,7 +425,7 @@ class GenerationProgressRequest(BaseModel):
 
 @router.post("/multi-agent")
 async def multi_agent_endpoint(request: MultiAgentRequest):
-    """Process a question using the multi-agent system"""
+    """Process a question using the LangGraph multi-agent system"""
     # Initialize Langfuse tracing
     tracer = get_tracer()
     trace = None
@@ -441,19 +441,33 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
     
     if tracer.is_enabled():
         trace = tracer.create_trace(
-            name="multi-agent-workflow",
+            name="langgraph-multi-agent-workflow",
             input=request.question,
             metadata={
                 "endpoint": "/api/v1/langchain/multi-agent",
                 "conversation_id": request.conversation_id,
                 "selected_agents": request.selected_agents,
                 "max_iterations": request.max_iterations,
-                "model": model_name
+                "model": model_name,
+                "system_type": "langgraph"
             }
         )
         
-        # Note: Individual agent generations will be created by each agent
-        # No single top-level generation needed for multi-agent mode
+        # Create generation for LangGraph multi-agent workflow
+        if trace:
+            generation = tracer.create_generation_with_usage(
+                trace=trace,
+                name="langgraph-multi-agent-generation",
+                model=model_name,
+                input_text=request.question,
+                metadata={
+                    "selected_agents": request.selected_agents,
+                    "max_iterations": request.max_iterations,
+                    "system_type": "langgraph",
+                    "model": model_name,
+                    "endpoint": "multi-agent"
+                }
+            )
     
     # Create multi-agent workflow span for proper hierarchy
     workflow_span = None
@@ -461,48 +475,114 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
         try:
             if tracer.is_enabled():
                 workflow_span = tracer.create_multi_agent_workflow_span(
-                    trace, "multi-agent", request.selected_agents or []
+                    trace, "langgraph-multi-agent", request.selected_agents or []
                 )
         except Exception as e:
             print(f"[DEBUG] Failed to create multi-agent workflow span: {e}")
     
-    system = MultiAgentSystem(conversation_id=request.conversation_id, trace=workflow_span if workflow_span else trace)
+    # Use LangGraph multi-agent system with streaming callback
+    from app.langchain.langgraph_multi_agent_system import LangGraphMultiAgentSystem
     
     async def stream_events_with_tracing():
         collected_output = ""
         final_response = ""
         agent_outputs = []
         
+        # Use a different approach: direct yielding instead of queue
+        import asyncio
+        
+        # Create a shared container for the yielding function
+        stream_events = []
+        
+        async def event_callback(event):
+            """Callback to handle events from LangGraph system - immediately add to stream"""
+            print(f"[DEBUG] 📥 IMMEDIATE STREAM EVENT: {event.get('type')} - {event.get('message', event.get('agent', 'no message'))}")
+            stream_events.append(event)
+        
+        # Initialize system with streaming callback
+        system = LangGraphMultiAgentSystem(
+            conversation_id=request.conversation_id,
+            event_callback=event_callback
+        )
+        
         try:
-            async for event in system.stream_events(
-                request.question,
-                selected_agents=request.selected_agents,
-                max_iterations=request.max_iterations,
-                conversation_history=request.conversation_history
-            ):
-                # Events from multi-agent system should always be dicts
-                if not isinstance(event, dict):
-                    print(f"[ERROR] Received non-dict event: {type(event)} - {str(event)[:200]}...")
-                    continue
+            # Send initial status
+            yield json_module.dumps({
+                "type": "status",
+                "message": "🤖 Initializing multi-agent workflow..."
+            }) + "\n"
+            
+            # Add small delay for streaming effect
+            import asyncio
+            await asyncio.sleep(0.1)
+            
+            # Start LangGraph processing in background
+            async def process_query():
+                try:
+                    result = await system.process_query(
+                        query=request.question,
+                        conversation_id=request.conversation_id
+                    )
+                    # Signal completion by adding to stream_events
+                    stream_events.append({"type": "_completion", "result": result})
+                except Exception as e:
+                    stream_events.append({"type": "_error", "error": str(e)})
+            
+            # Start processing
+            processing_task = asyncio.create_task(process_query())
+            
+            # Stream events using polling approach
+            events_sent = 0
+            
+            while True:
+                # Check for new events in stream_events list
+                while events_sent < len(stream_events):
+                    event = stream_events[events_sent]
+                    events_sent += 1
+                    
+                    print(f"[DEBUG] 📤 SENDING EVENT {events_sent}: {event.get('type')} - {event.get('message', event.get('agent', 'no message'))}")
+                    
+                    if event["type"] == "_completion":
+                        # Process completed, send final response
+                        result = event["result"]
+                        yield json_module.dumps({
+                            "type": "final_response",
+                            "response": result.get("answer", ""),
+                            "agents_used": result.get("agents_used", []),
+                            "execution_pattern": result.get("execution_pattern", ""),
+                            "confidence_score": result.get("confidence_score", 0.0),
+                            "conversation_id": result.get("conversation_id", ""),
+                            "metadata": result.get("metadata", {})
+                        }) + "\n"
+                        return  # Exit completely
+                    
+                    elif event["type"] == "_error":
+                        # Error occurred, send error response
+                        yield json_module.dumps({
+                            "type": "error",
+                            "error": event["error"]
+                        }) + "\n"
+                        return  # Exit completely
+                    
+                    else:
+                        # Regular event, stream it immediately
+                        yield json_module.dumps(event) + "\n"
+                        # Small delay for proper streaming
+                        await asyncio.sleep(0.01)
                 
-                # Collect event data for Langfuse
-                collected_output += json_module.dumps(event) + "\n"
+                # If processing is done and we've sent all events, exit
+                if processing_task.done() and events_sent >= len(stream_events):
+                    break
+                    
+                # Wait a bit before checking for more events
+                await asyncio.sleep(0.1)
+            
+            # Clean up the processing task
+            if not processing_task.done():
+                processing_task.cancel()
                 
-                # Log key events
-                event_type = event.get('type', 'unknown')
-                if event_type == 'agent_complete':
-                    agent = event.get('agent', 'unknown')
-                    content = event.get('content', '')
-                    content_length = len(content)
-                    print(f"[INFO] Agent {agent} completed ({content_length} chars)")
-                    agent_outputs.append({"agent": agent, "content": content[:500]})
-                elif event_type == 'final_response':
-                    final_response = event.get('response', '')
-                    response_length = len(final_response)
-                    print(f"[INFO] Multi-agent processing complete ({response_length} chars)")
-                
-                # Convert to JSON string with newline, same as standard chat
-                yield json_module.dumps(event, ensure_ascii=False) + "\n"
+            # Collect output for tracing
+            collected_output = final_response
             
             # Update Langfuse generation and trace with the final output
             if tracer.is_enabled():
@@ -1065,26 +1145,59 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
             for tool_name in suggested_tools[:1]:  # Execute primary tool only
                 try:
                     logger.info(f"[DIRECT HANDLER] Executing tool: {tool_name}")
-                    # Use existing intelligent tool planner for parameter generation
-                    from app.langchain.intelligent_tool_planner import get_tool_planner
-                    planner = get_tool_planner()
                     
-                    # Create execution plan for this single tool
-                    execution_plan = await planner.plan_tool_execution(
-                        task=request.question,
-                        context={"user_query": request.question},
-                        mode="standard"
-                    )
+                    # Get tool schema to determine if parameters are needed
+                    from app.core.mcp_tools_cache import get_enabled_mcp_tools
+                    available_tools = get_enabled_mcp_tools()
+                    tool_info = available_tools.get(tool_name, {})
+                    tool_params_schema = tool_info.get('parameters', {})
                     
-                    # Find the matching tool in the plan
-                    tool_plan = None
-                    for planned_tool in execution_plan.tools:
-                        if planned_tool.tool_name == tool_name:
-                            tool_plan = planned_tool
-                            break
+                    # Check if tool requires parameters based on schema
+                    required_params = []
+                    if isinstance(tool_params_schema, dict):
+                        required_params = tool_params_schema.get('required', [])
                     
-                    # Use planned parameters or empty dict as fallback
-                    parameters = tool_plan.parameters if tool_plan else {}
+                    parameters = {}
+                    if not required_params:
+                        # Tool needs no parameters - execute immediately
+                        logger.info(f"[DIRECT HANDLER] Tool {tool_name} requires no parameters")
+                    else:
+                        # Tool needs parameters - determine them intelligently
+                        yield json_module.dumps({
+                            "type": "status", 
+                            "message": f"Planning parameters for {tool_name}..."
+                        }) + "\n"
+                        
+                        # Use simple parameter mapping for common patterns
+                        if "query" in required_params:
+                            parameters["query"] = request.question
+                        
+                        # For complex tools with multiple required params, use intelligent planning
+                        if len(required_params) > 1 or ("query" not in required_params and required_params):
+                            from app.langchain.intelligent_tool_planner import get_tool_planner
+                            planner = get_tool_planner()
+                            
+                            execution_plan = await planner.plan_tool_execution(
+                                task=request.question,
+                                context={"user_query": request.question},
+                                mode="standard"
+                            )
+                            
+                            # Find the matching tool in the plan
+                            tool_plan = None
+                            for planned_tool in execution_plan.tools:
+                                if planned_tool.tool_name == tool_name:
+                                    tool_plan = planned_tool
+                                    break
+                            
+                            if tool_plan:
+                                parameters = tool_plan.parameters
+                    
+                    # Send progress update before execution
+                    yield json_module.dumps({
+                        "type": "status", 
+                        "message": f"Executing {tool_name}..."
+                    }) + "\n"
                     
                     logger.info(f"[DIRECT HANDLER] Using planned parameters for {tool_name}: {parameters}")
                     
@@ -1119,6 +1232,12 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
             logger.info(f"[DIRECT HANDLER] Processing {len(tool_results)} tool results")
             if tool_results and any(r.get('success') for r in tool_results):
                 try:
+                    # Send progress update before synthesis
+                    yield json_module.dumps({
+                        "type": "status", 
+                        "message": "Generating response from tool results..."
+                    }) + "\n"
+                    
                     # Build context from tool results
                     tool_context = ""
                     for tr in tool_results:
@@ -1319,54 +1438,64 @@ def handle_multi_agent_query(request: RAGRequest, routing: Dict):
             yield json_module.dumps({
                 "type": "classification",
                 "routing": routing,
-                "handler": "multi_agent",
-                "message": "This is a complex query. Using multi-agent system."
+                "handler": "langgraph_multi_agent",
+                "message": "This is a complex query. Using LangGraph multi-agent system."
             }) + "\n"
             
-            # Get suggested agents
-            suggested_agents = routing.get("routing", {}).get("suggested_agents", [])
+            # Use LangGraph multi-agent system
+            from app.langchain.langgraph_multi_agent_system import langgraph_multi_agent_answer
             
-            # Create multi-agent request
-            multi_request = MultiAgentRequest(
+            yield json_module.dumps({
+                "type": "status",
+                "message": "🤖 Initializing LangGraph multi-agent workflow..."
+            }) + "\n"
+            
+            # Process with LangGraph system
+            result = await langgraph_multi_agent_answer(
                 question=request.question,
-                conversation_id=conversation_id,
-                selected_agents=suggested_agents if suggested_agents else None,
-                max_iterations=10
+                conversation_id=conversation_id
             )
             
-            # Use existing multi-agent endpoint logic
-            system = MultiAgentSystem(conversation_id=conversation_id)
+            # Stream the results
+            yield json_module.dumps({
+                "type": "agent_selection",
+                "agents_selected": result.get("agents_used", []),
+                "execution_pattern": result.get("execution_pattern", ""),
+                "selection_reasoning": result.get("agent_selection_reasoning", ""),
+                "confidence_score": result.get("confidence_score", 0.0)
+            }) + "\n"
             
-            # Stream responses
+            yield json_module.dumps({
+                "type": "status",
+                "message": f"🔄 Executing {result.get('execution_pattern', 'sequential')} collaboration pattern..."
+            }) + "\n"
+            
+            # Stream final response
+            final_answer = result.get("answer", "")
+            
+            # Stream token by token for consistency with other handlers
             import asyncio
+            for i in range(0, len(final_answer), 10):  # Stream in chunks of 10 characters
+                chunk = final_answer[i:i+10]
+                yield json_module.dumps({
+                    "token": chunk
+                }) + "\n"
+                await asyncio.sleep(0.01)  # Small delay for streaming effect
             
-            async def agent_stream():
-                async for event in system.stream_events(
-                    request.question,
-                    selected_agents=suggested_agents,
-                    max_iterations=10
-                ):
-                    yield json_module.dumps(event, ensure_ascii=False) + "\n"
-            
-            async def async_wrapper():
-                chunks = []
-                async for chunk in agent_stream():
-                    chunks.append(chunk)
-                return chunks
-            
-            # Run the async function
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                chunks = loop.run_until_complete(async_wrapper())
-                for chunk in chunks:
-                    yield chunk
-            finally:
-                loop.close()
+            # Send final answer
+            yield json_module.dumps({
+                "answer": final_answer,
+                "source": "LANGGRAPH_MULTI_AGENT",
+                "agents_used": result.get("agents_used", []),
+                "execution_pattern": result.get("execution_pattern", ""),
+                "confidence_score": result.get("confidence_score", 0.0),
+                "conversation_id": conversation_id,
+                "metadata": result.get("metadata", {})
+            }) + "\n"
                 
         except Exception as e:
-            logger.error(f"Multi-agent handler error: {e}")
-            yield json_module.dumps({"error": f"Multi-agent handling failed: {str(e)}"}) + "\n"
+            logger.error(f"LangGraph multi-agent handler error: {e}")
+            yield json_module.dumps({"error": f"LangGraph multi-agent handling failed: {str(e)}"}) + "\n"
             
     return StreamingResponse(stream(), media_type="application/json")
 
