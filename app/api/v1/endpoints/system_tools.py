@@ -151,6 +151,18 @@ async def get_system_tool_details(tool_id: int, db: Session = Depends(get_db)):
         logger.error(f"Failed to get system tool details: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/system-tools/cache/reload")
+async def reload_system_tools_cache():
+    """Reload MCP tools cache without reinstalling"""
+    try:
+        logger.info("Reloading MCP tools cache...")
+        reload_enabled_mcp_tools()
+        logger.info("MCP tools cache reloaded successfully")
+        return {"success": True, "message": "MCP tools cache reloaded successfully"}
+    except Exception as e:
+        logger.error(f"Failed to reload MCP tools cache: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload cache: {str(e)}")
+
 @router.post("/system-tools/validate")
 async def validate_system_tools():
     """Validate that all system tools are properly registered and functional"""

@@ -526,10 +526,52 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
     Handle large generation tasks that transcend context limits
     using intelligent chunking and Redis-based state management
     """
-                    
-                    # End the generation with results including usage
-                    if generation:
-                        generation.end(
+    # Initialize Langfuse tracing
+    tracer = get_tracer()
+    trace = None
+    generation = None
+    
+    # Get model name from LLM settings for proper tracing
+    from app.core.llm_settings_cache import get_llm_settings
+    llm_settings = get_llm_settings()
+    model_name = llm_settings.get("model", "unknown")
+    
+    if not tracer._initialized:
+        tracer.initialize()
+    
+    if tracer.is_enabled():
+        trace = tracer.create_trace(
+            name="large-generation-workflow",
+            input=request.task_description,
+            metadata={
+                "endpoint": "/api/v1/langchain/large-generation",
+                "conversation_id": request.conversation_id,
+                "target_count": request.target_count,
+                "chunk_size": request.chunk_size,
+                "use_redis": request.use_redis,
+                "model": model_name
+            }
+        )
+        
+        # Create generation within the trace for detailed observability
+        if trace:
+            generation = tracer.create_generation_with_usage(
+                trace=trace,
+                name="large-generation-generation",
+                model=model_name,
+                input_text=request.task_description,
+                metadata={
+                    "target_count": request.target_count,
+                    "chunk_size": request.chunk_size,
+                    "use_redis": request.use_redis,
+                    "model": model_name,
+                    "endpoint": "large-generation"
+                }
+            )
+    
+    system = MultiAgentSystem(conversation_id=request.conversation_id, trace=trace)
+    
+    async def stream_events_with_tracing():
                             output=generation_output,
                             usage=usage,
                             metadata={

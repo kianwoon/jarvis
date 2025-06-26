@@ -18,11 +18,11 @@ def register_rag_mcp_tool():
     db = SessionLocal()
     try:
         # Check if tool already exists
-        existing_tool = db.query(MCPTool).filter(MCPTool.name == "rag_search").first()
+        existing_tool = db.query(MCPTool).filter(MCPTool.name == "knowledge_search").first()
         
         tool_definition = {
-            "name": "rag_search",
-            "description": "Intelligent document retrieval using vector and keyword search with automatic collection selection",
+            "name": "knowledge_search",
+            "description": "Intelligent document retrieval for in-house info using vector and keyword search with automatic collection selection",
             "endpoint": "internal://rag_mcp_service",  # Internal service endpoint
             "method": "POST",
             "parameters": {
@@ -86,7 +86,7 @@ def unregister_rag_mcp_tool():
     
     db = SessionLocal()
     try:
-        tool = db.query(MCPTool).filter(MCPTool.name == "rag_search").first()
+        tool = db.query(MCPTool).filter(MCPTool.name == "knowledge_search").first()
         if tool:
             db.delete(tool)
             db.commit()

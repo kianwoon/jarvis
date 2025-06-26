@@ -178,10 +178,8 @@ class MultiAgentLangGraphState(TypedDict):
 class LangGraphMultiAgentSystem:
     """LangGraph-based multi-agent system with proper state management"""
     
-    def __init__(self, conversation_id: Optional[str] = None, event_callback=None):
+    def __init__(self, conversation_id: Optional[str] = None):
         self.conversation_id = conversation_id or str(uuid.uuid4())
-        self.event_callback = event_callback  # Callback for streaming events
-        logger.info(f"🔗 SYSTEM INITIALIZED WITH CALLBACK: {self.event_callback is not None}")
         self.redis_client = redis.Redis(
             host=REDIS_HOST, 
             port=REDIS_PORT, 
@@ -213,18 +211,6 @@ class LangGraphMultiAgentSystem:
         
         logger.info(f"LangGraph Multi-Agent System initialized with {len(self.agents)} agents")
 
-    async def _emit_event(self, event_type: str, data: dict):
-        """Emit an event to the callback if available"""
-        if self.event_callback:
-            event = {"type": event_type, **data}
-            try:
-                logger.info(f"🎬 EMITTING EVENT: {event_type} - {data.get('message', data.get('agent', 'no message'))}")
-                await self.event_callback(event)
-                logger.info(f"✅ EVENT EMITTED: {event_type}")
-            except Exception as e:
-                logger.error(f"❌ FAILED TO EMIT EVENT {event_type}: {e}")
-        else:
-            logger.warning(f"⚠️ NO CALLBACK - EVENT NOT EMITTED: {event_type}")
 
     def _validate_and_fix_agent_configs(self):
         """Validate and fix agent configurations to prevent hangs and timeouts"""
@@ -540,12 +526,6 @@ class LangGraphMultiAgentSystem:
             state["selected_agents"] = selected_agents[:3]  # Limit to 3 agents
             state["agent_selection_reasoning"] = reasoning
             
-            # Emit agent selection event for streaming
-            await self._emit_event("agent_selection", {
-                "agents_selected": selected_agents[:3],
-                "selection_reasoning": reasoning,
-                "confidence_score": 0.8  # Base confidence for successful selection
-            })
             
         except Exception as e:
             logger.error(f"Agent selection failed: {e}")
@@ -627,10 +607,6 @@ class LangGraphMultiAgentSystem:
             
             state["execution_pattern"] = pattern
             
-            # Emit execution pattern event for streaming
-            await self._emit_event("status", {
-                "message": f"🔄 Executing {pattern} collaboration pattern..."
-            })
             
         except Exception as e:
             logger.error(f"Execution pattern determination failed: {e}")
@@ -684,12 +660,6 @@ class LangGraphMultiAgentSystem:
                 
                 logger.info(f"Executing agent {agent_name} with {max_tokens} tokens, {timeout}s timeout")
                 
-                # Emit agent start event for streaming
-                await self._emit_event("agent_start", {
-                    "agent": agent_name,
-                    "role": agent_data.get('role', agent_name),
-                    "message": f"🎯 {agent_data.get('role', agent_name)} is analyzing..."
-                })
                 
                 # Use efficient LLM call for agent execution with agent-specific config
                 agent_response = await self._efficient_llm_call(
@@ -723,13 +693,6 @@ class LangGraphMultiAgentSystem:
                 
                 logger.info(f"Agent {agent_name} completed successfully")
                 
-                # Emit agent complete event for streaming
-                await self._emit_event("agent_complete", {
-                    "agent": agent_name,
-                    "role": agent_data.get('role', agent_name),
-                    "response": agent_response,
-                    "message": f"✅ {agent_data.get('role', agent_name)} completed analysis"
-                })
                 
             except Exception as e:
                 logger.error(f"Agent {agent_name} execution failed: {e}")
@@ -1029,9 +992,6 @@ class LangGraphMultiAgentSystem:
         
         try:
             # Emit synthesis start event
-            await self._emit_event("status", {
-                "message": "🔄 Synthesizing final response..."
-            })
             
             # Use efficient LLM call for response synthesis with aggressive limits for speed
             synthesized_response = await self._efficient_llm_call(

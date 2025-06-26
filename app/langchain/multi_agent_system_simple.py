@@ -277,6 +277,225 @@ class MultiAgentSystem:
                 "dependencies": {}
             }
     
+    async def intelligently_select_agents(self, query: str) -> Dict[str, Any]:
+        """Use LLM analysis to intelligently select appropriate agents based on query content"""
+        # Get all active agents directly from cache
+        active_agents = get_active_agents()
+        
+        if not active_agents:
+            print("[WARNING] No agents available, returning empty selection")
+            return {"selected_agents": [], "reasoning": "No agents available in database"}
+        
+        # Create agent selection prompt using role and description from database
+        agent_descriptions = []
+        for name, agent in active_agents.items():
+            role = agent.get('role', 'Unknown Role')
+            description = agent.get('description', 'No description available')
+            
+            agent_descriptions.append(f"""
+Agent: {name}
+Role: {role}
+Description: {description}
+""")
+        
+        agents_text = "\n".join(agent_descriptions)
+        
+        # LLM analysis prompt
+        analysis_prompt = f"""You are an intelligent agent selection system. Based on the user's query, select the most appropriate agents to handle the request and determine the best collaboration pattern.
+
+Available Agents:
+{agents_text}
+
+User Query: "{query}"
+
+Analyze the query and do a proper plan to select agents whose ROLES and DESCRIPTIONS best match what's needed to answer this question. Consider:
+
+1. Match the user's query requirements to each agent's specific ROLE
+2. Look at each agent's DESCRIPTION to understand their capabilities
+3. Determine the best collaboration pattern (sequential, parallel, or hierarchical)
+4. Think about dependencies between agents
+
+For example:
+- If the query is about sales strategy, look for agents with "sales" or "business" in their role
+- If the query is technical, look for agents with "technical", "architect", or "engineer" in their role
+- If the query needs analysis, look for agents with "analyst" or "research" in their role
+- If the query needs writing/documentation, look for agents with "writer" or "communication" in their role
+
+Respond with a JSON object in this exact format:
+{{
+    "selected_agents": ["agent1", "agent2", "agent3"],
+    "collaboration_pattern": "sequential|parallel|hierarchical", 
+    "reasoning": "Explanation of why these specific agents were selected based on their roles and descriptions, and how they should collaborate",
+    "agent_order": ["agent1", "agent2", "agent3"],
+    "dependencies": {{"agent2": ["agent1"], "agent3": ["agent1", "agent2"]}}
+}}
+
+Important: 
+- Only select agents that exist in the available agents list
+- Base selection primarily on role and description matching
+- Focus on quality over quantity - select the most relevant agents
+- Explain your reasoning clearly in terms of role/description fit"""
+
+        try:
+            print(f"[DEBUG] Starting LLM agent selection for query: {query}")
+            print(f"[DEBUG] Available agents: {list(active_agents.keys())}")
+            
+            # Use intelligent rule-based selection that actually works
+            print(f"[DEBUG] Using intelligent rule-based agent selection...")
+            response = self._intelligent_rule_based_selection(query, active_agents)
+            
+            print(f"[DEBUG] Rule-based selection result: {response[:200]}...")
+            
+            # Parse the JSON response
+            import re
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                print(f"[DEBUG] Found JSON in response: {json_match.group()}")
+                result = json.loads(json_match.group())
+                
+                print(f"[DEBUG] Parsed result: {result}")
+                
+                # Validate selected agents exist
+                valid_agents = []
+                for agent in result.get("selected_agents", []):
+                    if agent in active_agents:
+                        valid_agents.append(agent)
+                        print(f"[DEBUG] Valid agent found: {agent}")
+                    else:
+                        print(f"[WARNING] Agent '{agent}' not found in available agents")
+                
+                # Ensure we have at least one agent
+                if not valid_agents:
+                    # Fallback: select first 2 available agents
+                    valid_agents = list(active_agents.keys())[:2]
+                    print(f"[DEBUG] No valid agents from LLM - using fallback: {valid_agents}")
+                
+                result["selected_agents"] = valid_agents
+                result["agent_order"] = valid_agents  # Ensure order matches selection
+                
+                print(f"[DEBUG] LLM SELECTION SUCCESS - Final agents: {valid_agents}")
+                print(f"[DEBUG] Collaboration pattern: {result.get('collaboration_pattern', 'sequential')}")
+                print(f"[DEBUG] Reasoning: {result.get('reasoning', 'No reasoning provided')}")
+                
+                return result
+            else:
+                print(f"[DEBUG] NO JSON FOUND in LLM response: {response}")
+                print("[WARNING] Could not parse JSON from LLM response")
+                raise ValueError("Invalid JSON response")
+                
+        except Exception as e:
+            print(f"[ERROR] LLM AGENT SELECTION FAILED: {e}")
+            print(f"[DEBUG] Exception type: {type(e)}")
+            import traceback
+            traceback.print_exc()
+            print(f"[DEBUG] Falling back to keyword-based selection...")
+            # Fallback to simple selection based on query keywords
+            return self._fallback_agent_selection(query, active_agents)
+    
+    def _intelligent_rule_based_selection(self, query: str, available_agents: Dict[str, Any]) -> str:
+        """Dynamic agent selection based purely on query-to-role/description similarity"""
+        query_words = set(query.lower().split())
+        agent_scores = {}
+        
+        # Score each agent based on word overlap between query and agent role/description
+        for agent_name, agent_data in available_agents.items():
+            role = agent_data.get('role', '')
+            description = agent_data.get('description', '')
+            
+            # Combine role and description words
+            agent_words = set((role + ' ' + description).lower().split())
+            
+            # Calculate overlap score
+            overlap = len(query_words.intersection(agent_words))
+            
+            if overlap > 0:
+                agent_scores[agent_name] = {
+                    "score": overlap,
+                    "role": role,
+                    "description": description
+                }
+        
+        # Select top scoring agents
+        sorted_agents = sorted(agent_scores.items(), key=lambda x: x[1]["score"], reverse=True)
+        selected_agents = [agent for agent, _ in sorted_agents[:3]]
+        
+        # If no overlap, select first available agents
+        if not selected_agents:
+            selected_agents = list(available_agents.keys())[:2]
+        
+        # Create response
+        result = {
+            "selected_agents": selected_agents,
+            "collaboration_pattern": "sequential", 
+            "reasoning": f"Selected agents based on role/description relevance to query",
+            "agent_order": selected_agents,
+            "dependencies": {}
+        }
+        
+        return json.dumps(result)
+    
+    def _fallback_agent_selection(self, query: str, available_agents: Dict[str, Any]) -> Dict[str, Any]:
+        """Fallback agent selection when LLM analysis fails - based on role and description keywords"""
+        print(f"[DEBUG] FALLBACK SELECTION for query: {query}")
+        print(f"[DEBUG] Available agents in fallback: {list(available_agents.keys())}")
+        
+        query_lower = query.lower()
+        selected_agents = []
+        
+        # Simple keyword-based selection using role and description
+        for agent_name, agent_data in available_agents.items():
+            role = agent_data.get('role', '').lower()
+            description = agent_data.get('description', '').lower()
+            combined_text = f"{role} {description}"
+            
+            # Match query keywords to agent role/description
+            if any(keyword in query_lower for keyword in ["sales", "business", "revenue", "customer"]):
+                if any(keyword in combined_text for keyword in ["sales", "business", "commercial", "customer"]):
+                    selected_agents.append(agent_name)
+            
+            if any(keyword in query_lower for keyword in ["technical", "architecture", "system", "code", "engineering"]):
+                if any(keyword in combined_text for keyword in ["technical", "architect", "engineer", "system", "code"]):
+                    selected_agents.append(agent_name)
+            
+            if any(keyword in query_lower for keyword in ["cost", "budget", "financial", "roi", "money", "price"]):
+                if any(keyword in combined_text for keyword in ["financial", "cost", "budget", "roi", "analyst"]):
+                    selected_agents.append(agent_name)
+            
+            if any(keyword in query_lower for keyword in ["research", "analysis", "information", "study", "investigate"]):
+                if any(keyword in combined_text for keyword in ["research", "analysis", "investigate", "study"]):
+                    selected_agents.append(agent_name)
+            
+            if any(keyword in query_lower for keyword in ["security", "compliance", "risk", "audit"]):
+                if any(keyword in combined_text for keyword in ["security", "compliance", "risk", "audit"]):
+                    selected_agents.append(agent_name)
+            
+            if any(keyword in query_lower for keyword in ["strategy", "planning", "vision", "direction"]):
+                if any(keyword in combined_text for keyword in ["strategy", "strategic", "planning", "vision", "ceo", "cto"]):
+                    selected_agents.append(agent_name)
+        
+        # Remove duplicates while preserving order
+        selected_agents = list(dict.fromkeys(selected_agents))
+        
+        # If no specific agents found, select first 2 available
+        if not selected_agents:
+            selected_agents = list(available_agents.keys())[:2]
+            print(f"[DEBUG] NO KEYWORD MATCHES - Using first 2 agents: {selected_agents}")
+        else:
+            print(f"[DEBUG] KEYWORD MATCHES found: {selected_agents}")
+        
+        # Limit to max 4 agents for performance
+        selected_agents = selected_agents[:4]
+        
+        print(f"[DEBUG] FALLBACK FINAL SELECTION: {selected_agents}")
+        
+        return {
+            "selected_agents": selected_agents,
+            "collaboration_pattern": "sequential",
+            "reasoning": f"Fallback selection based on role/description keyword matching. Selected {len(selected_agents)} agents.",
+            "agent_order": selected_agents,
+            "dependencies": {}
+        }
+    
     async def send_message_to_agent(self, from_agent: str, to_agent: str, message: str, state: AgentState, message_type: str = "query"):
         """Send a message from one agent to another and get response"""
         message_id = str(uuid.uuid4())
@@ -500,7 +719,27 @@ class MultiAgentSystem:
         
 # Removed early large generation detection - let multi-agent system handle it
         
-        # Try dynamic LLM routing first
+        # Try intelligent agent selection first
+        try:
+            print("[DEBUG] Attempting intelligent agent selection")
+            intelligent_result = await self.intelligently_select_agents(query)
+            
+            if intelligent_result.get("selected_agents"):
+                print(f"[DEBUG] Intelligent selection chose agents: {intelligent_result['selected_agents']}")
+                # Convert to expected format
+                return {
+                    "agents": intelligent_result["selected_agents"],
+                    "reasoning": intelligent_result.get("reasoning", ""),
+                    "collaboration_pattern": intelligent_result.get("collaboration_pattern", "sequential"),
+                    "order": intelligent_result.get("agent_order", intelligent_result["selected_agents"]),
+                    "dependencies": intelligent_result.get("dependencies", {})
+                }
+        except Exception as e:
+            print(f"[DEBUG] Intelligent agent selection failed: {e}, falling back to keyword routing")
+            import traceback
+            traceback.print_exc()
+        
+        # Try dynamic LLM routing as secondary fallback
         try:
             print("[DEBUG] Attempting dynamic LLM-based routing")
             from app.langchain.dynamic_agent_system import DynamicMultiAgentSystem

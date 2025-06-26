@@ -146,6 +146,92 @@ def get_active_agents():
     agents = get_langgraph_agents()
     return {name: agent for name, agent in agents.items() if agent.get("is_active", True)}
 
+def analyze_agent_capabilities(agent_data: dict) -> dict:
+    """Analyze agent capabilities based on role, system_prompt, and tools"""
+    capabilities = {
+        "primary_domain": "general",
+        "skills": [],
+        "expertise_areas": [],
+        "tools_available": agent_data.get("tools", []),
+        "interaction_style": "collaborative",
+        "complexity_level": "intermediate"
+    }
+    
+    role = agent_data.get("role", "").lower()
+    system_prompt = agent_data.get("system_prompt", "").lower()
+    combined_text = f"{role} {system_prompt}"
+    
+    # Analyze primary domain
+    if any(keyword in combined_text for keyword in ["sales", "business", "commercial", "revenue"]):
+        capabilities["primary_domain"] = "business"
+        capabilities["skills"].extend(["negotiation", "strategy", "customer_relations"])
+    elif any(keyword in combined_text for keyword in ["technical", "architect", "engineer", "code", "development"]):
+        capabilities["primary_domain"] = "technical"
+        capabilities["skills"].extend(["system_design", "architecture", "programming"])
+    elif any(keyword in combined_text for keyword in ["financial", "finance", "cost", "roi", "budget"]):
+        capabilities["primary_domain"] = "financial"
+        capabilities["skills"].extend(["financial_analysis", "cost_modeling", "roi_calculation"])
+    elif any(keyword in combined_text for keyword in ["research", "document", "knowledge", "analysis"]):
+        capabilities["primary_domain"] = "research"
+        capabilities["skills"].extend(["information_retrieval", "analysis", "synthesis"])
+    elif any(keyword in combined_text for keyword in ["security", "compliance", "risk", "audit"]):
+        capabilities["primary_domain"] = "security"
+        capabilities["skills"].extend(["risk_assessment", "compliance", "security_analysis"])
+    
+    # Analyze expertise areas based on role keywords
+    expertise_keywords = {
+        "leadership": ["ceo", "cto", "cio", "director", "manager", "lead"],
+        "strategy": ["strategic", "strategy", "planning", "vision"],
+        "execution": ["executor", "implementation", "delivery", "operations"],
+        "analysis": ["analyst", "analysis", "research", "investigation"],
+        "communication": ["communication", "writing", "presentation", "reporting"],
+        "coordination": ["coordinator", "orchestrator", "manager", "synthesizer"]
+    }
+    
+    for expertise, keywords in expertise_keywords.items():
+        if any(keyword in combined_text for keyword in keywords):
+            capabilities["expertise_areas"].append(expertise)
+    
+    # Determine complexity level
+    if any(keyword in combined_text for keyword in ["senior", "expert", "advanced", "architect"]):
+        capabilities["complexity_level"] = "advanced"
+    elif any(keyword in combined_text for keyword in ["junior", "basic", "simple"]):
+        capabilities["complexity_level"] = "basic"
+    
+    return capabilities
+
+def get_agents_with_capabilities():
+    """Get all agents with their analyzed capabilities"""
+    agents = get_langgraph_agents()
+    agents_with_capabilities = {}
+    
+    for name, agent_data in agents.items():
+        if agent_data.get("is_active", True):
+            capabilities = analyze_agent_capabilities(agent_data)
+            agent_with_capabilities = {
+                **agent_data,
+                "capabilities": capabilities
+            }
+            agents_with_capabilities[name] = agent_with_capabilities
+    
+    return agents_with_capabilities
+
+def find_agents_by_domain(domain: str):
+    """Find agents specializing in a specific domain"""
+    agents = get_agents_with_capabilities()
+    return {
+        name: agent for name, agent in agents.items()
+        if agent.get("capabilities", {}).get("primary_domain") == domain
+    }
+
+def find_agents_by_skill(skill: str):
+    """Find agents with a specific skill"""
+    agents = get_agents_with_capabilities()
+    return {
+        name: agent for name, agent in agents.items()
+        if skill in agent.get("capabilities", {}).get("skills", [])
+    }
+
 def reload_cache_from_db():
     """Reload cache from database - called by API endpoint"""
     print("[DEBUG] Forcing reload of agents cache from database")
