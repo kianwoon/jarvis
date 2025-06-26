@@ -10,6 +10,7 @@ import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -423,9 +424,12 @@ class LargeGenerationRequest(BaseModel):
 class GenerationProgressRequest(BaseModel):
     session_id: str
 
+
 @router.post("/multi-agent")
 async def multi_agent_endpoint(request: MultiAgentRequest):
     """Process a question using the LangGraph multi-agent system"""
+    print(f"[DEBUG] 🚀 MULTI-AGENT ENDPOINT CALLED with question: {request.question[:50]}...")
+    
     # Initialize Langfuse tracing
     tracer = get_tracer()
     trace = None
@@ -483,114 +487,45 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
     # Use LangGraph multi-agent system with streaming callback
     from app.langchain.langgraph_multi_agent_system import LangGraphMultiAgentSystem
     
-    async def stream_events_with_tracing():
-        collected_output = ""
-        final_response = ""
-        agent_outputs = []
-        
-        # Use a different approach: direct yielding instead of queue
-        import asyncio
-        
-        # Create a shared container for the yielding function
-        stream_events = []
-        
-        async def event_callback(event):
-            """Callback to handle events from LangGraph system - immediately add to stream"""
-            print(f"[DEBUG] 📥 IMMEDIATE STREAM EVENT: {event.get('type')} - {event.get('message', event.get('agent', 'no message'))}")
-            stream_events.append(event)
-        
-        # Initialize system with streaming callback
-        system = LangGraphMultiAgentSystem(
-            conversation_id=request.conversation_id,
-            event_callback=event_callback
-        )
-        
-        try:
-            # Send initial status
-            yield json_module.dumps({
-                "type": "status",
-                "message": "🤖 Initializing multi-agent workflow..."
-            }) + "\n"
-            
-            # Add small delay for streaming effect
-            import asyncio
-            await asyncio.sleep(0.1)
-            
-            # Start LangGraph processing in background
-            async def process_query():
-                try:
-                    result = await system.process_query(
-                        query=request.question,
-                        conversation_id=request.conversation_id
-                    )
-                    # Signal completion by adding to stream_events
-                    stream_events.append({"type": "_completion", "result": result})
-                except Exception as e:
-                    stream_events.append({"type": "_error", "error": str(e)})
-            
-            # Start processing
-            processing_task = asyncio.create_task(process_query())
-            
-            # Stream events using polling approach
-            events_sent = 0
-            
-            while True:
-                # Check for new events in stream_events list
-                while events_sent < len(stream_events):
-                    event = stream_events[events_sent]
-                    events_sent += 1
-                    
-                    print(f"[DEBUG] 📤 SENDING EVENT {events_sent}: {event.get('type')} - {event.get('message', event.get('agent', 'no message'))}")
-                    
-                    if event["type"] == "_completion":
-                        # Process completed, send final response
-                        result = event["result"]
-                        yield json_module.dumps({
-                            "type": "final_response",
-                            "response": result.get("answer", ""),
-                            "agents_used": result.get("agents_used", []),
-                            "execution_pattern": result.get("execution_pattern", ""),
-                            "confidence_score": result.get("confidence_score", 0.0),
-                            "conversation_id": result.get("conversation_id", ""),
-                            "metadata": result.get("metadata", {})
-                        }) + "\n"
-                        return  # Exit completely
-                    
-                    elif event["type"] == "_error":
-                        # Error occurred, send error response
-                        yield json_module.dumps({
-                            "type": "error",
-                            "error": event["error"]
-                        }) + "\n"
-                        return  # Exit completely
-                    
-                    else:
-                        # Regular event, stream it immediately
-                        yield json_module.dumps(event) + "\n"
-                        # Small delay for proper streaming
-                        await asyncio.sleep(0.01)
+    def create_stream():
+        async def stream():
+            print(f"[DEBUG] ✅ STREAM FUNCTION CALLED FOR MULTI-AGENT")
+            try:
+                # Send initial status with immediate streaming
+                print(f"[DEBUG] 📤 YIELDING INITIAL STATUS TO FRONTEND")
+                yield json_module.dumps({"type": "status", "message": "🤖 Starting multi-agent analysis..."}) + "\n"
                 
-                # If processing is done and we've sent all events, exit
-                if processing_task.done() and events_sent >= len(stream_events):
-                    break
-                    
-                # Wait a bit before checking for more events
-                await asyncio.sleep(0.1)
-            
-            # Clean up the processing task
-            if not processing_task.done():
-                processing_task.cancel()
+                # Use LangGraph multi-agent system
+                from app.langchain.langgraph_multi_agent_system import langgraph_multi_agent_answer
                 
-            # Collect output for tracing
-            collected_output = final_response
-            
-            # Update Langfuse generation and trace with the final output
-            if tracer.is_enabled():
-                try:
-                    generation_output = final_response if final_response else "Multi-agent processing completed"
-                    
-                    # Estimate token usage for cost tracking
-                    usage = tracer.estimate_token_usage(request.question, generation_output)
+                # Process with LangGraph system
+                result = await langgraph_multi_agent_answer(
+                    question=request.question,
+                    conversation_id=request.conversation_id
+                )
+                
+                # Send final result
+                yield json_module.dumps({
+                    "type": "final_response",
+                    "response": result.get("answer", ""),
+                    "agents_used": result.get("agents_used", []),
+                    "conversation_id": result.get("conversation_id", "")
+                }) + "\n"
+                
+            except Exception as e:
+                print(f"[ERROR] Multi-agent streaming error: {e}")
+                yield json_module.dumps({"error": f"Multi-agent processing failed: {str(e)}"}) + "\n"
+        return stream()
+    
+    print(f"[DEBUG] 🎯 ABOUT TO RETURN STREAMING RESPONSE FOR MULTI-AGENT")
+    return StreamingResponse(create_stream(), media_type="application/json")
+
+@router.post("/large-generation")
+async def large_generation_endpoint(request: LargeGenerationRequest):
+    """
+    Handle large generation tasks that transcend context limits
+    using intelligent chunking and Redis-based state management
+    """
                     
                     # End the generation with results including usage
                     if generation:
@@ -680,10 +615,8 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
             
             raise
     
-    return StreamingResponse(
-        stream_events_with_tracing(),
-        media_type="application/json"
-    )
+    print(f"[DEBUG] 🎯 ABOUT TO RETURN STREAMING RESPONSE FOR MULTI-AGENT")
+    return StreamingResponse(create_stream(), media_type="application/json")
 
 @router.post("/large-generation")
 async def large_generation_endpoint(request: LargeGenerationRequest):
