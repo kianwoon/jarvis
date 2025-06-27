@@ -640,7 +640,7 @@ Required JSON format:
                 if agent_data.get("tools"):
                     context_str += "IMPORTANT: Use tools first if needed, then provide your response.\n"
                 else:
-                    context_str += "IMPORTANT: Provide your response directly without <think> tags. Your actual analysis should be outside any thinking tags.\n"
+                    context_str += "IMPORTANT: Provide your response directly. Your actual analysis should be outside any thinking tags. /NO_THINK\n"
             
             # Special handling for conversation history
             if "conversation_history" in context:

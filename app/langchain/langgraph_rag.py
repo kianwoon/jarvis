@@ -474,7 +474,7 @@ def generate_response_node(state: RAGState) -> RAGState:
                     text += token
     
     # Clean response
-    answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    answer = text.strip()
     state["final_answer"] = answer
     
     return state

@@ -10,7 +10,6 @@ import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import logging
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +175,7 @@ async def rag_endpoint(request: RAGRequest):
                 }
                 simple_query_type = type_mapping.get(enhanced_type, "LLM")
                 print(f"[DEBUG] API endpoint - Mapped '{enhanced_type}' to '{simple_query_type}'")
+                print(f"[DEBUG] API endpoint - About to pass query_type='{simple_query_type}' to rag_answer")
             
             # Get temporary document context if available and modify question
             enhanced_question = request.question
@@ -298,11 +298,8 @@ Please answer the user's question using the information from the uploaded docume
                             if "answer" in chunk_data:
                                 final_answer = chunk_data["answer"]
                                 logger.info(f"[TRACE DEBUG] Extracted final answer: {final_answer[:100]}...")
-                                # Clean up thinking tags from the answer for cleaner output
-                                import re
                                 if final_answer:
-                                    final_answer = re.sub(r'<think>.*?</think>', '', final_answer, flags=re.DOTALL).strip()
-                                    logger.info(f"[TRACE DEBUG] Cleaned final answer: {final_answer[:100]}...")
+                                    logger.info(f"[TRACE DEBUG] Final answer: {final_answer[:100]}...")
                             if "source" in chunk_data:
                                 source_info = chunk_data["source"]
                                 logger.info(f"[TRACE DEBUG] Extracted source info: {source_info}")
@@ -424,7 +421,6 @@ class LargeGenerationRequest(BaseModel):
 class GenerationProgressRequest(BaseModel):
     session_id: str
 
-
 @router.post("/multi-agent")
 async def multi_agent_endpoint(request: MultiAgentRequest):
     """Process a question using the LangGraph multi-agent system"""
@@ -487,91 +483,60 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
     # Use LangGraph multi-agent system with streaming callback
     from app.langchain.langgraph_multi_agent_system import LangGraphMultiAgentSystem
     
-    def create_stream():
-        async def stream():
-            print(f"[DEBUG] ✅ STREAM FUNCTION CALLED FOR MULTI-AGENT")
-            try:
-                # Send initial status with immediate streaming
-                print(f"[DEBUG] 📤 YIELDING INITIAL STATUS TO FRONTEND")
-                yield json_module.dumps({"type": "status", "message": "🤖 Starting multi-agent analysis..."}) + "\n"
-                
-                # Use LangGraph multi-agent system
-                from app.langchain.langgraph_multi_agent_system import langgraph_multi_agent_answer
-                
-                # Process with LangGraph system
-                result = await langgraph_multi_agent_answer(
-                    question=request.question,
-                    conversation_id=request.conversation_id
-                )
-                
-                # Send final result
-                yield json_module.dumps({
-                    "type": "final_response",
-                    "response": result.get("answer", ""),
-                    "agents_used": result.get("agents_used", []),
-                    "conversation_id": result.get("conversation_id", "")
-                }) + "\n"
-                
-            except Exception as e:
-                print(f"[ERROR] Multi-agent streaming error: {e}")
-                yield json_module.dumps({"error": f"Multi-agent processing failed: {str(e)}"}) + "\n"
-        return stream()
-    
-    print(f"[DEBUG] 🎯 ABOUT TO RETURN STREAMING RESPONSE FOR MULTI-AGENT")
-    return StreamingResponse(create_stream(), media_type="application/json")
-
-@router.post("/large-generation")
-async def large_generation_endpoint(request: LargeGenerationRequest):
-    """
-    Handle large generation tasks that transcend context limits
-    using intelligent chunking and Redis-based state management
-    """
-    # Initialize Langfuse tracing
-    tracer = get_tracer()
-    trace = None
-    generation = None
-    
-    # Get model name from LLM settings for proper tracing
-    from app.core.llm_settings_cache import get_llm_settings
-    llm_settings = get_llm_settings()
-    model_name = llm_settings.get("model", "unknown")
-    
-    if not tracer._initialized:
-        tracer.initialize()
-    
-    if tracer.is_enabled():
-        trace = tracer.create_trace(
-            name="large-generation-workflow",
-            input=request.task_description,
-            metadata={
-                "endpoint": "/api/v1/langchain/large-generation",
-                "conversation_id": request.conversation_id,
-                "target_count": request.target_count,
-                "chunk_size": request.chunk_size,
-                "use_redis": request.use_redis,
-                "model": model_name
-            }
-        )
-        
-        # Create generation within the trace for detailed observability
-        if trace:
-            generation = tracer.create_generation_with_usage(
-                trace=trace,
-                name="large-generation-generation",
-                model=model_name,
-                input_text=request.task_description,
-                metadata={
-                    "target_count": request.target_count,
-                    "chunk_size": request.chunk_size,
-                    "use_redis": request.use_redis,
-                    "model": model_name,
-                    "endpoint": "large-generation"
-                }
-            )
-    
-    system = MultiAgentSystem(conversation_id=request.conversation_id, trace=trace)
-    
     async def stream_events_with_tracing():
+        print(f"[DEBUG] ✅ STREAM FUNCTION CALLED FOR MULTI-AGENT")
+        collected_output = ""
+        final_response = ""
+        
+        try:
+            # Use streaming multi-agent function like working RAG pattern
+            from app.langchain.langgraph_multi_agent_system import langgraph_multi_agent_answer
+            
+            # Get streaming generator (same pattern as rag_answer)
+            multi_agent_stream = await langgraph_multi_agent_answer(
+                question=request.question,
+                conversation_id=request.conversation_id,
+                stream=True,
+                trace=workflow_span or trace
+            )
+            print(f"[DEBUG] API endpoint - Got multi_agent_stream: {type(multi_agent_stream)}")
+            
+            # Stream chunks exactly like RAG endpoint does
+            chunk_count = 0
+            async for chunk in multi_agent_stream:
+                try:
+                    if chunk:  # Only yield non-empty chunks
+                        chunk_count += 1
+                        yield chunk
+                        # Add small delay to ensure streaming
+                        import asyncio
+                        await asyncio.sleep(0.01)
+                except GeneratorExit:
+                    # Client disconnected, log and stop gracefully
+                    print(f"[INFO] Client disconnected after {chunk_count} chunks")
+                    break
+                except Exception as chunk_error:
+                    print(f"[ERROR] Error yielding chunk {chunk_count}: {chunk_error}")
+                    # Try to yield error message, but don't fail the whole stream
+                    try:
+                        yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
+                    except:
+                        break  # If we can't even send error, client is likely gone
+                        
+            print(f"[DEBUG] Multi-agent streaming completed with {chunk_count} chunks")
+            collected_output = f"Multi-agent streaming completed with {chunk_count} chunks"
+            
+            # Update Langfuse generation and trace with the final output
+            if tracer.is_enabled():
+                try:
+                    generation_output = final_response if final_response else "Multi-agent processing completed"
+                    
+                    # Estimate token usage for cost tracking
+                    usage = tracer.estimate_token_usage(request.question, generation_output)
+                    
+                    # End the generation with results including usage
+                    if generation:
+                        generation.end(
                             output=generation_output,
                             usage=usage,
                             metadata={
@@ -658,7 +623,10 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
             raise
     
     print(f"[DEBUG] 🎯 ABOUT TO RETURN STREAMING RESPONSE FOR MULTI-AGENT")
-    return StreamingResponse(create_stream(), media_type="application/json")
+    return StreamingResponse(
+        stream_events_with_tracing(),
+        media_type="application/json"
+    )
 
 @router.post("/large-generation")
 async def large_generation_endpoint(request: LargeGenerationRequest):
@@ -1034,11 +1002,8 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
                             if "answer" in chunk_data:
                                 final_answer = chunk_data["answer"]
                                 logger.info(f"[TRACE DEBUG] Direct tool extracted final answer: {final_answer[:100]}...")
-                                # Clean up thinking tags from the answer for cleaner output
-                                import re
                                 if final_answer:
-                                    final_answer = re.sub(r'<think>.*?</think>', '', final_answer, flags=re.DOTALL).strip()
-                                    logger.info(f"[TRACE DEBUG] Direct tool cleaned final answer: {final_answer[:100]}...")
+                                    logger.info(f"[TRACE DEBUG] Direct tool final answer: {final_answer[:100]}...")
                             if "source" in chunk_data:
                                 source_info = chunk_data["source"]
                                 logger.info(f"[TRACE DEBUG] Direct tool extracted source info: {source_info}")

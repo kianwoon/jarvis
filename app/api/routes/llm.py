@@ -156,7 +156,7 @@ async def generate(request: GenerateRequest):
         response = await inference.generate(request.prompt)
         text = response.text or ""
         reasoning = re.findall(r"<think>(.*?)</think>", text, re.DOTALL)
-        answer = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        answer = text.strip()
         
         result = {
             "text": text,

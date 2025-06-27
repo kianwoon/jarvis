@@ -130,9 +130,6 @@ class CollaborationExecutor:
                     next_agent = agent_tasks[current_index + 1][0]
                     # Extract key info from response for communication message
                     response_preview = agent_response[:200] + "..." if len(agent_response) > 200 else agent_response
-                    # Clean thinking tags for preview
-                    import re
-                    response_preview = re.sub(r'<think>.*?</think>', '', response_preview, flags=re.DOTALL).strip()
                     if not response_preview:
                         response_preview = "Analysis and findings passed to next agent"
                     

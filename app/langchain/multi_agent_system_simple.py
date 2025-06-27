@@ -186,25 +186,9 @@ class MultiAgentSystem:
         
         return default_prompt
     
-    def _remove_thinking_tags(self, text: str) -> str:
-        """Remove thinking tags from LLM response"""
-        import re
-        # First check if there's any content outside thinking tags
-        # This prevents completely empty responses
-        non_think_content = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        non_think_content = re.sub(r'</?think>', '', non_think_content).strip()
-        
-        if not non_think_content and text.strip():
-            # If everything is in thinking tags, return a message
-            print(f"[WARNING] Response only contains thinking tags, original length: {len(text)}")
-            return "I need to analyze this request and provide a proper response. Let me process the information provided."
-        
-        # Remove <think>...</think> tags and their content
-        pattern = r'<think>.*?</think>'
-        cleaned = re.sub(pattern, '', text, flags=re.DOTALL)
-        # Also remove any standalone tags
-        cleaned = re.sub(r'</?think>', '', cleaned)
-        return cleaned.strip()
+    def _clean_response(self, text: str) -> str:
+        """Clean response without removing thinking tags"""
+        return text.strip()
     
     def _clean_markdown_formatting(self, text: str) -> str:
         """Clean up excessive markdown formatting"""
@@ -687,7 +671,7 @@ Important:
             print(f"[DEBUG] {agent_name}: Completed generation, response length = {len(response_text)}")
             
             # Clean the response and yield final completion event
-            cleaned_content = self._remove_thinking_tags(response_text)
+            cleaned_content = self._clean_response(response_text)
             # Keep markdown formatting for better display
             # cleaned_content = self._clean_markdown_formatting(cleaned_content)
             display_content = cleaned_content.strip()
@@ -1568,9 +1552,6 @@ Remember {context['client']} is a major bank requiring highest service standards
 
 **ORIGINAL QUERY:** {state['query']}
 
-<think>
-Analyze the inputs and plan the synthesis approach.
-</think>
 
 Now provide your synthesis:"""
         
@@ -3370,7 +3351,7 @@ Now provide your synthesis:"""
             prompt += "\n1. You MUST use the tools by outputting the JSON format shown above"
             prompt += "\n2. Use the EXACT parameter names shown in the tool specifications"
             prompt += "\n3. For google_search tool, use 'query' NOT 'q' and 'num_results' NOT 'num'"
-            prompt += "\n4. DO NOT use <think> tags or explain what you're going to do"
+            prompt += "\n4. DO NOT explain what you're going to do"
             prompt += "\n5. START your response with the tool JSON immediately"
             prompt += "\n6. After the tool executes, you can provide additional analysis"
             

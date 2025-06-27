@@ -2473,6 +2473,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
         raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
     
     # STEP 1: Use pre-computed query_type if provided, otherwise classify
+    print(f"[DEBUG] rag_answer: RECEIVED query_type parameter = '{query_type}'")
     if query_type:
         # Use pre-computed classification from API layer to avoid double work
         query_type = query_type.upper()  # Normalize case

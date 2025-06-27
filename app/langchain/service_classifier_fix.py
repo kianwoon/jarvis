@@ -119,7 +119,7 @@ Answer with exactly one word: RAG, TOOLS, or LLM"""
         print(f"[DEBUG] LLM classification output: {text}")
         
         # Extract classification
-        text_clean = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip().upper()
+        text_clean = text.strip().upper()
         
         if "RAG" in text_clean:
             classification = "RAG"

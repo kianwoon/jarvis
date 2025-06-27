@@ -537,12 +537,10 @@ Example: tool|0.85"""
             logger.info(f"LLM Classifier raw response: '{response_text}'")
             
             # Clean response - remove thinking tags and extract classification
-            clean_response = response_text
-            logger.info(f"[CLASSIFIER DEBUG] Raw response length: {len(response_text)}, has_think_tags: {'<think>' in clean_response and '</think>' in clean_response}")
-            if '<think>' in clean_response and '</think>' in clean_response:
-                import re
-                clean_response = re.sub(r'<think>.*?</think>', '', clean_response, flags=re.DOTALL).strip()
-                logger.info(f"[CLASSIFIER DEBUG] After cleaning: '{clean_response}'")
+            import re
+            clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
+            logger.info(f"[CLASSIFIER DEBUG] Raw response length: {len(response_text)}")
+            logger.info(f"[CLASSIFIER DEBUG] Response after cleaning: '{clean_response}'")
             
             # Parse LLM response - require TYPE|CONFIDENCE format
             if '|' in clean_response:
@@ -979,10 +977,7 @@ Output only the most relevant tool name (no explanations):/NO_THINK"""
             response = await llm.generate(prompt)
             response_text = response.text.strip()
             
-            # Clean response - remove thinking tags
             clean_response = response_text
-            if '<think>' in clean_response and '</think>' in clean_response:
-                clean_response = re.sub(r'<think>.*?</think>', '', clean_response, flags=re.DOTALL).strip()
             
             logger.info(f"LLM tool suggestion for '{query}': {clean_response}")
             

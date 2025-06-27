@@ -80,6 +80,26 @@ def reload_llm_settings():
             "thinking_mode": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 4000},
             "non_thinking_mode": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 4000},
             "max_tokens": 4000,
+            "multi_agent_timing": {
+                "startup_delay": 0.3,
+                "progress_delay": 0.2,
+                "agent_communication_delay": 0.3,
+                "tool_execution_delay": 0.5,
+                "token_streaming_delay": 0.02,
+                "synthesis_startup_delay": 0.5,
+                "synthesis_progress_delay": 0.3,
+                "synthesis_token_delay": 0.02,
+                "completion_delay": 0.2
+            },
+            "response_requirements": {
+                "min_paragraphs": 3,
+                "max_paragraphs": 4,
+                "min_words": 300,
+                "max_words": 500,
+                "quality_level": "comprehensive",
+                "include_examples": True,
+                "include_recommendations": True
+            },
             "query_classifier": {
                 "min_confidence_threshold": 0.1,
                 "max_classifications": 3,

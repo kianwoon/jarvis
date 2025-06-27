@@ -222,28 +222,39 @@ class LangGraphMultiAgentSystem:
         MIN_TEMP = 0.1           # Minimum temperature
         MAX_TEMP = 1.0           # Maximum temperature
         
+        # Special limits for synthesizer (needs more resources for complex synthesis)
+        SYNTHESIZER_MAX_TOKENS = 3000   # Higher token limit for synthesis
+        SYNTHESIZER_MAX_TIMEOUT = 90    # Longer timeout for synthesis
+        
         fixed_count = 0
         
         for agent_name, agent_data in self.agents.items():
             config = agent_data.get('config', {})
             original_config = config.copy()
             
-            # Validate and fix max_tokens
+            # Validate and fix max_tokens (with special handling for synthesizer)
             max_tokens = config.get('max_tokens', 1500)
-            if max_tokens > MAX_TOKENS_LIMIT:
-                config['max_tokens'] = MAX_TOKENS_LIMIT
-                logger.warning(f"Agent '{agent_name}': Reduced max_tokens from {max_tokens} to {MAX_TOKENS_LIMIT}")
+            is_synthesizer = agent_name.lower() == 'synthesizer'
+            
+            max_token_limit = SYNTHESIZER_MAX_TOKENS if is_synthesizer else MAX_TOKENS_LIMIT
+            
+            if max_tokens > max_token_limit:
+                config['max_tokens'] = max_token_limit
+                logger.warning(f"Agent '{agent_name}': Reduced max_tokens from {max_tokens} to {max_token_limit}")
                 fixed_count += 1
             elif max_tokens < 100:
-                config['max_tokens'] = 1000
-                logger.warning(f"Agent '{agent_name}': Increased max_tokens from {max_tokens} to 1000")
+                default_tokens = 2000 if is_synthesizer else 1000
+                config['max_tokens'] = default_tokens
+                logger.warning(f"Agent '{agent_name}': Increased max_tokens from {max_tokens} to {default_tokens}")
                 fixed_count += 1
             
-            # Validate and fix timeout
+            # Validate and fix timeout (with special handling for synthesizer)
             timeout = config.get('timeout', 30)
-            if timeout > MAX_TIMEOUT_LIMIT:
-                config['timeout'] = MAX_TIMEOUT_LIMIT
-                logger.warning(f"Agent '{agent_name}': Reduced timeout from {timeout}s to {MAX_TIMEOUT_LIMIT}s")
+            max_timeout_limit = SYNTHESIZER_MAX_TIMEOUT if is_synthesizer else MAX_TIMEOUT_LIMIT
+            
+            if timeout > max_timeout_limit:
+                config['timeout'] = max_timeout_limit
+                logger.warning(f"Agent '{agent_name}': Reduced timeout from {timeout}s to {max_timeout_limit}s")
                 fixed_count += 1
             elif timeout < MIN_TIMEOUT:
                 config['timeout'] = MIN_TIMEOUT
@@ -261,6 +272,21 @@ class LangGraphMultiAgentSystem:
                 logger.warning(f"Agent '{agent_name}': Reduced temperature from {temperature} to {MAX_TEMP}")
                 fixed_count += 1
             
+            # Validate and set model (NEW: Support for agent-specific thinking models)
+            model = config.get('model')
+            available_models = ["qwen3:30b-a3b", "llama3.1:8b", "qwen2.5:32b", "mistral:7b"]  # Add more as needed
+            
+            if model and model not in available_models:
+                logger.warning(f"Agent '{agent_name}': Unknown model '{model}', will fallback to global model")
+                # Don't remove invalid model, let it fallback to global setting
+            elif not model:
+                # For agents that should have thinking capability, suggest qwen3:30b-a3b
+                # This is just informational, not enforced
+                if "compliance" in agent_name.lower() or "analyst" in agent_name.lower() or "research" in agent_name.lower():
+                    logger.info(f"Agent '{agent_name}': Consider setting model to 'qwen3:30b-a3b' for thinking capability")
+            else:
+                logger.debug(f"Agent '{agent_name}': Using model '{model}'")
+            
             # Update the agent config if changes were made
             if config != original_config:
                 agent_data['config'] = config
@@ -271,28 +297,29 @@ class LangGraphMultiAgentSystem:
             logger.debug("All agent configurations are within safe limits")
 
     def _clean_llm_response(self, response_text: str) -> str:
-        """Clean LLM response by removing verbose reasoning blocks and formatting issues"""
+        """PRESERVE ALL THINKING CONTENT - qwen3:30b-a3b is a thinking model"""
         import re
         
-        # Remove <think>...</think> blocks (including multiline)
-        cleaned = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
+        # CRITICAL FIX: PRESERVE ALL THINKING CONTENT INCLUDING NATURAL LANGUAGE REASONING
+        # Do NOT remove <think>...</think> blocks or natural reasoning patterns
+        # This was the root cause - aggressive cleaning was removing thinking content
         
-        # Remove other verbose reasoning patterns
-        cleaned = re.sub(r'Okay, .*?(?=\n\n|\n[A-Z]|$)', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'Let me .*?(?=\n\n|\n[A-Z]|$)', '', cleaned, flags=re.DOTALL)
-        cleaned = re.sub(r'I need to .*?(?=\n\n|\n[A-Z]|$)', '', cleaned, flags=re.DOTALL)
+        if not response_text:
+            return ""
+            
+        # MINIMAL cleaning - only remove excessive whitespace
+        cleaned = response_text.strip()
         
-        # Clean up extra whitespace and empty lines
-        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
-        cleaned = cleaned.strip()
+        # Only clean up excessive newlines (more than 3 in a row)
+        cleaned = re.sub(r'\n\s*\n\s*\n\s*\n+', '\n\n\n', cleaned)
         
-        # If response is too short after cleaning, return a fallback
-        if len(cleaned) < 50:
-            return f"Based on expert analysis: {response_text[:200]}..."
+        # If response is too short, return original
+        if len(cleaned) < 10:
+            return response_text
             
         return cleaned
 
-    async def _efficient_llm_call(self, prompt: str, max_tokens: int = 2000, temperature: float = 0.7, timeout: float = 45.0, agent_name: str = "unknown") -> str:
+    async def _efficient_llm_call(self, prompt: str, max_tokens: int = 2000, temperature: float = 0.7, timeout: float = 45.0, agent_name: str = "unknown", model_name: str = None) -> str:
         """Efficient LLM call using direct OllamaLLM like the working codebase patterns"""
         from app.llm.ollama import OllamaLLM
         from app.llm.base import LLMConfig
@@ -303,18 +330,33 @@ class LangGraphMultiAgentSystem:
         error_msg = None
         
         try:
-            # Validate and clamp parameters to more conservative limits for responsiveness
-            max_tokens = min(max_tokens, 2000)  # Reduced hard limit for faster response
-            timeout = min(timeout, 45)          # Reduced hard timeout limit
+            # Validate and clamp parameters with special handling for synthesizer
+            is_synthesizer = agent_name.lower() == 'synthesizer'
+            
+            # Apply appropriate limits based on agent type
+            if is_synthesizer:
+                max_tokens = min(max_tokens, 3000)  # Higher limit for synthesizer
+                timeout = min(timeout, 90)          # Longer timeout for synthesizer
+            else:
+                max_tokens = min(max_tokens, 2000)  # Standard limit for other agents
+                timeout = min(timeout, 45)          # Standard timeout for other agents
+                
             temperature = max(0.1, min(temperature, 1.0))  # Temperature bounds
             
             if max_tokens > 1500:
                 logger.debug(f"Large token request ({max_tokens}), using extended timeout")
-                timeout = min(timeout * 1.2, 45)  # Scale timeout for large requests
+                max_timeout = 90 if is_synthesizer else 45
+                timeout = min(timeout * 1.2, max_timeout)  # Scale timeout for large requests
+            
+            # CRITICAL FIX: Support agent-specific model configuration
+            # Use provided model_name if available, otherwise fall back to global setting
+            effective_model = model_name or self.llm_settings["model"]
+            
+            logger.debug(f"Agent {agent_name} using model: {effective_model} (agent-specific: {bool(model_name)}, global: {self.llm_settings['model']})")
             
             # Create LLM config using codebase efficient pattern
             llm_config = LLMConfig(
-                model_name=self.llm_settings["model"],
+                model_name=effective_model,
                 temperature=temperature,
                 top_p=0.9,
                 max_tokens=max_tokens
@@ -401,7 +443,7 @@ class LangGraphMultiAgentSystem:
         workflow.add_edge("synthesize_response", "finalize_output")
         workflow.add_edge("finalize_output", END)
         
-        return workflow.compile(checkpointer=self.checkpointer)
+        # For now, compile without checkpointer to avoid Redis connection issues\n        return workflow.compile()
 
     async def analyze_query_node(self, state: MultiAgentLangGraphState) -> MultiAgentLangGraphState:
         """Analyze the user query to understand requirements"""
@@ -657,17 +699,19 @@ class LangGraphMultiAgentSystem:
                 max_tokens = min(agent_config.get('max_tokens', 1000), 1500)  # Cap at 1500 for speed
                 timeout = min(agent_config.get('timeout', 30), 30)           # Cap at 30s for speed
                 temperature = agent_config.get('temperature', 0.7)
+                model_name = agent_config.get('model')  # Get agent-specific model
                 
-                logger.info(f"Executing agent {agent_name} with {max_tokens} tokens, {timeout}s timeout")
+                logger.info(f"Executing agent {agent_name} with {max_tokens} tokens, {timeout}s timeout, model: {model_name or 'global'}")
                 
                 
-                # Use efficient LLM call for agent execution with agent-specific config
+                # Use efficient LLM call for agent execution with agent-specific config including model
                 agent_response = await self._efficient_llm_call(
                     agent_prompt,
                     max_tokens=max_tokens,
                     temperature=temperature,
                     timeout=timeout,
-                    agent_name=agent_name
+                    agent_name=agent_name,
+                    model_name=model_name
                 )
                 
                 # Store agent output
@@ -738,14 +782,16 @@ class LangGraphMultiAgentSystem:
                 max_tokens = agent_config.get('max_tokens', 1000)
                 timeout = agent_config.get('timeout', 45)
                 temperature = agent_config.get('temperature', 0.7)
+                model_name = agent_config.get('model')  # Get agent-specific model
                 
-                # Use efficient LLM call for agent execution with agent-specific config
+                # Use efficient LLM call for agent execution with agent-specific config including model
                 agent_response = await self._efficient_llm_call(
                     agent_prompt,
                     max_tokens=max_tokens,
                     temperature=temperature,
                     timeout=timeout,
-                    agent_name=agent_name
+                    agent_name=agent_name,
+                    model_name=model_name
                 )
                 
                 state["agent_outputs"][agent_name] = agent_response
@@ -818,12 +864,15 @@ class LangGraphMultiAgentSystem:
                     max_tokens = worker_config.get('max_tokens', 1000)
                     timeout = worker_config.get('timeout', 45)
                     temperature = worker_config.get('temperature', 0.7)
+                    model_name = worker_config.get('model')  # Get worker-specific model
                     
                     worker_response = await self._efficient_llm_call(
                         worker_prompt,
                         max_tokens=max_tokens,
                         temperature=temperature,
-                        timeout=timeout
+                        timeout=timeout,
+                        agent_name=worker,
+                        model_name=model_name
                     )
                     state["agent_outputs"][worker] = worker_response
                 except Exception as e:
@@ -891,12 +940,15 @@ class LangGraphMultiAgentSystem:
                 max_tokens = agent_config.get('max_tokens', 1000)
                 timeout = agent_config.get('timeout', 45)
                 temperature = agent_config.get('temperature', 0.7)
+                model_name = agent_config.get('model')  # Get agent-specific model
                 
                 response = await self._efficient_llm_call(
                     agent_prompt,
                     max_tokens=max_tokens,
                     temperature=temperature,
-                    timeout=timeout
+                    timeout=timeout,
+                    agent_name=agent_name,
+                    model_name=model_name
                 )
                 initial_responses[agent_name] = response
                 state["agent_outputs"][f"{agent_name}_round1"] = response
@@ -993,13 +1045,14 @@ class LangGraphMultiAgentSystem:
         try:
             # Emit synthesis start event
             
-            # Use efficient LLM call for response synthesis with aggressive limits for speed
+            # Use efficient LLM call for response synthesis - prefer thinking model for better synthesis
             synthesized_response = await self._efficient_llm_call(
                 synthesis_prompt,
                 max_tokens=800,   # Further reduced for speed
                 temperature=0.6,  # Slightly more focused
                 timeout=20,       # Aggressive timeout for responsiveness
-                agent_name="synthesizer"
+                agent_name="synthesizer",
+                model_name="qwen3:30b-a3b"  # Use thinking model for synthesis if available
             )
             state["final_response"] = synthesized_response
             
@@ -1156,7 +1209,7 @@ class LangGraphMultiAgentSystem:
         """Get current performance metrics summary"""
         return self.performance_metrics.get_summary()
 
-    async def process_query(self, query: str, conversation_id: Optional[str] = None) -> Dict[str, Any]:
+    async def process_query(self, query: str, conversation_id: Optional[str] = None, trace=None) -> Dict[str, Any]:
         """Process a query through the LangGraph multi-agent workflow"""
         
         if not conversation_id:
@@ -1225,18 +1278,28 @@ class LangGraphMultiAgentSystem:
 # Export main function for API integration
 async def langgraph_multi_agent_answer(
     question: str,
-    conversation_id: Optional[str] = None
-) -> Dict[str, Any]:
+    conversation_id: Optional[str] = None,
+    stream: bool = False,
+    trace=None
+):
     """
-    LangGraph-based multi-agent answer
+    LangGraph-based multi-agent answer with streaming support using real workflow
     
     Args:
         question: User query
         conversation_id: Optional conversation ID for continuity
+        stream: Whether to return streaming generator or final result
         
     Returns:
-        Dict with answer and collaboration metadata
+        Dict with answer and collaboration metadata OR async generator if stream=True
     """
     
     system = LangGraphMultiAgentSystem(conversation_id)
-    return await system.process_query(question, conversation_id)
+    
+    if stream:
+        # Use FIXED multi-agent streaming with proper thinking and tool usage
+        from app.langchain.fixed_multi_agent_streaming import fixed_multi_agent_streaming
+        return await fixed_multi_agent_streaming(question, conversation_id, trace=trace)
+    else:
+        # Return final result (non-streaming)
+        return await system.process_query(question, conversation_id, trace=trace)

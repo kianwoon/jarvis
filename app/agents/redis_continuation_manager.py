@@ -593,12 +593,10 @@ Generate the {chunk.chunk_size} questions now:"""
         return prompt
     
     def _clean_chunk_response(self, response: str) -> str:
-        """Clean chunk response by removing thinking tags and reasoning sections"""
+        """Clean chunk response by removing only excessive reasoning sections"""
         import re
         
-        # Remove thinking tags and their content
-        cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
-        cleaned = re.sub(r'</?think>', '', cleaned)
+        cleaned = response
         
         # Remove reasoning sections
         cleaned = re.sub(r'Reasoning:\s*.*?(?=\d+\.|\n\n|\Z)', '', cleaned, flags=re.DOTALL)
