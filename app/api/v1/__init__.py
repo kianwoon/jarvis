@@ -18,6 +18,7 @@ from app.api.v1.endpoints import pipeline_validation
 from app.api.v1.endpoints import pipeline_execution_ws
 from app.api.v1.endpoints import agent_recommendations
 from app.api.v1.endpoints import pipeline_replay
+from app.api.v1.endpoints import automation
 import logging
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,12 @@ api_router.include_router(
     pipeline_execution_ws.router,
     prefix="",
     tags=["pipeline-websockets"]
+)
+
+api_router.include_router(
+    automation.router,
+    prefix="",
+    tags=["automation"]
 )
 
  

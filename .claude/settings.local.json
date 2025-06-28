@@ -62,7 +62,9 @@
       "Bash(npx tsc:*)",
       "WebFetch(domain:modelcontextprotocol.io)",
       "Bash(time curl:*)",
-      "Bash(docker kill:*)"
+      "Bash(docker kill:*)",
+      "WebFetch(domain:docs.langflow.org)",
+      "Bash(gtimeout:*)"
     ],
     "deny": []
   },

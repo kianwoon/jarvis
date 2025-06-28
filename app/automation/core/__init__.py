@@ -1,0 +1,3 @@
+"""
+Core automation functionality
+"""

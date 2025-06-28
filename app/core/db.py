@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker, relationship
 from app.core.config import get_settings
 import os
 
+
 settings = get_settings()
 
 # PostgreSQL ONLY - NO SQLITE!
@@ -167,6 +168,58 @@ class UserCollectionAccess(Base):
     
     # Relationship
     collection = relationship("CollectionRegistry", backref="user_access")
+
+# AI Automation Models
+class AutomationWorkflow(Base):
+    """Automation workflow definition using Langflow"""
+    __tablename__ = "automation_workflows"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False, index=True)
+    description = Column(String, nullable=True)
+    langflow_config = Column(JSON, nullable=False)  # Langflow flow configuration
+    trigger_config = Column(JSON, nullable=True)    # Trigger configuration (webhook, schedule, etc.)
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    created_by = Column(String(255), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Relationships
+    executions = relationship("AutomationExecution", back_populates="workflow", cascade="all, delete-orphan")
+
+class AutomationExecution(Base):
+    """Automation workflow execution tracking"""
+    __tablename__ = "automation_executions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey('automation_workflows.id'), nullable=False, index=True)
+    execution_id = Column(String(255), nullable=False, unique=True, index=True)  # UUID for tracking
+    status = Column(String(50), nullable=False, index=True)  # 'running', 'completed', 'failed', 'cancelled'
+    input_data = Column(JSON, nullable=True)     # Input parameters
+    output_data = Column(JSON, nullable=True)    # Final results
+    execution_log = Column(JSON, nullable=True)  # Step-by-step execution log
+    error_message = Column(String, nullable=True) # Error details if failed
+    started_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    
+    # Relationship
+    workflow = relationship("AutomationWorkflow", back_populates="executions")
+
+class AutomationTrigger(Base):
+    """Automation triggers (webhooks, schedules, events)"""
+    __tablename__ = "automation_triggers"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey('automation_workflows.id'), nullable=False, index=True)
+    trigger_type = Column(String(50), nullable=False)  # 'webhook', 'schedule', 'event', 'manual'
+    trigger_config = Column(JSON, nullable=False)      # Type-specific configuration
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    last_triggered = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Relationship
+    workflow = relationship("AutomationWorkflow")
 
 def get_db():
     db = SessionLocal()

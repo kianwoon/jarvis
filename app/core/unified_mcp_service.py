@@ -11,13 +11,76 @@ import aiohttp
 import json
 import logging
 from typing import Dict, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 
 from .oauth_token_manager import oauth_token_manager
 from .mcp_client import MCPClient, MCPServerConfig
 
 logger = logging.getLogger(__name__)
+
+
+class CircuitBreaker:
+    """Simple circuit breaker for MCP servers to prevent cascading failures"""
+    
+    def __init__(self, failure_threshold: int = 3, recovery_timeout: int = 60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failures: Dict[str, int] = {}
+        self.last_failure_time: Dict[str, datetime] = {}
+        self.circuit_open: Dict[str, bool] = {}
+    
+    def _get_server_key(self, server_config: Dict[str, Any], tool_name: str) -> str:
+        """Generate a unique key for the server/tool combination"""
+        command = server_config.get("command", "")
+        args = server_config.get("args", [])
+        return f"{command}:{':'.join(args)}:{tool_name}"
+    
+    def is_circuit_open(self, server_config: Dict[str, Any], tool_name: str) -> bool:
+        """Check if circuit is open (server temporarily disabled)"""
+        key = self._get_server_key(server_config, tool_name)
+        
+        if key not in self.circuit_open:
+            return False
+        
+        if not self.circuit_open[key]:
+            return False
+        
+        # Check if recovery timeout has passed
+        if key in self.last_failure_time:
+            time_since_failure = datetime.now() - self.last_failure_time[key]
+            if time_since_failure.total_seconds() > self.recovery_timeout:
+                # Reset circuit
+                self.circuit_open[key] = False
+                self.failures[key] = 0
+                logger.info(f"Circuit breaker reset for {key}")
+                return False
+        
+        return True
+    
+    def record_failure(self, server_config: Dict[str, Any], tool_name: str):
+        """Record a failure and potentially open the circuit"""
+        key = self._get_server_key(server_config, tool_name)
+        
+        self.failures[key] = self.failures.get(key, 0) + 1
+        self.last_failure_time[key] = datetime.now()
+        
+        if self.failures[key] >= self.failure_threshold:
+            self.circuit_open[key] = True
+            logger.warning(f"Circuit breaker opened for {key} after {self.failures[key]} failures")
+    
+    def record_success(self, server_config: Dict[str, Any], tool_name: str):
+        """Record a success and reset failure count"""
+        key = self._get_server_key(server_config, tool_name)
+        
+        if key in self.failures:
+            self.failures[key] = 0
+        if key in self.circuit_open:
+            self.circuit_open[key] = False
+
+
+# Global circuit breaker instance
+mcp_circuit_breaker = CircuitBreaker()
 
 class UnifiedMCPService:
     """
@@ -231,6 +294,12 @@ class UnifiedMCPService:
             Tool result or error
         """
         try:
+            # Check circuit breaker first
+            if mcp_circuit_breaker.is_circuit_open(server_config, tool_name):
+                error_msg = f"MCP server circuit breaker is open for {tool_name} - server temporarily disabled"
+                logger.warning(error_msg)
+                return {"error": error_msg}
+            
             logger.info(f"[STDIO] Calling {tool_name} on stdio server")
             
             # Get stdio client
@@ -270,10 +339,32 @@ class UnifiedMCPService:
                         result = await client.call_tool(tool_name, enhanced_params)
             
             logger.info(f"[STDIO] Tool {tool_name} completed")
+            
+            # Record success if no error in result
+            if "error" not in result:
+                mcp_circuit_breaker.record_success(server_config, tool_name)
+            else:
+                mcp_circuit_breaker.record_failure(server_config, tool_name)
+            
             return result
             
         except Exception as e:
             logger.error(f"[STDIO] Failed to call {tool_name}: {e}")
+            # Record failure in circuit breaker
+            mcp_circuit_breaker.record_failure(server_config, tool_name)
+            
+            # Special fallback for get_datetime tool
+            if tool_name == "get_datetime":
+                logger.info(f"[STDIO] Using datetime fallback for {tool_name}")
+                try:
+                    from .datetime_fallback import get_current_datetime
+                    fallback_result = get_current_datetime()
+                    logger.info(f"[STDIO] Datetime fallback successful")
+                    return {"content": [{"type": "text", "text": str(fallback_result)}]}
+                except Exception as fallback_error:
+                    logger.error(f"[STDIO] Datetime fallback also failed: {fallback_error}")
+                    return {"error": f"MCP server failed and fallback failed: {str(e)}"}
+            
             return {"error": str(e)}
     
     async def call_http_tool(self, endpoint: str, tool_name: str, parameters: Dict[str, Any],
@@ -441,8 +532,10 @@ async def call_mcp_tool_unified(tool_info: Dict[str, Any], tool_name: str,
         Tool result or error
     """
     try:
+        logger.info(f"[UNIFIED DEBUG] Starting unified tool call for {tool_name}")
         endpoint = tool_info.get("endpoint", "")
         server_id = tool_info.get("server_id")
+        logger.info(f"[UNIFIED DEBUG] Tool {tool_name} - endpoint: {endpoint}, server_id: {server_id}")
         
         # Determine service type based on tool name or server info
         service_name = "general"  # Default for non-OAuth tools
@@ -455,15 +548,19 @@ async def call_mcp_tool_unified(tool_info: Dict[str, Any], tool_name: str,
         
         if endpoint.startswith("stdio://"):
             # Stdio MCP server
+            logger.info(f"[UNIFIED DEBUG] Using stdio protocol for {tool_name}")
             from .db import SessionLocal, MCPServer
             
             if not server_id:
+                logger.error(f"[UNIFIED DEBUG] No server_id for stdio tool {tool_name}")
                 return {"error": "No server_id for stdio tool"}
             
+            logger.info(f"[UNIFIED DEBUG] Looking up server {server_id} in database")
             db = SessionLocal()
             try:
                 server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
                 if not server or not server.command:
+                    logger.error(f"[UNIFIED DEBUG] Server {server_id} not found or has no command")
                     return {"error": f"Server {server_id} not found or has no command"}
                 
                 server_config = {
@@ -471,12 +568,16 @@ async def call_mcp_tool_unified(tool_info: Dict[str, Any], tool_name: str,
                     "args": server.args if server.args else [],
                     "env": server.env if server.env else {}
                 }
+                logger.info(f"[UNIFIED DEBUG] Server config for {tool_name}: {server_config}")
                 
                 # Get unified service instance
                 service = UnifiedMCPService()
-                return await service.call_stdio_tool(
+                logger.info(f"[UNIFIED DEBUG] Calling stdio tool {tool_name}")
+                result = await service.call_stdio_tool(
                     server_config, tool_name, parameters, server_id, service_name
                 )
+                logger.info(f"[UNIFIED DEBUG] Stdio tool {tool_name} completed")
+                return result
             finally:
                 db.close()
         

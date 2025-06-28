@@ -5,6 +5,7 @@ Supports configurable patterns and multiple classifications with confidence scor
 import re
 import yaml
 import logging
+import asyncio
 from typing import Dict, List, Optional, Tuple, Set
 from enum import Enum
 from dataclasses import dataclass
@@ -520,8 +521,16 @@ Example: tool|0.85"""
                 except Exception as e:
                     logger.warning(f"Failed to create classification generation span: {e}")
             
-            response = await llm.generate(prompt)
-            response_text = response.text
+            # Add timeout wrapper for LLM classification
+            try:
+                response = await asyncio.wait_for(
+                    llm.generate(prompt),
+                    timeout=45.0  # 45 second timeout (15s buffer over Ollama's 30s)
+                )
+                response_text = response.text
+            except asyncio.TimeoutError:
+                logger.error("LLM classification timed out after 45 seconds")
+                return await self._retry_llm_classification(query, "llm_timeout")
             
             # End generation span with result
             if generation_span and tracer:
@@ -974,8 +983,17 @@ Output only the most relevant tool name (no explanations):/NO_THINK"""
                     model_server = "http://ollama:11434"
             
             llm = OllamaLLM(llm_config, base_url=model_server)
-            response = await llm.generate(prompt)
-            response_text = response.text.strip()
+            
+            # Add timeout wrapper for LLM tool suggestion
+            try:
+                response = await asyncio.wait_for(
+                    llm.generate(prompt),
+                    timeout=30.0  # 30 second timeout for tool suggestions
+                )
+                response_text = response.text.strip()
+            except asyncio.TimeoutError:
+                logger.error("LLM tool suggestion timed out after 30 seconds")
+                return []  # Return empty list if timeout
             
             clean_response = response_text
             

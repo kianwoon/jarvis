@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import subprocess
+import threading
+import queue
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import uuid
@@ -28,12 +30,15 @@ class MCPStdioBridge:
             "name": "jarvis-mcp-bridge",
             "version": "1.0.0"
         }
+        self.response_queue = queue.Queue()
+        self.response_thread = None
         
     async def start(self):
         """Start the MCP server process"""
         try:
             full_command = [self.command] + self.args
-            logger.info(f"Starting MCP server: {' '.join(full_command)}")
+            logger.info(f"[STDIO DEBUG] Starting MCP server: {' '.join(full_command)}")
+            logger.info(f"[STDIO DEBUG] Command: {self.command}, Args: {self.args}")
             
             # Set up environment with common Node.js paths and MCP server env vars
             import os
@@ -41,6 +46,19 @@ class MCPStdioBridge:
             
             # Add MCP server environment variables first
             env.update(self.env_vars)
+            
+            # Ensure minimal required environment variables for MCP servers
+            required_defaults = {
+                'JIRA_URL': 'https://dummy.atlassian.net',
+                'JIRA_USER': 'dummy@example.com', 
+                'JIRA_TOKEN': 'dummy-token',
+                'MS_GRAPH_TOKEN': 'dummy-token'
+            }
+            
+            for key, default_value in required_defaults.items():
+                if key not in env:
+                    env[key] = default_value
+                    logger.debug(f"[STDIO DEBUG] Set default env var {key}")
             
             # Ensure PATH includes common Node.js installation paths
             current_path = env.get('PATH', '')
@@ -119,24 +137,130 @@ class MCPStdioBridge:
                         except Exception as e:
                             logger.warning(f"Could not check package availability: {e}")
             
-            self.process = await asyncio.create_subprocess_exec(
-                self.command,
-                *self.args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
+            # Create subprocess with timeout
+            logger.info(f"[STDIO DEBUG] About to create subprocess")
+            logger.info(f"[STDIO DEBUG] Full command: {self.command} {' '.join(self.args)}")
+            # Log working directory info
+            cwd_info = '/mcp-servers'
+            if not os.path.exists('/mcp-servers'):
+                if self.args and os.path.dirname(self.args[0]):
+                    cwd_info = os.path.dirname(self.args[0])
+                else:
+                    cwd_info = 'current working directory'
+            logger.info(f"[STDIO DEBUG] Working directory: {cwd_info}")
+            logger.info(f"[STDIO DEBUG] Environment variables being passed: {list(env.keys())}")
+            logger.info(f"[STDIO DEBUG] MCP env vars: {list(self.env_vars.keys())}")
+            logger.info(f"[STDIO DEBUG] Required MCP env vars present: JIRA_URL={env.get('JIRA_URL', 'NOT SET')[:20]}...")
+            
+            # Test if the command exists and is executable
+            try:
+                import os
+                node_path = env.get('PATH', '').split(':')
+                logger.info(f"[STDIO DEBUG] PATH: {node_path}")
+                node_exists = any(os.path.exists(os.path.join(p, 'node')) for p in node_path if p)
+                logger.info(f"[STDIO DEBUG] Node.js exists in PATH: {node_exists}")
+            except Exception as e:
+                logger.warning(f"[STDIO DEBUG] Could not check node existence: {e}")
+            
+            try:
+                logger.info(f"[STDIO DEBUG] Using subprocess.Popen instead of asyncio")
+                import subprocess
+                
+                # Determine working directory - use actual MCP server directory if outside Docker
+                import os
+                cwd = '/mcp-servers'
+                if not os.path.exists(cwd):
+                    # Not in Docker environment, use MCP server directory from args
+                    if self.args and os.path.dirname(self.args[0]):
+                        cwd = os.path.dirname(self.args[0])
+                        logger.info(f"[STDIO DEBUG] Using MCP server directory: {cwd}")
+                    else:
+                        cwd = None  # Use current working directory
+                        logger.info(f"[STDIO DEBUG] Using current working directory")
+                
+                self.process = subprocess.Popen(
+                    [self.command] + self.args,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                    cwd=cwd,
+                    text=False  # Use bytes
+                )
+                logger.info(f"[STDIO DEBUG] Subprocess created successfully, PID: {self.process.pid}")
+                
+                # Start response reader thread
+                self._start_response_thread()
+                
+            except Exception as e:
+                logger.error(f"[STDIO DEBUG] Process creation failed: {e}")
+                logger.error(f"[STDIO DEBUG] Command that failed: {self.command} {' '.join(self.args)}")
+                logger.error(f"[STDIO DEBUG] Working directory: /mcp-servers")
+                raise
             
             # Initialize the MCP connection
-            await self._initialize_mcp()
+            logger.info(f"[STDIO DEBUG] Starting MCP initialization")
+            try:
+                await self._initialize_mcp()
+                logger.info(f"[STDIO DEBUG] MCP initialization completed successfully")
+            except Exception as e:
+                logger.error(f"[STDIO DEBUG] MCP initialization failed: {e}")
+                if self.process:
+                    self.process.terminate()
+                raise
             
         except Exception as e:
             logger.error(f"Failed to start MCP server: {e}")
+            logger.error(f"Command: {self.command} {' '.join(self.args)}")
+            logger.error(f"Environment variables: {list(self.env_vars.keys())}")
+            if self.process and self.process.stderr:
+                try:
+                    # Read stderr synchronously for subprocess.Popen
+                    import select
+                    import sys
+                    if sys.platform != 'win32':
+                        # Use select for non-blocking read on Unix systems
+                        ready, _, _ = select.select([self.process.stderr], [], [], 1.0)
+                        if ready:
+                            stderr_text = self.process.stderr.read(1024).decode()
+                            if stderr_text:
+                                logger.error(f"MCP server stderr: {stderr_text}")
+                    else:
+                        # Windows fallback - just try to read
+                        try:
+                            stderr_text = self.process.stderr.read(1024).decode()
+                            if stderr_text:
+                                logger.error(f"MCP server stderr: {stderr_text}")
+                        except:
+                            pass
+                except Exception as e:
+                    logger.warning(f"Could not read stderr: {e}")
             raise
+    
+    def _start_response_thread(self):
+        """Start thread to read responses from stdout"""
+        def response_reader():
+            while True:
+                try:
+                    if self.process and self.process.stdout:
+                        line = self.process.stdout.readline()
+                        if line:
+                            self.response_queue.put(line.decode().strip())
+                        else:
+                            break  # Process closed
+                    else:
+                        break
+                except Exception as e:
+                    logger.error(f"[STDIO DEBUG] Response reader error: {e}")
+                    break
+        
+        self.response_thread = threading.Thread(target=response_reader, daemon=True)
+        self.response_thread.start()
+        logger.info(f"[STDIO DEBUG] Response reader thread started")
     
     async def _initialize_mcp(self):
         """Initialize MCP connection with the server following MCP spec"""
+        logger.info(f"[STDIO DEBUG] Building initialize request")
         # Send initialize request with proper client capabilities
         init_request = {
             "jsonrpc": "2.0",
@@ -154,7 +278,9 @@ class MCPStdioBridge:
             "id": self._next_id()
         }
         
+        logger.info(f"[STDIO DEBUG] Sending initialize request")
         response = await self._send_request(init_request)
+        logger.info(f"[STDIO DEBUG] Initialize request completed")
         
         # Store server capabilities for future reference
         if "result" in response:
@@ -180,19 +306,42 @@ class MCPStdioBridge:
     
     async def _send_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Send a request and wait for response"""
+        logger.info(f"[STDIO DEBUG] _send_request called for method: {request.get('method', 'unknown')}")
         if not self.process or not self.process.stdin:
+            logger.error(f"[STDIO DEBUG] MCP server process not running or stdin not available")
             raise RuntimeError("MCP server process not running")
         
         # Send request
         request_str = json.dumps(request) + "\n"
+        logger.info(f"[STDIO DEBUG] Writing request to stdin: {len(request_str)} bytes")
         self.process.stdin.write(request_str.encode())
-        await self.process.stdin.drain()
+        self.process.stdin.flush()  # Use sync flush instead of async drain
+        logger.info(f"[STDIO DEBUG] Request written and flushed")
         
         logger.debug(f"Sent MCP request: {request}")
         
-        # Read response
-        response_line = await self.process.stdout.readline()
-        response_text = response_line.decode().strip()
+        # Read response with timeout using queue
+        logger.info(f"[STDIO DEBUG] Waiting for response from queue")
+        try:
+            # Use asyncio to wait for response from queue
+            import time
+            start_time = time.time()
+            timeout = 3.0
+            
+            while time.time() - start_time < timeout:
+                try:
+                    response_text = self.response_queue.get_nowait()
+                    logger.info(f"[STDIO DEBUG] Response received from queue: {len(response_text)} chars")
+                    break
+                except queue.Empty:
+                    await asyncio.sleep(0.1)  # Small delay before checking again
+            else:
+                logger.error(f"[STDIO DEBUG] MCP server response timed out after {timeout} seconds")
+                raise Exception("MCP server response timeout - server may be unresponsive")
+                
+        except Exception as e:
+            logger.error(f"[STDIO DEBUG] Error reading from queue: {e}")
+            raise
         
         logger.debug(f"Raw MCP response: '{response_text}'")
         
@@ -206,12 +355,25 @@ class MCPStdioBridge:
             # Check if there are error messages on stderr
             if self.process.stderr:
                 try:
-                    stderr_data = await asyncio.wait_for(self.process.stderr.readline(), timeout=1.0)
-                    stderr_text = stderr_data.decode().strip()
-                    if stderr_text:
-                        logger.error(f"MCP server stderr: {stderr_text}")
-                except asyncio.TimeoutError:
-                    pass
+                    import select
+                    import sys
+                    if sys.platform != 'win32':
+                        # Use select for non-blocking read
+                        ready, _, _ = select.select([self.process.stderr], [], [], 0.5)
+                        if ready:
+                            stderr_text = self.process.stderr.readline().decode().strip()
+                            if stderr_text:
+                                logger.error(f"MCP server stderr: {stderr_text}")
+                    else:
+                        # Windows fallback
+                        try:
+                            stderr_text = self.process.stderr.readline().decode().strip()
+                            if stderr_text:
+                                logger.error(f"MCP server stderr: {stderr_text}")
+                        except:
+                            pass
+                except Exception as e:
+                    logger.warning(f"Could not read stderr: {e}")
             raise Exception(f"Invalid JSON response from MCP server: {response_text}")
         
         logger.debug(f"Parsed MCP response: {response}")
@@ -239,7 +401,7 @@ class MCPStdioBridge:
         
         notification_str = json.dumps(notification) + "\n"
         self.process.stdin.write(notification_str.encode())
-        await self.process.stdin.drain()
+        self.process.stdin.flush()  # Use sync flush for subprocess.Popen
         
         logger.debug(f"Sent MCP notification: {notification}")
     
@@ -296,8 +458,16 @@ class MCPStdioBridge:
             "id": self._next_id()
         }
         
-        response = await self._send_request(request)
-        return response.get("result", {})
+        # Call tool with timeout
+        try:
+            response = await asyncio.wait_for(
+                self._send_request(request),
+                timeout=5.0  # 5 second timeout for tool execution
+            )
+            return response.get("result", {})
+        except asyncio.TimeoutError:
+            logger.error(f"MCP tool call {tool_name} timed out after 5 seconds")
+            raise Exception(f"MCP tool '{tool_name}' execution timeout")
     
     async def stop(self):
         """Stop the MCP server process with proper cleanup"""
@@ -318,11 +488,28 @@ class MCPStdioBridge:
             if self.process.returncode is None:
                 self.process.terminate()
                 try:
-                    await asyncio.wait_for(self.process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    logger.warning("MCP server did not terminate gracefully, killing process")
-                    self.process.kill()
-                    await self.process.wait()
+                    # Use threading for process wait with timeout
+                    import threading
+                    import time
+                    
+                    def wait_for_process():
+                        return self.process.wait()
+                    
+                    wait_thread = threading.Thread(target=wait_for_process)
+                    wait_thread.start()
+                    wait_thread.join(timeout=5.0)
+                    
+                    if wait_thread.is_alive():
+                        logger.warning("MCP server did not terminate gracefully, killing process")
+                        self.process.kill()
+                        wait_thread.join(timeout=2.0)
+                    
+                except Exception as e:
+                    logger.error(f"Error during process termination: {e}")
+                    try:
+                        self.process.kill()
+                    except:
+                        pass
             
             self.process = None
             self.initialized = False
@@ -339,14 +526,19 @@ class MCPDockerBridge(MCPStdioBridge):
     async def is_container_running(self) -> bool:
         """Check if the Docker container is running"""
         try:
-            result = await asyncio.create_subprocess_exec(
-                "docker", "inspect", "-f", "{{.State.Running}}", self.container_name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+            # Check container status with timeout
+            result = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    "docker", "inspect", "-f", "{{.State.Running}}", self.container_name,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                ),
+                timeout=5.0  # 5 second timeout for docker inspect
             )
-            stdout, _ = await result.communicate()
+            stdout, _ = await asyncio.wait_for(result.communicate(), timeout=5.0)
             return stdout.decode().strip() == "true"
-        except Exception:
+        except (Exception, asyncio.TimeoutError):
+            logger.warning(f"Failed to check container {self.container_name} status (timeout or error)")
             return False
 
 

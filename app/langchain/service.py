@@ -3706,7 +3706,11 @@ def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> 
                 
                 thread = threading.Thread(target=run_search)
                 thread.start()
-                thread.join()
+                thread.join(timeout=30.0)  # 30 second timeout for RAG search
+                
+                if thread.is_alive():
+                    logger.error("RAG search timed out after 30 seconds")
+                    result_container['exception'] = Exception("RAG search operation timed out")
                 
                 if result_container['exception']:
                     raise result_container['exception']
@@ -3848,19 +3852,31 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
                 
                 def run_in_thread():
                     try:
+                        logger.info(f"[THREAD DEBUG] Starting thread for tool {tool_name}")
                         # Create new event loop for this thread
                         new_loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(new_loop)
+                        logger.info(f"[THREAD DEBUG] Event loop created for {tool_name}")
                         result_container['result'] = new_loop.run_until_complete(
                             call_mcp_tool_unified(tool_info, tool_name, clean_parameters)
                         )
+                        logger.info(f"[THREAD DEBUG] Tool {tool_name} completed successfully")
                         new_loop.close()
+                        logger.info(f"[THREAD DEBUG] Event loop closed for {tool_name}")
                     except Exception as e:
+                        logger.error(f"[THREAD DEBUG] Exception in thread for {tool_name}: {e}")
                         result_container['exception'] = e
                 
                 thread = threading.Thread(target=run_in_thread)
+                logger.info(f"[THREAD DEBUG] Starting thread for {tool_name}")
                 thread.start()
-                thread.join()
+                logger.info(f"[THREAD DEBUG] Thread started, waiting for completion of {tool_name}")
+                thread.join(timeout=5.0)  # 5 second timeout for MCP tool calls
+                logger.info(f"[THREAD DEBUG] Thread join completed for {tool_name}, is_alive: {thread.is_alive()}")
+                
+                if thread.is_alive():
+                    logger.error(f"[THREAD DEBUG] MCP tool call {tool_name} timed out after 5 seconds")
+                    result_container['exception'] = Exception(f"MCP tool '{tool_name}' operation timed out after 5 seconds")
                 
                 if result_container['exception']:
                     raise result_container['exception']

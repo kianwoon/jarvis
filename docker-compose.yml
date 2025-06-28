@@ -38,7 +38,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=llm_platform
-      - POSTGRES_MULTIPLE_DATABASES=llm_platform,langfuse
+      - POSTGRES_MULTIPLE_DATABASES=llm_platform,langfuse,langflow
     ports:
       - "5432:5432"
     volumes:
@@ -68,20 +68,6 @@ services:
       - "8050:8050"
     restart: unless-stopped
 
-
-  mcp:
-    build:
-      context: ../MCP/MCP
-      dockerfile: Dockerfile
-    container_name: mcp-jira-outlook
-    command: python -m uvicorn app:app --host 0.0.0.0 --port 9000 --reload
-    ports:
-      - "9000:9000"
-    env_file:
-      - ../MCP/MCP/.env
-    volumes:
-      - ../MCP/MCP:/app
-    working_dir: /app
 
   mcp-gmail:
     build:
@@ -150,6 +136,7 @@ services:
   #     - SALT=langfuse-salt-change-in-production
   #   command: ["worker"]
   #   restart: unless-stopped
+
 
 
 volumes:
