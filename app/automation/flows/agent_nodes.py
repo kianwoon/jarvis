@@ -359,6 +359,88 @@ def get_parallel_node_schema() -> Dict[str, Any]:
         }
     }
 
+def get_state_node_schema() -> Dict[str, Any]:
+    """Get schema for State Management Node in visual editor"""
+    return {
+        "type": "StateNode",
+        "name": "State Manager",
+        "description": "Manage and persist workflow state across execution steps",
+        "category": "Control",
+        "icon": "🔄",
+        "color": "#9C27B0",
+        "inputs": [
+            {
+                "name": "state_update",
+                "type": "object",
+                "label": "State Update",
+                "description": "New state data to merge with current state"
+            },
+            {
+                "name": "state_key",
+                "type": "string", 
+                "label": "State Key",
+                "description": "Specific state key to update"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "current_state",
+                "type": "object",
+                "label": "Current State",
+                "description": "Current workflow state"
+            },
+            {
+                "name": "state_value",
+                "type": "any",
+                "label": "State Value",
+                "description": "Value of specific state key"
+            }
+        ],
+        "properties": {
+            "state_schema": {
+                "type": "json",
+                "label": "State Schema",
+                "description": "Define the structure of the workflow state",
+                "required": False,
+                "default": {
+                    "type": "object",
+                    "properties": {
+                        "current_step": {"type": "string"},
+                        "user_input": {"type": "string"},
+                        "agent_outputs": {"type": "object"},
+                        "execution_context": {"type": "object"}
+                    }
+                }
+            },
+            "persistence": {
+                "type": "boolean",
+                "label": "Persist State",
+                "description": "Whether to persist state across workflow executions",
+                "default": True
+            },
+            "state_operation": {
+                "type": "select",
+                "label": "State Operation",
+                "description": "How to handle state updates",
+                "required": True,
+                "options": [
+                    {"value": "merge", "label": "Merge with Current"},
+                    {"value": "replace", "label": "Replace Current"},
+                    {"value": "get", "label": "Get Current State"},
+                    {"value": "set_key", "label": "Set Specific Key"}
+                ],
+                "default": "merge"
+            },
+            "checkpoint_name": {
+                "type": "string",
+                "label": "Checkpoint Name",
+                "description": "Name for state checkpoint (for resumable workflows)",
+                "required": False,
+                "placeholder": "Enter checkpoint name..."
+            }
+        }
+    }
+
 def get_all_node_schemas() -> List[Dict[str, Any]]:
     """Get all available node schemas for the visual editor"""
     return [
@@ -366,7 +448,8 @@ def get_all_node_schemas() -> List[Dict[str, Any]]:
         get_input_node_schema(),
         get_output_node_schema(),
         get_condition_node_schema(),
-        get_parallel_node_schema()
+        get_parallel_node_schema(),
+        get_state_node_schema()
     ]
 
 def get_node_categories() -> List[Dict[str, Any]]:
