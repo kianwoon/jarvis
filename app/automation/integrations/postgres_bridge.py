@@ -121,7 +121,8 @@ class PostgresBridge:
                 status=execution_data.get("status", "running"),
                 input_data=execution_data.get("input_data"),
                 output_data=execution_data.get("output_data"),
-                execution_log=execution_data.get("execution_log", [])
+                execution_log=execution_data.get("execution_log", []),
+                workflow_state=execution_data.get("workflow_state")
             )
             
             db.add(execution)
@@ -186,6 +187,7 @@ class PostgresBridge:
                 "input_data": execution.input_data,
                 "output_data": execution.output_data,
                 "execution_log": execution.execution_log,
+                "workflow_state": execution.workflow_state,
                 "error_message": execution.error_message,
                 "started_at": execution.started_at.isoformat() if execution.started_at else None,
                 "completed_at": execution.completed_at.isoformat() if execution.completed_at else None

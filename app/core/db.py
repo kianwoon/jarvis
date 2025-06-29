@@ -12,7 +12,21 @@ DATABASE_URL = (
     f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
     f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
 )
-engine = create_engine(DATABASE_URL)
+
+# Enhanced connection pooling for automation workflows with 20+ agents
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=20,           # Max 20 persistent connections in pool
+    max_overflow=30,        # Allow 30 additional connections beyond pool_size
+    pool_pre_ping=True,     # Validate connections before use
+    pool_recycle=3600,      # Recycle connections every hour
+    pool_timeout=30,        # Wait 30 seconds for connection from pool
+    echo=False,             # Set to True for SQL debugging
+    connect_args={
+        "application_name": "jarvis_automation",
+        "options": "-c statement_timeout=60000"  # 60 second statement timeout
+    }
+)
 # Test connection
 try:
     with engine.connect() as conn:
@@ -198,6 +212,7 @@ class AutomationExecution(Base):
     input_data = Column(JSON, nullable=True)     # Input parameters
     output_data = Column(JSON, nullable=True)    # Final results
     execution_log = Column(JSON, nullable=True)  # Step-by-step execution log
+    workflow_state = Column(JSON, nullable=True) # Workflow state and checkpoints
     error_message = Column(String, nullable=True) # Error details if failed
     started_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
     completed_at = Column(TIMESTAMP(timezone=True), nullable=True)

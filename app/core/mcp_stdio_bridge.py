@@ -37,8 +37,7 @@ class MCPStdioBridge:
         """Start the MCP server process"""
         try:
             full_command = [self.command] + self.args
-            logger.info(f"[STDIO DEBUG] Starting MCP server: {' '.join(full_command)}")
-            logger.info(f"[STDIO DEBUG] Command: {self.command}, Args: {self.args}")
+            logger.debug(f"Starting MCP server: {' '.join(full_command)}")
             
             # Set up environment with common Node.js paths and MCP server env vars
             import os
@@ -58,7 +57,7 @@ class MCPStdioBridge:
             for key, default_value in required_defaults.items():
                 if key not in env:
                     env[key] = default_value
-                    logger.debug(f"[STDIO DEBUG] Set default env var {key}")
+                    logger.debug(f"Set default env var {key}")
             
             # Ensure PATH includes common Node.js installation paths
             current_path = env.get('PATH', '')
@@ -75,15 +74,15 @@ class MCPStdioBridge:
             # For npx/npm commands, verify npx is accessible and log detailed info
             if self.command == 'npx':
                 npx_found = False
-                logger.info(f"Checking for npx in PATH: {env['PATH']}")
+                logger.debug(f"Checking for npx in PATH")
                 
                 for path in env['PATH'].split(':'):
                     if not path:  # Skip empty path components
                         continue
                     npx_path = os.path.join(path, 'npx')
-                    logger.info(f"Checking {npx_path} - exists: {os.path.exists(npx_path)}")
+                    logger.debug(f"Checking {npx_path} - exists: {os.path.exists(npx_path)}")
                     if os.path.exists(npx_path):
-                        logger.info(f"Found npx at {npx_path}")
+                        logger.debug(f"Found npx at {npx_path}")
                         npx_found = True
                         break
                 
@@ -96,9 +95,9 @@ class MCPStdioBridge:
                         '/usr/bin/npx'
                     ]
                     for npx_path in npx_locations:
-                        logger.info(f"Checking fallback location {npx_path} - exists: {os.path.exists(npx_path)}")
+                        logger.debug(f"Checking fallback location {npx_path} - exists: {os.path.exists(npx_path)}")
                         if os.path.exists(npx_path):
-                            logger.info(f"Found npx at {npx_path}, adding to PATH")
+                            logger.debug(f"Found npx at {npx_path}, adding to PATH")
                             env['PATH'] = os.path.dirname(npx_path) + ':' + env['PATH']
                             npx_found = True
                             break
@@ -106,13 +105,13 @@ class MCPStdioBridge:
                     if not npx_found:
                         logger.error("npx not found anywhere, MCP server will likely fail to start")
                 else:
-                    logger.info("npx found and accessible")
+                    logger.debug("npx found and accessible")
                 
                 # If npx command and not found, try using full path
                 if not npx_found and self.command == 'npx':
                     for npx_path in ['/opt/homebrew/bin/npx', '/usr/local/bin/npx', '/usr/bin/npx']:
                         if os.path.exists(npx_path):
-                            logger.info(f"Using full path to npx: {npx_path}")
+                            logger.debug(f"Using full path to npx: {npx_path}")
                             self.command = npx_path
                             break
                 
@@ -120,7 +119,7 @@ class MCPStdioBridge:
                 if self.command == 'npx' or self.command.endswith('/npx'):
                     if len(self.args) > 0:
                         package_name = self.args[0]
-                        logger.info(f"Testing if npm package '{package_name}' is available")
+                        logger.debug(f"Testing if npm package '{package_name}' is available")
                         try:
                             # Test if package can be found
                             test_proc = await asyncio.create_subprocess_exec(
@@ -131,15 +130,14 @@ class MCPStdioBridge:
                             )
                             stdout, stderr = await test_proc.communicate()
                             if test_proc.returncode == 0:
-                                logger.info(f"Package '{package_name}' is globally installed")
+                                logger.debug(f"Package '{package_name}' is globally installed")
                             else:
                                 logger.warning(f"Package '{package_name}' not found globally: {stderr.decode()}")
                         except Exception as e:
                             logger.warning(f"Could not check package availability: {e}")
             
             # Create subprocess with timeout
-            logger.info(f"[STDIO DEBUG] About to create subprocess")
-            logger.info(f"[STDIO DEBUG] Full command: {self.command} {' '.join(self.args)}")
+            logger.debug(f"About to create subprocess: {self.command} {' '.join(self.args)}")
             # Log working directory info
             cwd_info = '/mcp-servers'
             if not os.path.exists('/mcp-servers'):
@@ -147,23 +145,19 @@ class MCPStdioBridge:
                     cwd_info = os.path.dirname(self.args[0])
                 else:
                     cwd_info = 'current working directory'
-            logger.info(f"[STDIO DEBUG] Working directory: {cwd_info}")
-            logger.info(f"[STDIO DEBUG] Environment variables being passed: {list(env.keys())}")
-            logger.info(f"[STDIO DEBUG] MCP env vars: {list(self.env_vars.keys())}")
-            logger.info(f"[STDIO DEBUG] Required MCP env vars present: JIRA_URL={env.get('JIRA_URL', 'NOT SET')[:20]}...")
+            logger.debug(f"Working directory: {cwd_info}")
             
             # Test if the command exists and is executable
             try:
                 import os
                 node_path = env.get('PATH', '').split(':')
-                logger.info(f"[STDIO DEBUG] PATH: {node_path}")
                 node_exists = any(os.path.exists(os.path.join(p, 'node')) for p in node_path if p)
-                logger.info(f"[STDIO DEBUG] Node.js exists in PATH: {node_exists}")
+                logger.debug(f"Node.js exists in PATH: {node_exists}")
             except Exception as e:
-                logger.warning(f"[STDIO DEBUG] Could not check node existence: {e}")
+                logger.debug(f"Could not check node existence: {e}")
             
             try:
-                logger.info(f"[STDIO DEBUG] Using subprocess.Popen instead of asyncio")
+                logger.debug("Using subprocess.Popen instead of asyncio")
                 import subprocess
                 
                 # Determine working directory - use actual MCP server directory if outside Docker
@@ -173,10 +167,10 @@ class MCPStdioBridge:
                     # Not in Docker environment, use MCP server directory from args
                     if self.args and os.path.dirname(self.args[0]):
                         cwd = os.path.dirname(self.args[0])
-                        logger.info(f"[STDIO DEBUG] Using MCP server directory: {cwd}")
+                        logger.debug(f"Using MCP server directory: {cwd}")
                     else:
                         cwd = None  # Use current working directory
-                        logger.info(f"[STDIO DEBUG] Using current working directory")
+                        logger.debug("Using current working directory")
                 
                 self.process = subprocess.Popen(
                     [self.command] + self.args,
@@ -187,24 +181,23 @@ class MCPStdioBridge:
                     cwd=cwd,
                     text=False  # Use bytes
                 )
-                logger.info(f"[STDIO DEBUG] Subprocess created successfully, PID: {self.process.pid}")
+                logger.debug(f"Subprocess created successfully, PID: {self.process.pid}")
                 
                 # Start response reader thread
                 self._start_response_thread()
                 
             except Exception as e:
-                logger.error(f"[STDIO DEBUG] Process creation failed: {e}")
-                logger.error(f"[STDIO DEBUG] Command that failed: {self.command} {' '.join(self.args)}")
-                logger.error(f"[STDIO DEBUG] Working directory: /mcp-servers")
+                logger.error(f"Process creation failed: {e}")
+                logger.error(f"Command that failed: {self.command} {' '.join(self.args)}")
                 raise
             
             # Initialize the MCP connection
-            logger.info(f"[STDIO DEBUG] Starting MCP initialization")
+            logger.debug("Starting MCP initialization")
             try:
                 await self._initialize_mcp()
-                logger.info(f"[STDIO DEBUG] MCP initialization completed successfully")
+                logger.debug("MCP initialization completed successfully")
             except Exception as e:
-                logger.error(f"[STDIO DEBUG] MCP initialization failed: {e}")
+                logger.error(f"MCP initialization failed: {e}")
                 if self.process:
                     self.process.terminate()
                 raise
@@ -251,16 +244,16 @@ class MCPStdioBridge:
                     else:
                         break
                 except Exception as e:
-                    logger.error(f"[STDIO DEBUG] Response reader error: {e}")
+                    logger.error(f"Response reader error: {e}")
                     break
         
         self.response_thread = threading.Thread(target=response_reader, daemon=True)
         self.response_thread.start()
-        logger.info(f"[STDIO DEBUG] Response reader thread started")
+        logger.debug("Response reader thread started")
     
     async def _initialize_mcp(self):
         """Initialize MCP connection with the server following MCP spec"""
-        logger.info(f"[STDIO DEBUG] Building initialize request")
+        logger.debug("Building initialize request")
         # Send initialize request with proper client capabilities
         init_request = {
             "jsonrpc": "2.0",
@@ -278,9 +271,9 @@ class MCPStdioBridge:
             "id": self._next_id()
         }
         
-        logger.info(f"[STDIO DEBUG] Sending initialize request")
+        logger.debug("Sending initialize request")
         response = await self._send_request(init_request)
-        logger.info(f"[STDIO DEBUG] Initialize request completed")
+        logger.debug("Initialize request completed")
         
         # Store server capabilities for future reference
         if "result" in response:
@@ -306,41 +299,41 @@ class MCPStdioBridge:
     
     async def _send_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Send a request and wait for response"""
-        logger.info(f"[STDIO DEBUG] _send_request called for method: {request.get('method', 'unknown')}")
+        logger.debug(f"Sending request for method: {request.get('method', 'unknown')}")
         if not self.process or not self.process.stdin:
-            logger.error(f"[STDIO DEBUG] MCP server process not running or stdin not available")
+            logger.error("MCP server process not running or stdin not available")
             raise RuntimeError("MCP server process not running")
         
         # Send request
         request_str = json.dumps(request) + "\n"
-        logger.info(f"[STDIO DEBUG] Writing request to stdin: {len(request_str)} bytes")
+        logger.debug(f"Writing request to stdin: {len(request_str)} bytes")
         self.process.stdin.write(request_str.encode())
         self.process.stdin.flush()  # Use sync flush instead of async drain
-        logger.info(f"[STDIO DEBUG] Request written and flushed")
+        logger.debug("Request written and flushed")
         
         logger.debug(f"Sent MCP request: {request}")
         
         # Read response with timeout using queue
-        logger.info(f"[STDIO DEBUG] Waiting for response from queue")
+        logger.debug("Waiting for response from queue")
         try:
             # Use asyncio to wait for response from queue
             import time
             start_time = time.time()
-            timeout = 3.0
+            timeout = 30.0  # CRITICAL FIX: Increased from 3s to 30s for complex tool operations
             
             while time.time() - start_time < timeout:
                 try:
                     response_text = self.response_queue.get_nowait()
-                    logger.info(f"[STDIO DEBUG] Response received from queue: {len(response_text)} chars")
+                    logger.debug(f"Response received from queue: {len(response_text)} chars")
                     break
                 except queue.Empty:
                     await asyncio.sleep(0.1)  # Small delay before checking again
             else:
-                logger.error(f"[STDIO DEBUG] MCP server response timed out after {timeout} seconds")
+                logger.error(f"MCP server response timed out after {timeout} seconds")
                 raise Exception("MCP server response timeout - server may be unresponsive")
                 
         except Exception as e:
-            logger.error(f"[STDIO DEBUG] Error reading from queue: {e}")
+            logger.error(f"Error reading from queue: {e}")
             raise
         
         logger.debug(f"Raw MCP response: '{response_text}'")

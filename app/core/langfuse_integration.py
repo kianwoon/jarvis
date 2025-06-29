@@ -492,6 +492,71 @@ class LangfuseTracer:
             logger.error(f"Failed to create pipeline execution span: {e}")
             return None
     
+    def create_automation_execution_trace(self, workflow_id: int, execution_id: str, input_data: Dict[str, Any] = None) -> Optional[Any]:
+        """Create a trace for automation workflow execution"""
+        if not self.is_enabled():
+            return None
+        try:
+            # Sanitize inputs
+            safe_workflow_id = int(workflow_id) if workflow_id else 0
+            safe_execution_id = str(execution_id)[:100] if execution_id else "unknown"
+            safe_input_data = self._sanitize_parameters(input_data) if input_data else {}
+            
+            trace = self.client.trace(
+                name=f"automation-workflow-{safe_workflow_id}",
+                input={
+                    "workflow_id": safe_workflow_id,
+                    "execution_id": safe_execution_id,
+                    "input_data": safe_input_data
+                },
+                metadata={
+                    "operation": "automation_workflow_execution",
+                    "workflow_id": safe_workflow_id,
+                    "execution_id": safe_execution_id,
+                    "workflow_type": "visual_automation",
+                    "input_data_size": len(str(safe_input_data))
+                }
+            )
+            
+            logger.info(f"Created automation execution trace for workflow {safe_workflow_id}, execution {safe_execution_id}")
+            return trace
+        except Exception as e:
+            logger.error(f"Failed to create automation execution trace: {e}")
+            return None
+    
+    def create_node_execution_span(self, parent_trace_or_span, node_id: str, node_type: str, node_data: Dict[str, Any] = None) -> Optional[Any]:
+        """Create a span for individual workflow node execution"""
+        if not self.is_enabled() or not parent_trace_or_span:
+            return None
+        try:
+            # Sanitize inputs
+            safe_node_id = str(node_id)[:100] if node_id else "unknown"
+            safe_node_type = str(node_type)[:50] if node_type else "unknown"
+            safe_node_data = self._sanitize_parameters(node_data) if node_data else {}
+            
+            # Check if parent is a span or trace
+            if hasattr(parent_trace_or_span, 'span') and callable(getattr(parent_trace_or_span, 'span')):
+                return parent_trace_or_span.span(
+                    name=f"node-{safe_node_type}-{safe_node_id}",
+                    input={
+                        "node_id": safe_node_id,
+                        "node_type": safe_node_type,
+                        "node_data": safe_node_data
+                    },
+                    metadata={
+                        "operation": "workflow_node_execution",
+                        "node_id": safe_node_id,
+                        "node_type": safe_node_type,
+                        "node_data_size": len(str(safe_node_data))
+                    }
+                )
+            else:
+                logger.warning(f"Parent object doesn't have span method: {type(parent_trace_or_span)}")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to create node execution span: {e}")
+            return None
+    
     def create_agent_execution_span(self, parent_span, agent_name: str, query: str, agent_metadata: Dict[str, Any] = None) -> Optional[Any]:
         """Create a span for individual agent execution within a workflow"""
         if not self.is_enabled() or not parent_span:

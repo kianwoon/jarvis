@@ -63,7 +63,8 @@ class AutomationExecutor:
         execution_id: str,
         langflow_config: Dict[str, Any],
         input_data: Optional[Dict[str, Any]] = None,
-        message: Optional[str] = None
+        message: Optional[str] = None,
+        trace=None  # Add trace parameter like standard chat mode
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute workflow with real-time streaming for agent-based workflows"""
         
@@ -73,7 +74,7 @@ class AutomationExecutor:
             logger.info(f"[AUTOMATION EXECUTOR] Streaming agent-based workflow {workflow_id}")
             
             async for update in self.agent_executor.execute_agent_workflow(
-                workflow_id, execution_id, langflow_config, input_data, message
+                workflow_id, execution_id, langflow_config, input_data, message, trace
             ):
                 yield update
         else:

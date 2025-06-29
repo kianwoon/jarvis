@@ -20,10 +20,6 @@ from app.automation.core.automation_cache import (
 from app.automation.integrations.postgres_bridge import postgres_bridge
 from app.automation.core.automation_executor import AutomationExecutor
 from app.automation.api.node_schema_endpoint import router as node_schema_router
-from app.automation.core.resource_monitor import get_resource_monitor
-from app.core.unified_mcp_service import get_mcp_pool_stats
-from app.langchain.dynamic_agent_system import agent_instance_pool
-from app.core.redis_client import get_redis_pool_info
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -94,93 +90,6 @@ async def list_workflows():
         logger.error(f"[AUTOMATION API] Error listing workflows: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/workflows", response_model=WorkflowResponse)
-async def create_workflow(workflow: WorkflowCreate):
-    """Create new automation workflow"""
-    try:
-        # Create workflow in database
-        workflow_id = postgres_bridge.create_workflow(workflow.dict())
-        
-        if not workflow_id:
-            raise HTTPException(status_code=500, detail="Failed to create workflow")
-        
-        # Invalidate cache to refresh
-        invalidate_workflow_cache()
-        
-        # Get created workflow
-        created_workflow = postgres_bridge.get_workflow(workflow_id)
-        if not created_workflow:
-            raise HTTPException(status_code=500, detail="Failed to retrieve created workflow")
-        
-        logger.info(f"[AUTOMATION API] Created workflow: {workflow_id}")
-        return WorkflowResponse(**created_workflow)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[AUTOMATION API] Error creating workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/workflows/{workflow_id}", response_model=WorkflowResponse)
-async def get_workflow(workflow_id: int):
-    """Get specific workflow by ID"""
-    try:
-        workflow = get_workflow_by_id(workflow_id)
-        if not workflow:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-        
-        return WorkflowResponse(**workflow)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[AUTOMATION API] Error getting workflow {workflow_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.put("/workflows/{workflow_id}", response_model=WorkflowResponse)
-async def update_workflow(workflow_id: int, updates: WorkflowUpdate):
-    """Update automation workflow"""
-    try:
-        # Update in database
-        success = postgres_bridge.update_workflow(workflow_id, updates.dict(exclude_unset=True))
-        
-        if not success:
-            raise HTTPException(status_code=404, detail="Workflow not found or update failed")
-        
-        # Invalidate cache
-        invalidate_workflow_cache()
-        
-        # Get updated workflow
-        updated_workflow = postgres_bridge.get_workflow(workflow_id)
-        if not updated_workflow:
-            raise HTTPException(status_code=500, detail="Failed to retrieve updated workflow")
-        
-        logger.info(f"[AUTOMATION API] Updated workflow: {workflow_id}")
-        return WorkflowResponse(**updated_workflow)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[AUTOMATION API] Error updating workflow {workflow_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.delete("/workflows/{workflow_id}")
-async def delete_workflow(workflow_id: int):
-    """Delete automation workflow"""
-    try:
-        success = postgres_bridge.delete_workflow(workflow_id)
-        
-        if not success:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-        
-        # Invalidate cache
-        invalidate_workflow_cache()
-        
-        logger.info(f"[AUTOMATION API] Deleted workflow: {workflow_id}")
-        return {"message": "Workflow deleted successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[AUTOMATION API] Error deleting workflow {workflow_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @router.post("/workflows/{workflow_id}/execute/stream")
 async def execute_workflow_stream(
     workflow_id: int, 
@@ -249,9 +158,22 @@ async def execute_workflow_stream(
                 )
                 logger.debug(f"Automation span created: {automation_span is not None}")
             
-            # REMOVED: automation-generation should NOT exist
-            # Generations are only for actual LLM calls, not workflow coordination
-            # The DynamicMultiAgentSystem will create proper generations for each agent's LLM calls
+            # EXACT SAME GENERATION CREATION AS STANDARD CHAT MODE
+            if automation_span:
+                generation = tracer.create_generation_with_usage(
+                    trace=trace,
+                    name="automation-generation",  # Similar to "rag-generation"
+                    model=model_name,
+                    input_text=request.message or str(request.input_data),
+                    parent_span=automation_span,
+                    metadata={
+                        "workflow_id": workflow_id,
+                        "execution_id": execution_id,
+                        "model": model_name,
+                        "endpoint": "automation"
+                    }
+                )
+                logger.debug(f"Automation generation created: {generation is not None}")
         
         # Create execution record
         execution_data = {
@@ -294,7 +216,7 @@ async def execute_workflow_stream(
                     event_type = update.get("type", "unknown")
                     
                     # Stream events in real-time (like standard chat)
-                    yield f"data: {json.dumps(update)}\n\n"
+                    yield f"data: {json.dumps(update)}\\n\\n"
                     
                     # Collect final answer for trace completion
                     if event_type == "workflow_result":
@@ -306,15 +228,41 @@ async def execute_workflow_stream(
                 
                 logger.debug(f"Automation API - Processed {chunk_count} events")
                 
-                # TRACE COMPLETION - No generation to end since we removed automation-generation
+                # EXACT SAME TRACE COMPLETION AS STANDARD CHAT MODE
                 if tracer.is_enabled():
                     try:
-                        workflow_output = final_answer if final_answer else "Automation workflow completed"
+                        generation_output = final_answer if final_answer else "Automation workflow completed"
                         
-                        # Update trace with final result
+                        # Estimate token usage for cost tracking (copy from langchain.py)
+                        usage = tracer.estimate_token_usage(
+                            request.message or str(request.input_data), 
+                            generation_output
+                        )
+                        
+                        # End the generation with results (exact pattern from langchain.py)
+                        if generation:
+                            generation.end(
+                                output=generation_output,
+                                usage_details=usage,
+                                metadata={
+                                    "response_length": len(final_answer) if final_answer else len(collected_output),
+                                    "source": "automation_workflow",
+                                    "streaming": True,
+                                    "has_final_answer": bool(final_answer),
+                                    "workflow_id": workflow_id,
+                                    "execution_id": execution_id,
+                                    "model": model_name,
+                                    "input_length": len(request.message or str(request.input_data)),
+                                    "output_length": len(generation_output),
+                                    "estimated_tokens": usage
+                                }
+                            )
+                            logger.debug(f"Automation generation completed")
+                        
+                        # Update trace with final result (exact pattern from langchain.py)
                         if trace:
                             trace.update(
-                                output=workflow_output,
+                                output=generation_output,
                                 metadata={
                                     "success": True,
                                     "source": "automation_workflow",
@@ -335,10 +283,30 @@ async def execute_workflow_stream(
             except Exception as e:
                 logger.error(f"[AUTOMATION API] Streaming execution failed: {e}")
                 
-                # ERROR HANDLING - No generation to end since we removed automation-generation  
+                # EXACT SAME ERROR HANDLING AS STANDARD CHAT MODE
                 if tracer.is_enabled():
                     try:
+                        # Estimate usage even for errors (copy from langchain.py)
                         error_output = f"Error: {str(e)}"
+                        usage = tracer.estimate_token_usage(
+                            request.message or str(request.input_data), 
+                            error_output
+                        )
+                        
+                        # End generation with error (exact pattern from langchain.py)
+                        if generation:
+                            generation.end(
+                                output=error_output,
+                                usage_details=usage,
+                                metadata={
+                                    "success": False,
+                                    "error": str(e),
+                                    "workflow_id": workflow_id,
+                                    "execution_id": execution_id,
+                                    "model": model_name,
+                                    "estimated_tokens": usage
+                                }
+                            )
                         
                         # Update trace with error (exact pattern from langchain.py)
                         if trace:
@@ -362,7 +330,7 @@ async def execute_workflow_stream(
                     "execution_id": execution_id,
                     "error": str(e)
                 }
-                yield f"data: {json.dumps(error_update)}\n\n"
+                yield f"data: {json.dumps(error_update)}\\n\\n"
         
         return StreamingResponse(
             stream_workflow_execution(),
@@ -378,146 +346,4 @@ async def execute_workflow_stream(
         raise
     except Exception as e:
         logger.error(f"[AUTOMATION API] Error starting streaming execution: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ===== RESOURCE MONITORING ENDPOINTS =====
-
-@router.get("/monitor/resources")
-async def get_resource_stats():
-    """
-    Get comprehensive resource usage statistics for automation workflows
-    """
-    try:
-        resource_monitor = get_resource_monitor()
-        
-        # Get all resource statistics
-        workflow_stats = resource_monitor.get_workflow_stats()
-        mcp_stats = get_mcp_pool_stats()
-        agent_pool_stats = agent_instance_pool.get_pool_stats()
-        redis_stats = get_redis_pool_info()
-        
-        return {
-            "workflow_resources": workflow_stats,
-            "mcp_subprocess_pool": mcp_stats,
-            "agent_instance_pool": agent_pool_stats,
-            "redis_connection_pool": redis_stats,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"[AUTOMATION API] Error getting resource stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/monitor/resources/workflow/{workflow_id}/{execution_id}")
-async def get_workflow_resource_stats(workflow_id: int, execution_id: str):
-    """
-    Get resource usage statistics for a specific workflow execution
-    """
-    try:
-        resource_monitor = get_resource_monitor()
-        stats = resource_monitor.get_workflow_stats(workflow_id, execution_id)
-        
-        if "error" in stats:
-            raise HTTPException(status_code=404, detail=stats["error"])
-        
-        return stats
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[AUTOMATION API] Error getting workflow resource stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/monitor/health")
-async def get_system_health():
-    """
-    Get overall system health status for automation workflows
-    """
-    try:
-        resource_monitor = get_resource_monitor()
-        
-        # Get resource statistics
-        stats = resource_monitor.get_workflow_stats()
-        mcp_stats = get_mcp_pool_stats()
-        agent_stats = agent_instance_pool.get_pool_stats()
-        redis_stats = get_redis_pool_info()
-        
-        # Determine health status
-        health_status = "healthy"
-        issues = []
-        
-        # Check resource utilization
-        if stats.get("system_utilization", {}).get("memory_utilization", 0) > 0.8:
-            health_status = "warning"
-            issues.append("High memory utilization")
-        
-        if stats.get("system_utilization", {}).get("subprocess_utilization", 0) > 0.8:
-            health_status = "warning"  
-            issues.append("High subprocess utilization")
-        
-        # Check agent pool utilization
-        if agent_stats.get("pool_utilization", 0) > 0.9:
-            health_status = "warning"
-            issues.append("Agent pool near capacity")
-        
-        # Check for recent alerts
-        recent_alerts = stats.get("recent_alerts", [])
-        if len(recent_alerts) > 5:
-            health_status = "critical"
-            issues.append(f"Multiple resource alerts: {len(recent_alerts)}")
-        
-        # Check Redis connection
-        if redis_stats.get("status") != "active":
-            health_status = "critical"
-            issues.append("Redis connection pool unavailable")
-        
-        return {
-            "status": health_status,
-            "issues": issues,
-            "active_workflows": stats.get("active_workflows", 0),
-            "system_utilization": stats.get("system_utilization", {}),
-            "pool_utilizations": {
-                "agent_pool": agent_stats.get("pool_utilization", 0),
-                "mcp_pool": mcp_stats.get("subprocess_pool", {}).get("pool_utilization", 0)
-            },
-            "recent_alerts_count": len(recent_alerts),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"[AUTOMATION API] Error getting system health: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/monitor/cleanup")
-async def force_resource_cleanup():
-    """
-    Force cleanup of automation resources (admin endpoint)
-    """
-    try:
-        logger.info("[AUTOMATION API] Force resource cleanup requested")
-        
-        # Clean up MCP subprocesses
-        from app.core.unified_mcp_service import cleanup_mcp_subprocesses
-        await cleanup_mcp_subprocesses()
-        
-        # Clean up agent instance pool
-        await agent_instance_pool.cleanup_all()
-        
-        # Force garbage collection
-        import gc
-        gc.collect()
-        
-        logger.info("[AUTOMATION API] Force resource cleanup completed")
-        
-        return {
-            "message": "Resource cleanup completed",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"[AUTOMATION API] Error during force cleanup: {e}")
         raise HTTPException(status_code=500, detail=str(e))

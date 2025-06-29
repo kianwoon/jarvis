@@ -114,6 +114,49 @@ def get_agent_node_schema() -> Dict[str, Any]:
                 "min": 0.1,
                 "max": 1.0,
                 "step": 0.1
+            },
+            "state_enabled": {
+                "type": "boolean",
+                "label": "Enable State Management",
+                "description": "Enable built-in state management for direct agent chaining",
+                "required": False,
+                "default": False
+            },
+            "state_operation": {
+                "type": "select",
+                "label": "State Operation",
+                "description": "How to handle agent output for next agent",
+                "required": False,
+                "options": [
+                    {"value": "merge", "label": "Merge with Previous"},
+                    {"value": "replace", "label": "Replace Previous"},
+                    {"value": "append", "label": "Append to Previous"},
+                    {"value": "passthrough", "label": "Pass Output Directly"}
+                ],
+                "default": "passthrough",
+                "show_when": {"state_enabled": True}
+            },
+            "output_format": {
+                "type": "select",
+                "label": "Output Format",
+                "description": "How to format output for next agent",
+                "required": False,
+                "options": [
+                    {"value": "text", "label": "Plain Text"},
+                    {"value": "structured", "label": "Structured Data"},
+                    {"value": "context", "label": "Context Object"},
+                    {"value": "full", "label": "Full Agent Response"}
+                ],
+                "default": "text",
+                "show_when": {"state_enabled": True}
+            },
+            "chain_key": {
+                "type": "string",
+                "label": "Chain Key",
+                "description": "State key for agent chaining (optional)",
+                "required": False,
+                "placeholder": "e.g., analysis_result, processed_data",
+                "show_when": {"state_enabled": True}
             }
         }
     }

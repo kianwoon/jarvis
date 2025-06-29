@@ -1,44 +1,91 @@
 """
-Centralized Redis client with better error handling
+Centralized Redis client with connection pooling for automation workflows
 """
 import redis
 import os
 from typing import Optional
 import time
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Global connection pool instance
+_redis_pool = None
+
+def get_redis_pool() -> Optional[redis.ConnectionPool]:
+    """
+    Get or create Redis connection pool optimized for automation workflows
+    """
+    global _redis_pool
+    
+    if _redis_pool is None:
+        redis_host = os.getenv("REDIS_HOST", "redis")
+        redis_port = int(os.getenv("REDIS_PORT", 6379))
+        
+        # In development, if Redis host is localhost but we're in Docker, try 'redis' first
+        if redis_host == "localhost" and os.path.exists("/.dockerenv"):
+            redis_host = "redis"
+        
+        try:
+            # Enhanced connection pool for automation workflows with 20+ agents
+            _redis_pool = redis.ConnectionPool(
+                host=redis_host,
+                port=redis_port,
+                max_connections=50,        # Allow up to 50 connections for high concurrency
+                retry_on_timeout=True,     # Retry on connection timeout
+                socket_connect_timeout=5,  # 5 second connection timeout
+                socket_timeout=5,          # 5 second socket timeout
+                socket_keepalive=True,     # Enable TCP keepalive
+                health_check_interval=30   # Health check every 30 seconds
+            )
+            logger.info(f"Redis connection pool created: {redis_host}:{redis_port} (max_connections=50)")
+        except Exception as e:
+            logger.error(f"Failed to create Redis connection pool: {e}")
+            _redis_pool = None
+    
+    return _redis_pool
 
 def get_redis_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[redis.Redis]:
     """
-    Get Redis client with retry logic and better error handling
+    Get Redis client using connection pool with retry logic and better error handling
     """
-    redis_host = os.getenv("REDIS_HOST", "redis")
-    redis_port = int(os.getenv("REDIS_PORT", 6379))
-    
-    # In development, if Redis host is localhost but we're in Docker, try 'redis' first
-    if redis_host == "localhost" and os.path.exists("/.dockerenv"):
-        redis_host = "redis"
+    pool = get_redis_pool()
+    if not pool:
+        return None
     
     for attempt in range(max_retries):
         try:
             client = redis.Redis(
-                host=redis_host, 
-                port=redis_port, 
-                decode_responses=True,
-                socket_connect_timeout=5,
-                socket_timeout=5
+                connection_pool=pool,
+                decode_responses=True
             )
             client.ping()
             if attempt > 0:
-                print(f"Redis connected after {attempt + 1} attempts")
+                logger.info(f"Redis connected after {attempt + 1} attempts")
             return client
         except (redis.ConnectionError, redis.TimeoutError) as e:
             if attempt < max_retries - 1:
-                print(f"Redis connection attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
+                logger.warning(f"Redis connection attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
                 time.sleep(retry_delay)
             else:
-                print(f"Redis connection failed after {max_retries} attempts: {e}")
+                logger.error(f"Redis connection failed after {max_retries} attempts: {e}")
                 return None
         except Exception as e:
-            print(f"Unexpected error connecting to Redis: {e}")
+            logger.error(f"Unexpected error connecting to Redis: {e}")
             return None
     
     return None
+
+def get_redis_pool_info() -> dict:
+    """Get Redis connection pool information for monitoring"""
+    pool = get_redis_pool()
+    if not pool:
+        return {"status": "no_pool"}
+    
+    return {
+        "status": "active",
+        "max_connections": pool.max_connections,
+        "created_connections": pool.created_connections,
+        "available_connections": len(pool._available_connections),
+        "in_use_connections": len(pool._in_use_connections)
+    }

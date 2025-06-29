@@ -6,12 +6,190 @@ import asyncio
 from typing import Dict, List, Any, Optional, AsyncGenerator
 from datetime import datetime
 import hashlib
+import weakref
+from dataclasses import dataclass, field
 
 from app.core.langgraph_agents_cache import get_langgraph_agents, get_active_agents, get_agent_by_role, get_agent_by_name
 from app.core.llm_settings_cache import get_llm_settings
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 import os
+
+
+@dataclass
+class AgentInstanceInfo:
+    """Information about an agent system instance"""
+    instance_id: str
+    agent_system: 'DynamicMultiAgentSystem'
+    created_at: datetime = field(default_factory=datetime.now)
+    last_used: datetime = field(default_factory=datetime.now)
+    usage_count: int = 0
+    is_busy: bool = False
+
+
+class AgentInstancePool:
+    """Pool manager for DynamicMultiAgentSystem instances to prevent resource waste"""
+    
+    def __init__(self, max_instances: int = 5, max_idle_time: int = 600):
+        self.max_instances = max_instances
+        self.max_idle_time = max_idle_time  # 10 minutes
+        self.instances: Dict[str, AgentInstanceInfo] = {}
+        self._lock = asyncio.Lock()
+        
+        # Start cleanup task
+        self._cleanup_task = None
+        self._start_cleanup_task()
+    
+    def _start_cleanup_task(self):
+        """Start background cleanup task"""
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+    
+    async def _periodic_cleanup(self):
+        """Periodic cleanup of idle instances"""
+        while True:
+            try:
+                await asyncio.sleep(120)  # Check every 2 minutes
+                await self._cleanup_idle_instances()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Agent instance pool cleanup error: {e}")
+    
+    async def get_or_create_instance(self, trace=None) -> 'DynamicMultiAgentSystem':
+        """Get available instance or create new one from pool"""
+        async with self._lock:
+            # Find available (not busy) instance
+            for instance_info in self.instances.values():
+                if not instance_info.is_busy:
+                    instance_info.is_busy = True
+                    instance_info.last_used = datetime.now()
+                    instance_info.usage_count += 1
+                    # Update trace if provided
+                    instance_info.agent_system.trace = trace
+                    return instance_info.agent_system
+            
+            # Check if we're at capacity
+            if len(self.instances) >= self.max_instances:
+                # Remove least recently used idle instance
+                await self._remove_lru_instance()
+            
+            # Create new instance
+            instance_id = f"agent_instance_{len(self.instances)}_{datetime.now().strftime('%H%M%S')}"
+            agent_system = DynamicMultiAgentSystem(trace=trace)
+            
+            instance_info = AgentInstanceInfo(
+                instance_id=instance_id,
+                agent_system=agent_system,
+                is_busy=True
+            )
+            
+            self.instances[instance_id] = instance_info
+            
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Agent instance pool: Created new instance {instance_id} ({len(self.instances)}/{self.max_instances})")
+            
+            return agent_system
+    
+    async def release_instance(self, agent_system: 'DynamicMultiAgentSystem'):
+        """Release instance back to pool"""
+        async with self._lock:
+            # Find the instance
+            for instance_info in self.instances.values():
+                if instance_info.agent_system is agent_system:
+                    instance_info.is_busy = False
+                    instance_info.last_used = datetime.now()
+                    # Clear trace to prevent memory leaks
+                    instance_info.agent_system.trace = None
+                    break
+    
+    async def _remove_lru_instance(self):
+        """Remove least recently used idle instance"""
+        idle_instances = [
+            (instance_id, instance_info) 
+            for instance_id, instance_info in self.instances.items() 
+            if not instance_info.is_busy
+        ]
+        
+        if not idle_instances:
+            return
+        
+        # Find LRU idle instance
+        lru_id, lru_info = min(idle_instances, key=lambda x: x[1].last_used)
+        await self._remove_instance(lru_id)
+    
+    async def _remove_instance(self, instance_id: str):
+        """Remove specific instance from pool"""
+        if instance_id not in self.instances:
+            return
+        
+        instance_info = self.instances[instance_id]
+        
+        # Clean up the instance
+        try:
+            # Clear references
+            instance_info.agent_system.trace = None
+            instance_info.agent_system = None
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Agent instance pool: Error cleaning up instance {instance_id}: {e}")
+        
+        # Remove from pool
+        del self.instances[instance_id]
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Agent instance pool: Removed instance {instance_id}")
+    
+    async def _cleanup_idle_instances(self):
+        """Clean up instances that have been idle too long"""
+        async with self._lock:
+            current_time = datetime.now()
+            to_remove = []
+            
+            for instance_id, instance_info in self.instances.items():
+                if not instance_info.is_busy:
+                    idle_time = (current_time - instance_info.last_used).total_seconds()
+                    if idle_time > self.max_idle_time:
+                        to_remove.append(instance_id)
+            
+            for instance_id in to_remove:
+                await self._remove_instance(instance_id)
+    
+    async def cleanup_all(self):
+        """Clean up all instances in the pool"""
+        async with self._lock:
+            if self._cleanup_task:
+                self._cleanup_task.cancel()
+                try:
+                    await self._cleanup_task
+                except asyncio.CancelledError:
+                    pass
+            
+            instance_ids = list(self.instances.keys())
+            for instance_id in instance_ids:
+                await self._remove_instance(instance_id)
+    
+    def get_pool_stats(self) -> Dict[str, Any]:
+        """Get pool statistics for monitoring"""
+        busy_instances = [i for i in self.instances.values() if i.is_busy]
+        idle_instances = [i for i in self.instances.values() if not i.is_busy]
+        
+        return {
+            "total_instances": len(self.instances),
+            "busy_instances": len(busy_instances),
+            "idle_instances": len(idle_instances),
+            "max_instances": self.max_instances,
+            "pool_utilization": len(busy_instances) / self.max_instances if self.max_instances > 0 else 0
+        }
+
+
+# Global agent instance pool
+agent_instance_pool = AgentInstancePool()
 
 
 def _is_tool_result_successful(result) -> bool:
@@ -507,7 +685,7 @@ Required JSON format:
         # Default to parallel for general queries
         return "parallel"
     
-    async def execute_agent(self, agent_name: str, agent_data: Dict, query: str, context: Dict = None) -> AsyncGenerator[Dict, None]:
+    async def execute_agent(self, agent_name: str, agent_data: Dict, query: str, context: Dict = None, parent_trace_or_span = None) -> AsyncGenerator[Dict, None]:
         """Execute any agent dynamically using its system prompt"""
         
         # Import json at the top to ensure it's always available
@@ -521,17 +699,33 @@ Required JSON format:
         # Initialize variables for Langfuse generation (will be created after prompt is built)
         agent_generation = None
         tracer = None
-        if self.trace:
+        agent_span = None
+        
+        if self.trace or parent_trace_or_span:
             try:
                 from app.core.langfuse_integration import get_tracer
                 tracer = get_tracer()
+                
+                # Create agent execution span under parent trace/span if provided
+                if parent_trace_or_span and tracer and tracer.is_enabled():
+                    agent_span = tracer.create_agent_execution_span(
+                        parent_trace_or_span, 
+                        agent_name, 
+                        query,
+                        agent_metadata={
+                            "agent_config": agent_data,
+                            "context": context or {},
+                            "execution_mode": "dynamic_agent_system"
+                        }
+                    )
+                    print(f"[DEBUG] Created agent execution span for {agent_name}")
             except Exception as e:
-                print(f"[WARNING] Failed to get tracer for {agent_name}: {e}")
+                print(f"[WARNING] Failed to initialize tracing for {agent_name}: {e}")
         
         generation_ended = False
         
         def _end_agent_generation(output_text: str = None, error: str = None, success: bool = True, input_prompt: str = None):
-            """Safely end agent generation with proper error handling"""
+            """Safely end agent generation and span with proper error handling"""
             nonlocal generation_ended
             if agent_generation and tracer and tracer.is_enabled() and not generation_ended:
                 try:
@@ -557,6 +751,19 @@ Required JSON format:
                     print(f"[DEBUG] Ended Langfuse generation for agent {agent_name}")
                 except Exception as e:
                     print(f"[WARNING] Failed to end agent generation for {agent_name}: {e}")
+            
+            # End the agent span if it exists
+            if agent_span and tracer:
+                try:
+                    tracer.end_span_with_result(
+                        agent_span, 
+                        output_text or "Agent execution completed",
+                        success=success,
+                        error=error
+                    )
+                    print(f"[DEBUG] Ended agent execution span for {agent_name}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to end agent span for {agent_name}: {e}")
         
         # Ensure all parameters are valid to prevent scope issues
         if not query:
@@ -602,7 +809,16 @@ Required JSON format:
             # Special handling for previous agent outputs in sequential execution
             if "previous_outputs" in context:
                 context_str = f"\n\nCONTEXT FROM PREVIOUS AGENTS:\n"
-                for prev_output in context.get("previous_outputs", []):
+                previous_outputs = context.get("previous_outputs", [])
+                
+                # CRITICAL FIX: Context truncation to prevent massive prompts on 3rd+ agents
+                max_context_length = 2000  # Maximum chars per agent context
+                max_total_context = 4000   # Maximum total context length
+                total_context_length = 0
+                
+                print(f"[CONTEXT DEBUG] {agent_name}: Processing {len(previous_outputs)} previous outputs")
+                
+                for i, prev_output in enumerate(previous_outputs):
                     agent_name_prev = prev_output.get("agent", "Previous Agent")
                     content = prev_output.get("content") or prev_output.get("output", "")
                     
@@ -621,9 +837,38 @@ Required JSON format:
                             content = thinking_content
                         print(f"[DEBUG] Extracted content from thinking tags for {agent_name_prev}")
                     
-                    # Show substantial context from previous agents
-                    context_str += f"\n{agent_name_prev}:\n{content}\n"
-                    context_str += "-" * 50 + "\n"
+                    # CRITICAL: Truncate individual agent context to prevent massive prompts
+                    original_length = len(content)
+                    if len(content) > max_context_length:
+                        # Try to find a good breaking point (sentence boundary)
+                        sentences = content.split('. ')
+                        truncated_content = ""
+                        for sentence in sentences:
+                            if len(truncated_content + sentence + '. ') <= max_context_length - 100:
+                                truncated_content += sentence + '. '
+                            else:
+                                break
+                        
+                        if truncated_content:
+                            content = truncated_content + "\n\n[Content truncated for context management]"
+                        else:
+                            # Fallback to hard truncation
+                            content = content[:max_context_length-50] + "\n\n[Content truncated for context management]"
+                        
+                        print(f"[CONTEXT DEBUG] {agent_name}: Truncated {agent_name_prev} context from {original_length} to {len(content)} chars")
+                    
+                    # Check total context limit
+                    context_addition = f"\n{agent_name_prev}:\n{content}\n" + "-" * 50 + "\n"
+                    if total_context_length + len(context_addition) > max_total_context:
+                        print(f"[CONTEXT DEBUG] {agent_name}: Reached total context limit, skipping remaining agents")
+                        context_str += f"\n[Additional context from {len(previous_outputs) - i} agents truncated to manage prompt size]\n"
+                        break
+                    
+                    # Add context for this agent
+                    context_str += context_addition
+                    total_context_length += len(context_addition)
+                
+                print(f"[CONTEXT DEBUG] {agent_name}: Final context length: {len(context_str)} chars")
                 
                 # Add instruction to build upon previous work
                 agent_position = len(context.get("previous_outputs", [])) + 1
@@ -821,7 +1066,7 @@ TASK: Provide your analysis of the query above."""
                     print(f"[DEBUG] {agent_name}: About to call _process_tool_calls")
                     print(f"[DEBUG] {agent_name}: Variables check - agent_name: {agent_name is not None}, content: {len(response_text)}")
                     
-                    enhanced_content, tool_results = await self._process_tool_calls(agent_name, response_text, query, context, agent_data)
+                    enhanced_content, tool_results = await self._process_tool_calls(agent_name, response_text, query, context, agent_data, agent_span)
                     
                     # Enhance the completion event with avatar, description, and tool results
                     enhanced_chunk = {
@@ -862,6 +1107,15 @@ TASK: Provide your analysis of the query above."""
             }
         finally:
             print(f"[DEBUG] execute_agent: Finished (finally block) for {agent_name}")
+            
+            # CRITICAL FIX: Clean up MCP subprocesses after each agent execution to prevent resource exhaustion
+            try:
+                print(f"[DEBUG] {agent_name}: Cleaning up MCP subprocesses")
+                await self._cleanup_mcp_subprocesses()
+                print(f"[DEBUG] {agent_name}: MCP subprocess cleanup completed")
+            except Exception as e:
+                print(f"[WARNING] {agent_name}: MCP subprocess cleanup failed: {e}")
+            
             # Safety cleanup: end generation if it hasn't been ended yet
             if not generation_ended and agent_generation and tracer and tracer.is_enabled():
                 try:
@@ -1004,7 +1258,7 @@ TASK: Provide your analysis of the query above."""
                 "error": str(e)
             }
     
-    async def _process_tool_calls(self, agent_name: str, agent_response: str, query: str, context: Dict = None, agent_data: Dict = None) -> tuple[str, list]:
+    async def _process_tool_calls(self, agent_name: str, agent_response: str, query: str, context: Dict = None, agent_data: Dict = None, parent_span = None) -> tuple[str, list]:
         """Process agent response for tool calls and execute them using intelligent tool system"""
         try:
             print(f"[DEBUG] {agent_name}: _process_tool_calls started with query: {query[:50]}...")
@@ -1211,20 +1465,22 @@ TASK: Provide your analysis of the query above."""
                 
                 def execute_tool_sync(tool_name, parameters):
                     """Execute tool in a separate thread to avoid event loop conflicts"""
-                    # Create tool span for tracing if trace is available
+                    # Create tool span for tracing if parent span or trace is available
                     from app.core.langfuse_integration import get_tracer
                     tracer = get_tracer()
                     tool_span = None
                     
-                    if self.trace and tracer.is_enabled():
+                    if (parent_span or self.trace) and tracer and tracer.is_enabled():
                         try:
                             print(f"[DEBUG] Creating tool span for {tool_name} by agent {agent_name}")
                             # Add agent info to parameters
                             params_with_agent = dict(parameters) if isinstance(parameters, dict) else {}
                             params_with_agent["agent"] = agent_name
                             
+                            # Use parent_span if available, otherwise fallback to self.trace
+                            trace_or_span = parent_span or self.trace
                             tool_span = tracer.create_tool_span(
-                                self.trace, 
+                                trace_or_span, 
                                 tool_name, 
                                 params_with_agent
                             )
@@ -1561,6 +1817,84 @@ Provide your complete response based on the tool results above. Do not generate 
             print(f"[WARNING] _clean_response: Original had {len(original_text)} chars: {original_text[:200]!r}")
         
         return cleaned
+    
+    async def _cleanup_mcp_subprocesses(self):
+        """Clean up MCP subprocesses to prevent resource exhaustion after each agent execution"""
+        try:
+            print(f"[DEBUG] MCP cleanup: Starting subprocess cleanup")
+            
+            # Method 1: Cleanup unified MCP service stdio clients using the new cleanup function
+            try:
+                from app.core.unified_mcp_service import cleanup_mcp_subprocesses
+                print(f"[DEBUG] MCP cleanup: Calling unified service cleanup")
+                await cleanup_mcp_subprocesses()
+                print(f"[DEBUG] MCP cleanup: Unified service cleanup completed")
+            except Exception as e:
+                print(f"[DEBUG] MCP cleanup: Unified service cleanup failed: {e}")
+            
+            # Method 2: Try to get and cleanup active MCP bridges directly
+            try:
+                print(f"[DEBUG] MCP cleanup: Checking for active stdio bridges")
+                # Import the stdio bridge call function to clean up any active bridges
+                from app.core.mcp_stdio_bridge import call_mcp_tool_via_stdio
+                print(f"[DEBUG] MCP cleanup: stdio bridge function accessible")
+                
+                # Force garbage collection to help clean up closed bridges
+                import gc
+                gc.collect()
+                print(f"[DEBUG] MCP cleanup: Garbage collection triggered")
+                
+            except Exception as e:
+                print(f"[DEBUG] MCP cleanup: stdio bridge cleanup failed: {e}")
+            
+            # Method 3: Send stop signals to any lingering processes via process management
+            try:
+                import psutil
+                import os
+                current_pid = os.getpid()
+                current_process = psutil.Process(current_pid)
+                
+                # Find child processes that might be MCP servers
+                mcp_children = []
+                for child in current_process.children(recursive=True):
+                    try:
+                        cmdline = ' '.join(child.cmdline())
+                        if any(keyword in cmdline.lower() for keyword in ['npx', 'mcp-server', 'node', 'docker exec']):
+                            mcp_children.append(child)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                
+                print(f"[DEBUG] MCP cleanup: Found {len(mcp_children)} potential MCP child processes")
+                
+                # Only clean up if we have more than 2 children (indicating accumulation)
+                if len(mcp_children) > 2:
+                    print(f"[DEBUG] MCP cleanup: Cleaning up {len(mcp_children)} MCP processes")
+                    for child in mcp_children:
+                        try:
+                            # Graceful termination first
+                            child.terminate()
+                            try:
+                                child.wait(timeout=1)  # Wait 1 second for graceful shutdown
+                            except psutil.TimeoutExpired:
+                                # Force kill if graceful termination fails
+                                child.kill()
+                            print(f"[DEBUG] MCP cleanup: Cleaned up process {child.pid}")
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            # Process already gone or no permission
+                            pass
+                else:
+                    print(f"[DEBUG] MCP cleanup: Process count acceptable, skipping process cleanup")
+                    
+            except ImportError:
+                print(f"[DEBUG] MCP cleanup: psutil not available for process cleanup")
+            except Exception as e:
+                print(f"[DEBUG] MCP cleanup: Process cleanup failed: {e}")
+            
+            print(f"[DEBUG] MCP cleanup: Subprocess cleanup completed")
+            
+        except Exception as e:
+            print(f"[ERROR] MCP cleanup: Overall cleanup failed: {e}")
+            # Don't raise exception - cleanup failure shouldn't break the workflow
     
     async def synthesize_responses(self, agent_responses: Dict[str, str], original_query: str) -> str:
         """Synthesize multiple agent responses into cohesive answer"""
