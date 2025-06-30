@@ -3,11 +3,14 @@ Dynamic Multi-Agent System that can use any agent from the database
 """
 import json
 import asyncio
+import logging
 from typing import Dict, List, Any, Optional, AsyncGenerator
 from datetime import datetime
 import hashlib
 import weakref
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 from app.core.langgraph_agents_cache import get_langgraph_agents, get_active_agents, get_agent_by_role, get_agent_by_name
 from app.core.llm_settings_cache import get_llm_settings
@@ -776,23 +779,37 @@ Required JSON format:
         # Get agent configuration
         agent_config = agent_data.get("config", {})
         max_tokens = agent_config.get("max_tokens", 4000)
-        temperature = agent_config.get("temperature", 0.7)
+        # Priority: context temperature > agent config temperature > default
+        temperature = (
+            context.get("temperature") or
+            agent_config.get("temperature") or
+            0.7
+        )
         
         # Dynamic timeout based on query complexity and agent type
-        base_timeout = agent_config.get("timeout", 60)
+        # Priority: context timeout (from workflow config) > agent config timeout > default
+        base_timeout = (
+            context.get("timeout") or 
+            agent_config.get("timeout") or 
+            60
+        )
         query_length = len(query)
         
-        # Increase timeout for complex queries and strategic agents
+        logger.debug(f"[TIMEOUT CONFIG] {agent_name}: base_timeout={base_timeout}s (from {'context' if context.get('timeout') else 'agent_config' if agent_config.get('timeout') else 'default'})")
+        
+        # Apply complexity-based timeout extensions (but respect configured minimum)
+        timeout = base_timeout  # Start with configured timeout
+        
+        # Extend timeout for complex queries (but don't reduce below configured)
         if query_length > 100 or "strategy" in query.lower() or "discuss" in query.lower():
-            timeout = max(base_timeout, 90)  # At least 90 seconds for complex queries
-        else:
-            timeout = base_timeout
+            timeout = max(timeout, base_timeout + 30)  # Add 30s for complexity
             
-        # Strategic agents get extra time
+        # Strategic agents get extra time if needed
         if any(keyword in agent_name.lower() for keyword in ["strategist", "analyst", "architect", "ceo", "cto", "cio"]):
-            timeout = max(timeout, 120)  # Strategic agents get at least 2 minutes
+            timeout = max(timeout, base_timeout + 60)  # Add 60s for strategic work
             
         print(f"[DEBUG] {agent_name}: Dynamic timeout set to {timeout}s (base={base_timeout}s, query_len={query_length})")
+        logger.info(f"[AGENT TIMEOUT] {agent_name}: Using timeout {timeout}s (configured: {base_timeout}s, extended for complexity: {timeout > base_timeout})")
         
         # Build prompt with agent's system prompt and query
         # Check if there's a pipeline-specific system prompt in the config
@@ -1685,13 +1702,24 @@ Based on these tool results, provide your final comprehensive response that:
 Provide your complete response based on the tool results above. Do not generate any tool calls."""
 
                 # Generate SINGLE follow-up response that incorporates tool results (UNIFIED PROCESSING)
+                # Calculate timeout using same logic as main execution
+                follow_up_timeout = (
+                    context.get("timeout") or 
+                    agent_data.get("config", {}).get("timeout") or 
+                    60
+                )
+                # Apply complexity-based extensions for strategic agents
+                if any(keyword in agent_name.lower() for keyword in ["strategist", "analyst", "architect", "ceo", "cto", "cio"]):
+                    follow_up_timeout = max(follow_up_timeout, follow_up_timeout + 60)
+                
                 follow_up_response = ""
+                print(f"[DEBUG] {agent_name}: Starting FIXED real-time streaming with timeout={follow_up_timeout}s")
                 async for chunk in self._call_llm_stream(
                     follow_up_prompt,
                     agent_name, 
                     temperature=0.8,
                     max_tokens=2000,
-                    timeout=60
+                    timeout=follow_up_timeout  # Use calculated timeout
                 ):
                     if chunk.get("type") == "agent_complete":
                         follow_up_response = chunk.get("content", "")

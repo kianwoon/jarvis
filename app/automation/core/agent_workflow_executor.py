@@ -99,8 +99,29 @@ class AgentWorkflowExecutor:
                 "status": "running"
             }
             
-            # Convert visual workflow to agent execution plan
+            # Convert visual workflow to agent execution plan with enhanced 4-way connectivity
             agent_plan = self._convert_workflow_to_agent_plan(workflow_config, input_data, message)
+            
+            # Process enhanced workflow metadata if available
+            if workflow_config.get('connectivity_type') == '4-way':
+                logger.info(f"[AGENT WORKFLOW] Processing 4-way connectivity workflow v{workflow_config.get('version', '1.0')}")
+                
+                # Use execution sequence if provided
+                if 'execution_sequence' in workflow_config:
+                    agent_plan['execution_sequence'] = workflow_config['execution_sequence']
+                    logger.info(f"[AGENT WORKFLOW] Using predefined execution sequence: {len(agent_plan['execution_sequence'])} steps")
+                
+                # Process node relationships for enhanced execution
+                if 'node_relationships' in workflow_config:
+                    agent_plan['node_relationships'] = workflow_config['node_relationships']
+                    logger.info(f"[AGENT WORKFLOW] Loaded node relationships for {len(agent_plan['node_relationships'])} nodes")
+                
+                # Process enhanced edge information
+                if workflow_config.get('edges'):
+                    enhanced_edges = [edge for edge in workflow_config['edges'] if 'connectivity_info' in edge]
+                    if enhanced_edges:
+                        agent_plan['enhanced_edges'] = enhanced_edges
+                        logger.info(f"[AGENT WORKFLOW] Processing {len(enhanced_edges)} enhanced edges with 4-way connectivity info")
             
             # Create workflow planning span with enhanced debugging
             workflow_planning_span = None
@@ -138,11 +159,14 @@ class AgentWorkflowExecutor:
                     logger.warning(f"Failed to create workflow planning span: {e}")
                     logger.debug(f"Workflow planning span failed: {e}")
             
-            # Yield agent plan
+            # Yield enhanced agent plan with execution sequence
             yield {
                 "type": "agent_plan",
                 "agents": agent_plan["agents"],
-                "execution_pattern": agent_plan["pattern"]
+                "execution_pattern": agent_plan["pattern"],
+                "execution_sequence": agent_plan.get("execution_sequence", []),
+                "connectivity_type": workflow_config.get('connectivity_type', 'legacy'),
+                "workflow_version": workflow_config.get('version', '1.0')
             }
             
             # Execute agents using multi-agent system
@@ -422,6 +446,28 @@ class AgentWorkflowExecutor:
                             {}
                         )
                         
+                        # Extract timeout configuration from workflow node
+                        # Debug logging to understand timeout extraction
+                        context_timeout = context.get("timeout")
+                        agent_config_timeout = agent_config.get("timeout")
+                        node_data_timeout = node_data.get("timeout")
+                        
+                        logger.debug(f"[TIMEOUT DEBUG] Agent: {agent_name}")
+                        logger.debug(f"[TIMEOUT DEBUG] context timeout: {context_timeout}")
+                        logger.debug(f"[TIMEOUT DEBUG] agent_config timeout: {agent_config_timeout}")
+                        logger.debug(f"[TIMEOUT DEBUG] node_data timeout: {node_data_timeout}")
+                        logger.debug(f"[TIMEOUT DEBUG] agent_config keys: {list(agent_config.keys()) if agent_config else 'None'}")
+                        logger.debug(f"[TIMEOUT DEBUG] node_data keys: {list(node_data.keys()) if node_data else 'None'}")
+                        
+                        configured_timeout = (
+                            context_timeout or
+                            agent_config_timeout or
+                            node_data_timeout or
+                            60  # fallback default
+                        )
+                        
+                        logger.info(f"[TIMEOUT EXTRACTION] Agent {agent_name}: extracted timeout = {configured_timeout}s from workflow config")
+                        
                         # Extract state management configuration
                         state_enabled = (
                             agent_config.get("state_enabled") or
@@ -454,6 +500,7 @@ class AgentWorkflowExecutor:
                             "custom_prompt": custom_prompt,
                             "tools": tools,
                             "context": context,
+                            "configured_timeout": configured_timeout,
                             "position": node.get("position", {}),
                             "state_enabled": state_enabled,
                             "state_operation": state_operation,
@@ -478,7 +525,7 @@ class AgentWorkflowExecutor:
             # Try to construct query from input data
             query = f"Process the following data: {json.dumps(input_data, indent=2)}"
         
-        return {
+        result = {
             "agents": agent_nodes,
             "state_nodes": state_nodes,
             "pattern": execution_pattern,
@@ -486,6 +533,20 @@ class AgentWorkflowExecutor:
             "input_data": input_data,
             "edges": edges
         }
+        
+        # Add enhanced workflow metadata if available
+        if hasattr(workflow_config, 'get') and workflow_config.get('connectivity_type') == '4-way':
+            result.update({
+                "execution_sequence": workflow_config.get('execution_sequence', []),
+                "node_relationships": workflow_config.get('node_relationships', {}),
+                "enhanced_edges": [edge for edge in workflow_config.get('edges', []) if 'connectivity_info' in edge],
+                "connectivity_type": workflow_config.get('connectivity_type'),
+                "workflow_version": workflow_config.get('version', '1.0')
+            })
+            
+            logger.info(f"[WORKFLOW CONVERSION] Enhanced workflow metadata added - version {result['workflow_version']}")
+        
+        return result
     
     def _analyze_execution_pattern(self, agent_nodes: List[Dict], edges: List[Dict]) -> str:
         """
@@ -607,6 +668,8 @@ class AgentWorkflowExecutor:
                 "tools": agent_node["tools"],
                 "config": agent_config.get("config", {}),
                 "node_id": agent_node["node_id"],
+                # Pass through the configured timeout from workflow node
+                "configured_timeout": agent_node.get("configured_timeout", 60),
                 # Enhanced state management metadata for tracing
                 "state_enabled": agent_node.get("state_enabled", False),
                 "state_operation": agent_node.get("state_operation", "passthrough"),
@@ -646,10 +709,15 @@ class AgentWorkflowExecutor:
                 async for result in self._execute_agents_parallel(selected_agents, query, workflow_id, execution_id, execution_trace, workflow_state):
                     yield result
             else:
-                # Execute agents sequentially (default) 
+                # Execute agents sequentially (default) with enhanced workflow support
                 # CRITICAL FIX: Always pass main execution_trace, not agent_execution_span
                 # The DynamicMultiAgentSystem needs the main trace for generations
-                async for result in self._execute_agents_sequential(selected_agents, query, workflow_id, execution_id, execution_trace, workflow_state, workflow_edges):
+                
+                # Pass agent_plan to sequential execution for enhanced features
+                async for result in self._execute_agents_sequential(
+                    selected_agents, query, workflow_id, execution_id, execution_trace, 
+                    workflow_state, workflow_edges, agent_plan
+                ):
                     yield result
         except Exception as e:
             logger.error(f"[AGENT WORKFLOW] Agent execution failed: {e}")
@@ -673,6 +741,27 @@ class AgentWorkflowExecutor:
                 except Exception as e:
                     logger.warning(f"Failed to end agent execution span: {e}")
     
+    def _reorder_agents_by_sequence(self, agents: List[Dict[str, Any]], execution_sequence: List[str]) -> List[Dict[str, Any]]:
+        """Reorder agents based on predefined execution sequence from 4-way connectivity workflow"""
+        if not execution_sequence:
+            return agents
+            
+        # Create mapping from node_id to agent
+        agent_map = {agent['node_id']: agent for agent in agents}
+        reordered_agents = []
+        
+        # Add agents in sequence order if they exist
+        for node_id in execution_sequence:
+            if node_id in agent_map:
+                reordered_agents.append(agent_map[node_id])
+                del agent_map[node_id]  # Remove from map to avoid duplicates
+        
+        # Add any remaining agents not in sequence at the end
+        reordered_agents.extend(agent_map.values())
+        
+        logger.info(f"[AGENT WORKFLOW] Reordered {len(reordered_agents)} agents based on execution sequence")
+        return reordered_agents
+    
     async def _execute_agents_sequential(
         self,
         agents: List[Dict[str, Any]],
@@ -681,9 +770,17 @@ class AgentWorkflowExecutor:
         execution_id: str,
         execution_trace=None,
         workflow_state: WorkflowState = None,
-        workflow_edges: List[Dict[str, Any]] = None
+        workflow_edges: List[Dict[str, Any]] = None,
+        agent_plan: Dict[str, Any] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Execute agents sequentially using state-based workflow execution"""
+        """Execute agents sequentially using state-based workflow execution with 4-way connectivity support"""
+        
+        # Check if workflow has predefined execution sequence from 4-way connectivity
+        if agent_plan and agent_plan.get('execution_sequence'):
+            execution_sequence = agent_plan.get('execution_sequence', [])
+            logger.info(f"[AGENT WORKFLOW] Using predefined execution sequence: {execution_sequence}")
+            # Reorder agents based on execution sequence
+            agents = self._reorder_agents_by_sequence(agents, execution_sequence)
         
         # STATE-BASED EXECUTION: Each agent receives clean workflow state + previous outputs
         # No context accumulation - agents get structured state objects instead
@@ -706,19 +803,26 @@ class AgentWorkflowExecutor:
                 "workflow_id": workflow_id,
                 "execution_id": execution_id,
                 "agent_index": i,
+                "total_agents": len(agents),
+                "sequence_display": f"{i + 1}/{len(agents)}",
                 "state_enabled": agent.get("state_enabled", False),
                 "timestamp": datetime.utcnow().isoformat()
             }
             
             try:
-                # STATE-BASED EXECUTION: Build clean agent input from workflow state
+                # STATE-BASED EXECUTION: Build clean agent input from workflow state with 4-way connectivity support
+                enhanced_edges = agent_plan.get('enhanced_edges', []) if agent_plan else []
+                node_relationships = agent_plan.get('node_relationships', {}) if agent_plan else {}
+                
                 agent_input = self._build_agent_state_input(
                     agent=agent,
                     agent_index=i,
                     workflow_state=workflow_state,
                     agent_outputs=agent_outputs,
                     user_query=query,
-                    workflow_edges=workflow_edges
+                    workflow_edges=workflow_edges,
+                    enhanced_edges=enhanced_edges,
+                    node_relationships=node_relationships
                 )
                 
                 # Create agent prompt using state-based input format
@@ -781,6 +885,9 @@ class AgentWorkflowExecutor:
                     "chain_data": None,  # State-based execution doesn't use chain data
                     "workflow_id": workflow_id,
                     "execution_id": execution_id,
+                    "agent_index": i,
+                    "total_agents": len(agents),
+                    "sequence_display": f"{i + 1}/{len(agents)}",
                     "timestamp": datetime.utcnow().isoformat()
                 }
                 
@@ -796,7 +903,10 @@ class AgentWorkflowExecutor:
                     "agent_name": agent_name,
                     "error": str(e),
                     "workflow_id": workflow_id,
-                    "execution_id": execution_id
+                    "execution_id": execution_id,
+                    "agent_index": i,
+                    "total_agents": len(agents),
+                    "sequence_display": f"{i + 1}/{len(agents)}"
                 }
         
         # Create final synthesis span - SIMPLIFIED
@@ -859,6 +969,8 @@ class AgentWorkflowExecutor:
                 "workflow_id": workflow_id,
                 "execution_id": execution_id,
                 "agent_index": i,
+                "total_agents": len(agents),
+                "sequence_display": f"{i + 1}/{len(agents)}",
                 "timestamp": datetime.utcnow().isoformat()
             }
         
@@ -892,7 +1004,7 @@ Please process this request independently and provide your analysis."""
         
         # Collect results as they complete
         agent_outputs = {}
-        for agent_name, task in tasks:
+        for task_index, (agent_name, task) in enumerate(tasks):
             try:
                 result = await task
                 agent_output = result.get("output", "")
@@ -910,6 +1022,9 @@ Please process this request independently and provide your analysis."""
                     "tools_used": result.get("tools_used", []),
                     "workflow_id": workflow_id,
                     "execution_id": execution_id,
+                    "agent_index": task_index,
+                    "total_agents": len(agents),
+                    "sequence_display": f"{task_index + 1}/{len(agents)}",
                     "timestamp": datetime.utcnow().isoformat()
                 }
                 
@@ -920,7 +1035,10 @@ Please process this request independently and provide your analysis."""
                     "agent_name": agent_name,
                     "error": str(e),
                     "workflow_id": workflow_id,
-                    "execution_id": execution_id
+                    "execution_id": execution_id,
+                    "agent_index": task_index,
+                    "total_agents": len(agents),
+                    "sequence_display": f"{task_index + 1}/{len(agents)}"
                 }
         
         # Yield final response
@@ -971,7 +1089,9 @@ Please process this request independently and provide your analysis."""
             if not agent_info:
                 raise ValueError(f"Agent '{agent_name}' not found in cache")
             
-            effective_timeout = 60  # Give enough time for tools to complete
+            # Use configured timeout from workflow node, with fallback to reasonable default
+            effective_timeout = agent.get("configured_timeout", 60)
+            logger.info(f"[AGENT WORKFLOW] Using configured timeout: {effective_timeout}s for agent {agent_name}")
             
             available_tools = agent.get("tools", [])
             
@@ -981,7 +1101,7 @@ Please process this request independently and provide your analysis."""
                 "agent_config": agent,
                 "tools": available_tools,
                 "temperature": agent.get("context", {}).get("temperature", 0.7),
-                "timeout": effective_timeout
+                "timeout": effective_timeout  # Pass configured timeout to agent system
             }
             
             # Execute using the dynamic agent system with enhanced tracking
@@ -1256,7 +1376,9 @@ Please process this request independently and provide your analysis."""
         workflow_state: WorkflowState,
         agent_outputs: Dict[str, str],
         user_query: str,
-        workflow_edges: List[Dict[str, Any]]
+        workflow_edges: List[Dict[str, Any]],
+        enhanced_edges: List[Dict[str, Any]] = None,
+        node_relationships: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Build clean state-based input for agent execution"""
         
@@ -1284,25 +1406,53 @@ Please process this request independently and provide your analysis."""
             "previous_results": []
         }
         
-        # Add dependency-based agent results (edge-based, not sequential accumulation)
+        # Enhanced dependency resolution with 4-way connectivity support
         if workflow_edges and workflow_state:
-            # Get specific dependencies from workflow edges
-            dependencies = self._get_agent_dependencies(agent["node_id"], workflow_edges)
+            # Use enhanced edges if available (from 4-way connectivity)
+            edges_to_use = enhanced_edges or workflow_edges
             
-            for dep_node_id in dependencies:
-                # Find the agent name/index for this dependency node
-                dep_result = workflow_state.get_state(f"node_output_{dep_node_id}")
-                if dep_result:
-                    agent_input["previous_results"].append(dep_result)
-                else:
-                    # Fallback: try to find by agent name mapping
-                    for existing_agent_name in agent_outputs.keys():
-                        agent_result = workflow_state.get_state(f"agent_output_{existing_agent_name}")
-                        if agent_result and isinstance(agent_result, dict):
-                            # Check if this agent result matches the dependency node
-                            if agent_result.get("node_id") == dep_node_id:
-                                agent_input["previous_results"].append(agent_result)
-                                break
+            # Get specific dependencies from workflow edges with enhanced handle information
+            dependencies = self._get_agent_dependencies(agent["node_id"], edges_to_use)
+            
+            # Use node_relationships for enhanced dependency resolution if available
+            if node_relationships and agent["node_id"] in node_relationships:
+                relationship_info = node_relationships[agent["node_id"]]
+                input_connections = relationship_info.get("inputs", [])
+                
+                logger.info(f"[4-WAY CONNECTIVITY] Agent {agent['name']} has {len(input_connections)} input connections")
+                
+                for connection in input_connections:
+                    source_node_id = connection.get("source_node")
+                    source_handle = connection.get("source_handle")
+                    target_handle = connection.get("target_handle")
+                    
+                    # Enhanced dependency tracking with handle information
+                    dep_result = workflow_state.get_state(f"node_output_{source_node_id}")
+                    if dep_result:
+                        # Enhance result with connection metadata
+                        enhanced_result = dep_result.copy() if isinstance(dep_result, dict) else {"output": dep_result}
+                        enhanced_result["connection_info"] = {
+                            "source_handle": source_handle,
+                            "target_handle": target_handle,
+                            "connection_type": "4-way"
+                        }
+                        agent_input["previous_results"].append(enhanced_result)
+            else:
+                # Standard dependency resolution
+                for dep_node_id in dependencies:
+                    # Find the agent name/index for this dependency node
+                    dep_result = workflow_state.get_state(f"node_output_{dep_node_id}")
+                    if dep_result:
+                        agent_input["previous_results"].append(dep_result)
+                    else:
+                        # Fallback: try to find by agent name mapping
+                        for existing_agent_name in agent_outputs.keys():
+                            agent_result = workflow_state.get_state(f"agent_output_{existing_agent_name}")
+                            if agent_result and isinstance(agent_result, dict):
+                                # Check if this agent result matches the dependency node
+                                if agent_result.get("node_id") == dep_node_id:
+                                    agent_input["previous_results"].append(agent_result)
+                                    break
         elif agent_index > 0 and workflow_state:
             # Fallback to sequential for workflows without explicit edges
             for i in range(agent_index):

@@ -2972,19 +2972,45 @@ Now provide your synthesis:"""
                                 if attempts > 1:
                                     logger.error(f"Tool {tool_name} failed after {attempts} attempts ({error_type}): {error_msg}")
                                         
-                                    # Yield enhanced tool error event
-                                    if event_callback:
-                                        await event_callback({
-                                            "type": "tool_error",
-                                            "agent": agent_name,
-                                            "tool": tool_name,
-                                            "error": error_msg,
-                                            "error_type": error_type,
-                                            "attempts": attempts,
-                                            "timestamp": datetime.now().isoformat()
-                                        })
-                                else:
-                                    logger.error(f"Tool {tool_name} failed ({error_type}): {error_msg}")
+                                        # Yield enhanced tool error event
+                                        if event_callback:
+                                            await event_callback({
+                                                "type": "tool_error",
+                                                "agent": agent_name,
+                                                "tool": tool_name,
+                                                "error": error_msg,
+                                                "error_type": error_type,
+                                                "attempts": attempts,
+                                                "timestamp": datetime.now().isoformat()
+                                            })
+                                    else:
+                                        logger.error(f"Tool {tool_name} failed ({error_type}): {error_msg}")
+                                        
+                                        # Yield tool error event
+                                        if event_callback:
+                                            await event_callback({
+                                                "type": "tool_error",
+                                                "agent": agent_name,
+                                                "tool": tool_name,
+                                                "error": error_msg,
+                                                "error_type": error_type,
+                                                "timestamp": datetime.now().isoformat()
+                                            })
+                                
+                                # Check content for error messages (MCP protocol format) - legacy format
+                                elif result.get("content"):
+                                    error_msg = None
+                                    content = result["content"]
+                                    if isinstance(content, list) and len(content) > 0:
+                                        first_content = content[0]
+                                        if isinstance(first_content, dict) and first_content.get("text"):
+                                            text = first_content["text"]
+                                            # Check if this is an error message
+                                            if any(err_keyword in text.lower() for err_keyword in ["error", "failed", "no access", "invalid"]):
+                                                error_msg = text
+                                
+                                if error_msg:
+                                    logger.error(f"Tool execution error: {error_msg}")
                                     
                                     # Yield tool error event
                                     if event_callback:
@@ -2993,95 +3019,88 @@ Now provide your synthesis:"""
                                             "agent": agent_name,
                                             "tool": tool_name,
                                             "error": error_msg,
-                                            "error_type": error_type,
                                             "timestamp": datetime.now().isoformat()
                                         })
-                            
-                            # Check content for error messages (MCP protocol format) - legacy format
-                            elif result.get("content"):
-                                error_msg = None
-                                content = result["content"]
-                                if isinstance(content, list) and len(content) > 0:
-                                    first_content = content[0]
-                                    if isinstance(first_content, dict) and first_content.get("text"):
-                                        text = first_content["text"]
-                                        # Check if this is an error message
-                                        if any(err_keyword in text.lower() for err_keyword in ["error", "failed", "no access", "invalid"]):
-                                            error_msg = text
-                            
-                            if error_msg:
-                                logger.error(f"Tool execution error: {error_msg}")
-                                
-                                # Yield tool error event
-                                if event_callback:
-                                    await event_callback({
-                                        "type": "tool_error",
-                                        "agent": agent_name,
-                                        "tool": tool_name,
-                                        "error": error_msg,
-                                        "timestamp": datetime.now().isoformat()
-                                    })
-                                
-                                # If it's an authentication error, provide helpful guidance
-                                if any(auth_keyword in error_msg.lower() for auth_keyword in ["no access", "refresh token", "authentication", "unauthorized"]):
-                                    auth_error = (
-                                        f"Authentication Error: Gmail access is not properly configured. "
-                                        f"Please ensure Gmail OAuth is set up in the MCP Servers settings. "
-                                        f"Error details: {error_msg}"
-                                    )
-                                    # End tool span with authentication error
+                                    
+                                    # If it's an authentication error, provide helpful guidance
+                                    if any(auth_keyword in error_msg.lower() for auth_keyword in ["no access", "refresh token", "authentication", "unauthorized"]):
+                                        auth_error = (
+                                            f"Authentication Error: Gmail access is not properly configured. "
+                                            f"Please ensure Gmail OAuth is set up in the MCP Servers settings. "
+                                            f"Error details: {error_msg}"
+                                        )
+                                        # End tool span with authentication error
+                                        if tool_span:
+                                            tracer.end_span_with_result(tool_span, None, False, auth_error)
+                                        return auth_error
+                                    
+                                    # End tool span with general error
                                     if tool_span:
-                                        tracer.end_span_with_result(tool_span, None, False, auth_error)
-                                    return auth_error
-                                
-                                # End tool span with general error
-                                if tool_span:
-                                    tracer.end_span_with_result(tool_span, None, False, f"Error: {error_msg}")
-                                return f"Error: {error_msg}"
+                                        tracer.end_span_with_result(tool_span, None, False, f"Error: {error_msg}")
+                                    return f"Error: {error_msg}"
+                                else:
+                                    # Success - return the result
+                                    result_str = json.dumps(result, indent=2)
+                                    
+                                    # Yield tool success event
+                                    if event_callback:
+                                        await event_callback({
+                                            "type": "tool_result",
+                                            "agent": agent_name,
+                                            "tool": tool_name,
+                                            "result": result,
+                                            "success": True,
+                                            "timestamp": datetime.now().isoformat()
+                                        })
+                                    
+                                    # End tool span with success
+                                    if tool_span:
+                                        print(f"[DEBUG] Ending tool span for {tool_name} with success")
+                                        tracer.end_span_with_result(tool_span, result, True)
+                                    return result_str
                             else:
-                                # Success - return the result
-                                result_str = json.dumps(result, indent=2)
+                                result_str = str(result)
                                 
-                                # Yield tool success event
+                                # Yield tool success event for string results
                                 if event_callback:
                                     await event_callback({
                                         "type": "tool_result",
                                         "agent": agent_name,
                                         "tool": tool_name,
-                                        "result": result,
+                                        "result": result_str,
                                         "success": True,
                                         "timestamp": datetime.now().isoformat()
                                     })
                                 
-                                # End tool span with success
+                                # End tool span with success (string result)
                                 if tool_span:
-                                    print(f"[DEBUG] Ending tool span for {tool_name} with success")
-                                    tracer.end_span_with_result(tool_span, result, True)
+                                    print(f"[DEBUG] Ending tool span for {tool_name} with success (string result)")
+                                    tracer.end_span_with_result(tool_span, result_str, True)
                                 return result_str
                         else:
-                            result_str = str(result)
+                            # For HTTP-based tools, make the request
+                            # This would need to be implemented based on your HTTP tool execution logic
+                            error_msg = f"HTTP tool execution not implemented for {tool_name}"
                             
-                            # Yield tool success event for string results
                             if event_callback:
                                 await event_callback({
-                                    "type": "tool_result",
+                                    "type": "tool_error",
                                     "agent": agent_name,
                                     "tool": tool_name,
-                                    "result": result_str,
-                                    "success": True,
+                                    "error": error_msg,
                                     "timestamp": datetime.now().isoformat()
                                 })
                             
-                            # End tool span with success (string result)
+                            # End tool span with error (HTTP not implemented)
                             if tool_span:
-                                print(f"[DEBUG] Ending tool span for {tool_name} with success (string result)")
-                                tracer.end_span_with_result(tool_span, result_str, True)
-                            return result_str
-                    else:
-                        # For HTTP-based tools, make the request
-                        # This would need to be implemented based on your HTTP tool execution logic
-                        error_msg = f"HTTP tool execution not implemented for {tool_name}"
+                                tracer.end_span_with_result(tool_span, None, False, error_msg)
+                            return error_msg
+                
+                    except Exception as e:
+                        error_msg = f"Tool execution failed: {str(e)}"
+                        logger.error(f"Failed to execute MCP tool {tool_name}: {str(e)}", exc_info=True)
                         
+                        # Yield tool error event
                         if event_callback:
                             await event_callback({
                                 "type": "tool_error",
@@ -3091,29 +3110,10 @@ Now provide your synthesis:"""
                                 "timestamp": datetime.now().isoformat()
                             })
                         
-                        # End tool span with error (HTTP not implemented)
+                        # End tool span with error (exception)
                         if tool_span:
                             tracer.end_span_with_result(tool_span, None, False, error_msg)
                         return error_msg
-                
-        except Exception as e:
-            error_msg = f"Tool execution failed: {str(e)}"
-            logger.error(f"Failed to execute MCP tool {tool_name}: {str(e)}", exc_info=True)
-            
-            # Yield tool error event
-            if event_callback:
-                await event_callback({
-                    "type": "tool_error",
-                    "agent": agent_name,
-                    "tool": tool_name,
-                    "error": error_msg,
-                    "timestamp": datetime.now().isoformat()
-                })
-            
-            # End tool span with error (exception)
-            if tool_span:
-                tracer.end_span_with_result(tool_span, None, False, error_msg)
-            return error_msg
     
     def _map_tool_parameters(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Map common parameter mismatches to correct parameter names"""

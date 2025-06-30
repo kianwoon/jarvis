@@ -45,9 +45,14 @@ def get_redis_pool() -> Optional[redis.ConnectionPool]:
     
     return _redis_pool
 
-def get_redis_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[redis.Redis]:
+def get_redis_client(max_retries: int = 3, retry_delay: float = 1.0, decode_responses: bool = True) -> Optional[redis.Redis]:
     """
     Get Redis client using connection pool with retry logic and better error handling
+    
+    Args:
+        max_retries: Maximum retry attempts
+        retry_delay: Delay between retries in seconds
+        decode_responses: Whether to decode responses to strings (default True)
     """
     pool = get_redis_pool()
     if not pool:
@@ -57,7 +62,7 @@ def get_redis_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional
         try:
             client = redis.Redis(
                 connection_pool=pool,
-                decode_responses=True
+                decode_responses=decode_responses
             )
             client.ping()
             if attempt > 0:
@@ -75,6 +80,13 @@ def get_redis_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional
             return None
     
     return None
+
+def get_redis_client_for_langgraph() -> Optional[redis.Redis]:
+    """
+    Get Redis client specifically configured for LangGraph RedisSaver
+    (requires decode_responses=False for binary data handling)
+    """
+    return get_redis_client(decode_responses=False)
 
 def get_redis_pool_info() -> dict:
     """Get Redis connection pool information for monitoring"""

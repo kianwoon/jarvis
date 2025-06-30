@@ -5,7 +5,6 @@ import json
 import re
 from typing import Dict, List, Any, Optional, TypedDict, Annotated
 from datetime import datetime
-import redis
 from langgraph.graph import Graph, StateGraph, END
 from langgraph.checkpoint.redis import RedisSaver
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
@@ -22,11 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 
 # Redis configuration for conversation persistence
-from app.core.config import get_settings
-config = get_settings()
-REDIS_HOST = config.REDIS_HOST
-REDIS_PORT = config.REDIS_PORT
-REDIS_PASSWORD = config.REDIS_PASSWORD
+from app.core.redis_client import get_redis_client_for_langgraph, get_redis_client
 CONVERSATION_TTL = 3600 * 24  # 24 hours
 
 # Context window limits
@@ -237,15 +232,20 @@ class ConversationMemory:
 def create_rag_graph() -> StateGraph:
     """Create the LangGraph RAG workflow"""
     
-    # Initialize Redis for checkpointing
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
+    # Initialize Redis for checkpointing using pooled connection
+    redis_for_checkpointer = get_redis_client_for_langgraph()
+    redis_client = get_redis_client(decode_responses=True)
     
-    # Try creating RedisSaver without any arguments - it might use default connection
-    try:
-        checkpointer = RedisSaver()
-    except:
-        # If that fails, disable checkpointing for now
-        print("[WARNING] RedisSaver initialization failed, disabling checkpointing")
+    # Create RedisSaver with pooled connection
+    if redis_for_checkpointer:
+        try:
+            checkpointer = RedisSaver(redis_for_checkpointer)
+            print("[INFO] RedisSaver initialized with pooled Redis connection")
+        except Exception as e:
+            print(f"[WARNING] RedisSaver initialization failed: {e}, disabling checkpointing")
+            checkpointer = None
+    else:
+        print("[WARNING] Redis connection pool not available, disabling checkpointing")
         checkpointer = None
     
     # Initialize conversation memory
@@ -481,8 +481,11 @@ def generate_response_node(state: RAGState) -> RAGState:
 
 def update_memory_node(state: RAGState) -> RAGState:
     """Update conversation memory"""
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
-    memory = ConversationMemory(redis_client)
+    redis_client = get_redis_client(decode_responses=True)
+    if redis_client:
+        memory = ConversationMemory(redis_client)
+    else:
+        return state  # Skip memory update if Redis not available
     
     # Add messages to history
     memory.add_message(state["conversation_id"], HumanMessage(content=state["query"]))
@@ -556,9 +559,12 @@ def enhanced_rag_answer(
     )
     
     # Get conversation history
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
-    memory = ConversationMemory(redis_client)
-    initial_state["messages"] = memory.get_conversation(conversation_id)
+    redis_client = get_redis_client(decode_responses=True)
+    if redis_client:
+        memory = ConversationMemory(redis_client)
+        initial_state["messages"] = memory.get_conversation(conversation_id)
+    else:
+        initial_state["messages"] = []  # Empty conversation history if Redis not available
     
     # Create and run workflow
     app = create_rag_graph()

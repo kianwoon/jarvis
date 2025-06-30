@@ -181,6 +181,23 @@ async def delete_workflow(workflow_id: int):
         logger.error(f"[AUTOMATION API] Error deleting workflow {workflow_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/executions")
+async def list_executions(limit: int = 10):
+    """List recent workflow executions"""
+    try:
+        # This is a placeholder implementation - you may want to implement actual execution tracking
+        # For now, return empty list to fix the 404 error
+        executions = []
+        
+        # If you have execution tracking in your database, implement it here:
+        # executions = postgres_bridge.get_recent_executions(limit)
+        
+        logger.info(f"[AUTOMATION API] Listed {len(executions)} executions")
+        return executions
+    except Exception as e:
+        logger.error(f"[AUTOMATION API] Error listing executions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/workflows/{workflow_id}/execute/stream")
 async def execute_workflow_stream(
     workflow_id: int, 

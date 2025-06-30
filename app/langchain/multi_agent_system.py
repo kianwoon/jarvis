@@ -9,22 +9,25 @@ from langgraph.checkpoint.redis import RedisSaver
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from app.core.langgraph_agents_cache import get_langgraph_agents, get_agent_by_role
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
+from app.core.redis_client import get_redis_client_for_langgraph
 import json
 import uuid
 from datetime import datetime
-import redis
-import os
+import logging
 
-# Redis configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+logger = logging.getLogger(__name__)
 
-# Initialize Redis saver for conversation persistence
+# Initialize Redis saver for conversation persistence using pooled connection
 try:
-    redis_conn = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False)
-    checkpointer = RedisSaver(redis_conn)
-except:
-    print("Warning: Redis not available for multi-agent checkpointing")
+    redis_conn = get_redis_client_for_langgraph()
+    if redis_conn:
+        checkpointer = RedisSaver(redis_conn)
+        logger.info("Multi-agent Redis checkpointer initialized with pooled connection")
+    else:
+        checkpointer = None
+        logger.warning("Redis connection pool not available for multi-agent checkpointing")
+except Exception as e:
+    logger.error(f"Failed to initialize Redis checkpointer: {e}")
     checkpointer = None
 
 class AgentState(TypedDict):

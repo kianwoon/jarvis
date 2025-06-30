@@ -15,7 +15,7 @@ from dataclasses import dataclass, asdict
 from app.langchain.enhanced_multi_agent_system import EnhancedMultiAgentSystem
 from app.agents.agent_contracts import AgentContract, create_agent_contract
 from app.core.langgraph_agents_cache import get_agent_by_name
-from app.core.db import SessionLocal
+from app.core.db import get_db_session
 from app.core.redis_client import get_redis_client
 from sqlalchemy import text
 
@@ -76,8 +76,7 @@ class PipelineMultiAgentBridge:
         )
         
         # Load pipeline configuration from database
-        db = SessionLocal()
-        try:
+        with get_db_session() as db:
             # Get pipeline template
             result = db.execute(
                 text("""
@@ -93,14 +92,11 @@ class PipelineMultiAgentBridge:
                 
                 # Load agent templates and create contracts
                 await self._load_agent_contracts()
-        finally:
-            db.close()
     
     async def _load_agent_contracts(self):
         """Load agent contracts from templates"""
         
-        db = SessionLocal()
-        try:
+        with get_db_session() as db:
             for agent_info in self.agent_sequence:
                 agent_name = agent_info.get("agent")
                 
@@ -127,8 +123,6 @@ class PipelineMultiAgentBridge:
                     )
                     
                     self.agent_contracts[agent_name] = contract
-        finally:
-            db.close()
     
     async def publish_agent_io_update(self, agent_name: str, status: str,
                                      input_data: Optional[AgentInput] = None,
@@ -378,8 +372,7 @@ class PipelineMultiAgentBridge:
     async def _mark_execution_complete(self):
         """Mark pipeline execution as complete"""
         
-        db = SessionLocal()
-        try:
+        with get_db_session() as db:
             db.execute(
                 text("""
                 UPDATE pipeline_executions 
@@ -392,8 +385,6 @@ class PipelineMultiAgentBridge:
                 }
             )
             db.commit()
-        finally:
-            db.close()
 
 
 async def execute_pipeline_with_agents(pipeline_id: str, execution_id: str,

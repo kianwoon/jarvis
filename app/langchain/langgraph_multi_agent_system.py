@@ -49,16 +49,9 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from app.core.langgraph_agents_cache import get_langgraph_agents, get_agent_by_name
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
 from app.core.llm_settings_cache import get_llm_settings
+from app.core.redis_client import get_redis_client_for_langgraph
 from app.llm.ollama import JarvisLLM
-import redis
 import logging
-
-# Redis configuration
-from app.core.config import get_settings
-config = get_settings()
-REDIS_HOST = config.REDIS_HOST
-REDIS_PORT = config.REDIS_PORT
-REDIS_PASSWORD = config.REDIS_PASSWORD
 
 logger = logging.getLogger(__name__)
 
@@ -180,17 +173,24 @@ class LangGraphMultiAgentSystem:
     
     def __init__(self, conversation_id: Optional[str] = None):
         self.conversation_id = conversation_id or str(uuid.uuid4())
-        self.redis_client = redis.Redis(
-            host=REDIS_HOST, 
-            port=REDIS_PORT, 
-            password=REDIS_PASSWORD, 
-            decode_responses=True
-        )
+        self.redis_client = get_redis_client_for_langgraph()
+        if not self.redis_client:
+            logger.warning("Redis client not available for LangGraph multi-agent system")
+            # Continue without Redis for conversation storage
+            self.redis_client = None
         
-        # Initialize checkpointer for state persistence
-        # Disabled due to LangGraph version compatibility issues
-        self.checkpointer = None
-        logger.debug("Checkpointing disabled for compatibility")
+        # Initialize checkpointer for state persistence using pooled Redis connection
+        redis_for_checkpointer = get_redis_client_for_langgraph()
+        if redis_for_checkpointer:
+            try:
+                self.checkpointer = RedisSaver(redis_for_checkpointer)
+                logger.info("LangGraph checkpointer initialized with pooled Redis connection")
+            except Exception as e:
+                logger.warning(f"Failed to initialize RedisSaver: {e}")
+                self.checkpointer = None
+        else:
+            self.checkpointer = None
+            logger.warning("Redis not available, checkpointing disabled")
         
         # Load agents and settings
         self.agents = get_langgraph_agents()
@@ -443,7 +443,11 @@ class LangGraphMultiAgentSystem:
         workflow.add_edge("synthesize_response", "finalize_output")
         workflow.add_edge("finalize_output", END)
         
-        # For now, compile without checkpointer to avoid Redis connection issues\n        return workflow.compile()
+        # Compile with checkpointer if available, otherwise compile without
+        if self.checkpointer:
+            return workflow.compile(checkpointer=self.checkpointer)
+        else:
+            return workflow.compile()
 
     async def analyze_query_node(self, state: MultiAgentLangGraphState) -> MultiAgentLangGraphState:
         """Analyze the user query to understand requirements"""
@@ -1096,9 +1100,12 @@ class LangGraphMultiAgentSystem:
         }
         
         try:
-            self.redis_client.lpush(conversation_key, json.dumps(conversation_data))
-            self.redis_client.ltrim(conversation_key, 0, 49)  # Keep last 50 interactions
-            self.redis_client.expire(conversation_key, 86400)  # 24 hour TTL
+            if self.redis_client:
+                self.redis_client.lpush(conversation_key, json.dumps(conversation_data))
+                self.redis_client.ltrim(conversation_key, 0, 49)  # Keep last 50 interactions
+                self.redis_client.expire(conversation_key, 86400)  # 24 hour TTL
+            else:
+                logger.debug("Redis client not available, skipping conversation storage")
         except Exception as e:
             logger.error(f"Failed to store conversation: {e}")
         

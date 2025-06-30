@@ -18,6 +18,7 @@ try:
     from app.agents.agent_communication import AgentCommunicationProtocol, PipelineContextManager
     from app.agents.pipeline_orchestrator import PipelineOrchestrator
     from app.langchain.multi_agent_system_simple import MultiAgentSystem
+    from app.langchain.multi_agent_resource_monitor import get_multi_agent_resource_monitor
 except ImportError as e:
     logger.warning(f"Failed to import enhanced components: {e}")
     # Fallback imports
@@ -25,6 +26,7 @@ except ImportError as e:
     PipelineContextManager = None
     PipelineOrchestrator = None
     from app.langchain.multi_agent_system_simple import MultiAgentSystem
+    get_multi_agent_resource_monitor = None
 
 class EnhancedMultiAgentSystem(MultiAgentSystem):
     """Enhanced version with structured communication"""
@@ -32,6 +34,14 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
     def __init__(self, conversation_id: Optional[str] = None, trace=None):
         super().__init__(conversation_id, trace)
         self.communication_protocol = AgentCommunicationProtocol() if AgentCommunicationProtocol else None
+        
+        # Initialize resource monitoring for enhanced multi-agent system
+        if get_multi_agent_resource_monitor:
+            self.resource_monitor = get_multi_agent_resource_monitor()
+            self.resource_usage = None
+        else:
+            self.resource_monitor = None
+            self.resource_usage = None
         self.context_manager = None
         self.pipeline_orchestrator = None
         self.agent_behaviors = self._load_agent_behaviors()
@@ -60,42 +70,80 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
                      config: Optional[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute pipeline with enhanced communication"""
         
-        # Check if enhanced components are available
-        if not self.enhanced_available:
-            logger.warning("Enhanced components not available, falling back to standard execution")
-            async for event in super().execute(query, mode, config):
-                yield event
-            return
+        # Start resource monitoring if available
+        if self.resource_monitor:
+            self.resource_usage = self.resource_monitor.start_session_monitoring(
+                conversation_id=self.conversation_id,
+                mode=mode
+            )
+            logger.info(f"Started resource monitoring for enhanced multi-agent session {self.conversation_id}")
         
-        # Initialize context manager for this execution
-        self.context_manager = PipelineContextManager() if PipelineContextManager else None
-        
-        # CRITICAL: Extract pipeline_id from config for proper mode detection
-        self.current_pipeline_id = None
-        if config and "pipeline" in config:
-            pipeline_config = config["pipeline"]
-            self.current_pipeline_id = pipeline_config.get("id")
-            logger.info(f"🔴 [PIPELINE DETECTED] Pipeline ID extracted from config: {self.current_pipeline_id}")
+        try:
+            # Check if enhanced components are available
+            if not self.enhanced_available:
+                logger.warning("Enhanced components not available, falling back to standard execution")
+                async for event in super().execute(query, mode, config):
+                    yield event
+                return
             
-            # Initialize orchestrator
-            if PipelineOrchestrator:
-                self.pipeline_orchestrator = PipelineOrchestrator(pipeline_config)
-        else:
-            logger.info(f"🔵 [MULTI-AGENT DETECTED] No pipeline config found, using multi-agent mode")
+            # Initialize context manager for this execution
+            self.context_manager = PipelineContextManager() if PipelineContextManager else None
         
-        # Get agent sequence
-        agents = config.get("agents", []) if config else []
-        if not agents and config and "pipeline" in config:
-            agents = config["pipeline"].get("agents", [])
+            # CRITICAL: Extract pipeline_id from config for proper mode detection
+            self.current_pipeline_id = None
+            if config and "pipeline" in config:
+                pipeline_config = config["pipeline"]
+                self.current_pipeline_id = pipeline_config.get("id")
+                logger.info(f"🔴 [PIPELINE DETECTED] Pipeline ID extracted from config: {self.current_pipeline_id}")
+                
+                # Initialize orchestrator
+                if PipelineOrchestrator:
+                    self.pipeline_orchestrator = PipelineOrchestrator(pipeline_config)
+            else:
+                logger.info(f"🔵 [MULTI-AGENT DETECTED] No pipeline config found, using multi-agent mode")
+            
+            # Get agent sequence
+            agents = config.get("agents", []) if config else []
+            if not agents and config and "pipeline" in config:
+                agents = config["pipeline"].get("agents", [])
         
-        # Execute based on mode
-        if mode == "sequential" and self.context_manager:
-            async for event in self._execute_sequential_enhanced(query, agents):
-                yield event
-        else:
-            # Fall back to original implementation for other modes
-            async for event in super().execute(query, mode, config):
-                yield event
+            # Execute based on mode
+            if mode == "sequential" and self.context_manager:
+                async for event in self._execute_sequential_enhanced(query, agents):
+                    yield event
+            else:
+                # Fall back to original implementation for other modes
+                async for event in super().execute(query, mode, config):
+                    yield event
+        
+        except Exception as e:
+            logger.error(f"Enhanced multi-agent execution failed: {e}")
+            # Complete resource monitoring with error status
+            if self.resource_monitor and self.resource_usage:
+                try:
+                    final_usage = self.resource_monitor.complete_session_monitoring(self.conversation_id)
+                    if final_usage and final_usage.limits_exceeded:
+                        logger.warning(f"Failed multi-agent session {self.conversation_id} exceeded resource limits: {final_usage.limits_exceeded}")
+                except Exception as monitor_error:
+                    logger.warning(f"Failed to complete resource monitoring: {monitor_error}")
+            raise
+        
+        finally:
+            # Always complete resource monitoring on exit
+            if self.resource_monitor and self.resource_usage:
+                try:
+                    final_usage = self.resource_monitor.complete_session_monitoring(self.conversation_id)
+                    if final_usage:
+                        if final_usage.limits_exceeded:
+                            logger.warning(f"Multi-agent session {self.conversation_id} exceeded resource limits: {final_usage.limits_exceeded}")
+                        logger.info(f"Enhanced multi-agent session {self.conversation_id} completed - "
+                                  f"Memory peak: {final_usage.memory_peak_mb:.1f}MB, "
+                                  f"Agents: {final_usage.agents_executed}, "
+                                  f"LLM calls: {final_usage.llm_calls_count}, "
+                                  f"Tool calls: {final_usage.tool_calls_count}, "
+                                  f"Duration: {final_usage.execution_duration_ms:.1f}ms")
+                except Exception as monitor_error:
+                    logger.warning(f"Failed to complete resource monitoring: {monitor_error}")
     
     async def _execute_sequential_enhanced(self, query: str, 
                                          agents: List[Any]) -> AsyncGenerator[Dict[str, Any], None]:
@@ -191,6 +239,10 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
             
             logger.info(f"[ENHANCED] Executing agent {idx + 1}/{total_agents}: {agent_name}")
             
+            # Record agent start in resource monitoring
+            if self.resource_monitor:
+                self.resource_monitor.record_agent_start(self.conversation_id, agent_name)
+            
             # Emit agent_start event
             yield {
                 "event": "agent_start",
@@ -213,9 +265,11 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
             }
             
             # Call the agent
+            agent_success = False
             async for event in self._execute_single_agent(agent_name, agent_state):
                 # Parse the response if it's a completion event
                 if event.get("event") == "agent_complete":
+                    agent_success = True
                     response = event.get("data", {}).get("response", "")
                     parsed_response = self.communication_protocol.parse_agent_response(response)
                     
@@ -225,8 +279,21 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
                     # Add parsing info to event
                     event["data"]["parsed_response"] = parsed_response
                     event["data"]["pipeline_position"] = f"{idx + 1}/{total_agents}"
+                    
+                    # Record agent completion in resource monitoring
+                    if self.resource_monitor:
+                        self.resource_monitor.record_agent_complete(self.conversation_id, agent_name, success=True)
+                elif event.get("event") == "error":
+                    agent_success = False
+                    # Record agent failure in resource monitoring
+                    if self.resource_monitor:
+                        self.resource_monitor.record_agent_complete(self.conversation_id, agent_name, success=False)
                 
                 yield event
+            
+            # Ensure agent completion is recorded even if no explicit completion event
+            if not agent_success and self.resource_monitor:
+                self.resource_monitor.record_agent_complete(self.conversation_id, agent_name, success=False)
         
         # Yield final summary
         yield {
@@ -284,8 +351,9 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
         
         # NO CONFIG MIXING - each mode uses its own table exclusively
         
-        # Create dynamic system and execute agent
-        dynamic_system = DynamicMultiAgentSystem(trace=self.trace)
+        # Get dynamic system from pool for better resource management
+        from app.langchain.dynamic_agent_system import agent_instance_pool
+        dynamic_system = await agent_instance_pool.get_or_create_instance(trace=self.trace)
         
         # Build enhanced context with pipeline information
         context = {
@@ -303,64 +371,88 @@ class EnhancedMultiAgentSystem(MultiAgentSystem):
         start_time = datetime.now()
         response_text = ""
         
-        async for event in dynamic_system.execute_agent(
-            agent_name,
-            agent_data,
-            state.get("query", ""),
-            context=context
-        ):
-            # Transform event format to match expected output
-            event_type = event.get("type", "")
-            
-            if event_type == "agent_complete":
-                duration = (datetime.now() - start_time).total_seconds()
-                response_text = event.get("content", "")
+        try:
+            async for event in dynamic_system.execute_agent(
+                agent_name,
+                agent_data,
+                state.get("query", ""),
+                context=context
+            ):
+                # Transform event format to match expected output
+                event_type = event.get("type", "")
                 
-                # Ensure response_text is not empty - check multiple fields
-                if not response_text.strip():
-                    response_text = (
-                        event.get("response") or
-                        event.get("output") or
-                        "Agent completed but produced no output"
-                    )
+                # Monitor LLM calls and tool calls for resource tracking
+                if self.resource_monitor:
+                    if event_type in ["llm_call", "generation_start", "generation_complete"]:
+                        self.resource_monitor.record_llm_call(self.conversation_id, agent_name)
+                    elif event_type in ["tool_call", "tool_execution", "mcp_call"]:
+                        self.resource_monitor.record_tool_call(self.conversation_id, agent_name)
                 
-                yield {
-                    "event": "agent_complete",
-                    "data": {
-                        "agent": agent_name,
-                        "response": response_text,
-                        "content": response_text,  # Add both fields for compatibility
-                        "reasoning": event.get("reasoning", ""),
-                        "duration": duration,
-                        "avatar": event.get("avatar", "🤖"),
-                        "description": event.get("description", ""),
-                        "timeout": event.get("timeout", False),
-                        "tools_used": event.get("tools_used", [])
+                if event_type == "agent_complete":
+                    duration = (datetime.now() - start_time).total_seconds()
+                    response_text = event.get("content", "")
+                    tools_used = event.get("tools_used", [])
+                    
+                    # Record additional tool calls based on tools_used count
+                    if self.resource_monitor and tools_used:
+                        for _ in tools_used:
+                            self.resource_monitor.record_tool_call(self.conversation_id, agent_name)
+                    
+                    # Ensure response_text is not empty - check multiple fields
+                    if not response_text.strip():
+                        response_text = (
+                            event.get("response") or
+                            event.get("output") or
+                            "Agent completed but produced no output"
+                        )
+                    
+                    yield {
+                        "event": "agent_complete",
+                        "data": {
+                            "agent": agent_name,
+                            "response": response_text,
+                            "content": response_text,  # Add both fields for compatibility
+                            "reasoning": event.get("reasoning", ""),
+                            "duration": duration,
+                            "avatar": event.get("avatar", "🤖"),
+                            "description": event.get("description", ""),
+                            "timeout": event.get("timeout", False),
+                            "tools_used": tools_used
+                        }
                     }
-                }
-            elif event_type == "agent_token":
-                # Stream tokens as they come
-                yield {
-                    "event": "streaming",
-                    "data": {
-                        "agent": agent_name,
-                        "content": event.get("token", "")
+                elif event_type == "agent_token":
+                    # Stream tokens as they come - first token indicates LLM call started
+                    if self.resource_monitor and event.get("token"):
+                        # Only record once per agent execution by checking if this is the first token
+                        # This prevents multiple recordings for the same LLM call
+                        if not hasattr(self, f'_llm_recorded_{agent_name}_{start_time.timestamp()}'):
+                            self.resource_monitor.record_llm_call(self.conversation_id, agent_name)
+                            setattr(self, f'_llm_recorded_{agent_name}_{start_time.timestamp()}', True)
+                    
+                    yield {
+                        "event": "streaming",
+                        "data": {
+                            "agent": agent_name,
+                            "content": event.get("token", "")
+                        }
                     }
-                }
-            elif event_type == "agent_error":
-                yield {
-                    "event": "error",
-                    "data": {
-                        "agent": agent_name,
-                        "error": event.get("error", "Unknown error")
+                elif event_type == "agent_error":
+                    yield {
+                        "event": "error",
+                        "data": {
+                            "agent": agent_name,
+                            "error": event.get("error", "Unknown error")
+                        }
                     }
-                }
-            else:
-                # Pass through other events with proper format
-                yield {
-                    "event": event_type,
-                    "data": event
-                }
+                else:
+                    # Pass through other events with proper format
+                    yield {
+                        "event": event_type,
+                        "data": event
+                    }
+        finally:
+            # Always release the instance back to the pool
+            await agent_instance_pool.release_instance(dynamic_system)
 
 def create_pipeline_config(pipeline_name: str, agents: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Helper to create a pipeline configuration"""

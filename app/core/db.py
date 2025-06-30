@@ -241,4 +241,15 @@ def get_db():
     try:
         yield db
     finally:
+        db.close()
+
+from contextlib import contextmanager
+
+@contextmanager
+def get_db_session():
+    """Context manager for database sessions with automatic cleanup"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
         db.close() 
