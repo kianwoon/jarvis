@@ -471,26 +471,6 @@ class LangfuseTracer:
             logger.error(f"Failed to create tool execution workflow span: {e}")
             return None
     
-    def create_pipeline_execution_span(self, trace, pipeline_id: int, mode: str, agents: List[str]) -> Optional[Any]:
-        """Create a span for agentic pipeline execution"""
-        if not self.is_enabled() or not trace:
-            return None
-        try:
-            safe_agents = [str(agent)[:100] for agent in (agents or [])[:20]]
-            return trace.span(
-                name=f"pipeline-execution-{mode}",
-                input={"pipeline_id": pipeline_id, "agents": safe_agents, "mode": mode},
-                metadata={
-                    "operation": "pipeline_execution",
-                    "pipeline_id": pipeline_id,
-                    "mode": mode,
-                    "agent_count": len(safe_agents),
-                    "pipeline_type": "agentic"
-                }
-            )
-        except Exception as e:
-            logger.error(f"Failed to create pipeline execution span: {e}")
-            return None
     
     def create_automation_execution_trace(self, workflow_id: int, execution_id: str, input_data: Dict[str, Any] = None) -> Optional[Any]:
         """Create a trace for automation workflow execution"""

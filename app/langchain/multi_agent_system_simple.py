@@ -174,7 +174,7 @@ class MultiAgentSystem:
     def _get_agent_prompt_with_template(self, agent_name: str, state: AgentState, default_prompt: str) -> str:
         """Get agent prompt, using template instructions if available"""
         # Check for agent template configuration
-        agent_config = state.get("metadata", {}).get("pipeline_agent_config", {})
+        agent_config = state.get("metadata", {}).get("agent_config", {})
         template_instructions = agent_config.get("default_instructions", "")
         
         if template_instructions:
@@ -1128,7 +1128,7 @@ Important: Only use agent names that exist in the available agents list above.""
         context = self._extract_query_context(state["query"])
         
         # Check for agent template configuration
-        agent_config = state.get("metadata", {}).get("pipeline_agent_config", {})
+        agent_config = state.get("metadata", {}).get("agent_config", {})
         template_instructions = agent_config.get("default_instructions", "")
         
         # Check for messages from other agents - make dynamic
@@ -2547,8 +2547,7 @@ Now provide your synthesis:"""
                 "start_time": datetime.now().isoformat(),
                 "mode": "single_agent",
                 "previous_outputs": previous_outputs or [],
-                "pipeline_goal": agent_config.get("pipeline_goal", "") if agent_config else "",
-                "pipeline_agent_config": agent_config  # Pass the full pipeline config
+                "agent_config": agent_config  # Pass the full agent config
             },
             error=None,
             agent_messages=[],

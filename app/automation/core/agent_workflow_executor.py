@@ -840,8 +840,11 @@ class AgentWorkflowExecutor:
                 )
                 agent_output = result.get("output", "")
                 
+                # Clean agent output for inter-agent communication (remove thinking tags)
+                clean_output = self._clean_output_for_state_passing(agent_output)
+                
                 # Store agent output in clean format (no truncation needed with state-based approach)
-                agent_outputs[agent_name] = agent_output
+                agent_outputs[agent_name] = agent_output  # Keep original for UI display
                 
                 # Update workflow state with agent output
                 if workflow_state:
@@ -849,7 +852,8 @@ class AgentWorkflowExecutor:
                     agent_result = {
                         "agent_name": agent_name,
                         "node_id": agent["node_id"],
-                        "output": agent_output,
+                        "output": clean_output,  # Use cleaned output for state passing
+                        "raw_output": agent_output,  # Keep original for UI/debugging
                         "tools_used": result.get("tools_used", []),
                         "timestamp": datetime.utcnow().isoformat(),
                         "index": i
@@ -875,13 +879,21 @@ class AgentWorkflowExecutor:
                 # Individual agent spans will be created by the multi-agent system itself
                 pass
                 
+                # Parse the agent prompt to extract structured sections for frontend
+                agent_input_sections = self._parse_agent_prompt_sections(agent_prompt)
+                
                 yield {
                     "type": "agent_execution_complete",
                     "agent_name": agent_name,
-                    "input": agent_prompt[:200] + "..." if len(agent_prompt) > 200 else agent_prompt,
+                    "input": agent_prompt,  # Provide full prompt for detailed analysis
+                    "input_summary": agent_prompt[:200] + "..." if len(agent_prompt) > 200 else agent_prompt,
+                    "input_sections": agent_input_sections,  # Structured sections for UI parsing
                     "output": result.get("output", ""),
                     "tools_used": result.get("tools_used", []),
                     "state_enabled": agent.get("state_enabled", False),
+                    "state_operation": agent.get("state_operation", "passthrough"),
+                    "output_format": agent.get("output_format", "text"),
+                    "chain_key": agent.get("chain_key", ""),
                     "chain_data": None,  # State-based execution doesn't use chain data
                     "workflow_id": workflow_id,
                     "execution_id": execution_id,
@@ -1544,3 +1556,76 @@ Please process this request independently and provide your analysis."""
             if edge.get("target") == node_id:
                 dependencies.append(edge.get("source"))
         return dependencies
+    
+    def _clean_output_for_state_passing(self, agent_output: str) -> str:
+        """Clean agent output for inter-agent communication by removing thinking tags and extracting final analysis"""
+        if not agent_output:
+            return ""
+        
+        import re
+        
+        # Remove thinking tags completely for state passing
+        clean_content = re.sub(r'<think>.*?</think>', '', agent_output, flags=re.DOTALL)
+        clean_content = re.sub(r'</?think>', '', clean_content)
+        
+        # Clean up extra whitespace
+        clean_content = '\n'.join(line.strip() for line in clean_content.split('\n') if line.strip())
+        clean_content = clean_content.strip()
+        
+        # If the cleaned content is too short, try extracting content differently
+        if len(clean_content) < 100:
+            # Look for thinking content that might contain the actual analysis
+            thinking_match = re.search(r'<think>(.*?)</think>', agent_output, re.DOTALL)
+            if thinking_match:
+                thinking_content = thinking_match.group(1).strip()
+                # If thinking content is substantial, consider it might be the main content
+                if len(thinking_content) > len(clean_content) * 2:
+                    clean_content = thinking_content
+        
+        return clean_content if clean_content else agent_output
+    
+    def _parse_agent_prompt_sections(self, agent_prompt: str) -> Dict[str, Any]:
+        """Parse agent prompt into structured sections for frontend display"""
+        if not agent_prompt:
+            return {"has_dependencies": False, "role": "", "dependency_results": "", "user_request": ""}
+        
+        lines = agent_prompt.split('\n')
+        role = ""
+        dependency_results = ""
+        user_request = ""
+        in_dependency_section = False
+        in_user_request_section = False
+        
+        for line in lines:
+            line_clean = line.strip()
+            
+            # Extract role
+            if line.startswith('ROLE:'):
+                role = line.replace('ROLE:', '').strip()
+            
+            # Detect sections
+            if 'WORKFLOW DEPENDENCIES' in line or 'DEPENDENCY RESULTS' in line:
+                in_dependency_section = True
+                in_user_request_section = False
+                continue
+            elif 'USER REQUEST' in line or 'ORIGINAL QUERY' in line:
+                in_user_request_section = True
+                in_dependency_section = False
+                continue
+            elif line.startswith('TASK:') or line.startswith('INSTRUCTIONS:'):
+                in_dependency_section = False
+                in_user_request_section = False
+                continue
+            
+            # Capture content
+            if in_dependency_section and line_clean:
+                dependency_results += line + '\n'
+            elif in_user_request_section and line_clean:
+                user_request += line + '\n'
+        
+        return {
+            "has_dependencies": bool(dependency_results.strip()),
+            "role": role,
+            "dependency_results": dependency_results.strip(),
+            "user_request": user_request.strip()
+        }

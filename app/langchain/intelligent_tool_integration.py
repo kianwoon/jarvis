@@ -74,52 +74,14 @@ async def execute_multi_agent_tools(
         agent_name=agent_name
     )
 
-async def execute_pipeline_agent_tools(
-    task: str,
-    agent_name: str,
-    pipeline_id: int,
-    context: Dict[str, Any] = None,
-    trace=None,
-    stream_callback=None
-) -> List[Dict[str, Any]]:
-    """
-    Execute tools for agentic pipeline mode - only pipeline agent's assigned tools
-    
-    Args:
-        task: The task to accomplish
-        agent_name: Name of the agent (required)
-        pipeline_id: ID of the pipeline (required)
-        context: Additional context
-        trace: Langfuse trace for observability
-        stream_callback: Optional streaming callback
-        
-    Returns:
-        List of execution events
-    """
-    if not agent_name or pipeline_id is None:
-        logger.error("[INTELLIGENT TOOLS] Agent name and pipeline_id required for pipeline mode")
-        return [{"type": "error", "error": "Agent name and pipeline_id required for pipeline mode"}]
-    
-    logger.info(f"[INTELLIGENT TOOLS] Pipeline execution for {agent_name} in pipeline {pipeline_id}: {task[:100]}...")
-    
-    return await execute_task_with_intelligent_tools(
-        task=task,
-        context=context,
-        trace=trace,
-        stream_callback=stream_callback,
-        mode="pipeline",
-        agent_name=agent_name,
-        pipeline_id=pipeline_id
-    )
 
-def analyze_agent_tool_constraints(agent_name: str, mode: str = "multi_agent", pipeline_id: int = None) -> Dict[str, Any]:
+def analyze_agent_tool_constraints(agent_name: str, mode: str = "multi_agent") -> Dict[str, Any]:
     """
     Analyze tool constraints for an agent in a specific mode
     
     Args:
         agent_name: Name of the agent
         mode: "multi_agent" or "pipeline"
-        pipeline_id: Required for pipeline mode
         
     Returns:
         Dict with agent tool information and constraints

@@ -62,7 +62,6 @@ class IntelligentToolExecutor:
         stream_callback=None,
         mode: str = "standard",
         agent_name: str = None,
-        pipeline_id: int = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Execute a task using intelligent tool planning and execution
@@ -85,7 +84,7 @@ class IntelligentToolExecutor:
                     tracer = get_tracer()
                     if tracer.is_enabled():
                         # Get available tools count for metadata
-                        available_tools = self.planner.get_enhanced_tool_metadata(mode, agent_name, pipeline_id)
+                        available_tools = self.planner.get_enhanced_tool_metadata(mode, agent_name)
                         available_tools_count = len(available_tools) if available_tools else 0
                         
                         planning_span = tracer.create_intelligent_tool_planning_span(
@@ -104,7 +103,7 @@ class IntelligentToolExecutor:
                 "timestamp": datetime.now().isoformat()
             }
             
-            execution_plan = await self.planner.plan_tool_execution(task, context, mode, agent_name, pipeline_id)
+            execution_plan = await self.planner.plan_tool_execution(task, context, mode, agent_name)
             
             # End planning span
             if planning_span:
@@ -172,26 +171,6 @@ class IntelligentToolExecutor:
                 if len(safe_tools) != len(execution_plan.tools):
                     execution_plan.tools = safe_tools
                     execution_plan.reasoning += f"\n[SAFETY LIMIT] Restricted to 1 action tool to prevent unintended modifications."
-            
-            # CRITICAL SECURITY CHECK for pipeline mode - ONLY allow tools from pipeline_agents table
-            if mode == "pipeline" and pipeline_id is not None and agent_name:
-                from app.core.pipeline_agents_cache import validate_pipeline_agent_tools
-                
-                planned_tools = [tool_plan.tool_name for tool_plan in execution_plan.tools]
-                logger.info(f"[PIPELINE SECURITY] Validating tools {planned_tools} for agent {agent_name} in pipeline {pipeline_id}")
-                
-                if not validate_pipeline_agent_tools(pipeline_id, agent_name, planned_tools):
-                    logger.error(f"[PIPELINE SECURITY] BLOCKED: One or more tools not allowed for pipeline agent {agent_name}")
-                    yield {
-                        "type": "security_violation",
-                        "error": f"Security violation: Tools {planned_tools} not authorized for pipeline agent {agent_name}",
-                        "agent_name": agent_name,
-                        "pipeline_id": pipeline_id,
-                        "unauthorized_tools": planned_tools
-                    }
-                    return
-                else:
-                    logger.info(f"[PIPELINE SECURITY] All tools validated for pipeline agent {agent_name}")
             
             yield {
                 "type": "plan_created",
@@ -287,7 +266,6 @@ class IntelligentToolExecutor:
                                 stream_callback,
                                 mode,
                                 agent_name,
-                                pipeline_id
                             ):
                                 yield replan_event
                         break
@@ -546,7 +524,6 @@ class IntelligentToolExecutor:
         stream_callback=None,
         mode: str = "standard",
         agent_name: str = None,
-        pipeline_id: int = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Adaptively re-plan remaining tools based on failure"""
         
@@ -570,7 +547,7 @@ class IntelligentToolExecutor:
                 stream_callback("🔄 Re-planning remaining tasks...")
             
             # Get new plan for remaining work with same mode constraints
-            new_plan = await self.planner.plan_tool_execution(replan_task, context.user_context, mode, agent_name, pipeline_id)
+            new_plan = await self.planner.plan_tool_execution(replan_task, context.user_context, mode, agent_name)
             
             if new_plan.tools:
                 yield {
@@ -643,7 +620,7 @@ async def execute_task_with_intelligent_tools(
     executor = IntelligentToolExecutor(trace=trace)
     
     events = []
-    async for event in executor.execute_task_intelligently(task, context, stream_callback, mode, agent_name, pipeline_id):
+    async for event in executor.execute_task_intelligently(task, context, stream_callback, mode, agent_name):
         events.append(event)
     
     return events

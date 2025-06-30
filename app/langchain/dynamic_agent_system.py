@@ -812,10 +812,10 @@ Required JSON format:
         logger.info(f"[AGENT TIMEOUT] {agent_name}: Using timeout {timeout}s (configured: {base_timeout}s, extended for complexity: {timeout > base_timeout})")
         
         # Build prompt with agent's system prompt and query
-        # Check if there's a pipeline-specific system prompt in the config
+        # Get system prompt from agent config or data
         if agent_config.get("system_prompt"):
             system_prompt = agent_config["system_prompt"]
-            print(f"[DEBUG] Using pipeline-specific system prompt for {agent_name}")
+            print(f"[DEBUG] Using agent config system prompt for {agent_name}")
         else:
             system_prompt = agent_data.get("system_prompt", "You are a helpful assistant.")
             print(f"[DEBUG] Using default system prompt for {agent_name}")
@@ -1312,87 +1312,21 @@ TASK: Provide your analysis of the query above."""
                     except Exception as e:
                         print(f"[DEBUG] {agent_name}: Failed to create agent span: {e}")
                 
-                # Execute tools using intelligent system - detect pipeline mode for proper constraints
+                # Execute tools using intelligent multi-agent system
                 try:
-                    # Check if we're running in pipeline mode to enforce proper tool constraints
-                    pipeline_id = None
-                    
-                    # Method 1: Check conversation_context for pipeline info
-                    pipeline_context = context.get("conversation_context", {}) if context else {}
-                    pipeline_info = pipeline_context.get("pipeline", {}) if pipeline_context else {}
-                    pipeline_id = pipeline_info.get("id") or pipeline_context.get("pipeline_id")
-                    
-                    # Method 1.5: Check pipeline_context directly for pipeline_id
-                    if not pipeline_id and context:
-                        direct_pipeline_context = context.get("pipeline_context", {})
-                        pipeline_id = direct_pipeline_context.get("pipeline_id")
-                    
-                    # Method 2: Check direct context keys
-                    if not pipeline_id and context:
-                        for key in ["pipeline_id", "execution_id"]:
-                            if key in context:
-                                pipeline_id = context[key]
-                                break
-                    
-                    # Method 3: Check if self.trace has pipeline info (from multi-agent system config)
-                    if not pipeline_id and hasattr(self, 'current_config') and self.current_config:
-                        config_pipeline = self.current_config.get("pipeline", {})
-                        pipeline_id = config_pipeline.get("id")
-                    
-                    # Method 4: Check agent_data for pipeline context
-                    if not pipeline_id and agent_data:
-                        agent_pipeline_ctx = agent_data.get("pipeline_context", {})
-                        pipeline_id = agent_pipeline_ctx.get("pipeline_id")
-                    
-                    # Method 5: Check if trace metadata contains pipeline info
-                    if not pipeline_id and self.trace and hasattr(self.trace, 'metadata'):
-                        trace_meta = getattr(self.trace, 'metadata', {}) or {}
-                        pipeline_id = trace_meta.get("pipeline_id")
-                    
-                    # Method 6: Simple heuristic - if we have a multi-agent system and conversation_id looks like execution ID
-                    if not pipeline_id and hasattr(self, 'conversation_id') and self.conversation_id:
-                        # Pipeline execution IDs are typically numeric strings
-                        if self.conversation_id.isdigit():
-                            print(f"[DEBUG] {agent_name}: Detected potential pipeline execution based on numeric conversation_id")
-                            pipeline_id = self.conversation_id
-                    
-                    # Convert pipeline_id to integer if it's a string
-                    if pipeline_id and isinstance(pipeline_id, str) and pipeline_id.isdigit():
-                        pipeline_id = int(pipeline_id)
-                    elif pipeline_id and not isinstance(pipeline_id, int):
-                        pipeline_id = None  # Invalid format
-                    
-                    print(f"[DEBUG] {agent_name}: Pipeline detection - pipeline_id: {pipeline_id} (type: {type(pipeline_id)})")
-                    
-                    if pipeline_id:
-                        # Use pipeline-specific tool execution with proper constraints
-                        print(f"[DEBUG] {agent_name}: Using pipeline tool execution with constraints")
-                        from app.langchain.intelligent_tool_integration import execute_pipeline_agent_tools
-                        execution_events = await execute_pipeline_agent_tools(
-                            task=query,
-                            agent_name=agent_name,
-                            pipeline_id=str(pipeline_id),
-                            context={
-                                "agent_response": agent_response,
-                                "conversation_context": context,
-                                "agent_data": agent_data
-                            },
-                            trace=agent_span if agent_span else self.trace
-                        )
-                    else:
-                        # Use multi-agent tool execution (original behavior)
-                        print(f"[DEBUG] {agent_name}: Using multi-agent tool execution")
-                        from app.langchain.intelligent_tool_integration import execute_multi_agent_tools
-                        execution_events = await execute_multi_agent_tools(
-                            task=query,
-                            agent_name=agent_name,
-                            context={
-                                "agent_response": agent_response,
-                                "conversation_context": context,
-                                "agent_data": agent_data
-                            },
-                            trace=agent_span if agent_span else self.trace
-                        )
+                    # Use multi-agent tool execution
+                    print(f"[DEBUG] {agent_name}: Using multi-agent tool execution")
+                    from app.langchain.intelligent_tool_integration import execute_multi_agent_tools
+                    execution_events = await execute_multi_agent_tools(
+                        task=query,
+                        agent_name=agent_name,
+                        context={
+                            "agent_response": agent_response,
+                            "conversation_context": context,
+                            "agent_data": agent_data
+                        },
+                        trace=agent_span if agent_span else self.trace
+                    )
                     
                     # Process execution events and extract results
                     tool_results = []

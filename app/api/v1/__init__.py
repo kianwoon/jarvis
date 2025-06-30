@@ -12,12 +12,8 @@ from app.api.v1.endpoints import collections
 from app.api.v1.endpoints import model_presets
 from app.api.v1.endpoints import oauth
 from app.api.v1.endpoints import oauth_flow
-from app.api.v1.endpoints import pipelines
 from app.api.v1.endpoints import agent_templates
-from app.api.v1.endpoints import pipeline_validation
-from app.api.v1.endpoints import pipeline_execution_ws
 from app.api.v1.endpoints import agent_recommendations
-from app.api.v1.endpoints import pipeline_replay
 from app.api.v1.endpoints import automation
 import logging
 
@@ -143,11 +139,6 @@ api_router.include_router(
     tags=["oauth-flow"]
 )
 
-api_router.include_router(
-    pipelines.router,
-    prefix="/pipelines",
-    tags=["pipelines"]
-)
 
 api_router.include_router(
     agent_templates.router,
@@ -155,11 +146,6 @@ api_router.include_router(
     tags=["agent-templates"]
 )
 
-api_router.include_router(
-    pipeline_validation.router,
-    prefix="/pipelines",
-    tags=["pipeline-validation"]
-)
 
 api_router.include_router(
     agent_recommendations.router,
@@ -167,17 +153,7 @@ api_router.include_router(
     tags=["agent-recommendations"]
 )
 
-api_router.include_router(
-    pipeline_replay.router,
-    prefix="/pipelines",
-    tags=["pipeline-replay"]
-)
 
-api_router.include_router(
-    pipeline_execution_ws.router,
-    prefix="",
-    tags=["pipeline-websockets"]
-)
 
 api_router.include_router(
     automation.router,

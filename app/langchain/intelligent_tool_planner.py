@@ -40,7 +40,7 @@ class IntelligentToolPlanner:
     def __init__(self):
         self.planning_cache = {}  # Cache successful plans for similar tasks
         
-    def get_enhanced_tool_metadata(self, mode: str = "standard", agent_name: str = None, pipeline_id: int = None) -> Dict[str, Dict[str, Any]]:
+    def get_enhanced_tool_metadata(self, mode: str = "standard", agent_name: str = None) -> Dict[str, Dict[str, Any]]:
         """
         Get enhanced tool metadata with capabilities and use cases, 
         respecting tool constraints based on mode
@@ -55,7 +55,7 @@ class IntelligentToolPlanner:
             raw_tools = get_enabled_mcp_tools()
             
             # Get available tools based on mode
-            available_tool_names = self._get_available_tools_for_mode(mode, agent_name, pipeline_id)
+            available_tool_names = self._get_available_tools_for_mode(mode, agent_name)
             
             enhanced_tools = {}
             for tool_name, tool_data in raw_tools.items():
@@ -92,7 +92,7 @@ class IntelligentToolPlanner:
             logger.error(f"[TOOL PLANNER] Failed to get tool metadata: {e}")
             return {}
     
-    def _get_available_tools_for_mode(self, mode: str, agent_name: str = None, pipeline_id: int = None) -> Optional[List[str]]:
+    def _get_available_tools_for_mode(self, mode: str, agent_name: str = None) -> Optional[List[str]]:
         """
         Get list of available tool names based on mode and constraints
         
@@ -130,27 +130,6 @@ class IntelligentToolPlanner:
                 logger.error(f"[TOOL PLANNER] Failed to get tools for multi-agent {agent_name}: {e}")
                 return []
                 
-        elif mode == "pipeline":
-            # PIPELINE MODE: Use ONLY pipeline_agents table
-            if not agent_name or pipeline_id is None:
-                logger.warning("[TOOL PLANNER] Agent name and pipeline_id required for pipeline mode")
-                return []
-                
-            try:
-                from app.core.pipeline_agents_cache import get_pipeline_agent_tools
-                logger.info(f"[TOOL PLANNER] PIPELINE MODE: Getting tools for {agent_name} from pipeline_agents table (pipeline {pipeline_id})")
-                tools = get_pipeline_agent_tools(pipeline_id, agent_name)
-                
-                if tools:
-                    logger.info(f"[TOOL PLANNER] Pipeline agent {agent_name} has {len(tools)} assigned tools: {tools}")
-                    return tools
-                else:
-                    logger.error(f"[TOOL PLANNER] CRITICAL: Pipeline agent {agent_name} in pipeline {pipeline_id} has no tools in pipeline_agents table!")
-                    return []
-                    
-            except Exception as e:
-                logger.error(f"[TOOL PLANNER] Failed to get tools for pipeline agent {agent_name}: {e}")
-                return []
         
         else:
             logger.warning(f"[TOOL PLANNER] Unknown mode: {mode}")
@@ -263,7 +242,6 @@ class IntelligentToolPlanner:
         context: Dict[str, Any] = None, 
         mode: str = "standard",
         agent_name: str = None,
-        pipeline_id: int = None
     ) -> ExecutionPlan:
         """
         Create an intelligent execution plan for a task using available tools
@@ -280,14 +258,14 @@ class IntelligentToolPlanner:
         """
         try:
             # Create cache key that includes mode constraints
-            cache_key = self._generate_cache_key(task, mode, agent_name, pipeline_id)
+            cache_key = self._generate_cache_key(task, mode, agent_name)
             if cache_key in self.planning_cache:
                 cached_plan = self.planning_cache[cache_key]
                 logger.info(f"[TOOL PLANNER] Using cached plan for similar task (mode: {mode})")
                 return cached_plan
             
             # Get available tools with enhanced metadata respecting mode constraints
-            available_tools = self.get_enhanced_tool_metadata(mode, agent_name, pipeline_id)
+            available_tools = self.get_enhanced_tool_metadata(mode, agent_name)
             if not available_tools:
                 logger.warning(f"[TOOL PLANNER] No tools available for planning (mode: {mode}, agent: {agent_name})")
                 return ExecutionPlan(
@@ -323,7 +301,7 @@ class IntelligentToolPlanner:
                 reasoning=f"Planning failed: {str(e)}"
             )
     
-    def _generate_cache_key(self, task: str, mode: str = "standard", agent_name: str = None, pipeline_id: int = None) -> str:
+    def _generate_cache_key(self, task: str, mode: str = "standard", agent_name: str = None) -> str:
         """Generate cache key for task (simplified for similar tasks)"""
         # Normalize task for caching similar requests
         normalized = task.lower().strip()
@@ -334,8 +312,6 @@ class IntelligentToolPlanner:
         cache_components = [normalized, mode]
         if agent_name:
             cache_components.append(agent_name)
-        if pipeline_id:
-            cache_components.append(str(pipeline_id))
             
         return str(hash(tuple(cache_components)))
     
