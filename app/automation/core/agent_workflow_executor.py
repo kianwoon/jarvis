@@ -12,6 +12,7 @@ from datetime import datetime
 from app.langchain.dynamic_agent_system import DynamicMultiAgentSystem, agent_instance_pool
 from app.core.langgraph_agents_cache import get_langgraph_agents, get_agent_by_name
 from app.automation.integrations.redis_bridge import workflow_redis
+from app.automation.integrations.postgres_bridge import postgres_bridge
 from app.core.langfuse_integration import get_tracer
 from app.automation.core.workflow_state import WorkflowState, workflow_state_manager
 from app.automation.core.resource_monitor import get_resource_monitor
@@ -187,6 +188,13 @@ class AgentWorkflowExecutor:
             }
             workflow_redis.update_workflow_state(workflow_id, execution_id, final_state)
             
+            # Update execution status in database
+            postgres_bridge.update_execution(execution_id, {
+                "status": "completed",
+                "completed_at": datetime.utcnow()
+            })
+            logger.info(f"[AGENT WORKFLOW] Updated execution {execution_id} status to completed in database")
+            
             # End execution trace with success and enhanced metadata
             if execution_trace:
                 try:
@@ -303,6 +311,14 @@ class AgentWorkflowExecutor:
             }
             workflow_redis.update_workflow_state(workflow_id, execution_id, error_state)
             
+            # Update execution status in database
+            postgres_bridge.update_execution(execution_id, {
+                "status": "failed",
+                "error_message": str(e),
+                "completed_at": datetime.utcnow()
+            })
+            logger.info(f"[AGENT WORKFLOW] Updated execution {execution_id} status to failed in database")
+            
             # Update execution trace with error (traces use update, not end_span_with_result)
             if execution_trace:
                 try:
@@ -386,9 +402,10 @@ class AgentWorkflowExecutor:
         nodes = workflow_config.get("nodes", [])
         edges = workflow_config.get("edges", [])
         
-        # Extract agent nodes and state nodes from workflow
+        # Extract agent nodes, state nodes, and output nodes from workflow
         agent_nodes = []
         state_nodes = []
+        output_node = None
         
         for node in nodes:
             node_data = node.get("data", {})
@@ -407,6 +424,41 @@ class AgentWorkflowExecutor:
                     "checkpoint_name": node_data.get("checkpointName", "")
                 })
                 logger.debug(f"[WORKFLOW CONVERSION] Found StateNode: {node.get('id')}")
+            
+            # Check for output nodes
+            elif node_type == "OutputNode" or node.get("type") == "outputnode":
+                # Extract OutputNode configuration
+                output_config = node_data.get("node", {}) or node_data
+                
+                output_node = {
+                    "node_id": node.get("id"),
+                    "output_format": (
+                        output_config.get("output_format") or
+                        node_data.get("output_format") or
+                        "text"
+                    ),
+                    "include_metadata": (
+                        output_config.get("include_metadata") or
+                        node_data.get("include_metadata") or
+                        False
+                    ),
+                    "include_tool_calls": (
+                        output_config.get("include_tool_calls") or
+                        node_data.get("include_tool_calls") or
+                        False
+                    ),
+                    "auto_display": (
+                        output_config.get("auto_display") or
+                        node_data.get("auto_display") or
+                        True
+                    ),
+                    "auto_save": (
+                        output_config.get("auto_save") or
+                        node_data.get("auto_save") or
+                        False
+                    )
+                }
+                logger.debug(f"[WORKFLOW CONVERSION] Found OutputNode: {node.get('id')} with format: {output_node['output_format']}, auto_display: {output_node['auto_display']}, auto_save: {output_node['auto_save']}")
             
             # Check for both legacy and agent-based node types
             elif node_type == "AgentNode" or node.get("type") == "agentnode":
@@ -427,24 +479,30 @@ class AgentWorkflowExecutor:
                     # Get agent from cache
                     agent_info = get_agent_by_name(agent_name)
                     if agent_info:
-                        # Extract additional configuration
-                        custom_prompt = (
-                            agent_config.get("custom_prompt") or
-                            node_data.get("customPrompt") or
-                            ""
-                        )
+                        # FIXED: Only extract user-configured custom prompt, don't pad with empty strings
+                        custom_prompt = ""
+                        if agent_config.get("custom_prompt"):
+                            custom_prompt = agent_config.get("custom_prompt")
+                        elif node_data.get("customPrompt"):
+                            custom_prompt = node_data.get("customPrompt")
+                        # Do NOT use agent template prompts - only use what user explicitly configured
                         
-                        tools = (
-                            agent_config.get("tools") or
-                            node_data.get("tools") or
-                            []
-                        )
+                        # FIXED: Only use user-configured tools, don't default to empty arrays
+                        tools = []
+                        if agent_config.get("tools"):
+                            tools = agent_config.get("tools")
+                        elif node_data.get("tools"):
+                            tools = node_data.get("tools")
+                        # Do NOT merge agent template tools - only use what user explicitly configured
                         
-                        context = (
-                            agent_config.get("context") or
-                            node_data.get("context") or
-                            {}
-                        )
+                        # FIXED: Only use user-configured context, never inject agent template defaults
+                        # This prevents hardcoded model specifications and other template configs from corrupting user workflows
+                        context = {}
+                        if agent_config.get("context"):
+                            context = agent_config.get("context")
+                        elif node_data.get("context"):
+                            context = node_data.get("context")
+                        # Do NOT merge agent template context - only use what user explicitly configured
                         
                         # Extract timeout configuration from workflow node
                         # Debug logging to understand timeout extraction
@@ -493,11 +551,25 @@ class AgentWorkflowExecutor:
                             ""
                         )
                         
+                        # CRITICAL FIX: Extract node-specific query
+                        node_query = (
+                            agent_config.get("query") or
+                            node_data.get("query") or
+                            ""
+                        )
+                        
                         agent_nodes.append({
                             "node_id": node.get("id"),
                             "agent_name": agent_name,
-                            "agent_config": agent_info,
+                            "agent_config": {
+                                "name": agent_name,
+                                "role": agent_info.get("role", ""),
+                                "system_prompt": agent_info.get("system_prompt", ""),
+                                # Filter out hardcoded model specs but preserve legitimate config
+                                "config": self._filter_agent_config(agent_info.get("config", {}))
+                            },
                             "custom_prompt": custom_prompt,
+                            "query": node_query,  # Add node-specific query
                             "tools": tools,
                             "context": context,
                             "configured_timeout": configured_timeout,
@@ -516,8 +588,8 @@ class AgentWorkflowExecutor:
                 state_info = f" [STATE: {agent_node.get('state_operation', 'passthrough')}, FORMAT: {agent_node.get('output_format', 'text')}]"
             logger.info(f"[WORKFLOW CONVERSION] Agent {i+1}: {agent_node['agent_name']} (Node: {agent_node['node_id']}){state_info}")
         
-        # Determine execution pattern from edges
-        execution_pattern = self._analyze_execution_pattern(agent_nodes, edges)
+        # Determine execution pattern from edges (check workflow config first)
+        execution_pattern = self._analyze_execution_pattern(agent_nodes, edges, workflow_config)
         
         # Prepare query from input or message
         query = message or input_data.get("query", "") if input_data else ""
@@ -528,6 +600,7 @@ class AgentWorkflowExecutor:
         result = {
             "agents": agent_nodes,
             "state_nodes": state_nodes,
+            "output_node": output_node,
             "pattern": execution_pattern,
             "query": query,
             "input_data": input_data,
@@ -548,13 +621,48 @@ class AgentWorkflowExecutor:
         
         return result
     
-    def _analyze_execution_pattern(self, agent_nodes: List[Dict], edges: List[Dict]) -> str:
+    def _filter_agent_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter out hardcoded model specifications and other unwanted defaults from agent config"""
+        if not config:
+            return {}
+        
+        # Create filtered config excluding hardcoded model specs
+        filtered_config = {}
+        
+        # Explicitly exclude known hardcoded values
+        excluded_keys = {
+            "model",  # Removes "claude-3-sonnet-20240229" and other hardcoded models
+            "temperature",  # Remove default temperature unless user-configured
+            "timeout",  # Remove default timeout unless user-configured  
+        }
+        
+        for key, value in config.items():
+            if key not in excluded_keys:
+                filtered_config[key] = value
+        
+        logger.debug(f"[CONFIG FILTER] Original config keys: {list(config.keys())}")
+        logger.debug(f"[CONFIG FILTER] Filtered config keys: {list(filtered_config.keys())}")
+        
+        return filtered_config
+    
+    def _analyze_execution_pattern(self, agent_nodes: List[Dict], edges: List[Dict], workflow_config: Optional[Dict[str, Any]] = None) -> str:
         """
         Analyze workflow structure to determine execution pattern
         
-        FIXED: Default to sequential execution to resolve user complaint about parallel execution
+        FIXED: Check for explicit execution_sequence first, then fall back to heuristics
+        Default to sequential execution to resolve user complaint about parallel execution
         Only use parallel when explicitly designed with multiple disconnected chains
         """
+        
+        # CRITICAL FIX: Check for explicit execution sequence first
+        if workflow_config and workflow_config.get('execution_sequence'):
+            execution_sequence = workflow_config.get('execution_sequence', [])
+            # Count agent nodes in the sequence
+            agent_nodes_in_sequence = [node_id for node_id in execution_sequence 
+                                     if any(agent['node_id'] == node_id for agent in agent_nodes)]
+            if len(agent_nodes_in_sequence) > 1:
+                logger.info(f"[EXECUTION PATTERN] Using explicit execution sequence: {len(agent_nodes_in_sequence)} agents in sequence")
+                return "sequential"
         
         if len(agent_nodes) <= 1:
             return "single"
@@ -664,7 +772,7 @@ class AgentWorkflowExecutor:
                 "name": final_agent_name,
                 "agent_name": final_agent_name,  # Add both keys for compatibility
                 "role": agent_config["role"],
-                "system_prompt": agent_node.get("custom_prompt") or agent_config["system_prompt"],
+                "system_prompt": self._build_system_prompt(agent_node),
                 "tools": agent_node["tools"],
                 "config": agent_config.get("config", {}),
                 "node_id": agent_node["node_id"],
@@ -706,7 +814,7 @@ class AgentWorkflowExecutor:
         try:
             if pattern == "parallel":
                 # Execute agents in parallel
-                async for result in self._execute_agents_parallel(selected_agents, query, workflow_id, execution_id, execution_trace, workflow_state):
+                async for result in self._execute_agents_parallel(selected_agents, query, workflow_id, execution_id, execution_trace, workflow_state, agent_plan):
                     yield result
             else:
                 # Execute agents sequentially (default) with enhanced workflow support
@@ -938,8 +1046,9 @@ class AgentWorkflowExecutor:
             except Exception as e:
                 logger.warning(f"Failed to create synthesis span: {e}")
         
-        # Yield final response
-        final_response = self._synthesize_agent_outputs(agent_outputs, query)
+        # Yield final response with OutputNode configuration
+        output_node = agent_plan.get("output_node") if agent_plan else None
+        final_response = self._synthesize_agent_outputs(agent_outputs, query, output_node)
         
         # Fix: Use correct Langfuse API - spans use .end() method
         if synthesis_span:
@@ -959,7 +1068,8 @@ class AgentWorkflowExecutor:
             "response": final_response,
             "agent_outputs": agent_outputs,
             "workflow_id": workflow_id,
-            "execution_id": execution_id
+            "execution_id": execution_id,
+            "output_config": output_node
         }
     
     async def _execute_agents_parallel(
@@ -969,7 +1079,8 @@ class AgentWorkflowExecutor:
         workflow_id: int,
         execution_id: str,
         execution_trace=None,
-        workflow_state: WorkflowState = None
+        workflow_state: WorkflowState = None,
+        agent_plan: Dict[str, Any] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute agents in parallel, then combine results"""
         
@@ -1053,14 +1164,16 @@ Please process this request independently and provide your analysis."""
                     "sequence_display": f"{task_index + 1}/{len(agents)}"
                 }
         
-        # Yield final response
-        final_response = self._synthesize_agent_outputs(agent_outputs, query)
+        # Yield final response with OutputNode configuration
+        output_node = agent_plan.get("output_node") if agent_plan else None
+        final_response = self._synthesize_agent_outputs(agent_outputs, query, output_node)
         yield {
             "type": "workflow_result",
             "response": final_response,
             "agent_outputs": agent_outputs,
             "workflow_id": workflow_id,
-            "execution_id": execution_id
+            "execution_id": execution_id,
+            "output_config": output_node
         }
     
     async def _execute_single_agent(
@@ -1101,11 +1214,60 @@ Please process this request independently and provide your analysis."""
             if not agent_info:
                 raise ValueError(f"Agent '{agent_name}' not found in cache")
             
+            # CRITICAL FIX: Override cached agent config with workflow-specific configuration
+            # Extract workflow config from multiple possible locations
+            workflow_node = agent.get("node", {})  # Main workflow node config
+            agent_config_data = agent.get("agent_config", {})
+            workflow_context = agent.get("context", {})
+            available_tools = agent.get("tools", []) or workflow_node.get("tools", [])
+            
+            # Create a copy of agent_info to avoid modifying the cache
+            agent_info = agent_info.copy()
+            
+            # Override tools with workflow config
+            if available_tools:
+                agent_info["tools"] = available_tools
+                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} tools with workflow config: {available_tools}")
+            else:
+                logger.info(f"[AGENT WORKFLOW] Using default agent {agent_name} tools from cache: {agent_info.get('tools', [])}")
+            
+            # Override agent config with workflow-specific values
+            if "config" not in agent_info:
+                agent_info["config"] = {}
+            
+            # Override model if specified in workflow
+            workflow_model = (
+                workflow_node.get("model") or
+                workflow_context.get("model") or 
+                agent_config_data.get("model")
+            )
+            if workflow_model:
+                agent_info["config"]["model"] = workflow_model
+                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} model with workflow config: {workflow_model}")
+                
+            # Override temperature if specified in workflow  
+            workflow_temperature = (
+                workflow_node.get("temperature") or
+                workflow_context.get("temperature") or
+                agent_config_data.get("temperature")
+            )
+            if workflow_temperature is not None:
+                agent_info["config"]["temperature"] = workflow_temperature
+                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} temperature with workflow config: {workflow_temperature}")
+                
+            # Override max_tokens if specified in workflow
+            workflow_max_tokens = (
+                workflow_node.get("max_tokens") or
+                workflow_context.get("max_tokens") or
+                agent_config_data.get("max_tokens")
+            )
+            if workflow_max_tokens:
+                agent_info["config"]["max_tokens"] = workflow_max_tokens
+                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} max_tokens with workflow config: {workflow_max_tokens}")
+            
             # Use configured timeout from workflow node, with fallback to reasonable default
             effective_timeout = agent.get("configured_timeout", 60)
             logger.info(f"[AGENT WORKFLOW] Using configured timeout: {effective_timeout}s for agent {agent_name}")
-            
-            available_tools = agent.get("tools", [])
             
             context = {
                 "workflow_id": workflow_id,
@@ -1281,24 +1443,131 @@ Please process this request independently and provide your analysis."""
         
         return formatted_output
     
-    def _synthesize_agent_outputs(self, agent_outputs: Dict[str, str], original_query: str) -> str:
-        """Synthesize final response from all agent outputs"""
+    def _synthesize_agent_outputs(self, agent_outputs: Dict[str, str], original_query: str, output_node: Optional[Dict] = None) -> str:
+        """Return final agent output (synthesizer) with OutputNode configuration formatting"""
         
         if not agent_outputs:
             return "No agent outputs to synthesize."
         
+        # Get OutputNode configuration with defaults
+        output_config = output_node or {}
+        output_format = output_config.get("output_format", "text")
+        include_metadata = output_config.get("include_metadata", False)
+        include_tool_calls = output_config.get("include_tool_calls", False)
+        
+        # For single agent, return clean output
         if len(agent_outputs) == 1:
-            return list(agent_outputs.values())[0]
+            agent_output = list(agent_outputs.values())[0]
+            return self._format_output(agent_output, output_format, include_metadata, include_tool_calls, original_query)
         
-        # Combine multiple agent outputs
-        synthesis = f"Based on analysis from {len(agent_outputs)} AI agents:\n\n"
+        # For multiple agents, return the LAST agent's output (which should be the synthesizer)
+        # The last agent in a properly designed workflow should have already synthesized all previous outputs
+        final_agent_output = list(agent_outputs.values())[-1]
         
-        for agent_name, output in agent_outputs.items():
-            synthesis += f"**{agent_name}:**\n{output}\n\n"
+        # Only combine all outputs if explicitly requested via include_metadata
+        if include_metadata:
+            synthesis = f"Based on analysis from {len(agent_outputs)} AI agents:\n\n"
+            for agent_name, output in agent_outputs.items():
+                synthesis += f"**{agent_name}:**\n{output}\n\n"
+            synthesis += f"**Final Synthesis:**\n{final_agent_output}"
+        else:
+            # Return only the final synthesizer output (clean, no concatenation)
+            synthesis = final_agent_output
         
-        synthesis += f"**Summary:** The agents have provided complementary perspectives on: {original_query}"
+        return self._format_output(synthesis, output_format, include_metadata, include_tool_calls, original_query)
+    
+    def _format_output(self, content: str, output_format: str, include_metadata: bool, include_tool_calls: bool, original_query: str) -> str:
+        """Format output according to OutputNode configuration"""
         
-        return synthesis
+        # Clean tool calls if not requested
+        if not include_tool_calls:
+            content = self._remove_tool_calls(content)
+        
+        # Apply format-specific processing
+        if output_format == "markdown":
+            return self._format_as_markdown(content)
+        elif output_format == "json":
+            return self._format_as_json(content, original_query, include_metadata)
+        elif output_format == "html":
+            return self._format_as_html(content)
+        else:  # text format
+            return content
+    
+    def _remove_tool_calls(self, content: str) -> str:
+        """Remove tool call information from content"""
+        import re
+        # Remove common tool call patterns
+        patterns = [
+            r'\*\*Tools Used.*?\*\*',
+            r'Tool\s+called:.*?\n',
+            r'Function\s+called:.*?\n',
+            r'\[Tool:\s+.*?\]',
+            r'Using\s+tool:.*?\n'
+        ]
+        
+        for pattern in patterns:
+            content = re.sub(pattern, '', content, flags=re.IGNORECASE | re.DOTALL)
+        
+        return content.strip()
+    
+    def _format_as_markdown(self, content: str) -> str:
+        """Format content as clean markdown"""
+        # Ensure proper markdown structure
+        lines = content.split('\n')
+        formatted_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if line:
+                # Convert **text:** to markdown headers if appropriate
+                if line.endswith(':') and line.startswith('**') and line.endswith('**:'):
+                    # Convert **Agent Name:** to ## Agent Name
+                    header_text = line[2:-3]  # Remove ** and :
+                    formatted_lines.append(f"## {header_text}\n")
+                else:
+                    formatted_lines.append(line)
+            else:
+                formatted_lines.append('')
+        
+        return '\n'.join(formatted_lines).strip()
+    
+    def _format_as_json(self, content: str, query: str, include_metadata: bool) -> str:
+        """Format content as JSON structure"""
+        import json
+        
+        result = {
+            "content": content,
+            "query": query if include_metadata else None
+        }
+        
+        if include_metadata:
+            from datetime import datetime
+            result["generated_at"] = datetime.now().isoformat()
+            result["format"] = "json"
+        
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    
+    def _format_as_html(self, content: str) -> str:
+        """Format content as HTML"""
+        import re
+        
+        # Convert markdown-style formatting to HTML
+        html_content = content
+        
+        # Convert **text** to <strong>text</strong>
+        html_content = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', html_content)
+        
+        # Convert line breaks to <br> and paragraphs
+        paragraphs = html_content.split('\n\n')
+        formatted_paragraphs = []
+        
+        for para in paragraphs:
+            if para.strip():
+                # Replace single line breaks with <br>
+                para = para.replace('\n', '<br>')
+                formatted_paragraphs.append(f'<p>{para}</p>')
+        
+        return '\n'.join(formatted_paragraphs)
     
     def _process_state_operations(self, state_nodes: List[Dict], workflow_state: WorkflowState, edges: List[Dict]):
         """Process state node operations in the correct order"""
@@ -1629,3 +1898,26 @@ Please process this request independently and provide your analysis."""
             "dependency_results": dependency_results.strip(),
             "user_request": user_request.strip()
         }
+    
+    def _build_system_prompt(self, agent_node: Dict[str, Any]) -> str:
+        """
+        Build system prompt with proper priority:
+        1. Combine workflow custom_prompt + query 
+        2. Fallback to agent database system_prompt
+        3. Final fallback to default prompt
+        """
+        # Build combined workflow prompt from custom_prompt + query
+        workflow_prompt_parts = []
+        if agent_node.get("custom_prompt"):
+            workflow_prompt_parts.append(agent_node["custom_prompt"])
+        if agent_node.get("query"):
+            workflow_prompt_parts.append(agent_node["query"])
+        
+        combined_workflow_prompt = "\n\n".join(workflow_prompt_parts) if workflow_prompt_parts else ""
+        
+        # Apply priority chain: workflow prompt -> agent database -> default
+        return (
+            combined_workflow_prompt or 
+            agent_node.get("agent_config", {}).get("system_prompt") or 
+            "You are a helpful assistant."
+        )
