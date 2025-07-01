@@ -1668,10 +1668,13 @@ Please process this request independently and provide your analysis."""
         input_data = workflow_state.get_state("input_data") if workflow_state else None
         
         # Build agent input object (clean state format)
+        # CRITICAL FIX: Use agent-specific query instead of global workflow query
+        agent_specific_query = agent.get("query", "") or user_query
+        
         agent_input = {
             "user_request": {
                 "message": user_message,
-                "query": user_query,
+                "query": agent_specific_query,  # Use node-specific query
                 "input_data": input_data
             },
             "workflow_context": {
@@ -1761,14 +1764,34 @@ Please process this request independently and provide your analysis."""
     ) -> str:
         """Create agent prompt using state-based input format"""
         
-        system_prompt = agent["system_prompt"]
+        # CRITICAL FIX: Use proper agent structure and prioritize workflow configuration
+        # Get system prompt using workflow custom_prompt + query, with fallback to agent database
+        agent_config = agent.get("agent_config", {})
+        
+        # Build system prompt with proper priority
+        workflow_custom_prompt = agent.get("custom_prompt", "")
+        agent_query = agent.get("query", "")
+        database_system_prompt = agent_config.get("system_prompt", "")
+        
+        # Combine workflow custom prompt and query
+        workflow_prompt_parts = []
+        if workflow_custom_prompt:
+            workflow_prompt_parts.append(workflow_custom_prompt)
+        if agent_query:
+            workflow_prompt_parts.append(agent_query)
+        
+        combined_workflow_prompt = "\n\n".join(workflow_prompt_parts) if workflow_prompt_parts else ""
+        
+        # Use workflow prompt if available, otherwise fall back to database system prompt
+        system_prompt = combined_workflow_prompt or database_system_prompt or "You are a helpful assistant."
+        
         user_request = agent_input["user_request"]
         workflow_context = agent_input["workflow_context"]
         previous_results = agent_input.get("previous_results", [])
         
         # Build clean, structured prompt
         prompt_parts = [
-            f"ROLE: {agent['role']}",
+            f"ROLE: {agent_config.get('role', '')}",
             f"SYSTEM: {system_prompt}",
             "",
             "=== WORKFLOW CONTEXT ===",
