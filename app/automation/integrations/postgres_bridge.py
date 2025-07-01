@@ -224,6 +224,81 @@ class PostgresBridge:
         finally:
             db.close()
     
+    def get_recent_executions(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get recent executions across all workflows"""
+        # Clean up stale running executions first - use longer timeout to avoid marking successful executions as failed
+        cleaned_count = self.cleanup_stale_executions(timeout_minutes=60)
+        if cleaned_count > 0:
+            logger.info(f"[POSTGRES BRIDGE] Cleaned up {cleaned_count} stale executions before listing")
+        
+        db = SessionLocal()
+        try:
+            executions = db.query(AutomationExecution).order_by(
+                AutomationExecution.started_at.desc()
+            ).limit(limit).all()
+            
+            result = []
+            for execution in executions:
+                result.append({
+                    "id": execution.id,
+                    "execution_id": execution.execution_id,
+                    "workflow_id": execution.workflow_id,
+                    "status": execution.status,
+                    "started_at": execution.started_at.isoformat() if execution.started_at else None,
+                    "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+                    "error_message": execution.error_message
+                })
+            
+            return result
+        except Exception as e:
+            logger.error(f"[POSTGRES BRIDGE] Error getting recent executions: {e}")
+            return []
+        finally:
+            db.close()
+
+    def cleanup_stale_executions(self, timeout_minutes: int = 30) -> int:
+        """Mark old running executions as failed - only if truly stale"""
+        db = SessionLocal()
+        try:
+            from datetime import datetime, timedelta
+            cutoff_time = datetime.utcnow() - timedelta(minutes=timeout_minutes)
+            
+            # Find executions that have been "running" for too long AND have no recent activity
+            # Only mark as failed if they've been running for more than timeout AND
+            # haven't been updated recently (indicating they're truly abandoned)
+            stale_executions = db.query(AutomationExecution).filter(
+                AutomationExecution.status == "running",
+                AutomationExecution.started_at < cutoff_time,
+                # Only mark as stale if completed_at is None (not already completed)
+                AutomationExecution.completed_at.is_(None)
+            ).all()
+            
+            count = 0
+            for execution in stale_executions:
+                # Double-check: if execution has completed_at set, don't mark as failed
+                if execution.completed_at is not None:
+                    continue
+                    
+                # Only mark as failed if it's been running for significantly longer than expected
+                # and has no completion timestamp
+                execution.status = "failed"
+                execution.error_message = f"Execution timed out after {timeout_minutes} minutes with no completion signal"
+                execution.completed_at = datetime.utcnow()
+                count += 1
+                logger.warning(f"[POSTGRES BRIDGE] Marked stale execution {execution.execution_id} as failed after {timeout_minutes} minutes")
+            
+            if count > 0:
+                db.commit()
+                logger.info(f"[POSTGRES BRIDGE] Cleaned up {count} truly stale running executions")
+            
+            return count
+        except Exception as e:
+            logger.error(f"[POSTGRES BRIDGE] Error cleaning up stale executions: {e}")
+            db.rollback()
+            return 0
+        finally:
+            db.close()
+
     def get_active_workflows(self) -> List[Dict[str, Any]]:
         """Get all active workflows"""
         db = SessionLocal()
