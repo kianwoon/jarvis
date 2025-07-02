@@ -258,6 +258,18 @@ def get_output_node_schema() -> Dict[str, Any]:
                 "label": "Include Tool Calls",
                 "description": "Include information about tools used",
                 "default": False
+            },
+            "auto_display": {
+                "type": "boolean",
+                "label": "Auto Display Result",
+                "description": "Automatically display workflow result when complete",
+                "default": True
+            },
+            "auto_save": {
+                "type": "boolean",
+                "label": "Auto Save to File",
+                "description": "Automatically save workflow result to Downloads folder",
+                "default": False
             }
         }
     }

@@ -474,6 +474,8 @@ class AgentWorkflowExecutor:
                 )
                 
                 logger.debug(f"[WORKFLOW CONVERSION] Node: {node.get('id')}, Type: {node_type}, Agent: {agent_name}")
+                logger.debug(f"[WORKFLOW CONVERSION] node_data keys: {list(node_data.keys()) if node_data else 'None'}")
+                logger.debug(f"[WORKFLOW CONVERSION] agent_config keys: {list(agent_config.keys()) if agent_config else 'None'}")
                 
                 if agent_name:
                     # Get agent from cache
@@ -494,6 +496,7 @@ class AgentWorkflowExecutor:
                         elif node_data.get("tools"):
                             tools = node_data.get("tools")
                         # Do NOT merge agent template tools - only use what user explicitly configured
+                        logger.debug(f"[WORKFLOW TOOLS] Agent {agent_name}: extracted tools = {tools}")
                         
                         # FIXED: Only use user-configured context, never inject agent template defaults
                         # This prevents hardcoded model specifications and other template configs from corrupting user workflows
@@ -587,6 +590,7 @@ class AgentWorkflowExecutor:
             if agent_node.get("state_enabled", False):
                 state_info = f" [STATE: {agent_node.get('state_operation', 'passthrough')}, FORMAT: {agent_node.get('output_format', 'text')}]"
             logger.info(f"[WORKFLOW CONVERSION] Agent {i+1}: {agent_node['agent_name']} (Node: {agent_node['node_id']}){state_info}")
+            logger.info(f"[WORKFLOW CONVERSION] Agent {i+1} tools: {agent_node.get('tools', [])}")
         
         # Determine execution pattern from edges (check workflow config first)
         execution_pattern = self._analyze_execution_pattern(agent_nodes, edges, workflow_config)
@@ -776,6 +780,10 @@ class AgentWorkflowExecutor:
                 "tools": agent_node["tools"],
                 "config": agent_config.get("config", {}),
                 "node_id": agent_node["node_id"],
+                # Pass through workflow-specific configuration
+                "custom_prompt": agent_node.get("custom_prompt", ""),
+                "query": agent_node.get("query", ""),
+                "agent_config": agent_config,  # Pass full agent config for _create_state_based_prompt
                 # Pass through the configured timeout from workflow node
                 "configured_timeout": agent_node.get("configured_timeout", 60),
                 # Enhanced state management metadata for tracing
@@ -908,6 +916,7 @@ class AgentWorkflowExecutor:
             yield {
                 "type": "agent_execution_start",
                 "agent_name": agent_name,
+                "node_id": agent.get("node_id"),  # CRITICAL: Add node_id for visual status update
                 "workflow_id": workflow_id,
                 "execution_id": execution_id,
                 "agent_index": i,
@@ -954,17 +963,31 @@ class AgentWorkflowExecutor:
                 # Store agent output in clean format (no truncation needed with state-based approach)
                 agent_outputs[agent_name] = agent_output  # Keep original for UI display
                 
+                # CRITICAL: Apply state formatting if enabled
+                formatted_output = clean_output  # Default to clean output
+                if agent.get("state_enabled", False):
+                    # Format output based on state configuration
+                    formatted_output = self._format_agent_output_for_chaining(
+                        clean_output,
+                        agent,
+                        None  # No previous chain data for passthrough operation
+                    )
+                    logger.info(f"[STATE FORMATTING] Applied {agent.get('output_format', 'text')} format to {agent_name} output")
+                
                 # Update workflow state with agent output
                 if workflow_state:
                     # Store agent output in structured format
                     agent_result = {
                         "agent_name": agent_name,
                         "node_id": agent["node_id"],
-                        "output": clean_output,  # Use cleaned output for state passing
+                        "output": formatted_output,  # Use formatted output for state passing
                         "raw_output": agent_output,  # Keep original for UI/debugging
+                        "clean_output": clean_output,  # Keep clean version too
                         "tools_used": result.get("tools_used", []),
                         "timestamp": datetime.utcnow().isoformat(),
-                        "index": i
+                        "index": i,
+                        "state_enabled": agent.get("state_enabled", False),
+                        "output_format": agent.get("output_format", "text")
                     }
                     
                     # Store by agent name
@@ -993,6 +1016,7 @@ class AgentWorkflowExecutor:
                 yield {
                     "type": "agent_execution_complete",
                     "agent_name": agent_name,
+                    "node_id": agent.get("node_id"),  # CRITICAL: Add node_id for visual status update
                     "input": agent_prompt,  # Provide full prompt for detailed analysis
                     "input_summary": agent_prompt[:200] + "..." if len(agent_prompt) > 200 else agent_prompt,
                     "input_sections": agent_input_sections,  # Structured sections for UI parsing
@@ -1021,6 +1045,7 @@ class AgentWorkflowExecutor:
                 yield {
                     "type": "agent_execution_error",
                     "agent_name": agent_name,
+                    "node_id": agent.get("node_id"),  # CRITICAL: Add node_id for visual status update
                     "error": str(e),
                     "workflow_id": workflow_id,
                     "execution_id": execution_id,
@@ -1089,6 +1114,7 @@ class AgentWorkflowExecutor:
             yield {
                 "type": "agent_execution_start",
                 "agent_name": agent["name"],
+                "node_id": agent.get("node_id"),  # CRITICAL: Add node_id for visual status update
                 "workflow_id": workflow_id,
                 "execution_id": execution_id,
                 "agent_index": i,
@@ -1128,6 +1154,9 @@ Please process this request independently and provide your analysis."""
         # Collect results as they complete
         agent_outputs = {}
         for task_index, (agent_name, task) in enumerate(tasks):
+            # Get agent node_id from original agents list
+            agent_node_id = agents[task_index].get("node_id") if task_index < len(agents) else None
+            
             try:
                 result = await task
                 agent_output = result.get("output", "")
@@ -1140,6 +1169,7 @@ Please process this request independently and provide your analysis."""
                 yield {
                     "type": "agent_execution_complete",
                     "agent_name": agent_name,
+                    "node_id": agent_node_id,  # CRITICAL: Add node_id for visual status update
                     "input": f"Query: {query}",
                     "output": result.get("output", ""),
                     "tools_used": result.get("tools_used", []),
@@ -1156,6 +1186,7 @@ Please process this request independently and provide your analysis."""
                 yield {
                     "type": "agent_execution_error",
                     "agent_name": agent_name,
+                    "node_id": agent_node_id,  # CRITICAL: Add node_id for visual status update
                     "error": str(e),
                     "workflow_id": workflow_id,
                     "execution_id": execution_id,
@@ -1221,6 +1252,12 @@ Please process this request independently and provide your analysis."""
             workflow_context = agent.get("context", {})
             available_tools = agent.get("tools", []) or workflow_node.get("tools", [])
             
+            # Debug logging for tool extraction
+            logger.debug(f"[TOOL EXTRACTION] Agent: {agent_name}")
+            logger.debug(f"[TOOL EXTRACTION] agent.get('tools'): {agent.get('tools', [])}")
+            logger.debug(f"[TOOL EXTRACTION] workflow_node.get('tools'): {workflow_node.get('tools', [])}")
+            logger.debug(f"[TOOL EXTRACTION] Final available_tools: {available_tools}")
+            
             # Create a copy of agent_info to avoid modifying the cache
             agent_info = agent_info.copy()
             
@@ -1265,6 +1302,28 @@ Please process this request independently and provide your analysis."""
                 agent_info["config"]["max_tokens"] = workflow_max_tokens
                 logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} max_tokens with workflow config: {workflow_max_tokens}")
             
+            # CRITICAL FIX: Override system_prompt with workflow configuration
+            # Build workflow prompt from custom_prompt + query
+            workflow_custom_prompt = agent.get("custom_prompt", "")
+            workflow_query = agent.get("query", "")
+            
+            # Combine workflow custom prompt and query
+            workflow_prompt_parts = []
+            if workflow_custom_prompt:
+                workflow_prompt_parts.append(workflow_custom_prompt)
+            if workflow_query:
+                workflow_prompt_parts.append(workflow_query)
+            
+            combined_workflow_prompt = "\n\n".join(workflow_prompt_parts) if workflow_prompt_parts else ""
+            
+            # Override agent's system prompt if workflow provides one
+            if combined_workflow_prompt:
+                agent_info["system_prompt"] = combined_workflow_prompt
+                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} system_prompt with workflow config (length: {len(combined_workflow_prompt)})")
+                logger.debug(f"[AGENT WORKFLOW] Workflow system prompt: {combined_workflow_prompt[:200]}...")
+            else:
+                logger.info(f"[AGENT WORKFLOW] Using agent {agent_name} default system_prompt from database")
+            
             # Use configured timeout from workflow node, with fallback to reasonable default
             effective_timeout = agent.get("configured_timeout", 60)
             logger.info(f"[AGENT WORKFLOW] Using configured timeout: {effective_timeout}s for agent {agent_name}")
@@ -1274,6 +1333,7 @@ Please process this request independently and provide your analysis."""
                 "execution_id": execution_id,
                 "agent_config": agent,
                 "tools": available_tools,
+                "available_tools": available_tools,  # Ensure tools are passed to DynamicMultiAgentSystem
                 "temperature": agent.get("context", {}).get("temperature", 0.7),
                 "timeout": effective_timeout  # Pass configured timeout to agent system
             }
@@ -1285,12 +1345,39 @@ Please process this request independently and provide your analysis."""
             model_info = "unknown"
             start_time = datetime.utcnow()
             
+            # CRITICAL FIX: Check if prompt contains previous agent results
+            # If prompt contains "Context from previous agents:", it has dependencies
+            has_dependencies = "Context from previous agents:" in prompt
+            
+            if has_dependencies:
+                # CRITICAL: When agent has dependencies, combine workflow prompt + context
+                # The 'prompt' contains query + previous results
+                if combined_workflow_prompt:
+                    # If workflow defines custom_prompt, prepend it
+                    full_context_prompt = combined_workflow_prompt + "\n\n" + prompt
+                else:
+                    # Otherwise use just the context prompt
+                    full_context_prompt = prompt
+                
+                agent_info["system_prompt"] = full_context_prompt
+                # CRITICAL FIX: Pass a query to avoid "no query provided" error
+                simple_query = "Process the task based on the context provided in the system prompt."
+                logger.info(f"[AGENT WORKFLOW] Agent {agent_name} has dependencies - using full context as system prompt")
+                logger.debug(f"[AGENT WORKFLOW] System prompt with context, length: {len(agent_info['system_prompt'])}")
+                system_prompt_preview = agent_info.get('system_prompt', '')[:500] if agent_info.get('system_prompt') else '...'
+                logger.debug(f"[AGENT WORKFLOW] System prompt preview: {system_prompt_preview}...")
+            else:
+                # Normal case - pass simple query
+                simple_query = workflow_query if workflow_query else prompt
+                query_preview = simple_query[:100] if simple_query else '...'
+                logger.info(f"[AGENT WORKFLOW] Passing simple query to DynamicMultiAgentSystem: {query_preview}...")
+            
             # CRITICAL FIX: Pass the correct parent span to DynamicMultiAgentSystem
             # This should be the agent-execution-sequence span, not the main trace
             async for event in dynamic_agent_system.execute_agent(
                 agent_name=agent_name,
                 agent_data=agent_info,
-                query=prompt,
+                query=simple_query,  # Pass simple query, not full prompt
                 context=context,
                 parent_trace_or_span=execution_trace  # This is the agent-execution-sequence span now
             ):
@@ -1392,36 +1479,117 @@ Please process this request independently and provide your analysis."""
         chain_key = agent_node.get("chain_key", "")
         
         # Format the output based on output_format setting
-        if output_format == "text":
+        # Map UI names to internal format names
+        format_mapping = {
+            "text": "text",
+            "plain text": "text",
+            "structured": "structured",
+            "structured data": "structured",
+            "context": "context",
+            "context object": "context",
+            "full": "full",
+            "full agent response": "full"
+        }
+        
+        normalized_format = format_mapping.get(output_format.lower(), output_format)
+        
+        if normalized_format == "text":
+            # Plain text - just the output
             formatted_output = agent_output
-        elif output_format == "structured":
+        elif normalized_format == "structured":
+            # Structured data - organized with metadata
+            # CRITICAL FIX: Ensure all values are JSON-serializable
             formatted_output = {
-                "content": agent_output,
-                "agent": agent_node["agent_name"],
+                "content": str(agent_output),  # Ensure string conversion
+                "agent": str(agent_node["agent_name"]),
+                "node_id": str(agent_node.get("node_id", "")),
+                "timestamp": datetime.utcnow().isoformat(),
+                "tools_used": list(agent_node.get("tools_used", []))  # Ensure list conversion
+            }
+            # Validate JSON serializability
+            try:
+                json.dumps(formatted_output)
+                logger.debug(f"[STRUCTURED OUTPUT] Successfully formatted output for {agent_node['agent_name']}")
+            except (TypeError, ValueError) as e:
+                logger.error(f"[STRUCTURED OUTPUT] Failed to serialize structured output for {agent_node['agent_name']}: {e}")
+                # Fallback to safe format
+                formatted_output = {
+                    "content": str(agent_output),
+                    "agent": str(agent_node["agent_name"]),
+                    "node_id": str(agent_node.get("node_id", "")),
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "error": "Serialization fallback applied"
+                }
+        elif normalized_format == "context":
+            # Context object - includes context and state info
+            # CRITICAL FIX: Ensure all context data is JSON-serializable
+            context_data = agent_node.get("context", {})
+            try:
+                # Test JSON serializability of context
+                json.dumps(context_data)
+                safe_context = context_data
+            except (TypeError, ValueError) as e:
+                logger.warning(f"[CONTEXT OUTPUT] Context not JSON-serializable for {agent_node['agent_name']}: {e}")
+                safe_context = {"error": "Context serialization failed", "raw": str(context_data)}
+            
+            formatted_output = {
+                "response": str(agent_output),
+                "agent_name": str(agent_node["agent_name"]),
+                "node_id": str(agent_node.get("node_id", "")),
+                "context": safe_context,
+                "state_operation": str(state_operation),
+                "chain_key": str(chain_key)
+            }
+        elif normalized_format == "full":
+            # Full agent response - everything
+            # CRITICAL FIX: Ensure all nested data is JSON-serializable
+            context_data = agent_node.get("context", {})
+            tools_data = agent_node.get("tools", [])
+            
+            try:
+                json.dumps(context_data)
+                safe_context = context_data
+            except (TypeError, ValueError):
+                safe_context = {"error": "Context serialization failed", "raw": str(context_data)}
+            
+            try:
+                json.dumps(tools_data)
+                safe_tools = tools_data
+            except (TypeError, ValueError):
+                safe_tools = [str(tool) for tool in tools_data] if isinstance(tools_data, list) else [str(tools_data)]
+            
+            formatted_output = {
+                "output": str(agent_output),
+                "agent_name": str(agent_node["agent_name"]),
+                "node_id": str(agent_node.get("node_id", "")),
+                "tools": safe_tools,
+                "context": safe_context,
+                "state_operation": str(state_operation),
+                "chain_key": str(chain_key),
                 "timestamp": datetime.utcnow().isoformat()
             }
-        elif output_format == "context":
-            formatted_output = {
-                "response": agent_output,
-                "agent_name": agent_node["agent_name"],
-                "context": agent_node.get("context", {}),
-                "chain_key": chain_key
-            }
-        elif output_format == "full":
-            formatted_output = {
-                "output": agent_output,
-                "agent_name": agent_node["agent_name"],
-                "tools": agent_node.get("tools", []),
-                "context": agent_node.get("context", {}),
-                "state_operation": state_operation,
-                "chain_key": chain_key
-            }
         else:
+            # Default to plain text
             formatted_output = agent_output
         
         # Apply state operation if there's previous chain data
-        if previous_chain_data is not None and state_operation != "passthrough":
-            if state_operation == "merge":
+        # Map UI names to internal operation names
+        operation_mapping = {
+            "passthrough": "passthrough",
+            "pass output directly": "passthrough",
+            "merge": "merge",
+            "merge with previous": "merge",
+            "replace": "replace",
+            "replace previous": "replace",
+            "append": "append",
+            "append to previous": "append"
+        }
+        
+        normalized_operation = operation_mapping.get(state_operation.lower(), state_operation)
+        
+        if previous_chain_data is not None and normalized_operation != "passthrough":
+            if normalized_operation == "merge":
+                # Merge with previous - combine data
                 if isinstance(previous_chain_data, dict) and isinstance(formatted_output, dict):
                     # Merge dictionaries
                     merged_data = previous_chain_data.copy()
@@ -1431,10 +1599,12 @@ Please process this request independently and provide your analysis."""
                     # Merge as strings
                     return f"{previous_chain_data}\n\n{formatted_output}"
             
-            elif state_operation == "replace":
+            elif normalized_operation == "replace":
+                # Replace previous - discard previous data
                 return formatted_output
             
-            elif state_operation == "append":
+            elif normalized_operation == "append":
+                # Append to previous - create or extend list
                 if isinstance(previous_chain_data, list):
                     previous_chain_data.append(formatted_output)
                     return previous_chain_data
@@ -1668,13 +1838,22 @@ Please process this request independently and provide your analysis."""
         input_data = workflow_state.get_state("input_data") if workflow_state else None
         
         # Build agent input object (clean state format)
-        # CRITICAL FIX: Use agent-specific query instead of global workflow query
-        agent_specific_query = agent.get("query", "") or user_query
+        # CRITICAL FIX: Always provide original user message to ALL agents
+        # Each agent should interpret the original message through their role, not just previous results
+        agent_specific_query = agent.get("query", "")
+        original_user_query = user_query  # This is the original user message/question
+        
+        # For "Execute with message" workflows, all agents should get the original user message
+        # Agent-specific queries are supplementary, not replacements
+        if user_message and not agent_specific_query:
+            # If no agent-specific query but we have original user message, use it
+            agent_specific_query = original_user_query
         
         agent_input = {
             "user_request": {
                 "message": user_message,
-                "query": agent_specific_query,  # Use node-specific query
+                "query": agent_specific_query,  # Agent-specific or original query
+                "original_query": original_user_query,  # Always preserve original user question
                 "input_data": input_data
             },
             "workflow_context": {
@@ -1705,6 +1884,9 @@ Please process this request independently and provide your analysis."""
                 
                 logger.info(f"[4-WAY CONNECTIVITY] Agent {agent['name']} has {len(input_connections)} input connections")
                 
+                # CRITICAL FIX: Track results found for multi-input debugging
+                results_found = []
+                
                 for connection in input_connections:
                     source_node_id = connection.get("source_node")
                     source_handle = connection.get("source_handle")
@@ -1713,29 +1895,83 @@ Please process this request independently and provide your analysis."""
                     # Enhanced dependency tracking with handle information
                     dep_result = workflow_state.get_state(f"node_output_{source_node_id}")
                     if dep_result:
-                        # Enhance result with connection metadata
-                        enhanced_result = dep_result.copy() if isinstance(dep_result, dict) else {"output": dep_result}
+                        # CRITICAL FIX: Ensure structured outputs are properly serialized
+                        if isinstance(dep_result, dict):
+                            enhanced_result = dep_result.copy()
+                            # Ensure the output field is JSON-serializable for structured formats
+                            if "output" in enhanced_result and isinstance(enhanced_result["output"], dict):
+                                try:
+                                    # Serialize and deserialize to ensure it's JSON-safe
+                                    enhanced_result["output"] = json.loads(json.dumps(enhanced_result["output"]))
+                                except (TypeError, ValueError) as e:
+                                    logger.warning(f"[MULTI-INPUT] Failed to serialize structured output from {source_node_id}: {e}")
+                                    # Fallback to string representation
+                                    enhanced_result["output"] = str(enhanced_result["output"])
+                        else:
+                            enhanced_result = {"output": str(dep_result)}
+                        
                         enhanced_result["connection_info"] = {
                             "source_handle": source_handle,
                             "target_handle": target_handle,
                             "connection_type": "4-way"
                         }
                         agent_input["previous_results"].append(enhanced_result)
+                        results_found.append(source_node_id)
+                    else:
+                        logger.warning(f"[MULTI-INPUT] No result found for dependency {source_node_id} → {agent['name']}")
+                
+                logger.info(f"[MULTI-INPUT] Agent {agent['name']} aggregated {len(results_found)} inputs: {results_found}")
             else:
-                # Standard dependency resolution
+                # Standard dependency resolution with enhanced multi-input support
+                results_found = []
                 for dep_node_id in dependencies:
                     # Find the agent name/index for this dependency node
                     dep_result = workflow_state.get_state(f"node_output_{dep_node_id}")
                     if dep_result:
-                        agent_input["previous_results"].append(dep_result)
-                    else:
+                        # CRITICAL FIX: Apply same serialization fix for standard dependencies
+                        if isinstance(dep_result, dict) and "output" in dep_result and isinstance(dep_result["output"], dict):
+                            try:
+                                # Ensure structured outputs are JSON-serializable
+                                dep_result_copy = dep_result.copy()
+                                dep_result_copy["output"] = json.loads(json.dumps(dep_result["output"]))
+                                agent_input["previous_results"].append(dep_result_copy)
+                            except (TypeError, ValueError) as e:
+                                logger.warning(f"[MULTI-INPUT] Failed to serialize structured output from {dep_node_id}: {e}")
+                                # Fallback: convert to string
+                                dep_result_copy = dep_result.copy()
+                                dep_result_copy["output"] = str(dep_result["output"])
+                                agent_input["previous_results"].append(dep_result_copy)
+                        else:
+                            agent_input["previous_results"].append(dep_result)
+                        results_found.append(dep_node_id)
+                
+                if len(dependencies) > 1:  # Multi-input scenario
+                    logger.info(f"[MULTI-INPUT] Agent {agent['name']} aggregated {len(results_found)} standard inputs: {results_found}")
+                
+                    # Fallback logic should be outside the multi-input check
+                for dep_node_id in dependencies:
+                    # Check if we still need to find this dependency
+                    if dep_node_id not in results_found:
                         # Fallback: try to find by agent name mapping
                         for existing_agent_name in agent_outputs.keys():
                             agent_result = workflow_state.get_state(f"agent_output_{existing_agent_name}")
                             if agent_result and isinstance(agent_result, dict):
                                 # Check if this agent result matches the dependency node
                                 if agent_result.get("node_id") == dep_node_id:
-                                    agent_input["previous_results"].append(agent_result)
+                                    # Apply same serialization fix for fallback results
+                                    if "output" in agent_result and isinstance(agent_result["output"], dict):
+                                        try:
+                                            agent_result_copy = agent_result.copy()
+                                            agent_result_copy["output"] = json.loads(json.dumps(agent_result["output"]))
+                                            agent_input["previous_results"].append(agent_result_copy)
+                                        except (TypeError, ValueError) as e:
+                                            logger.warning(f"[MULTI-INPUT] Failed to serialize fallback output from {dep_node_id}: {e}")
+                                            agent_result_copy = agent_result.copy()
+                                            agent_result_copy["output"] = str(agent_result["output"])
+                                            agent_input["previous_results"].append(agent_result_copy)
+                                    else:
+                                        agent_input["previous_results"].append(agent_result)
+                                    results_found.append(dep_node_id)
                                     break
         elif agent_index > 0 and workflow_state:
             # Fallback to sequential for workflows without explicit edges
@@ -1764,26 +2000,122 @@ Please process this request independently and provide your analysis."""
     ) -> str:
         """Create agent prompt using state-based input format"""
         
-        # CRITICAL FIX: Use proper agent structure and prioritize workflow configuration
-        # Get system prompt using workflow custom_prompt + query, with fallback to agent database
+        # CRITICAL FIX: Check if we have a workflow query
+        workflow_query = agent.get("query", "")
+        
+        # If workflow provides a query AND this is the first agent with no dependencies
+        previous_results = agent_input.get("previous_results", [])
+        
+        # ENHANCED DEBUG logging for multi-input scenarios
+        query_preview = workflow_query[:50] if workflow_query else "..."
+        logger.info(f"[PROMPT BUILD] Agent: {agent.get('name', 'unknown')}, Query: {query_preview}..., Previous results: {len(previous_results)}")
+        
+        if previous_results:
+            # CRITICAL FIX: Enhanced logging for multi-input debugging
+            if len(previous_results) > 1:
+                logger.info(f"[MULTI-INPUT PROMPT] Agent {agent.get('name', 'unknown')} processing {len(previous_results)} inputs")
+                for idx, result in enumerate(previous_results):
+                    if isinstance(result, dict):
+                        agent_name = result.get('agent_name', 'unknown')
+                        node_id = result.get('node_id', 'unknown')
+                        output_type = type(result.get('output', '')).__name__
+                        logger.debug(f"[MULTI-INPUT PROMPT] Input {idx+1}: {agent_name} ({node_id}) - {output_type}")
+                    else:
+                        logger.debug(f"[MULTI-INPUT PROMPT] Input {idx+1}: {type(result).__name__}")
+            else:
+                result_preview = str(previous_results[0])[:200] if previous_results[0] else "..."
+                logger.debug(f"[PROMPT BUILD] Previous result preview: {result_preview}...")
+        
+        # CRITICAL FIX: Always get the original user message for ALL agents
+        user_request = agent_input["user_request"]
+        original_query = user_request.get("original_query", "") or user_request.get("message", "")
+        
+        # For agents with specific workflow queries (like first agent), use that
+        # For other agents, use original user query so they understand the overall task
+        primary_task = workflow_query if workflow_query else original_query
+        
+        if not previous_results:
+            # First agent or agents with no dependencies - just return the primary task
+            return primary_task
+        
+        # For agents with dependencies, build comprehensive prompt that includes:
+        # 1. Original user question (so they understand the overall goal)
+        # 2. Previous results (as supporting context)
+        # 3. Their specific role (handled by custom_prompt)
+        if True:  # Always build comprehensive prompt for agents with dependencies
+            # Build comprehensive prompt that includes original question + context
+            prompt_parts = []
+            
+            # ALWAYS start with the original user question/task
+            if original_query:
+                prompt_parts.append("=== USER QUESTION ===")
+                prompt_parts.append(original_query)
+            
+            # If agent has specific workflow query different from original, add it too
+            if workflow_query and workflow_query != original_query:
+                prompt_parts.append("")
+                prompt_parts.append("=== SPECIFIC INSTRUCTIONS ===")
+                prompt_parts.append(workflow_query)
+            prompt_parts.append("")
+            
+            # Then add the previous results with clear context
+            prompt_parts.append("Context from previous agents:")
+            prompt_parts.append("")
+            
+            # CRITICAL FIX: Enhanced previous result formatting for multi-input scenarios
+            for i, result in enumerate(previous_results):
+                agent_name = result.get("agent_name", "Unknown Agent")
+                node_id = result.get("node_id", "unknown")
+                output = result.get("output", "")
+                
+                # ENHANCED: Handle different output formats with better error handling
+                try:
+                    if isinstance(output, dict):
+                        # State-formatted output (context object, structured, etc.)
+                        if "response" in output:
+                            # Context format
+                            display_output = str(output.get("response", ""))
+                        elif "content" in output:
+                            # Structured format
+                            display_output = str(output.get("content", ""))
+                        elif "output" in output:
+                            # Full format (nested output)
+                            display_output = str(output.get("output", ""))
+                        else:
+                            # Unknown dict format - convert to readable string
+                            try:
+                                display_output = json.dumps(output, indent=2, ensure_ascii=False)
+                            except (TypeError, ValueError):
+                                display_output = str(output)
+                    else:
+                        # String output - clean thinking tags if present
+                        display_output = str(output)
+                        if "<think>" in display_output and "</think>" in display_output:
+                            parts = display_output.split("</think>")
+                            if len(parts) > 1:
+                                display_output = parts[1].strip()
+                except Exception as e:
+                    logger.warning(f"[PROMPT BUILD] Error formatting output from {agent_name}: {e}")
+                    display_output = f"[Error formatting output: {str(output)[:100]}...]"
+                
+                # Add the result with clear structure
+                prompt_parts.extend([
+                    f"=== Agent {i+1}: {agent_name} (Node: {node_id}) ===",
+                    str(display_output)[:2000],  # Include substantial context
+                    ""
+                ])
+            
+            prompt_parts.append("=== Your Task ===")
+            prompt_parts.append("Analyze the USER QUESTION above from your role's perspective. Use the context from previous agents to inform your analysis, but focus on answering the original user question.")
+            
+            full_prompt = "\n".join(prompt_parts)
+            logger.debug(f"[PROMPT BUILD] Built dependency prompt, length: {len(full_prompt)}")
+            
+            return full_prompt
+        
+        # Otherwise, build full structured prompt for agents without workflow queries
         agent_config = agent.get("agent_config", {})
-        
-        # Build system prompt with proper priority
-        workflow_custom_prompt = agent.get("custom_prompt", "")
-        agent_query = agent.get("query", "")
-        database_system_prompt = agent_config.get("system_prompt", "")
-        
-        # Combine workflow custom prompt and query
-        workflow_prompt_parts = []
-        if workflow_custom_prompt:
-            workflow_prompt_parts.append(workflow_custom_prompt)
-        if agent_query:
-            workflow_prompt_parts.append(agent_query)
-        
-        combined_workflow_prompt = "\n\n".join(workflow_prompt_parts) if workflow_prompt_parts else ""
-        
-        # Use workflow prompt if available, otherwise fall back to database system prompt
-        system_prompt = combined_workflow_prompt or database_system_prompt or "You are a helpful assistant."
+        database_system_prompt = agent_config.get("system_prompt", "You are a helpful assistant.")
         
         user_request = agent_input["user_request"]
         workflow_context = agent_input["workflow_context"]
@@ -1792,7 +2124,7 @@ Please process this request independently and provide your analysis."""
         # Build clean, structured prompt
         prompt_parts = [
             f"ROLE: {agent_config.get('role', '')}",
-            f"SYSTEM: {system_prompt}",
+            f"SYSTEM: {database_system_prompt}",
             "",
             "=== WORKFLOW CONTEXT ===",
             f"Agent Position: {agent_index + 1} of {total_agents}",
@@ -1819,7 +2151,26 @@ Please process this request independently and provide your analysis."""
             for result in previous_results:  # Show all dependencies, not just last 2
                 agent_name = result.get("agent_name", "Unknown Agent")
                 node_id = result.get("node_id", "unknown")
-                output = result.get("output", "")[:500]  # Limit to 500 chars
+                output_text = result.get("output", "")
+                
+                # CRITICAL FIX: Handle structured outputs that might be dictionaries
+                if isinstance(output_text, dict):
+                    # Convert structured output to string safely
+                    try:
+                        if "content" in output_text:
+                            output = str(output_text["content"])[:500]
+                        elif "response" in output_text:
+                            output = str(output_text["response"])[:500]
+                        else:
+                            output = str(output_text)[:500]
+                    except Exception as e:
+                        logger.warning(f"[SLICE FIX] Error formatting structured output: {e}")
+                        output = str(output_text)[:500]
+                elif output_text:
+                    # String output - safe to slice
+                    output = str(output_text)[:500]
+                else:
+                    output = ""
                 prompt_parts.extend([
                     f"Dependency: {agent_name} (Node: {node_id})",
                     f"Output: {output}",
@@ -1832,14 +2183,19 @@ Please process this request independently and provide your analysis."""
             "=== TASK ===",
         ])
         
-        if agent_index == 0:
-            prompt_parts.append("As the first agent, analyze the user request from your role's perspective. Provide a focused response.")
-        elif agent_index == total_agents - 1:
-            prompt_parts.append("As the final agent, synthesize the previous results and provide a comprehensive conclusion.")
-        else:
-            prompt_parts.append("Based on the user request and previous results, provide your analysis from your role's perspective.")
+        # Get original user question for task instruction
+        original_user_question = user_request.get("original_query", "") or user_request.get("message", "") or user_request.get("query", "")
         
-        return "\n".join(prompt_parts)
+        if agent_index == 0:
+            prompt_parts.append(f"As the first agent, analyze this user question from your role's perspective: {original_user_question}")
+        elif agent_index == total_agents - 1:
+            prompt_parts.append(f"As the final agent, synthesize all previous analyses to provide a comprehensive answer to: {original_user_question}")
+        else:
+            prompt_parts.append(f"Analyze this user question from your role's perspective, considering the previous agents' insights: {original_user_question}")
+        
+        final_prompt = "\n".join(prompt_parts)
+        logger.debug(f"[PROMPT BUILD] Built structured prompt for {agent.get('name', 'unknown')}, length: {len(final_prompt)}")
+        return final_prompt
     
     def _get_agent_dependencies(self, node_id: str, workflow_edges: List[Dict[str, Any]]) -> List[str]:
         """Get list of agent node IDs that this agent depends on"""

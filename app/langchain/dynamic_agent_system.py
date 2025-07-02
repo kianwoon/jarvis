@@ -778,12 +778,22 @@ Required JSON format:
             
         # Get agent configuration
         agent_config = agent_data.get("config", {})
-        max_tokens = agent_config.get("max_tokens", 4000)
-        # Priority: context temperature > agent config temperature > default
+        
+        # Priority: context (workflow config) > agent config > default
+        max_tokens = (
+            context.get("max_tokens") or
+            agent_config.get("max_tokens") or
+            4000
+        )
         temperature = (
             context.get("temperature") or
             agent_config.get("temperature") or
             0.7
+        )
+        model = (
+            context.get("model") or
+            agent_config.get("model") or
+            "qwen3:30b-a3b"
         )
         
         # Dynamic timeout based on query complexity and agent type
@@ -812,12 +822,16 @@ Required JSON format:
         logger.info(f"[AGENT TIMEOUT] {agent_name}: Using timeout {timeout}s (configured: {base_timeout}s, extended for complexity: {timeout > base_timeout})")
         
         # Build prompt with agent's system prompt and query
-        # Get system prompt from agent config or data
-        if agent_config.get("system_prompt"):
+        # CRITICAL FIX: Prioritize agent_data system_prompt (set by workflow executor with context)
+        # This ensures workflow context is preserved while not breaking multi-agent mode
+        if agent_data.get("system_prompt"):
+            system_prompt = agent_data["system_prompt"]
+            print(f"[DEBUG] Using agent data system prompt for {agent_name}")
+        elif agent_config.get("system_prompt"):
             system_prompt = agent_config["system_prompt"]
             print(f"[DEBUG] Using agent config system prompt for {agent_name}")
         else:
-            system_prompt = agent_data.get("system_prompt", "You are a helpful assistant.")
+            system_prompt = "You are a helpful assistant."
             print(f"[DEBUG] Using default system prompt for {agent_name}")
         
         # Add context if available
@@ -927,10 +941,13 @@ Required JSON format:
         available_tools = []
         if context and "available_tools" in context:
             available_tools = context["available_tools"]
+            logger.debug(f"[TOOL OVERRIDE] {agent_name}: Using tools from context: {available_tools}")
         elif agent_config.get("tools"):
             available_tools = agent_config["tools"]
+            logger.debug(f"[TOOL OVERRIDE] {agent_name}: Using tools from agent_config: {available_tools}")
         elif agent_data.get("tools"):
             available_tools = agent_data["tools"]
+            logger.debug(f"[TOOL OVERRIDE] {agent_name}: Using tools from agent_data: {available_tools}")
             
         if available_tools:
             # Get detailed tool specifications from MCP system
@@ -1042,7 +1059,7 @@ TASK: Provide your analysis of the query above."""
             # Create Langfuse generation now that we have the actual input prompt
             if self.trace and tracer and tracer.is_enabled():
                 try:
-                    model_name = agent_data.get("config", {}).get("model", "qwen3:30b-a3b")
+                    model_name = model
                     print(f"[DEBUG] Creating Langfuse generation for {agent_name} with model: '{model_name}'")
                     agent_generation = tracer.create_generation_with_usage(
                         trace=self.trace,
@@ -1071,7 +1088,8 @@ TASK: Provide your analysis of the query above."""
                 agent_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                timeout=timeout
+                timeout=timeout,
+                model=model
             ):
                 # Removed excessive debug logging for chunk processing
                 
@@ -1141,12 +1159,12 @@ TASK: Provide your analysis of the query above."""
                 except Exception:
                     pass  # Ignore if already ended
     
-    async def _call_llm(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2000) -> str:
+    async def _call_llm(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2000, model: str = "qwen3:30b-a3b") -> str:
         """Simple LLM call that returns complete response"""
         model_config = self.llm_settings.get("thinking_mode", {})
         
         config = LLMConfig(
-            model_name=model_config.get("model", "qwen3:30b-a3b"),
+            model_name=model,
             temperature=temperature,
             top_p=model_config.get("top_p", 0.9),
             max_tokens=max_tokens
@@ -1162,7 +1180,7 @@ TASK: Provide your analysis of the query above."""
         return response_text
     
     async def _call_llm_stream(self, prompt: str, agent_name: str, temperature: float = 0.7, 
-                               max_tokens: int = 4000, timeout: int = 60):
+                               max_tokens: int = 4000, timeout: int = 60, model: str = "qwen3:30b-a3b"):
         """Streaming LLM call for agent execution with real-time token streaming"""
         try:
             response_text = ""
@@ -1171,7 +1189,7 @@ TASK: Provide your analysis of the query above."""
             # Create LLM instance for streaming
             model_config = self.llm_settings.get("thinking_mode", {})
             config = LLMConfig(
-                model_name=model_config.get("model", "qwen3:30b-a3b"),
+                model_name=model,
                 temperature=temperature,
                 top_p=model_config.get("top_p", 0.9),
                 max_tokens=max_tokens
@@ -1536,10 +1554,36 @@ TASK: Provide your analysis of the query above."""
                 
                 # Execute tools using thread pool to avoid event loop conflicts
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    # Submit all tool calls
+                    # CRITICAL FIX: Validate tools against available_tools from context
+                    available_tools_list = []
+                    if context and "available_tools" in context:
+                        available_tools_list = context["available_tools"]
+                    elif agent_data and "tools" in agent_data:
+                        available_tools_list = agent_data["tools"]
+                    
+                    # Filter tool calls to only include available tools
+                    valid_tool_calls = []
+                    for tool_call in tool_calls:
+                        tool_name = tool_call.get("tool")
+                        if tool_name:
+                            if not available_tools_list or tool_name in available_tools_list:
+                                # Tool is allowed (either no restrictions or in allowed list)
+                                valid_tool_calls.append(tool_call)
+                                logger.debug(f"[TOOL VALIDATION] Agent {agent_name} using allowed tool '{tool_name}'")
+                            else:
+                                # Tool not in available tools - skip it
+                                logger.warning(f"[TOOL VALIDATION] Agent {agent_name} tried to use '{tool_name}' which is not in available tools: {available_tools_list}")
+                                tool_results.append({
+                                    "tool": tool_name,
+                                    "parameters": tool_call.get("parameters", {}),
+                                    "error": f"Tool '{tool_name}' is not available for this agent. Available tools: {available_tools_list}",
+                                    "success": False
+                                })
+                    
+                    # Submit only valid tool calls
                     future_to_tool = {
                         executor.submit(execute_tool_sync, tool_call.get("tool"), tool_call.get("parameters", {})): tool_call
-                        for tool_call in tool_calls if tool_call.get("tool")
+                        for tool_call in valid_tool_calls if tool_call.get("tool")
                     }
                     
                     # Wait for all results
@@ -1646,6 +1690,14 @@ Provide your complete response based on the tool results above. Do not generate 
                 if any(keyword in agent_name.lower() for keyword in ["strategist", "analyst", "architect", "ceo", "cto", "cio"]):
                     follow_up_timeout = max(follow_up_timeout, follow_up_timeout + 60)
                 
+                # Extract model from agent_data or context (same logic as main execution)
+                agent_config = agent_data.get("config", {}) if agent_data else {}
+                model = (
+                    context.get("model") or
+                    agent_config.get("model") or
+                    "qwen3:30b-a3b"
+                )
+                
                 follow_up_response = ""
                 print(f"[DEBUG] {agent_name}: Starting FIXED real-time streaming with timeout={follow_up_timeout}s")
                 async for chunk in self._call_llm_stream(
@@ -1653,7 +1705,8 @@ Provide your complete response based on the tool results above. Do not generate 
                     agent_name, 
                     temperature=0.8,
                     max_tokens=2000,
-                    timeout=follow_up_timeout  # Use calculated timeout
+                    timeout=follow_up_timeout,  # Use calculated timeout
+                    model=model
                 ):
                     if chunk.get("type") == "agent_complete":
                         follow_up_response = chunk.get("content", "")
