@@ -402,9 +402,13 @@ class AgentWorkflowExecutor:
         nodes = workflow_config.get("nodes", [])
         edges = workflow_config.get("edges", [])
         
-        # Extract agent nodes, state nodes, and output nodes from workflow
+        # Extract agent nodes, state nodes, router nodes, parallel nodes, condition nodes, transform nodes, and output nodes from workflow
         agent_nodes = []
         state_nodes = []
+        router_nodes = []
+        parallel_nodes = []
+        condition_nodes = []
+        transform_nodes = []
         output_node = None
         
         for node in nodes:
@@ -424,6 +428,70 @@ class AgentWorkflowExecutor:
                     "checkpoint_name": node_data.get("checkpointName", "")
                 })
                 logger.debug(f"[WORKFLOW CONVERSION] Found StateNode: {node.get('id')}")
+            
+            # Check for router nodes
+            elif node_type == "RouterNode" or node.get("type") == "routernode":
+                router_config = node_data.get("node", {}) or node_data
+                router_nodes.append({
+                    "node_id": node.get("id"),
+                    "label": router_config.get("label", "Router"),
+                    "routing_mode": router_config.get("routing_mode", "multi-select"),
+                    "match_type": router_config.get("match_type", "exact"),
+                    "routes": router_config.get("routes", []),
+                    "fallback_route": router_config.get("fallback_route", ""),
+                    "case_sensitive": router_config.get("case_sensitive", False),
+                    "output_field": router_config.get("output_field", ""),
+                    "position": node.get("position", {})
+                })
+                logger.info(f"[WORKFLOW CONVERSION] Found RouterNode: {node.get('id')} with {len(router_config.get('routes', []))} routes")
+            
+            # Check for parallel nodes
+            elif node_type == "ParallelNode" or node.get("type") == "parallelnode":
+                parallel_config = node_data.get("node", {}) or node_data
+                parallel_nodes.append({
+                    "node_id": node.get("id"),
+                    "label": parallel_config.get("label", "Parallel Execution"),
+                    "max_parallel": parallel_config.get("maxParallel") or parallel_config.get("max_parallel", 3),
+                    "wait_for_all": parallel_config.get("waitForAll") if parallel_config.get("waitForAll") is not None else parallel_config.get("wait_for_all", True),
+                    "combine_strategy": parallel_config.get("combineStrategy") or parallel_config.get("combine_strategy", "merge"),
+                    "position": node.get("position", {})
+                })
+                logger.info(f"[WORKFLOW CONVERSION] Found ParallelNode: {node.get('id')} with max_parallel: {parallel_config.get('max_parallel', 3)}")
+            
+            # Check for condition nodes
+            elif node_type == "ConditionNode" or node.get("type") == "conditionnode":
+                condition_config = node_data.get("node", {}) or node_data
+                condition_nodes.append({
+                    "node_id": node.get("id"),
+                    "label": condition_config.get("label", "Condition"),
+                    "condition_type": condition_config.get("condition_type") or condition_config.get("conditionType", "simple"),
+                    "operator": condition_config.get("operator", "equals"),
+                    "compare_value": condition_config.get("compare_value") or condition_config.get("compareValue") or condition_config.get("rightOperand", ""),
+                    "left_operand": condition_config.get("left_operand") or condition_config.get("leftOperand", ""),
+                    "right_operand": condition_config.get("right_operand") or condition_config.get("rightOperand", ""),
+                    "ai_criteria": condition_config.get("ai_criteria") or condition_config.get("aiCriteria", ""),
+                    "case_sensitive": condition_config.get("case_sensitive") if condition_config.get("case_sensitive") is not None else condition_config.get("caseSensitive", False),
+                    "data_type": condition_config.get("data_type") or condition_config.get("dataType", "string"),
+                    "position": node.get("position", {})
+                })
+                logger.info(f"[WORKFLOW CONVERSION] Found ConditionNode: {node.get('id')} with type: {condition_config.get('condition_type', 'simple')}")
+            
+            # Check for transform nodes
+            elif node_type == "TransformNode" or node.get("type") == "transformnode":
+                transform_config = node_data.get("node", {}) or node_data
+                transform_nodes.append({
+                    "node_id": node.get("id"),
+                    "label": transform_config.get("label", "Transform"),
+                    "transform_type": transform_config.get("transform_type", "jsonpath"),
+                    "expression": transform_config.get("expression", "$"),
+                    "error_handling": transform_config.get("error_handling", "continue"),
+                    "default_value": transform_config.get("default_value"),
+                    "input_validation": transform_config.get("input_validation", {}),
+                    "output_validation": transform_config.get("output_validation", {}),
+                    "cache_results": transform_config.get("cache_results", False),
+                    "position": node.get("position", {})
+                })
+                logger.info(f"[WORKFLOW CONVERSION] Found TransformNode: {node.get('id')} with type: {transform_config.get('transform_type', 'jsonpath')}")
             
             # Check for output nodes
             elif node_type == "OutputNode" or node.get("type") == "outputnode":
@@ -604,6 +672,10 @@ class AgentWorkflowExecutor:
         result = {
             "agents": agent_nodes,
             "state_nodes": state_nodes,
+            "router_nodes": router_nodes,
+            "parallel_nodes": parallel_nodes,
+            "condition_nodes": condition_nodes,
+            "transform_nodes": transform_nodes,
             "output_node": output_node,
             "pattern": execution_pattern,
             "query": query,
@@ -756,6 +828,10 @@ class AgentWorkflowExecutor:
         
         agents = agent_plan["agents"]
         state_nodes = agent_plan.get("state_nodes", [])
+        router_nodes = agent_plan.get("router_nodes", [])
+        parallel_nodes = agent_plan.get("parallel_nodes", [])
+        condition_nodes = agent_plan.get("condition_nodes", [])
+        transform_nodes = agent_plan.get("transform_nodes", [])
         pattern = agent_plan["pattern"]
         query = agent_plan["query"]
         workflow_edges = agent_plan.get("edges", [])
@@ -903,8 +979,38 @@ class AgentWorkflowExecutor:
         agent_outputs = {}
         workflow_edges = workflow_edges or []
         
+        # Get router nodes for filtering
+        router_nodes = agent_plan.get("router_nodes", []) if agent_plan else []
+        active_target_nodes = set()
+        
+        # If we have router nodes, we need to track which agents are selected by routers
+        if router_nodes:
+            for router in router_nodes:
+                # Router will be processed when we encounter agents that output to it
+                # For now, we initialize empty set of target nodes
+                pass
+        
         for i, agent in enumerate(agents):
             agent_name = agent["name"]
+            agent_node_id = agent.get("node_id")
+            
+            # Check if this agent should execute based on router decisions
+            if active_target_nodes and agent_node_id and agent_node_id not in active_target_nodes:
+                # Check if this agent is downstream of any active nodes
+                if not self._should_execute_node(agent_node_id, active_target_nodes, workflow_edges):
+                    logger.info(f"[ROUTER FILTERING] Skipping agent {agent_name} (node: {agent_node_id}) - not selected by router")
+                    yield {
+                        "type": "agent_execution_skipped",
+                        "agent_name": agent_name,
+                        "node_id": agent_node_id,
+                        "reason": "Not selected by router",
+                        "workflow_id": workflow_id,
+                        "execution_id": execution_id,
+                        "agent_index": i,
+                        "total_agents": len(agents),
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                    continue
             
             # Update resource monitoring for agent execution
             self.resource_monitor.update_agent_count(workflow_id, execution_id, executed=1, active=1)
@@ -1034,6 +1140,143 @@ class AgentWorkflowExecutor:
                     "sequence_display": f"{i + 1}/{len(agents)}",
                     "timestamp": datetime.utcnow().isoformat()
                 }
+                
+                # Process router nodes after agent execution
+                current_node_id = agent.get("node_id")
+                if router_nodes and current_node_id:
+                    # Check if this agent connects to any router
+                    for edge in workflow_edges:
+                        if edge.get("source") == current_node_id:
+                            target_id = edge.get("target")
+                            # Check if target is a router node
+                            for router in router_nodes:
+                                if router["node_id"] == target_id:
+                                    # Process router logic
+                                    router_result = self._process_router_node(
+                                        router, agent_output, agent_outputs, workflow_edges
+                                    )
+                                    if router_result:
+                                        active_target_nodes.update(router_result["target_nodes"])
+                                        yield {
+                                            "type": "router_decision",
+                                            "router_id": router["node_id"],
+                                            "matched_routes": router_result["matched_routes"],
+                                            "target_nodes": list(router_result["target_nodes"]),
+                                            "workflow_id": workflow_id,
+                                            "execution_id": execution_id,
+                                            "timestamp": datetime.utcnow().isoformat()
+                                        }
+                
+                # Process transform nodes after agent execution
+                current_node_id = agent.get("node_id")
+                if transform_nodes and current_node_id:
+                    # Check if this agent connects to any transform node
+                    for edge in workflow_edges:
+                        if edge.get("source") == current_node_id:
+                            target_id = edge.get("target")
+                            # Check if target is a transform node
+                            for transform in transform_nodes:
+                                if transform["node_id"] == target_id:
+                                    # Process transform logic
+                                    transform_result = self._process_transform_node(
+                                        transform, agent_output
+                                    )
+                                    if transform_result:
+                                        yield {
+                                            "type": "transform_execution",
+                                            "transform_id": transform["node_id"],
+                                            "transform_type": transform["transform_type"],
+                                            "input": agent_output,
+                                            "output": transform_result["output"],
+                                            "error": transform_result.get("error"),
+                                            "workflow_id": workflow_id,
+                                            "execution_id": execution_id,
+                                            "timestamp": datetime.utcnow().isoformat()
+                                        }
+                
+                # Process parallel nodes after agent execution
+                if parallel_nodes and current_node_id:
+                    # Check if this agent connects to any parallel node
+                    for edge in workflow_edges:
+                        if edge.get("source") == current_node_id:
+                            target_id = edge.get("target")
+                            # Check if target is a parallel node
+                            for parallel in parallel_nodes:
+                                if parallel["node_id"] == target_id:
+                                    # Process parallel execution logic
+                                    yield {
+                                        "type": "parallel_execution_start",
+                                        "parallel_id": parallel["node_id"],
+                                        "max_parallel": parallel["max_parallel"],
+                                        "combine_strategy": parallel["combine_strategy"],
+                                        "wait_for_all": parallel["wait_for_all"],
+                                        "workflow_id": workflow_id,
+                                        "execution_id": execution_id,
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    }
+                                    
+                                    parallel_result = await self._process_parallel_node(
+                                        parallel, agent_output, workflow_edges, workflow_id, execution_id
+                                    )
+                                    
+                                    if parallel_result:
+                                        yield {
+                                            "type": "parallel_execution_complete",
+                                            "parallel_id": parallel["node_id"],
+                                            "results": parallel_result["results"],
+                                            "summary": parallel_result.get("summary"),
+                                            "completed_count": parallel_result.get("completed_count", 0),
+                                            "total_count": parallel_result.get("total_count", 0),
+                                            "progress_percentage": parallel_result.get("progress_percentage", 0),
+                                            "agent_status": parallel_result.get("agent_status", []),
+                                            "strategy_used": parallel_result.get("strategy_used", "merge"),
+                                            "workflow_id": workflow_id,
+                                            "execution_id": execution_id,
+                                            "timestamp": datetime.utcnow().isoformat()
+                                        }
+                
+                # Process condition nodes after agent execution
+                if condition_nodes and current_node_id:
+                    # Check if this agent connects to any condition node
+                    for edge in workflow_edges:
+                        if edge.get("source") == current_node_id:
+                            target_id = edge.get("target")
+                            # Check if target is a condition node
+                            for condition in condition_nodes:
+                                if condition["node_id"] == target_id:
+                                    # Process condition logic
+                                    yield {
+                                        "type": "condition_evaluation_start",
+                                        "condition_id": condition["node_id"],
+                                        "condition_type": condition["condition_type"],
+                                        "operator": condition.get("operator", "equals"),
+                                        "workflow_id": workflow_id,
+                                        "execution_id": execution_id,
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    }
+                                    
+                                    condition_result = await self._process_condition_node(
+                                        condition, agent_output, workflow_id, execution_id
+                                    )
+                                    
+                                    if condition_result:
+                                        # Yield condition result
+                                        yield {
+                                            "type": "condition_evaluation_complete",
+                                            "condition_id": condition["node_id"],
+                                            "result": condition_result["result"],
+                                            "branch": condition_result["branch"],
+                                            "evaluation_details": condition_result.get("evaluation_details", {}),
+                                            "condition_type": condition_result.get("condition_type", "unknown"),
+                                            "workflow_id": workflow_id,
+                                            "execution_id": execution_id,
+                                            "timestamp": datetime.utcnow().isoformat()
+                                        }
+                                        
+                                        # Handle branching logic - find nodes connected to true/false branches
+                                        self._handle_condition_branching(
+                                            condition_result, condition, workflow_edges, agents
+                                        )
                 
             except Exception as e:
                 logger.error(f"[AGENT WORKFLOW] Agent {agent_name} failed: {e}")
@@ -2300,3 +2543,739 @@ Please process this request independently and provide your analysis."""
             agent_node.get("agent_config", {}).get("system_prompt") or 
             "You are a helpful assistant."
         )
+    
+    def _process_router_node(
+        self,
+        router: Dict[str, Any],
+        agent_output: str,
+        agent_outputs: Dict[str, str],
+        workflow_edges: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Process router node to determine which routes to activate"""
+        try:
+            routing_mode = router.get("routing_mode", "multi-select")
+            match_type = router.get("match_type", "exact")
+            routes = router.get("routes", [])
+            case_sensitive = router.get("case_sensitive", False)
+            output_field = router.get("output_field", "")
+            
+            # Extract the value to match against
+            match_value = agent_output
+            if output_field:
+                # Try to extract specific field from output
+                try:
+                    import json
+                    output_data = json.loads(agent_output)
+                    match_value = output_data.get(output_field, agent_output)
+                except:
+                    # If not JSON or field not found, use full output
+                    pass
+            
+            # Convert to string for matching
+            match_value = str(match_value)
+            if not case_sensitive:
+                match_value = match_value.lower()
+            
+            matched_routes = []
+            target_nodes = set()
+            
+            # Check each route
+            for route in routes:
+                route_matched = False
+                route_values = route.get("match_values", [])
+                
+                for value in route_values:
+                    test_value = str(value)
+                    if not case_sensitive:
+                        test_value = test_value.lower()
+                    
+                    # Apply matching based on type
+                    if match_type == "exact":
+                        if match_value == test_value:
+                            route_matched = True
+                            break
+                    elif match_type == "contains":
+                        if test_value in match_value:
+                            route_matched = True
+                            break
+                    elif match_type == "regex":
+                        import re
+                        try:
+                            if re.search(test_value, match_value):
+                                route_matched = True
+                                break
+                        except:
+                            pass
+                    elif match_type == "in_array":
+                        # Check if match_value is in array form
+                        try:
+                            import json
+                            array_data = json.loads(match_value) if isinstance(match_value, str) else match_value
+                            if isinstance(array_data, list) and test_value in array_data:
+                                route_matched = True
+                                break
+                        except:
+                            pass
+                
+                if route_matched:
+                    matched_routes.append(route["id"])
+                    target_nodes.update(route.get("target_nodes", []))
+                    
+                    # If single-select mode, stop after first match
+                    if routing_mode == "single-select":
+                        break
+            
+            # If no matches and fallback route specified
+            if not matched_routes and router.get("fallback_route"):
+                target_nodes.add(router["fallback_route"])
+                matched_routes.append("fallback")
+            
+            logger.info(f"[ROUTER] Router {router['node_id']} matched routes: {matched_routes}, target nodes: {list(target_nodes)}")
+            
+            return {
+                "matched_routes": matched_routes,
+                "target_nodes": target_nodes
+            } if matched_routes else None
+            
+        except Exception as e:
+            logger.error(f"[ROUTER] Error processing router node: {e}")
+            return None
+    
+    def _should_execute_node(
+        self,
+        node_id: str,
+        active_target_nodes: set,
+        workflow_edges: List[Dict[str, Any]]
+    ) -> bool:
+        """Check if a node should execute based on router selections"""
+        # If no active targets, execute all
+        if not active_target_nodes:
+            return True
+        
+        # If this node is directly selected
+        if node_id in active_target_nodes:
+            return True
+        
+        # Check if this node is downstream of any active node
+        for edge in workflow_edges:
+            if edge.get("source") in active_target_nodes and edge.get("target") == node_id:
+                return True
+        
+        return False
+    
+    def _process_transform_node(
+        self,
+        transform: Dict[str, Any],
+        input_data: str
+    ) -> Optional[Dict[str, Any]]:
+        """Process transform node to transform data"""
+        try:
+            transform_type = transform.get("transform_type", "jsonpath")
+            expression = transform.get("expression", "$")
+            error_handling = transform.get("error_handling", "continue")
+            default_value = transform.get("default_value")
+            
+            # Parse input data
+            try:
+                data = json.loads(input_data) if isinstance(input_data, str) else input_data
+            except:
+                data = input_data
+            
+            result = None
+            
+            # Apply transformation based on type
+            if transform_type == "jsonpath":
+                try:
+                    import jsonpath_ng
+                    parser = jsonpath_ng.parse(expression)
+                    matches = [match.value for match in parser.find(data)]
+                    result = matches[0] if len(matches) == 1 else matches
+                except Exception as e:
+                    if error_handling == "fail":
+                        raise e
+                    elif error_handling == "default":
+                        result = default_value
+                    else:
+                        result = str(e)
+                        
+            elif transform_type == "javascript":
+                try:
+                    # Note: In production, use a safe JS evaluator
+                    import js2py
+                    context = js2py.EvalJs()
+                    context.data = data
+                    result = context.eval(f"({expression})")
+                except Exception as e:
+                    if error_handling == "fail":
+                        raise e
+                    elif error_handling == "default":
+                        result = default_value
+                    else:
+                        result = str(e)
+                        
+            elif transform_type == "python":
+                try:
+                    # Safe evaluation with restricted globals
+                    safe_globals = {"__builtins__": {}, "data": data}
+                    result = eval(expression, safe_globals)
+                except Exception as e:
+                    if error_handling == "fail":
+                        raise e
+                    elif error_handling == "default":
+                        result = default_value
+                    else:
+                        result = str(e)
+                        
+            elif transform_type == "jq":
+                try:
+                    import pyjq
+                    result = pyjq.apply(expression, data)
+                except Exception as e:
+                    if error_handling == "fail":
+                        raise e
+                    elif error_handling == "default":
+                        result = default_value
+                    else:
+                        result = str(e)
+            
+            logger.info(f"[TRANSFORM] Transform {transform['node_id']} ({transform_type}) completed successfully")
+            
+            return {
+                "output": result,
+                "error": None
+            }
+            
+        except Exception as e:
+            logger.error(f"[TRANSFORM] Error processing transform node: {e}")
+            if error_handling == "fail":
+                return {
+                    "output": None,
+                    "error": str(e)
+                }
+            elif error_handling == "default":
+                return {
+                    "output": default_value,
+                    "error": None
+                }
+            else:
+                return {
+                    "output": str(e),
+                    "error": str(e)
+                }
+    
+    async def _process_parallel_node(
+        self,
+        parallel: Dict[str, Any],
+        input_data: str,
+        workflow_edges: List[Dict[str, Any]],
+        workflow_id: int,
+        execution_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Process parallel node to execute multiple agents simultaneously"""
+        try:
+            max_parallel = parallel.get("max_parallel", 3)
+            wait_for_all = parallel.get("wait_for_all", True)
+            combine_strategy = parallel.get("combine_strategy", "merge")
+            parallel_node_id = parallel["node_id"]
+            
+            # Find all agents connected downstream from this parallel node
+            downstream_agents = []
+            for edge in workflow_edges:
+                if edge.get("source") == parallel_node_id:
+                    target_id = edge.get("target")
+                    # Look for agent nodes connected to this parallel node
+                    # Note: This would need to be enhanced to actually find and execute agents
+                    # For now, we'll simulate parallel execution
+                    downstream_agents.append({
+                        "node_id": target_id,
+                        "agent_name": f"Agent_{target_id}",
+                        "input": input_data
+                    })
+            
+            if not downstream_agents:
+                logger.warning(f"[PARALLEL] No downstream agents found for parallel node {parallel_node_id}")
+                return None
+            
+            # Limit to max_parallel agents
+            agents_to_execute = downstream_agents[:max_parallel]
+            total_count = len(agents_to_execute)
+            
+            logger.info(f"[PARALLEL] Starting parallel execution of {total_count} agents with strategy: {combine_strategy}")
+            
+            # Execute agents in parallel with progress tracking
+            results = []
+            completed_count = 0
+            
+            # Create progress tracking for each agent
+            agent_status = []
+            for i, agent in enumerate(agents_to_execute):
+                agent_status.append({
+                    "agentId": agent["node_id"],
+                    "agent_name": agent["agent_name"],
+                    "status": "pending",
+                    "progress": 0
+                })
+            
+            # Simulate parallel execution with progress updates
+            # In a real implementation, this would use asyncio.gather() or similar to execute actual agents
+            import asyncio
+            
+            async def execute_parallel_agent(agent_info, index):
+                # Update status to running
+                agent_status[index]["status"] = "running"
+                agent_status[index]["progress"] = 10
+                
+                # Simulate some processing time
+                await asyncio.sleep(0.1)
+                agent_status[index]["progress"] = 50
+                
+                await asyncio.sleep(0.1)
+                agent_status[index]["progress"] = 80
+                
+                # Create result
+                mock_result = {
+                    "agent_id": agent_info["node_id"],
+                    "agent_name": agent_info["agent_name"],
+                    "output": f"Parallel agent {index+1} processed: {input_data[:100]}...",
+                    "status": "completed",
+                    "execution_time": 1.5,
+                    "tools_used": []
+                }
+                
+                # Mark as completed
+                agent_status[index]["status"] = "completed"
+                agent_status[index]["progress"] = 100
+                
+                return mock_result
+            
+            # Execute all agents in parallel
+            if wait_for_all:
+                # Wait for all agents to complete
+                tasks = [execute_parallel_agent(agent, i) for i, agent in enumerate(agents_to_execute)]
+                results = await asyncio.gather(*tasks)
+                completed_count = len(results)
+            else:
+                # Execute agents with limited parallelism
+                semaphore = asyncio.Semaphore(max_parallel)
+                
+                async def bounded_execute(agent_info, index):
+                    async with semaphore:
+                        return await execute_parallel_agent(agent_info, index)
+                
+                tasks = [bounded_execute(agent, i) for i, agent in enumerate(agents_to_execute)]
+                results = await asyncio.gather(*tasks)
+                completed_count = len([r for r in results if r.get("status") == "completed"])
+            
+            # Apply combine strategy
+            combined_output = self._combine_parallel_results(results, combine_strategy)
+            
+            # Generate summary if needed
+            summary = None
+            if combine_strategy == "summary":
+                summary = f"Parallel execution completed: {completed_count}/{total_count} agents successful"
+            
+            logger.info(f"[PARALLEL] Parallel node {parallel_node_id} completed: {completed_count}/{total_count} agents")
+            
+            return {
+                "results": results,
+                "combined_output": combined_output,
+                "summary": summary,
+                "completed_count": completed_count,
+                "total_count": total_count,
+                "strategy_used": combine_strategy,
+                "agent_status": agent_status,
+                "progress_percentage": (completed_count / total_count * 100) if total_count > 0 else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"[PARALLEL] Error processing parallel node: {e}")
+            return {
+                "results": [],
+                "combined_output": f"Parallel execution failed: {str(e)}",
+                "summary": f"Error: {str(e)}",
+                "completed_count": 0,
+                "total_count": 0,
+                "strategy_used": combine_strategy,
+                "agent_status": [],
+                "progress_percentage": 0,
+                "error": str(e)
+            }
+    
+    def _combine_parallel_results(
+        self,
+        results: List[Dict[str, Any]],
+        strategy: str
+    ) -> str:
+        """Combine results from parallel agent execution based on strategy"""
+        try:
+            if not results:
+                return "No results to combine"
+            
+            if strategy == "merge":
+                # Merge all outputs
+                combined = []
+                for i, result in enumerate(results):
+                    output = result.get("output", "")
+                    combined.append(f"**Agent {i+1} ({result.get('agent_name', 'Unknown')}):**\n{output}")
+                return "\n\n".join(combined)
+            
+            elif strategy == "best":
+                # Select the longest/most detailed result as "best"
+                best_result = max(results, key=lambda r: len(r.get("output", "")))
+                return f"Best result from {best_result.get('agent_name', 'Unknown')}:\n{best_result.get('output', '')}"
+            
+            elif strategy == "summary":
+                # Create a summary of all results
+                summaries = []
+                for result in results:
+                    agent_name = result.get("agent_name", "Unknown")
+                    output_preview = result.get("output", "")[:100]
+                    summaries.append(f"- {agent_name}: {output_preview}...")
+                return f"Summary of {len(results)} parallel executions:\n" + "\n".join(summaries)
+            
+            elif strategy == "vote":
+                # Simple voting mechanism - return most common output
+                outputs = [result.get("output", "") for result in results]
+                if outputs:
+                    # For now, just return the first output
+                    # In a real implementation, this would analyze outputs for consensus
+                    return f"Consensus result:\n{outputs[0]}"
+                return "No consensus reached"
+            
+            else:
+                # Default to merge
+                return self._combine_parallel_results(results, "merge")
+                
+        except Exception as e:
+            logger.error(f"[PARALLEL] Error combining results: {e}")
+            return f"Error combining results: {str(e)}"
+    
+    async def _process_condition_node(
+        self,
+        condition: Dict[str, Any],
+        input_data: str,
+        workflow_id: int,
+        execution_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Process condition node to evaluate conditional logic"""
+        try:
+            condition_type = condition.get("condition_type", "simple")
+            operator = condition.get("operator", "equals")
+            compare_value = condition.get("compare_value", "")
+            left_operand = condition.get("left_operand", "")
+            right_operand = condition.get("right_operand", "")
+            ai_criteria = condition.get("ai_criteria", "")
+            case_sensitive = condition.get("case_sensitive", False)
+            data_type = condition.get("data_type", "string")
+            condition_node_id = condition["node_id"]
+            
+            logger.info(f"[CONDITION] Processing condition node {condition_node_id} with type: {condition_type}")
+            
+            # Determine what values to compare
+            if condition_type == "simple":
+                # Use left_operand and right_operand if available, otherwise fall back to input_data and compare_value
+                left_value = left_operand if left_operand else input_data
+                right_value = right_operand if right_operand else compare_value
+            else:
+                left_value = input_data
+                right_value = compare_value
+            
+            result = False
+            evaluation_details = {}
+            
+            # Apply condition evaluation based on type
+            if condition_type == "simple":
+                result = self._evaluate_simple_condition(
+                    left_value, right_value, operator, case_sensitive, data_type
+                )
+                evaluation_details = {
+                    "left_value": left_value,
+                    "right_value": right_value,
+                    "operator": operator,
+                    "case_sensitive": case_sensitive,
+                    "data_type": data_type
+                }
+                
+            elif condition_type == "ai_decision":
+                result = await self._evaluate_ai_condition(
+                    input_data, ai_criteria, workflow_id, execution_id
+                )
+                evaluation_details = {
+                    "input_data": input_data,
+                    "ai_criteria": ai_criteria,
+                    "evaluation_method": "AI-based decision"
+                }
+                
+            elif condition_type == "custom":
+                # For custom logic, use simple evaluation for now
+                # In a real implementation, this would support custom code execution
+                result = self._evaluate_simple_condition(
+                    left_value, right_value, operator, case_sensitive, data_type
+                )
+                evaluation_details = {
+                    "left_value": left_value,
+                    "right_value": right_value,
+                    "operator": operator,
+                    "note": "Custom logic currently uses simple evaluation"
+                }
+            
+            logger.info(f"[CONDITION] Condition {condition_node_id} evaluated to: {result}")
+            
+            return {
+                "result": result,
+                "branch": "true" if result else "false",
+                "evaluation_details": evaluation_details,
+                "condition_type": condition_type,
+                "node_id": condition_node_id
+            }
+            
+        except Exception as e:
+            logger.error(f"[CONDITION] Error processing condition node: {e}")
+            return {
+                "result": False,
+                "branch": "false",
+                "evaluation_details": {"error": str(e)},
+                "condition_type": condition.get("condition_type", "unknown"),
+                "node_id": condition.get("node_id", "unknown"),
+                "error": str(e)
+            }
+    
+    def _evaluate_simple_condition(
+        self,
+        left_value: str,
+        right_value: str,
+        operator: str,
+        case_sensitive: bool,
+        data_type: str
+    ) -> bool:
+        """Evaluate simple condition based on operator"""
+        try:
+            # Convert values based on data type
+            if data_type == "number":
+                try:
+                    left_value = float(left_value) if left_value else 0
+                    right_value = float(right_value) if right_value else 0
+                except ValueError:
+                    # If conversion fails, treat as strings
+                    pass
+            elif data_type == "boolean":
+                left_value = str(left_value).lower() in ['true', '1', 'yes', 'on']
+                right_value = str(right_value).lower() in ['true', '1', 'yes', 'on']
+            elif data_type == "json":
+                try:
+                    import json
+                    left_value = json.loads(left_value) if isinstance(left_value, str) else left_value
+                    right_value = json.loads(right_value) if isinstance(right_value, str) else right_value
+                except:
+                    pass
+            
+            # Convert to strings for comparison if not numeric/boolean
+            if data_type not in ["number", "boolean"]:
+                left_str = str(left_value)
+                right_str = str(right_value)
+                
+                # Apply case sensitivity
+                if not case_sensitive:
+                    left_str = left_str.lower()
+                    right_str = right_str.lower()
+                
+                left_value = left_str
+                right_value = right_str
+            
+            # Apply operator
+            if operator == "equals":
+                return left_value == right_value
+            elif operator == "not_equals":
+                return left_value != right_value
+            elif operator == "greater_than":
+                return left_value > right_value
+            elif operator == "less_than":
+                return left_value < right_value
+            elif operator == "greater_equal":
+                return left_value >= right_value
+            elif operator == "less_equal":
+                return left_value <= right_value
+            elif operator == "contains":
+                return str(right_value) in str(left_value)
+            elif operator == "starts_with":
+                return str(left_value).startswith(str(right_value))
+            elif operator == "ends_with":
+                return str(left_value).endswith(str(right_value))
+            elif operator == "regex_match":
+                import re
+                flags = 0 if case_sensitive else re.IGNORECASE
+                return bool(re.search(str(right_value), str(left_value), flags))
+            else:
+                # Default to equals
+                return left_value == right_value
+                
+        except Exception as e:
+            logger.error(f"[CONDITION] Error evaluating simple condition: {e}")
+            return False
+    
+    async def _evaluate_ai_condition(
+        self,
+        input_data: str,
+        ai_criteria: str,
+        workflow_id: int,
+        execution_id: str
+    ) -> bool:
+        """Evaluate condition using AI decision"""
+        try:
+            # For AI-based decision, we'll use the dynamic agent system
+            if not self.dynamic_agent_system:
+                logger.warning("[CONDITION] No dynamic agent system available for AI decision")
+                return False
+            
+            # Create a simple prompt for AI evaluation
+            evaluation_prompt = f"""
+Evaluate the following data against the given criteria and respond with only "TRUE" or "FALSE".
+
+Data to evaluate:
+{input_data}
+
+Evaluation criteria:
+{ai_criteria}
+
+Respond with only "TRUE" if the data meets the criteria, or "FALSE" if it doesn't.
+"""
+            
+            # Use a lightweight agent for evaluation (or the first available agent)
+            from app.core.langgraph_agents_cache import get_langgraph_agents
+            cached_agents = get_langgraph_agents()
+            
+            if not cached_agents:
+                logger.warning("[CONDITION] No agents available for AI decision")
+                return False
+            
+            # Use the first available agent for evaluation
+            agent_name = list(cached_agents.keys())[0]
+            agent_data = cached_agents[agent_name]
+            
+            # Simple context for the evaluation
+            context = {
+                "workflow_id": workflow_id,
+                "execution_id": execution_id,
+                "evaluation": True
+            }
+            
+            # Execute AI evaluation
+            final_response = None
+            async for event in self.dynamic_agent_system.execute_agent(
+                agent_name=agent_name,
+                agent_data=agent_data,
+                query=evaluation_prompt,
+                context=context
+            ):
+                if event.get("type") == "agent_complete":
+                    final_response = event.get("content", "")
+                    break
+            
+            if final_response:
+                # Parse the response to determine true/false
+                response_lower = final_response.lower().strip()
+                return "true" in response_lower and "false" not in response_lower
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"[CONDITION] Error evaluating AI condition: {e}")
+            return False
+    
+    def _handle_condition_branching(
+        self,
+        condition_result: Dict[str, Any],
+        condition: Dict[str, Any],
+        workflow_edges: List[Dict[str, Any]],
+        agents: List[Dict[str, Any]]
+    ) -> None:
+        """Handle branching logic for condition nodes"""
+        try:
+            condition_node_id = condition["node_id"]
+            branch = condition_result["branch"]  # "true" or "false"
+            result = condition_result["result"]
+            
+            # Find edges from the condition node
+            outgoing_edges = [
+                edge for edge in workflow_edges 
+                if edge.get("source") == condition_node_id
+            ]
+            
+            # Determine which branch to follow based on the result
+            # In a real implementation, this would need to match the specific handle IDs
+            # For now, we'll log the branching decision
+            logger.info(f"[CONDITION] Condition {condition_node_id} branching: {branch} (result: {result})")
+            
+            if result:
+                # Follow the "true" branch
+                true_targets = []
+                for edge in outgoing_edges:
+                    source_handle = edge.get("sourceHandle", "")
+                    if "true" in source_handle.lower():
+                        true_targets.append(edge.get("target"))
+                
+                if true_targets:
+                    logger.info(f"[CONDITION] Following TRUE branch to nodes: {true_targets}")
+                else:
+                    logger.info(f"[CONDITION] No TRUE branch found, continuing with all connected nodes")
+            else:
+                # Follow the "false" branch
+                false_targets = []
+                for edge in outgoing_edges:
+                    source_handle = edge.get("sourceHandle", "")
+                    if "false" in source_handle.lower():
+                        false_targets.append(edge.get("target"))
+                
+                if false_targets:
+                    logger.info(f"[CONDITION] Following FALSE branch to nodes: {false_targets}")
+                else:
+                    logger.info(f"[CONDITION] No FALSE branch found, continuing with all connected nodes")
+            
+            # Store branching information for workflow execution control
+            # In a more sophisticated implementation, this would control which agents execute next
+            
+        except Exception as e:
+            logger.error(f"[CONDITION] Error handling condition branching: {e}")
+    
+    def _should_execute_node_with_conditions(
+        self,
+        node_id: str,
+        condition_results: Dict[str, Dict[str, Any]],
+        workflow_edges: List[Dict[str, Any]]
+    ) -> bool:
+        """Check if a node should execute based on condition results"""
+        try:
+            # Find if this node is connected from any condition node
+            incoming_condition_edges = []
+            for edge in workflow_edges:
+                if edge.get("target") == node_id:
+                    source_id = edge.get("source")
+                    # Check if source is a condition node
+                    if source_id in condition_results:
+                        incoming_condition_edges.append({
+                            "source": source_id,
+                            "source_handle": edge.get("sourceHandle", ""),
+                            "condition_result": condition_results[source_id]
+                        })
+            
+            if not incoming_condition_edges:
+                # No condition dependencies, execute normally
+                return True
+            
+            # Check if any condition allows execution
+            for edge_info in incoming_condition_edges:
+                source_handle = edge_info["source_handle"]
+                condition_result = edge_info["condition_result"]
+                branch = condition_result.get("branch", "false")
+                
+                # If this edge is from the matching branch, allow execution
+                if (("true" in source_handle.lower() and branch == "true") or
+                    ("false" in source_handle.lower() and branch == "false")):
+                    return True
+            
+            # No matching branch found, don't execute
+            return False
+            
+        except Exception as e:
+            logger.error(f"[CONDITION] Error checking node execution with conditions: {e}")
+            return True  # Default to execute on error

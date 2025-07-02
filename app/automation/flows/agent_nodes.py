@@ -496,6 +496,214 @@ def get_state_node_schema() -> Dict[str, Any]:
         }
     }
 
+def get_router_node_schema() -> Dict[str, Any]:
+    """Get schema for Router Node in visual editor"""
+    return {
+        "type": "RouterNode",
+        "name": "Multi-Route Router",
+        "description": "Route workflow to one or more groups based on agent output",
+        "category": "Control",
+        "icon": "🔀",
+        "color": "#EC4899",
+        "inputs": [
+            {
+                "name": "agent_output",
+                "type": "any",
+                "label": "Agent Output",
+                "description": "Output from previous agent to evaluate for routing"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "routes",
+                "type": "array",
+                "label": "Active Routes",
+                "description": "List of activated route IDs"
+            },
+            {
+                "name": "matched_groups",
+                "type": "array",
+                "label": "Matched Groups",
+                "description": "List of group IDs to execute"
+            }
+        ],
+        "properties": {
+            "routing_mode": {
+                "type": "select",
+                "label": "Routing Mode",
+                "description": "How to handle multiple matches",
+                "required": True,
+                "options": [
+                    {"value": "multi-select", "label": "Multi-Select (Execute All Matches)"},
+                    {"value": "single-select", "label": "Single-Select (First Match Only)"}
+                ],
+                "default": "multi-select"
+            },
+            "match_type": {
+                "type": "select",
+                "label": "Match Type",
+                "description": "How to match agent output against route values",
+                "required": True,
+                "options": [
+                    {"value": "exact", "label": "Exact Match"},
+                    {"value": "contains", "label": "Contains"},
+                    {"value": "regex", "label": "Regular Expression"},
+                    {"value": "in_array", "label": "In Array (for array outputs)"}
+                ],
+                "default": "exact"
+            },
+            "routes": {
+                "type": "json",
+                "label": "Route Definitions", 
+                "description": "Define routing rules and target nodes (auto-populated from connections)",
+                "required": True,
+                "default": [
+                    {
+                        "id": "route_1",
+                        "match_values": ["Customer_Support", "customer", "support"],
+                        "target_nodes": ["agentnode-1", "agentnode-2"],
+                        "label": "Customer Support Route"
+                    },
+                    {
+                        "id": "route_2",
+                        "match_values": ["Sales_Inquiry", "sales", "pricing"],
+                        "target_nodes": ["agentnode-3"],
+                        "label": "Sales Route"
+                    },
+                    {
+                        "id": "route_3",
+                        "match_values": ["Technical_Issue", "technical", "bug"],
+                        "target_nodes": ["agentnode-4", "agentnode-5"],
+                        "label": "Technical Route"
+                    }
+                ]
+            },
+            "fallback_route": {
+                "type": "string", 
+                "label": "Fallback Route",
+                "description": "Node ID to execute when no matches found",
+                "required": False,
+                "placeholder": "agentnode-fallback"
+            },
+            "case_sensitive": {
+                "type": "boolean",
+                "label": "Case Sensitive",
+                "description": "Whether matching should be case-sensitive",
+                "default": False
+            },
+            "output_field": {
+                "type": "string",
+                "label": "Output Field",
+                "description": "Field to extract from agent output (leave empty for full output)",
+                "required": False,
+                "placeholder": "e.g., 'category' or 'labels'"
+            }
+        }
+    }
+
+def get_transform_node_schema() -> Dict[str, Any]:
+    """Get schema for Transform Node in visual editor"""
+    return {
+        "type": "TransformNode",
+        "name": "Data Transform",
+        "description": "Transform data using JSONPath, JQ, JavaScript, or Python expressions",
+        "category": "Data",
+        "icon": "🔄",
+        "color": "#10B981",
+        "inputs": [
+            {
+                "name": "input",
+                "type": "any",
+                "label": "Input Data",
+                "description": "Data to transform"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "output",
+                "type": "any",
+                "label": "Transformed Data",
+                "description": "Result of transformation"
+            },
+            {
+                "name": "error",
+                "type": "string",
+                "label": "Error",
+                "description": "Error message if transformation fails"
+            }
+        ],
+        "properties": {
+            "transform_type": {
+                "type": "select",
+                "label": "Transform Type",
+                "description": "Type of transformation to apply",
+                "required": True,
+                "options": [
+                    {"value": "jsonpath", "label": "JSONPath"},
+                    {"value": "jq", "label": "JQ Query"},
+                    {"value": "javascript", "label": "JavaScript"},
+                    {"value": "python", "label": "Python Expression"}
+                ],
+                "default": "jsonpath"
+            },
+            "expression": {
+                "type": "textarea",
+                "label": "Expression",
+                "description": "Transformation expression",
+                "required": True,
+                "placeholder": "e.g., $.data.items[*].name",
+                "default": "$"
+            },
+            "error_handling": {
+                "type": "select",
+                "label": "Error Handling",
+                "description": "How to handle transformation errors",
+                "required": True,
+                "options": [
+                    {"value": "fail", "label": "Fail Workflow"},
+                    {"value": "continue", "label": "Continue with Error"},
+                    {"value": "default", "label": "Use Default Value"}
+                ],
+                "default": "continue"
+            },
+            "default_value": {
+                "type": "json",
+                "label": "Default Value",
+                "description": "Value to use if transformation fails",
+                "required": False,
+                "default": None,
+                "show_when": {"error_handling": "default"}
+            },
+            "input_validation": {
+                "type": "json",
+                "label": "Input Schema (Optional)",
+                "description": "JSON Schema to validate input data",
+                "required": False,
+                "default": {}
+            },
+            "output_validation": {
+                "type": "json",
+                "label": "Output Schema (Optional)",
+                "description": "JSON Schema to validate output data",
+                "required": False,
+                "default": {}
+            },
+            "cache_results": {
+                "type": "boolean",
+                "label": "Cache Results",
+                "description": "Cache transformation results for identical inputs",
+                "default": False
+            },
+            "test_data": {
+                "type": "json",
+                "label": "Test Data",
+                "description": "Sample data for testing the expression",
+                "required": False,
+                "default": {"example": "data"}
+            }
+        }
+    }
+
 def get_all_node_schemas() -> List[Dict[str, Any]]:
     """Get all available node schemas for the visual editor"""
     return [
@@ -504,7 +712,9 @@ def get_all_node_schemas() -> List[Dict[str, Any]]:
         get_output_node_schema(),
         get_condition_node_schema(),
         get_parallel_node_schema(),
-        get_state_node_schema()
+        get_state_node_schema(),
+        get_router_node_schema(),
+        get_transform_node_schema()
     ]
 
 def get_node_categories() -> List[Dict[str, Any]]:
@@ -527,6 +737,12 @@ def get_node_categories() -> List[Dict[str, Any]]:
             "description": "Flow control and logic nodes",
             "color": "#7C3AED",
             "icon": "⚙️"
+        },
+        {
+            "name": "Data",
+            "description": "Data transformation and processing nodes",
+            "color": "#10B981",
+            "icon": "🔄"
         }
     ]
 
