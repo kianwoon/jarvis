@@ -9,6 +9,5 @@ app/core/__pycache__/*
 node_modules
 /.venv
 /venv
-*.pyc
 /app/core/__pycache__
 /scripts
