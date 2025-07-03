@@ -49,7 +49,11 @@ def get_agent_node_schema() -> Dict[str, Any]:
                 "name": "query",
                 "type": "string", 
                 "label": "Query",
-                "description": "Specific query or task for the agent"
+                "description": "Specific query or task for the agent",
+                "fieldType": "textarea",
+                "minHeight": 4,
+                "maxHeight": 12,
+                "resizable": True
             }
         ],
         "outputs": [
@@ -86,7 +90,10 @@ def get_agent_node_schema() -> Dict[str, Any]:
                 "label": "Custom Instructions",
                 "description": "Optional custom instructions for this specific task",
                 "required": False,
-                "placeholder": "Enter custom instructions to override default agent behavior..."
+                "placeholder": "Enter custom instructions to override default agent behavior...",
+                "minHeight": 6,
+                "maxHeight": 20,
+                "resizable": True
             },
             "tools": {
                 "type": "multiselect",
@@ -704,6 +711,132 @@ def get_transform_node_schema() -> Dict[str, Any]:
         }
     }
 
+def get_cache_node_schema() -> Dict[str, Any]:
+    """Get schema for Cache Node in visual editor"""
+    return {
+        "type": "CacheNode",
+        "name": "Cache",
+        "description": "Cache agent outputs to skip re-execution on subsequent runs",
+        "category": "Data",
+        "icon": "💾",
+        "color": "#06B6D4",
+        "inputs": [
+            {
+                "name": "input",
+                "type": "any",
+                "label": "Input Data",
+                "description": "Data to use for cache key generation"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "output",
+                "type": "any",
+                "label": "Cached Output",
+                "description": "Cached data or fresh execution result"
+            },
+            {
+                "name": "cache_info",
+                "type": "object",
+                "label": "Cache Information",
+                "description": "Cache hit/miss status and metadata"
+            }
+        ],
+        "properties": {
+            "cache_key": {
+                "type": "string",
+                "label": "Cache Key",
+                "description": "Custom cache key (leave empty for auto-generation)",
+                "required": False,
+                "placeholder": "workflow_step_1"
+            },
+            "cache_key_pattern": {
+                "type": "select",
+                "label": "Cache Key Pattern",
+                "description": "How to generate cache keys automatically",
+                "required": True,
+                "options": [
+                    {"value": "auto", "label": "Auto (workflow + node + inputs)"},
+                    {"value": "node_only", "label": "Node ID Only"},
+                    {"value": "input_hash", "label": "Input Data Hash"},
+                    {"value": "custom", "label": "Custom Key"}
+                ],
+                "default": "auto"
+            },
+            "ttl": {
+                "type": "number",
+                "label": "TTL (Time To Live)",
+                "description": "Cache expiration time in seconds (0 = never expires)",
+                "required": False,
+                "default": 3600,
+                "min": 0,
+                "max": 86400
+            },
+            "cache_policy": {
+                "type": "select",
+                "label": "Cache Policy",
+                "description": "When to use cached data",
+                "required": True,
+                "options": [
+                    {"value": "always", "label": "Always Use Cache"},
+                    {"value": "input_match", "label": "Cache on Input Match"},
+                    {"value": "conditional", "label": "Conditional Caching"}
+                ],
+                "default": "always"
+            },
+            "invalidate_on": {
+                "type": "multiselect",
+                "label": "Invalidate Cache On",
+                "description": "Events that should clear the cache",
+                "required": False,
+                "options": [
+                    {"value": "input_change", "label": "Input Change"},
+                    {"value": "workflow_change", "label": "Workflow Change"},
+                    {"value": "manual", "label": "Manual Only"},
+                    {"value": "upstream_change", "label": "Upstream Node Change"}
+                ],
+                "default": ["input_change"]
+            },
+            "cache_condition": {
+                "type": "textarea",
+                "label": "Cache Condition",
+                "description": "Only cache if this condition is met (JavaScript expression)",
+                "required": False,
+                "placeholder": "output.length > 100",
+                "show_when": {"cache_policy": "conditional"}
+            },
+            "enable_warming": {
+                "type": "boolean",
+                "label": "Enable Cache Warming",
+                "description": "Pre-populate cache with common scenarios",
+                "default": False
+            },
+            "max_cache_size": {
+                "type": "number",
+                "label": "Max Cache Size (MB)",
+                "description": "Maximum size for cached data (0 = unlimited)",
+                "required": False,
+                "default": 10,
+                "min": 0,
+                "max": 100
+            },
+            "cache_namespace": {
+                "type": "string",
+                "label": "Cache Namespace",
+                "description": "Namespace to group related cache entries",
+                "required": False,
+                "placeholder": "workflow_v1",
+                "default": "default"
+            },
+            "show_statistics": {
+                "type": "boolean",
+                "label": "Show Cache Statistics",
+                "description": "Display hit/miss rates and performance metrics",
+                "default": True
+            }
+        }
+    }
+
 def get_all_node_schemas() -> List[Dict[str, Any]]:
     """Get all available node schemas for the visual editor"""
     return [
@@ -714,7 +847,8 @@ def get_all_node_schemas() -> List[Dict[str, Any]]:
         get_parallel_node_schema(),
         get_state_node_schema(),
         get_router_node_schema(),
-        get_transform_node_schema()
+        get_transform_node_schema(),
+        get_cache_node_schema()
     ]
 
 def get_node_categories() -> List[Dict[str, Any]]:
@@ -794,8 +928,64 @@ def validate_agent_workflow(workflow_config: Dict[str, Any]) -> Dict[str, Any]:
     if len(edges) >= len(nodes):
         warnings.append("Workflow may contain cycles - review connections")
     
-    return {
+    # Check cache node configurations and pre-execution cache status
+    cache_nodes = [node for node in nodes if node.get("data", {}).get("type") == "CacheNode"]
+    cache_info = []
+    
+    for cache_node in cache_nodes:
+        node_id = cache_node.get("id")
+        cache_config = cache_node.get("data", {}).get("node", {})
+        
+        # Validate cache configuration
+        cache_key_pattern = cache_config.get("cache_key_pattern", "auto")
+        custom_key = cache_config.get("cache_key", "")
+        
+        if cache_key_pattern == "custom" and not custom_key:
+            errors.append(f"Cache node {node_id} has custom key pattern but no custom key specified")
+        
+        # TTL validation
+        ttl = cache_config.get("ttl", 3600)
+        if ttl < 0 or ttl > 86400:
+            warnings.append(f"Cache node {node_id} has unusual TTL: {ttl} seconds")
+        
+        # Cache policy validation
+        cache_policy = cache_config.get("cache_policy", "always")
+        if cache_policy == "conditional":
+            cache_condition = cache_config.get("cache_condition", "")
+            if not cache_condition:
+                warnings.append(f"Cache node {node_id} has conditional policy but no condition specified")
+        
+        # Check if cache node is properly connected
+        cache_has_input = any(edge.get("target") == node_id for edge in edges)
+        cache_has_output = any(edge.get("source") == node_id for edge in edges)
+        
+        if not cache_has_input:
+            warnings.append(f"Cache node {node_id} has no input connections")
+        if not cache_has_output:
+            warnings.append(f"Cache node {node_id} has no output connections")
+        
+        # Add cache info for pre-execution check
+        cache_info.append({
+            "node_id": node_id,
+            "cache_key_pattern": cache_key_pattern,
+            "custom_key": custom_key,
+            "ttl": ttl,
+            "cache_policy": cache_policy,
+            "has_connections": cache_has_input and cache_has_output
+        })
+    
+    validation_result = {
         "valid": len(errors) == 0,
         "errors": errors,
         "warnings": warnings
     }
+    
+    # Add cache information if cache nodes exist
+    if cache_nodes:
+        validation_result["cache_info"] = {
+            "total_cache_nodes": len(cache_nodes),
+            "cache_nodes": cache_info,
+            "requires_cache_check": True
+        }
+    
+    return validation_result

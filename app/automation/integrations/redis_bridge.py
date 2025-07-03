@@ -116,10 +116,12 @@ class RedisBridge:
             # Remove prefix from returned keys
             cleaned_keys = []
             for key in keys:
-                if key.startswith(self.key_prefix):
-                    cleaned_keys.append(key[len(self.key_prefix):])
+                # Convert bytes to string if needed
+                key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+                if key_str.startswith(self.key_prefix):
+                    cleaned_keys.append(key_str[len(self.key_prefix):])
                 else:
-                    cleaned_keys.append(key)
+                    cleaned_keys.append(key_str)
             
             logger.info(f"[REDIS BRIDGE] Found {len(cleaned_keys)} keys matching pattern: {pattern}")
             return cleaned_keys

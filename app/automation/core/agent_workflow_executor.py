@@ -402,12 +402,13 @@ class AgentWorkflowExecutor:
         nodes = workflow_config.get("nodes", [])
         edges = workflow_config.get("edges", [])
         
-        # Extract agent nodes, state nodes, router nodes, parallel nodes, condition nodes, transform nodes, and output nodes from workflow
+        # Extract agent nodes, state nodes, router nodes, parallel nodes, condition nodes, cache nodes, transform nodes, and output nodes from workflow
         agent_nodes = []
         state_nodes = []
         router_nodes = []
         parallel_nodes = []
         condition_nodes = []
+        cache_nodes = []
         transform_nodes = []
         output_node = None
         
@@ -475,6 +476,26 @@ class AgentWorkflowExecutor:
                     "position": node.get("position", {})
                 })
                 logger.info(f"[WORKFLOW CONVERSION] Found ConditionNode: {node.get('id')} with type: {condition_config.get('condition_type', 'simple')}")
+            
+            # Check for cache nodes
+            elif node_type == "CacheNode" or node.get("type") == "cachenode":
+                cache_config = node_data.get("node", {}) or node_data
+                cache_nodes.append({
+                    "node_id": node.get("id"),
+                    "label": cache_config.get("label", "Cache"),
+                    "cache_key": cache_config.get("cache_key") or cache_config.get("cacheKey", ""),
+                    "cache_key_pattern": cache_config.get("cache_key_pattern") or cache_config.get("cacheKeyPattern", "auto"),
+                    "ttl": cache_config.get("ttl", 3600),
+                    "cache_policy": cache_config.get("cache_policy") or cache_config.get("cachePolicy", "always"),
+                    "invalidate_on": cache_config.get("invalidate_on") or cache_config.get("invalidateOn", ["input_change"]),
+                    "cache_condition": cache_config.get("cache_condition") or cache_config.get("cacheCondition", ""),
+                    "enable_warming": cache_config.get("enable_warming") if cache_config.get("enable_warming") is not None else cache_config.get("enableWarming", False),
+                    "max_cache_size": cache_config.get("max_cache_size") or cache_config.get("maxCacheSize", 10),
+                    "cache_namespace": cache_config.get("cache_namespace") or cache_config.get("cacheNamespace", "default"),
+                    "show_statistics": cache_config.get("show_statistics") if cache_config.get("show_statistics") is not None else cache_config.get("showStatistics", True),
+                    "position": node.get("position", {})
+                })
+                logger.info(f"[WORKFLOW CONVERSION] Found CacheNode: {node.get('id')} with TTL: {cache_config.get('ttl', 3600)}s")
             
             # Check for transform nodes
             elif node_type == "TransformNode" or node.get("type") == "transformnode":
@@ -675,6 +696,7 @@ class AgentWorkflowExecutor:
             "router_nodes": router_nodes,
             "parallel_nodes": parallel_nodes,
             "condition_nodes": condition_nodes,
+            "cache_nodes": cache_nodes,
             "transform_nodes": transform_nodes,
             "output_node": output_node,
             "pattern": execution_pattern,
@@ -831,6 +853,7 @@ class AgentWorkflowExecutor:
         router_nodes = agent_plan.get("router_nodes", [])
         parallel_nodes = agent_plan.get("parallel_nodes", [])
         condition_nodes = agent_plan.get("condition_nodes", [])
+        cache_nodes = agent_plan.get("cache_nodes", [])
         transform_nodes = agent_plan.get("transform_nodes", [])
         pattern = agent_plan["pattern"]
         query = agent_plan["query"]
@@ -908,7 +931,7 @@ class AgentWorkflowExecutor:
                 # Pass agent_plan to sequential execution for enhanced features
                 async for result in self._execute_agents_sequential(
                     selected_agents, query, workflow_id, execution_id, execution_trace, 
-                    workflow_state, workflow_edges, agent_plan
+                    workflow_state, workflow_edges, agent_plan, cache_nodes, transform_nodes, parallel_nodes, condition_nodes
                 ):
                     yield result
         except Exception as e:
@@ -963,7 +986,11 @@ class AgentWorkflowExecutor:
         execution_trace=None,
         workflow_state: WorkflowState = None,
         workflow_edges: List[Dict[str, Any]] = None,
-        agent_plan: Dict[str, Any] = None
+        agent_plan: Dict[str, Any] = None,
+        cache_nodes: List[Dict[str, Any]] = None,
+        transform_nodes: List[Dict[str, Any]] = None,
+        parallel_nodes: List[Dict[str, Any]] = None,
+        condition_nodes: List[Dict[str, Any]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute agents sequentially using state-based workflow execution with 4-way connectivity support"""
         
@@ -981,6 +1008,10 @@ class AgentWorkflowExecutor:
         
         # Get router nodes for filtering
         router_nodes = agent_plan.get("router_nodes", []) if agent_plan else []
+        cache_nodes = cache_nodes or []
+        transform_nodes = transform_nodes or []
+        parallel_nodes = parallel_nodes or []
+        condition_nodes = condition_nodes or []
         active_target_nodes = set()
         
         # If we have router nodes, we need to track which agents are selected by routers
@@ -998,7 +1029,7 @@ class AgentWorkflowExecutor:
             if active_target_nodes and agent_node_id and agent_node_id not in active_target_nodes:
                 # Check if this agent is downstream of any active nodes
                 if not self._should_execute_node(agent_node_id, active_target_nodes, workflow_edges):
-                    logger.info(f"[ROUTER FILTERING] Skipping agent {agent_name} (node: {agent_node_id}) - not selected by router")
+                    logger.info(f"[ROUTER FILTERING] Skipping agent {agent_name} (node: {agent_node_id}) - not selected by router. Active targets: {list(active_target_nodes)}")
                     yield {
                         "type": "agent_execution_skipped",
                         "agent_name": agent_name,
@@ -1011,6 +1042,188 @@ class AgentWorkflowExecutor:
                         "timestamp": datetime.utcnow().isoformat()
                     }
                     continue
+            
+            # CACHE CHECK: Check if there's a cache node connected to this agent
+            cache_result = None
+            agent_input = None
+            cache_hit_skip = False  # Flag to control main agent loop
+            if cache_nodes:
+                # Check if this agent is connected TO a cache node (agent -> cache node)
+                for edge in workflow_edges:
+                    if edge.get("source") == agent_node_id:
+                        target_id = edge.get("target")
+                        # Check if target is a cache node
+                        for cache in cache_nodes:
+                            if cache["node_id"] == target_id:
+                                # Build agent input for cache key generation
+                                enhanced_edges = agent_plan.get('enhanced_edges', []) if agent_plan else []
+                                node_relationships = agent_plan.get('node_relationships', {}) if agent_plan else {}
+                                
+                                agent_input = self._build_agent_state_input(
+                                    agent=agent,
+                                    agent_index=i,
+                                    workflow_state=workflow_state,
+                                    agent_outputs=agent_outputs,
+                                    user_query=query,
+                                    workflow_edges=workflow_edges,
+                                    enhanced_edges=enhanced_edges,
+                                    node_relationships=node_relationships
+                                )
+                                
+                                # Check cache - use stable input for cache key (exclude dynamic execution data)
+                                stable_input = {
+                                    "user_request": agent_input.get("user_request", {}),
+                                    "agent_config": {
+                                        "name": agent["name"],
+                                        "role": agent["role"],
+                                        "node_id": agent["node_id"]
+                                    }
+                                }
+                                cache_result = await self._process_cache_node(
+                                    cache, str(stable_input), workflow_id, execution_id, agent_node_id
+                                )
+                                
+                                if cache_result and cache_result.get("skip_execution"):
+                                    # Cache hit! Skip agent execution
+                                    logger.info(f"[CACHE] Cache HIT - Skipping agent {agent_name} execution")
+                                    
+                                    # Enhanced cache hit event with metadata
+                                    cache_metadata = cache_result.get("cache_metadata", {})
+                                    yield {
+                                        "type": "cache_hit",
+                                        "agent_name": agent_name,
+                                        "node_id": agent_node_id,
+                                        "cache_id": cache["node_id"],
+                                        "cache_key": cache_result.get("cache_key", ""),
+                                        "cached_data": cache_result.get("cached_data"),
+                                        "cache_metadata": cache_metadata,
+                                        "cache_size": cache_result.get("cache_size", 0),
+                                        "cache_age_hours": cache_metadata.get("age_hours", 0),
+                                        "is_fresh": cache_metadata.get("is_fresh", True),
+                                        "data_type": cache_metadata.get("data_type", "unknown"),
+                                        "workflow_id": workflow_id,
+                                        "execution_id": execution_id,
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    }
+                                    
+                                    # Use cached output instead of executing agent
+                                    agent_output = cache_result.get("cached_data", "")
+                                    agent_outputs[agent_name] = agent_output
+                                    
+                                    # Store result in workflow state
+                                    if workflow_state:
+                                        agent_result = {
+                                            "agent_name": agent_name,
+                                            "node_id": agent["node_id"],
+                                            "output": agent_output,
+                                            "cached": True,
+                                            "cache_key": cache_result.get("cache_key", ""),
+                                            "tools_used": [],
+                                            "timestamp": datetime.utcnow().isoformat(),
+                                            "index": i
+                                        }
+                                        workflow_state.set_state(f"agent_output_{agent_name}", agent_result, f"agent_{i+1}_cached_result")
+                                        workflow_state.set_state(f"node_output_{agent['node_id']}", agent_result, f"node_{agent['node_id']}_cached_result")
+                                        
+                                        # CRITICAL: Store cache node output for downstream nodes (like RouterNode)
+                                        cache_node_result = {
+                                            "node_id": cache["node_id"],
+                                            "output": agent_output,
+                                            "cache_hit": True,
+                                            "cache_key": cache_result.get("cache_key", ""),
+                                            "timestamp": datetime.utcnow().isoformat()
+                                        }
+                                        workflow_state.set_state(f"node_output_{cache['node_id']}", cache_node_result, f"cache_{cache['node_id']}_result")
+                                    
+                                    yield {
+                                        "type": "agent_execution_complete",
+                                        "agent_name": agent_name,
+                                        "node_id": agent.get("node_id"),
+                                        "output": agent_output,
+                                        "cached": True,
+                                        "cache_info": cache_result,
+                                        "workflow_id": workflow_id,
+                                        "execution_id": execution_id,
+                                        "agent_index": i,
+                                        "total_agents": len(agents),
+                                        "sequence_display": f"{i + 1}/{len(agents)}",
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    }
+                                    
+                                    # CRITICAL: Process RouterNode if CacheNode connects to it
+                                    cache_node_id = cache["node_id"]
+                                    for edge in workflow_edges:
+                                        if edge.get("source") == cache_node_id:
+                                            target_id = edge.get("target")
+                                            # Check if target is a router node
+                                            for router in router_nodes:
+                                                if router["node_id"] == target_id:
+                                                    logger.info(f"[CACHE] Processing RouterNode {target_id} with cached result: {agent_output}")
+                                                    router_result = self._process_router_node(
+                                                        router, agent_output, agent_outputs, workflow_edges
+                                                    )
+                                                    if router_result:
+                                                        active_target_nodes.update(router_result["target_nodes"])
+                                                        logger.info(f"[ROUTER] Cache-triggered routing decision: {router_result['matched_routes']} → targets: {list(router_result['target_nodes'])}")
+                                                        yield {
+                                                            "type": "router_decision",
+                                                            "router_id": router["node_id"],
+                                                            "matched_routes": router_result["matched_routes"],
+                                                            "target_nodes": list(router_result["target_nodes"]),
+                                                            "workflow_id": workflow_id,
+                                                            "execution_id": execution_id,
+                                                            "timestamp": datetime.utcnow().isoformat(),
+                                                            "triggered_by": "cache_hit"
+                                                        }
+                                                    else:
+                                                        logger.warning(f"[ROUTER] No routing decision made for cached result: {agent_output}")
+                                    
+                                    # CRITICAL: Process direct CacheNode → AgentNode connections  
+                                    cache_node_id = cache["node_id"]
+                                    for edge in workflow_edges:
+                                        if edge.get("source") == cache_node_id:
+                                            target_id = edge.get("target")
+                                            # Check if target is an agent node (not router node)
+                                            target_agent = None
+                                            for target_agent_candidate in agents:
+                                                if target_agent_candidate.get("node_id") == target_id:
+                                                    target_agent = target_agent_candidate
+                                                    break
+                                            
+                                            if target_agent:
+                                                # This is a direct CacheNode → AgentNode connection
+                                                logger.info(f"[CACHE] Direct connection: CacheNode {cache_node_id} → AgentNode {target_id}, passing cached result: {agent_output}")
+                                                
+                                                # Store cached output as input for the target agent
+                                                if workflow_state:
+                                                    target_input_key = f"agent_input_{target_agent['name']}"
+                                                    cached_input = {
+                                                        "cached_output": agent_output,
+                                                        "source_cache_node": cache_node_id,
+                                                        "source_agent": agent_name,
+                                                        "timestamp": datetime.utcnow().isoformat()
+                                                    }
+                                                    workflow_state.set_state(target_input_key, cached_input, f"cache_input_for_{target_agent['name']}")
+                                                
+                                                # Yield cache connection info
+                                                yield {
+                                                    "type": "cache_connection",
+                                                    "source_cache_node": cache_node_id,
+                                                    "target_agent_node": target_id,
+                                                    "target_agent_name": target_agent["name"],
+                                                    "cached_data": agent_output,
+                                                    "workflow_id": workflow_id,
+                                                    "execution_id": execution_id,
+                                                    "timestamp": datetime.utcnow().isoformat()
+                                                }
+                                    
+                                    # Set flag to skip agent execution in main loop
+                                    cache_hit_skip = True
+                                break
+            
+            # Check if cache hit occurred and skip agent execution
+            if cache_hit_skip:
+                continue
             
             # Update resource monitoring for agent execution
             self.resource_monitor.update_agent_count(workflow_id, execution_id, executed=1, active=1)
@@ -1116,6 +1329,41 @@ class AgentWorkflowExecutor:
                 # Individual agent spans will be created by the multi-agent system itself
                 pass
                 
+                # CACHE STORAGE: Store result in cache if there was a cache miss
+                if cache_result and cache_result.get("should_cache") and not cache_result.get("cache_hit"):
+                    # Find the cache node to get its configuration
+                    cache_config = None
+                    for edge in workflow_edges:
+                        if edge.get("source") == agent_node_id:
+                            target_id = edge.get("target")
+                            for cache in cache_nodes:
+                                if cache["node_id"] == target_id:
+                                    cache_config = cache
+                                    break
+                    
+                    if cache_config:
+                        # Store the agent result in cache
+                        cache_stored = await self._store_cache_result(
+                            cache_result.get("cache_key", ""),
+                            agent_output,
+                            cache_config.get("ttl", 3600),
+                            cache_result.get("cache_condition", ""),
+                            cache_config.get("max_cache_size", 10) * 1024 * 1024
+                        )
+                        
+                        if cache_stored:
+                            yield {
+                                "type": "cache_stored",
+                                "agent_name": agent_name,
+                                "node_id": agent_node_id,
+                                "cache_id": cache_config["node_id"],
+                                "cache_key": cache_result.get("cache_key", ""),
+                                "ttl": cache_config.get("ttl", 3600),
+                                "workflow_id": workflow_id,
+                                "execution_id": execution_id,
+                                "timestamp": datetime.utcnow().isoformat()
+                            }
+                
                 # Parse the agent prompt to extract structured sections for frontend
                 agent_input_sections = self._parse_agent_prompt_sections(agent_prompt)
                 
@@ -1144,13 +1392,14 @@ class AgentWorkflowExecutor:
                 # Process router nodes after agent execution
                 current_node_id = agent.get("node_id")
                 if router_nodes and current_node_id:
-                    # Check if this agent connects to any router
+                    # Check if this agent connects to any router (direct connection)
                     for edge in workflow_edges:
                         if edge.get("source") == current_node_id:
                             target_id = edge.get("target")
                             # Check if target is a router node
                             for router in router_nodes:
                                 if router["node_id"] == target_id:
+                                    logger.info(f"[ROUTER] Processing RouterNode {target_id} with direct agent result: {agent_output}")
                                     # Process router logic
                                     router_result = self._process_router_node(
                                         router, agent_output, agent_outputs, workflow_edges
@@ -1166,6 +1415,40 @@ class AgentWorkflowExecutor:
                                             "execution_id": execution_id,
                                             "timestamp": datetime.utcnow().isoformat()
                                         }
+                    
+                    # CRITICAL: Also check for agent→cache→router connections (cache MISS case)
+                    for edge in workflow_edges:
+                        if edge.get("source") == current_node_id:
+                            cache_target_id = edge.get("target")
+                            # Check if target is a cache node
+                            for cache in cache_nodes:
+                                if cache["node_id"] == cache_target_id:
+                                    # Found agent→cache connection, now check cache→router
+                                    for cache_edge in workflow_edges:
+                                        if cache_edge.get("source") == cache_target_id:
+                                            router_target_id = cache_edge.get("target")
+                                            # Check if cache connects to router
+                                            for router in router_nodes:
+                                                if router["node_id"] == router_target_id:
+                                                    logger.info(f"[ROUTER] Processing RouterNode {router_target_id} with agent result via CacheNode (cache MISS): {agent_output}")
+                                                    # Process router logic with agent output
+                                                    router_result = self._process_router_node(
+                                                        router, agent_output, agent_outputs, workflow_edges
+                                                    )
+                                                    if router_result:
+                                                        active_target_nodes.update(router_result["target_nodes"])
+                                                        yield {
+                                                            "type": "router_decision",
+                                                            "router_id": router["node_id"],
+                                                            "matched_routes": router_result["matched_routes"],
+                                                            "target_nodes": list(router_result["target_nodes"]),
+                                                            "workflow_id": workflow_id,
+                                                            "execution_id": execution_id,
+                                                            "timestamp": datetime.utcnow().isoformat(),
+                                                            "triggered_by": "cache_miss_via_agent"
+                                                        }
+                                                    else:
+                                                        logger.warning(f"[ROUTER] No routing decision made for agent result via cache: {agent_output}")
                 
                 # Process transform nodes after agent execution
                 current_node_id = agent.get("node_id")
@@ -2232,6 +2515,33 @@ Please process this request independently and provide your analysis."""
                             "index": i
                         })
         
+        # CRITICAL: Check for cached input from CacheNode
+        if workflow_state:
+            cached_input_key = f"agent_input_{agent['name']}"
+            cached_input = workflow_state.get_state(cached_input_key)
+            if cached_input:
+                # Add cached data to the agent input
+                logger.info(f"[CACHE INPUT] Agent {agent['name']} received cached input from CacheNode")
+                agent_input["cached_input"] = {
+                    "cached_output": cached_input.get("cached_output"),
+                    "source_cache_node": cached_input.get("source_cache_node"),
+                    "source_agent": cached_input.get("source_agent"),
+                    "timestamp": cached_input.get("timestamp")
+                }
+                
+                # Add cached data to previous results so agent can use it
+                agent_input["previous_results"].append({
+                    "agent_name": cached_input.get("source_agent", "cache"),
+                    "node_id": cached_input.get("source_cache_node"),
+                    "output": cached_input.get("cached_output"),
+                    "cached": True,
+                    "connection_info": {
+                        "source_handle": "output",
+                        "target_handle": "input", 
+                        "connection_type": "cache"
+                    }
+                })
+        
         return agent_input
     
     def _create_state_based_prompt(
@@ -3279,3 +3589,264 @@ Respond with only "TRUE" if the data meets the criteria, or "FALSE" if it doesn'
         except Exception as e:
             logger.error(f"[CONDITION] Error checking node execution with conditions: {e}")
             return True  # Default to execute on error
+    
+    async def _process_cache_node(
+        self,
+        cache_config: Dict[str, Any],
+        input_data: str,
+        workflow_id: int,
+        execution_id: str,
+        agent_node_id: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """Process cache node to check for cached results or store new ones"""
+        try:
+            from app.automation.integrations.redis_bridge import workflow_redis
+            import hashlib
+            import json
+            
+            cache_key_pattern = cache_config.get("cache_key_pattern", "auto")
+            custom_cache_key = cache_config.get("cache_key", "")
+            ttl = cache_config.get("ttl", 3600)
+            cache_policy = cache_config.get("cache_policy", "always")
+            cache_namespace = cache_config.get("cache_namespace", "default")
+            max_cache_size = cache_config.get("max_cache_size", 10) * 1024 * 1024  # Convert MB to bytes
+            cache_node_id = cache_config["node_id"]
+            
+            # Generate cache key
+            cache_key = self._generate_cache_key(
+                cache_key_pattern, custom_cache_key, workflow_id, 
+                cache_node_id, agent_node_id, input_data, cache_namespace
+            )
+            
+            logger.info(f"[CACHE] Processing cache node {cache_node_id} with key: {cache_key}")
+            
+            # Check cache policy
+            if cache_policy == "always" or cache_policy == "input_match":
+                # Try to get cached result
+                cached_result = workflow_redis.get_value(cache_key)
+                
+                if cached_result:
+                    logger.info(f"[CACHE] Cache HIT for key: {cache_key}")
+                    
+                    # Check if cached data is within size limits
+                    cached_size = len(json.dumps(cached_result).encode('utf-8'))
+                    if max_cache_size > 0 and cached_size > max_cache_size:
+                        logger.warning(f"[CACHE] Cached data too large ({cached_size} bytes), invalidating")
+                        workflow_redis.delete_value(cache_key)
+                        cached_result = None
+                    else:
+                        # Calculate cache metadata for enhanced cache events
+                        cache_metadata = self._get_cache_metadata(cache_key, cached_result, cached_size)
+                        
+                        return {
+                            "cache_hit": True,
+                            "cached_data": cached_result,
+                            "cache_key": cache_key,
+                            "cache_size": cached_size,
+                            "cache_metadata": cache_metadata,
+                            "skip_execution": True
+                        }
+                
+                logger.info(f"[CACHE] Cache MISS for key: {cache_key}")
+                return {
+                    "cache_hit": False,
+                    "cache_key": cache_key,
+                    "skip_execution": False,
+                    "should_cache": True
+                }
+            
+            elif cache_policy == "conditional":
+                # Conditional caching - always execute but may cache result
+                return {
+                    "cache_hit": False,
+                    "cache_key": cache_key,
+                    "skip_execution": False,
+                    "should_cache": True,
+                    "conditional": True,
+                    "cache_condition": cache_config.get("cache_condition", "")
+                }
+            
+            # Default: no caching
+            return {
+                "cache_hit": False,
+                "cache_key": cache_key,
+                "skip_execution": False,
+                "should_cache": False
+            }
+            
+        except Exception as e:
+            logger.error(f"[CACHE] Error processing cache node: {e}")
+            return {
+                "cache_hit": False,
+                "cache_key": "",
+                "skip_execution": False,
+                "should_cache": False,
+                "error": str(e)
+            }
+    
+    def _generate_cache_key(
+        self,
+        pattern: str,
+        custom_key: str,
+        workflow_id: int,
+        cache_node_id: str,
+        agent_node_id: str,
+        input_data: str,
+        namespace: str
+    ) -> str:
+        """Generate cache key based on pattern"""
+        try:
+            import hashlib
+            import json
+            
+            if pattern == "custom" and custom_key:
+                return f"{namespace}:custom:{custom_key}"
+            
+            elif pattern == "node_only":
+                return f"{namespace}:node:{cache_node_id}"
+            
+            elif pattern == "input_hash":
+                input_hash = hashlib.md5(input_data.encode('utf-8')).hexdigest()[:8]
+                return f"{namespace}:input:{input_hash}"
+            
+            else:  # auto pattern
+                # Include workflow, node, and input hash for comprehensive key
+                input_hash = hashlib.md5(input_data.encode('utf-8')).hexdigest()[:8]
+                agent_part = f"_{agent_node_id}" if agent_node_id else ""
+                return f"{namespace}:auto:w{workflow_id}:n{cache_node_id}{agent_part}:i{input_hash}"
+                
+        except Exception as e:
+            logger.error(f"[CACHE] Error generating cache key: {e}")
+            return f"{namespace}:fallback:{cache_node_id}"
+    
+    async def _store_cache_result(
+        self,
+        cache_key: str,
+        result_data: Any,
+        ttl: int,
+        cache_condition: str = "",
+        max_size: int = 0
+    ) -> bool:
+        """Store result in cache with optional conditions"""
+        try:
+            from app.automation.integrations.redis_bridge import workflow_redis
+            import json
+            
+            # Check conditional caching
+            if cache_condition:
+                try:
+                    # Simple condition evaluation (in production, use safer evaluation)
+                    # For now, just check basic conditions
+                    if "length" in cache_condition:
+                        data_length = len(str(result_data))
+                        condition_met = eval(cache_condition.replace("output.length", str(data_length)))
+                        if not condition_met:
+                            logger.info(f"[CACHE] Cache condition not met, skipping cache storage")
+                            return False
+                except Exception as e:
+                    logger.warning(f"[CACHE] Error evaluating cache condition: {e}")
+                    return False
+            
+            # Check size limits
+            result_size = len(json.dumps(result_data).encode('utf-8'))
+            if max_size > 0 and result_size > max_size:
+                logger.warning(f"[CACHE] Result too large to cache ({result_size} bytes)")
+                return False
+            
+            # Store in cache
+            success = workflow_redis.set_value(cache_key, result_data, expire=ttl)
+            if success:
+                logger.info(f"[CACHE] Stored result in cache with key: {cache_key}, TTL: {ttl}s")
+            else:
+                logger.warning(f"[CACHE] Failed to store result in cache")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"[CACHE] Error storing cache result: {e}")
+            return False
+    
+    def _get_cache_metadata(self, cache_key: str, cached_data: Any, cached_size: int) -> Dict[str, Any]:
+        """Extract metadata from cached data for enhanced cache events"""
+        try:
+            from datetime import datetime, timezone
+            import json
+            
+            # Try to extract timestamp if available
+            timestamp = None
+            last_access = None
+            
+            if isinstance(cached_data, dict):
+                timestamp = cached_data.get("timestamp") or cached_data.get("created_at")
+                last_access = cached_data.get("last_access")
+            
+            # Calculate age if timestamp available
+            age_info = {}
+            if timestamp:
+                try:
+                    cache_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    age_seconds = (datetime.now(timezone.utc) - cache_time).total_seconds()
+                    age_info = {
+                        "age_seconds": int(age_seconds),
+                        "age_minutes": round(age_seconds / 60, 1),
+                        "age_hours": round(age_seconds / 3600, 2),
+                        "created_at": timestamp,
+                        "is_fresh": age_seconds < 3600,  # Less than 1 hour
+                        "is_stale": age_seconds > 86400   # More than 24 hours
+                    }
+                except Exception as e:
+                    logger.warning(f"[CACHE METADATA] Error parsing timestamp: {e}")
+            
+            # Determine data type and structure
+            data_type = type(cached_data).__name__
+            structure_info = {}
+            
+            if isinstance(cached_data, dict):
+                data_type = "object"
+                structure_info = {
+                    "key_count": len(cached_data.keys()),
+                    "has_output": "output" in cached_data,
+                    "has_metadata": any(key in cached_data for key in ["timestamp", "agent_name", "node_id"])
+                }
+            elif isinstance(cached_data, list):
+                data_type = "array"
+                structure_info = {"length": len(cached_data)}
+            elif isinstance(cached_data, str):
+                data_type = "string"
+                structure_info = {
+                    "length": len(cached_data),
+                    "word_count": len(cached_data.split()),
+                    "line_count": len(cached_data.split('\n'))
+                }
+            
+            # Performance metrics
+            size_info = {
+                "size_bytes": cached_size,
+                "size_kb": round(cached_size / 1024, 2),
+                "size_mb": round(cached_size / (1024 * 1024), 3),
+                "compression_ratio": 1.0  # Could be enhanced with actual compression
+            }
+            
+            # Generate preview for logs
+            preview = str(cached_data)[:100] + "..." if len(str(cached_data)) > 100 else str(cached_data)
+            
+            return {
+                "cache_key": cache_key,
+                "data_type": data_type,
+                "last_access": datetime.now(timezone.utc).isoformat(),
+                "access_count": 1,  # Could be enhanced with actual tracking
+                "preview": preview,
+                **age_info,
+                **structure_info,
+                **size_info
+            }
+            
+        except Exception as e:
+            logger.warning(f"[CACHE METADATA] Error extracting metadata: {e}")
+            return {
+                "cache_key": cache_key,
+                "size_bytes": cached_size,
+                "data_type": "unknown",
+                "error": str(e),
+                "last_access": datetime.now(timezone.utc).isoformat()
+            }

@@ -357,6 +357,45 @@ async def validate_workflow(workflow_config: Dict[str, Any]) -> Dict[str, Any]:
             # Validate agent-based workflow
             validation_result = validate_agent_workflow(workflow_config)
             validation_result["workflow_type"] = "agent_based"
+            
+            # Perform pre-execution cache existence check if cache nodes exist
+            cache_info = validation_result.get("cache_info")
+            if cache_info and cache_info.get("requires_cache_check"):
+                try:
+                    from app.automation.integrations.redis_bridge import workflow_redis
+                    
+                    cache_status = []
+                    for cache_node_info in cache_info["cache_nodes"]:
+                        node_id = cache_node_info["node_id"]
+                        
+                        # Generate cache key for pre-execution check
+                        cache_key = _generate_pre_execution_cache_key(
+                            cache_node_info, workflow_config.get("id")
+                        )
+                        
+                        # Check if cache exists
+                        cache_exists = workflow_redis.exists(cache_key) if cache_key else False
+                        
+                        cache_status.append({
+                            "node_id": node_id,
+                            "cache_key": cache_key,
+                            "cache_exists": cache_exists,
+                            "cache_key_pattern": cache_node_info["cache_key_pattern"],
+                            "estimated_hit": cache_exists
+                        })
+                    
+                    validation_result["cache_status"] = {
+                        "total_cache_nodes": len(cache_status),
+                        "cache_nodes_with_data": len([c for c in cache_status if c["cache_exists"]]),
+                        "estimated_cache_hits": len([c for c in cache_status if c["estimated_hit"]]),
+                        "cache_details": cache_status
+                    }
+                    
+                except Exception as e:
+                    validation_result["cache_status"] = {
+                        "error": f"Failed to check cache status: {str(e)}",
+                        "cache_check_failed": True
+                    }
         else:
             # Basic validation for legacy workflows
             validation_result = {
@@ -375,3 +414,27 @@ async def validate_workflow(workflow_config: Dict[str, Any]) -> Dict[str, Any]:
             "warnings": [],
             "workflow_type": "unknown"
         }
+
+def _generate_pre_execution_cache_key(cache_node_info: dict, workflow_id: int = None) -> str:
+    """Generate cache key for pre-execution validation"""
+    try:
+        cache_key_pattern = cache_node_info.get("cache_key_pattern", "auto")
+        custom_key = cache_node_info.get("custom_key", "")
+        node_id = cache_node_info["node_id"]
+        
+        if cache_key_pattern == "custom" and custom_key:
+            return custom_key
+        elif cache_key_pattern == "node_only":
+            return f"cache_{node_id}"
+        elif cache_key_pattern == "input_hash":
+            # For pre-execution, we can't know the exact input hash
+            # Return a pattern that would match any input hash for this node
+            return f"cache_{node_id}_*"  # This is a pattern, not exact key
+        else:  # auto pattern
+            if workflow_id:
+                return f"cache_{workflow_id}_{node_id}"
+            else:
+                return f"cache_{node_id}"
+                
+    except Exception:
+        return f"cache_{cache_node_info.get('node_id', 'unknown')}"

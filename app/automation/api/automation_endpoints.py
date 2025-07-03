@@ -20,6 +20,7 @@ from app.automation.core.automation_cache import (
 from app.automation.integrations.postgres_bridge import postgres_bridge
 from app.automation.core.automation_executor import AutomationExecutor
 from app.automation.api.node_schema_endpoint import router as node_schema_router
+from app.automation.api.cache_endpoint import router as cache_router
 from app.automation.core.resource_monitor import get_resource_monitor
 from app.core.unified_mcp_service import get_mcp_pool_stats
 from app.langchain.dynamic_agent_system import agent_instance_pool
@@ -30,6 +31,9 @@ router = APIRouter()
 
 # Include node schema endpoints
 router.include_router(node_schema_router, prefix="/schema", tags=["Node Schema"])
+
+# Include cache management endpoints
+router.include_router(cache_router, prefix="", tags=["Cache Management"])
 
 # Pydantic models
 class WorkflowCreate(BaseModel):
