@@ -35,6 +35,10 @@ router.include_router(node_schema_router, prefix="/schema", tags=["Node Schema"]
 # Include cache management endpoints
 router.include_router(cache_router, prefix="", tags=["Cache Management"])
 
+# Include external trigger endpoints
+from app.automation.api.trigger_endpoints import router as trigger_router
+router.include_router(trigger_router, prefix="/external", tags=["External Triggers"])
+
 # Pydantic models
 class WorkflowCreate(BaseModel):
     name: str = Field(..., description="Workflow name")

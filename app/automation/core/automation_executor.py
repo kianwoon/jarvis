@@ -111,10 +111,35 @@ class AutomationExecutor:
         """Detect if workflow uses agent-based nodes or legacy nodes"""
         
         nodes = langflow_config.get("nodes", [])
+        logger.info(f"[WORKFLOW DETECTION] Found {len(nodes)} nodes in workflow")
         
         # Check for agent-based nodes
-        agent_node_types = {"AgentNode", "InputNode", "OutputNode", "ConditionNode", "ParallelNode"}
-        legacy_node_types = {"JarvisLLMNode", "JarvisMCPToolNode", "JarvisAgentNode", "JarvisAIDecisionNode"}
+        agent_node_types = {
+            "AgentNode", "InputNode", "OutputNode", "ConditionNode", "ParallelNode",
+            "TriggerNode", "StateNode", "RouterNode", "TransformNode", "CacheNode"
+        }
+        legacy_node_types = {
+            "JarvisLLMNode", "JarvisMCPToolNode", "JarvisAgentNode", "JarvisAIDecisionNode", 
+            "JarvisEndNode", "JarvisStartNode", "JarvisConditionNode", "JarvisLoopNode"
+        }
+        
+        # Debug: Show all node types found
+        for i, node in enumerate(nodes):
+            node_type = node.get("data", {}).get("type", "")
+            node_id = node.get("id", "unknown")
+            logger.info(f"[WORKFLOW DETECTION] Node {i}: id={node_id}, type='{node_type}'")
+        
+        # Special case: If TriggerNode is present, always treat as agent-based
+        has_trigger_node = any(
+            node.get("data", {}).get("type", "") == "TriggerNode" 
+            for node in nodes
+        )
+        
+        logger.info(f"[WORKFLOW DETECTION] TriggerNode found: {has_trigger_node}")
+        
+        if has_trigger_node:
+            logger.info("TriggerNode detected - forcing agent-based workflow execution")
+            return "agent_based"
         
         has_agent_nodes = any(
             node.get("data", {}).get("type", "") in agent_node_types 

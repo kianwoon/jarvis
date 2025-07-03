@@ -562,28 +562,9 @@ def get_router_node_schema() -> Dict[str, Any]:
             "routes": {
                 "type": "json",
                 "label": "Route Definitions", 
-                "description": "Define routing rules and target nodes (auto-populated from connections)",
+                "description": "Define routing rules and target nodes (manually configured by user)",
                 "required": True,
-                "default": [
-                    {
-                        "id": "route_1",
-                        "match_values": ["Customer_Support", "customer", "support"],
-                        "target_nodes": ["agentnode-1", "agentnode-2"],
-                        "label": "Customer Support Route"
-                    },
-                    {
-                        "id": "route_2",
-                        "match_values": ["Sales_Inquiry", "sales", "pricing"],
-                        "target_nodes": ["agentnode-3"],
-                        "label": "Sales Route"
-                    },
-                    {
-                        "id": "route_3",
-                        "match_values": ["Technical_Issue", "technical", "bug"],
-                        "target_nodes": ["agentnode-4", "agentnode-5"],
-                        "label": "Technical Route"
-                    }
-                ]
+                "default": []
             },
             "fallback_route": {
                 "type": "string", 
@@ -707,6 +688,171 @@ def get_transform_node_schema() -> Dict[str, Any]:
                 "description": "Sample data for testing the expression",
                 "required": False,
                 "default": {"example": "data"}
+            }
+        }
+    }
+
+def get_trigger_node_schema() -> Dict[str, Any]:
+    """Get schema for Trigger Node in visual editor"""
+    return {
+        "type": "TriggerNode",
+        "name": "External Trigger",
+        "description": "Allow external systems to trigger workflow execution via API endpoints",
+        "category": "Input/Output",
+        "icon": "🔗",
+        "color": "#059669",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "trigger_data",
+                "type": "object",
+                "label": "Trigger Data",
+                "description": "Data received from external trigger request"
+            },
+            {
+                "name": "query_params",
+                "type": "object",
+                "label": "Query Parameters",
+                "description": "URL query parameters from trigger request"
+            },
+            {
+                "name": "headers",
+                "type": "object",
+                "label": "Request Headers",
+                "description": "HTTP headers from trigger request"
+            }
+        ],
+        "properties": {
+            "trigger_name": {
+                "type": "string",
+                "label": "Trigger Name",
+                "description": "Unique name for this trigger endpoint",
+                "required": True,
+                "placeholder": "my-workflow-trigger"
+            },
+            "http_methods": {
+                "type": "multiselect",
+                "label": "HTTP Methods",
+                "description": "Allowed HTTP methods for this trigger",
+                "required": True,
+                "options": [
+                    {"value": "GET", "label": "GET"},
+                    {"value": "POST", "label": "POST"},
+                    {"value": "PUT", "label": "PUT"},
+                    {"value": "DELETE", "label": "DELETE"},
+                    {"value": "PATCH", "label": "PATCH"}
+                ],
+                "default": ["POST"]
+            },
+            "authentication_type": {
+                "type": "select",
+                "label": "Authentication Type",
+                "description": "Authentication method for external access",
+                "required": True,
+                "options": [
+                    {"value": "none", "label": "No Authentication"},
+                    {"value": "api_key", "label": "API Key (Header)"},
+                    {"value": "bearer_token", "label": "Bearer Token"},
+                    {"value": "basic_auth", "label": "Basic Authentication"},
+                    {"value": "custom_header", "label": "Custom Header"}
+                ],
+                "default": "api_key"
+            },
+            "auth_header_name": {
+                "type": "string",
+                "label": "Auth Header Name",
+                "description": "Name of the authentication header",
+                "required": False,
+                "default": "X-API-Key",
+                "show_when": {"authentication_type": ["api_key", "custom_header"]}
+            },
+            "auth_token": {
+                "type": "string",
+                "label": "Authentication Token",
+                "description": "Token/key for authentication (auto-generated if empty)",
+                "required": False,
+                "placeholder": "Auto-generated secure token",
+                "show_when": {"authentication_type": ["api_key", "bearer_token", "custom_header"]}
+            },
+            "basic_auth_username": {
+                "type": "string",
+                "label": "Username",
+                "description": "Basic authentication username",
+                "required": False,
+                "show_when": {"authentication_type": "basic_auth"}
+            },
+            "basic_auth_password": {
+                "type": "string",
+                "label": "Password",
+                "description": "Basic authentication password",
+                "required": False,
+                "show_when": {"authentication_type": "basic_auth"}
+            },
+            "rate_limit": {
+                "type": "number",
+                "label": "Rate Limit (requests/minute)",
+                "description": "Maximum requests per minute (0 = unlimited)",
+                "required": False,
+                "default": 60,
+                "min": 0,
+                "max": 1000
+            },
+            "timeout": {
+                "type": "number",
+                "label": "Response Timeout (seconds)",
+                "description": "Maximum time to wait for workflow completion",
+                "required": False,
+                "default": 300,
+                "min": 30,
+                "max": 3600
+            },
+            "response_format": {
+                "type": "select",
+                "label": "Response Format",
+                "description": "Format of the response returned to external caller",
+                "required": True,
+                "options": [
+                    {"value": "workflow_output", "label": "Workflow Output Only"},
+                    {"value": "detailed", "label": "Detailed (with metadata)"},
+                    {"value": "status_only", "label": "Status Only"},
+                    {"value": "custom", "label": "Custom JSON Template"}
+                ],
+                "default": "workflow_output"
+            },
+            "custom_response_template": {
+                "type": "textarea",
+                "label": "Custom Response Template",
+                "description": "JSON template for custom response format (use {{output}}, {{status}}, {{execution_time}})",
+                "required": False,
+                "placeholder": '{"result": "{{output}}", "status": "{{status}}", "timestamp": "{{timestamp}}"}',
+                "show_when": {"response_format": "custom"}
+            },
+            "cors_enabled": {
+                "type": "boolean",
+                "label": "Enable CORS",
+                "description": "Allow cross-origin requests from web browsers",
+                "default": True
+            },
+            "cors_origins": {
+                "type": "textarea",
+                "label": "Allowed Origins",
+                "description": "Comma-separated list of allowed origins (* for all)",
+                "required": False,
+                "default": "*",
+                "show_when": {"cors_enabled": True}
+            },
+            "log_requests": {
+                "type": "boolean",
+                "label": "Log Requests",
+                "description": "Log all incoming trigger requests for debugging",
+                "default": True
+            },
+            "webhook_url": {
+                "type": "string",
+                "label": "Webhook URL",
+                "description": "Auto-generated URL for external systems (read-only)",
+                "required": False,
+                "readonly": True
             }
         }
     }
@@ -843,6 +989,7 @@ def get_all_node_schemas() -> List[Dict[str, Any]]:
         get_agent_node_schema(),
         get_input_node_schema(),
         get_output_node_schema(),
+        get_trigger_node_schema(),
         get_condition_node_schema(),
         get_parallel_node_schema(),
         get_state_node_schema(),
@@ -890,11 +1037,12 @@ def validate_agent_workflow(workflow_config: Dict[str, Any]) -> Dict[str, Any]:
     
     # Check for required nodes
     has_input = any(node.get("data", {}).get("type") == "InputNode" for node in nodes)
+    has_trigger = any(node.get("data", {}).get("type") == "TriggerNode" for node in nodes)
     has_agent = any(node.get("data", {}).get("type") == "AgentNode" for node in nodes)
     has_output = any(node.get("data", {}).get("type") == "OutputNode" for node in nodes)
     
-    if not has_input:
-        warnings.append("Workflow has no input node - will use default input handling")
+    if not has_input and not has_trigger:
+        warnings.append("Workflow has no input or trigger node - will use default input handling")
     
     if not has_agent:
         errors.append("Workflow must have at least one Agent node")

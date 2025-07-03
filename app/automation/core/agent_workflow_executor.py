@@ -402,7 +402,7 @@ class AgentWorkflowExecutor:
         nodes = workflow_config.get("nodes", [])
         edges = workflow_config.get("edges", [])
         
-        # Extract agent nodes, state nodes, router nodes, parallel nodes, condition nodes, cache nodes, transform nodes, and output nodes from workflow
+        # Extract agent nodes, state nodes, router nodes, parallel nodes, condition nodes, cache nodes, transform nodes, trigger nodes, and output nodes from workflow
         agent_nodes = []
         state_nodes = []
         router_nodes = []
@@ -410,6 +410,7 @@ class AgentWorkflowExecutor:
         condition_nodes = []
         cache_nodes = []
         transform_nodes = []
+        trigger_nodes = []
         output_node = None
         
         for node in nodes:
@@ -513,6 +514,27 @@ class AgentWorkflowExecutor:
                     "position": node.get("position", {})
                 })
                 logger.info(f"[WORKFLOW CONVERSION] Found TransformNode: {node.get('id')} with type: {transform_config.get('transform_type', 'jsonpath')}")
+            
+            # Check for trigger nodes
+            elif node_type == "TriggerNode" or node.get("type") == "triggernode":
+                trigger_config = node_data.get("node", {}) or node_data
+                trigger_nodes.append({
+                    "node_id": node.get("id"),
+                    "trigger_name": trigger_config.get("trigger_name", f"trigger-{node.get('id')}"),
+                    "http_methods": trigger_config.get("http_methods", ["POST"]),
+                    "authentication_type": trigger_config.get("authentication_type", "api_key"),
+                    "auth_header_name": trigger_config.get("auth_header_name", "X-API-Key"),
+                    "auth_token": trigger_config.get("auth_token", ""),
+                    "rate_limit": trigger_config.get("rate_limit", 60),
+                    "timeout": trigger_config.get("timeout", 300),
+                    "response_format": trigger_config.get("response_format", "workflow_output"),
+                    "custom_response_template": trigger_config.get("custom_response_template", ""),
+                    "cors_enabled": trigger_config.get("cors_enabled", True),
+                    "cors_origins": trigger_config.get("cors_origins", "*"),
+                    "log_requests": trigger_config.get("log_requests", True),
+                    "position": node.get("position", {})
+                })
+                logger.info(f"[WORKFLOW CONVERSION] Found TriggerNode: {node.get('id')} with name: {trigger_config.get('trigger_name')}")
             
             # Check for output nodes
             elif node_type == "OutputNode" or node.get("type") == "outputnode":
@@ -686,7 +708,26 @@ class AgentWorkflowExecutor:
         
         # Prepare query from input or message
         query = message or input_data.get("query", "") if input_data else ""
-        if not query and input_data:
+        
+        # Handle TriggerNode input data specially
+        if not query and input_data and trigger_nodes:
+            # If we have trigger nodes and special trigger input format
+            if input_data.get("trigger_data") is not None:
+                trigger_data = input_data.get("trigger_data", {})
+                query_params = input_data.get("query_params", {})
+                headers = input_data.get("headers", {})
+                
+                # Construct query from trigger data
+                if trigger_data:
+                    query = f"Process the external trigger data: {json.dumps(trigger_data, indent=2)}"
+                elif query_params:
+                    query = f"Process the query parameters: {json.dumps(query_params, indent=2)}"
+                else:
+                    query = "Process external trigger request"
+            else:
+                # Standard input data processing
+                query = f"Process the following data: {json.dumps(input_data, indent=2)}"
+        elif not query and input_data:
             # Try to construct query from input data
             query = f"Process the following data: {json.dumps(input_data, indent=2)}"
         
@@ -698,6 +739,7 @@ class AgentWorkflowExecutor:
             "condition_nodes": condition_nodes,
             "cache_nodes": cache_nodes,
             "transform_nodes": transform_nodes,
+            "trigger_nodes": trigger_nodes,
             "output_node": output_node,
             "pattern": execution_pattern,
             "query": query,
