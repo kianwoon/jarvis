@@ -402,11 +402,12 @@ class AgentWorkflowExecutor:
         nodes = workflow_config.get("nodes", [])
         edges = workflow_config.get("edges", [])
         
-        # Extract agent nodes, state nodes, router nodes, parallel nodes, condition nodes, cache nodes, transform nodes, trigger nodes, and output nodes from workflow
+        # Extract agent nodes, state nodes, router nodes, parallel nodes, aggregator nodes, condition nodes, cache nodes, transform nodes, trigger nodes, and output nodes from workflow
         agent_nodes = []
         state_nodes = []
         router_nodes = []
         parallel_nodes = []
+        aggregator_nodes = []
         condition_nodes = []
         cache_nodes = []
         transform_nodes = []
@@ -459,6 +460,33 @@ class AgentWorkflowExecutor:
                     "position": node.get("position", {})
                 })
                 logger.info(f"[WORKFLOW CONVERSION] Found ParallelNode: {node.get('id')} with max_parallel: {parallel_config.get('max_parallel', 3)}")
+            
+            # Check for aggregator nodes
+            elif node_type == "AggregatorNode" or node.get("type") == "aggregatornode":
+                aggregator_config = node_data.get("node", {}) or node_data
+                aggregator_nodes.append({
+                    "node_id": node.get("id"),
+                    "label": aggregator_config.get("label", "Output Aggregator"),
+                    "aggregation_strategy": aggregator_config.get("aggregation_strategy") or aggregator_config.get("aggregationStrategy", "semantic_merge"),
+                    "confidence_threshold": aggregator_config.get("confidence_threshold") or aggregator_config.get("confidenceThreshold", 0.3),
+                    "max_inputs": aggregator_config.get("max_inputs") or aggregator_config.get("maxInputs", 0),
+                    "deduplication_enabled": aggregator_config.get("deduplication_enabled") if aggregator_config.get("deduplication_enabled") is not None else aggregator_config.get("deduplicationEnabled", True),
+                    "similarity_threshold": aggregator_config.get("similarity_threshold") or aggregator_config.get("similarityThreshold", 0.85),
+                    "quality_weights": aggregator_config.get("quality_weights") or aggregator_config.get("qualityWeights", {
+                        "length": 0.2,
+                        "coherence": 0.3,
+                        "relevance": 0.3,
+                        "completeness": 0.2
+                    }),
+                    "output_format": aggregator_config.get("output_format") or aggregator_config.get("outputFormat", "comprehensive"),
+                    "include_source_attribution": aggregator_config.get("include_source_attribution") if aggregator_config.get("include_source_attribution") is not None else aggregator_config.get("includeSourceAttribution", True),
+                    "conflict_resolution": aggregator_config.get("conflict_resolution") or aggregator_config.get("conflictResolution", "highlight_conflicts"),
+                    "semantic_analysis": aggregator_config.get("semantic_analysis") if aggregator_config.get("semantic_analysis") is not None else aggregator_config.get("semanticAnalysis", True),
+                    "preserve_structure": aggregator_config.get("preserve_structure") if aggregator_config.get("preserve_structure") is not None else aggregator_config.get("preserveStructure", False),
+                    "fallback_strategy": aggregator_config.get("fallback_strategy") or aggregator_config.get("fallbackStrategy", "return_best"),
+                    "position": node.get("position", {})
+                })
+                logger.info(f"[WORKFLOW CONVERSION] Found AggregatorNode: {node.get('id')} with strategy: {aggregator_config.get('aggregation_strategy', 'semantic_merge')}")
             
             # Check for condition nodes
             elif node_type == "ConditionNode" or node.get("type") == "conditionnode":
@@ -559,13 +587,13 @@ class AgentWorkflowExecutor:
                         False
                     ),
                     "auto_display": (
-                        output_config.get("auto_display") or
-                        node_data.get("auto_display") or
-                        True
+                        output_config.get("auto_display") if output_config.get("auto_display") is not None else
+                        node_data.get("auto_display") if node_data.get("auto_display") is not None else
+                        False  # Default to False - only show if explicitly enabled
                     ),
                     "auto_save": (
-                        output_config.get("auto_save") or
-                        node_data.get("auto_save") or
+                        output_config.get("auto_save") if output_config.get("auto_save") is not None else
+                        node_data.get("auto_save") if node_data.get("auto_save") is not None else
                         False
                     )
                 }
@@ -736,6 +764,7 @@ class AgentWorkflowExecutor:
             "state_nodes": state_nodes,
             "router_nodes": router_nodes,
             "parallel_nodes": parallel_nodes,
+            "aggregator_nodes": aggregator_nodes,
             "condition_nodes": condition_nodes,
             "cache_nodes": cache_nodes,
             "transform_nodes": transform_nodes,
@@ -894,6 +923,7 @@ class AgentWorkflowExecutor:
         state_nodes = agent_plan.get("state_nodes", [])
         router_nodes = agent_plan.get("router_nodes", [])
         parallel_nodes = agent_plan.get("parallel_nodes", [])
+        aggregator_nodes = agent_plan.get("aggregator_nodes", [])
         condition_nodes = agent_plan.get("condition_nodes", [])
         cache_nodes = agent_plan.get("cache_nodes", [])
         transform_nodes = agent_plan.get("transform_nodes", [])
@@ -1050,6 +1080,7 @@ class AgentWorkflowExecutor:
         
         # Get router nodes for filtering
         router_nodes = agent_plan.get("router_nodes", []) if agent_plan else []
+        aggregator_nodes = agent_plan.get("aggregator_nodes", []) if agent_plan else []
         cache_nodes = cache_nodes or []
         transform_nodes = transform_nodes or []
         parallel_nodes = parallel_nodes or []
@@ -1602,6 +1633,86 @@ class AgentWorkflowExecutor:
                                         self._handle_condition_branching(
                                             condition_result, condition, workflow_edges, agents
                                         )
+                
+                # Store agent output for potential aggregator nodes (input collection)
+                if aggregator_nodes and current_node_id:
+                    # Find downstream aggregator nodes that need this output
+                    for edge in workflow_edges:
+                        if edge.get("source") == current_node_id:
+                            target_id = edge.get("target")
+                            # Check if target is an aggregator node
+                            for aggregator in aggregator_nodes:
+                                if aggregator["node_id"] == target_id:
+                                    # Store this agent output for the aggregator
+                                    aggregator_key = f"aggregator_inputs_{aggregator['node_id']}"
+                                    if workflow_state:
+                                        # Get existing inputs or initialize
+                                        existing_inputs = workflow_state.get_state(aggregator_key) or []
+                                        
+                                        # Add this agent's output to the collection
+                                        input_data = {
+                                            "source_agent": agent_name,
+                                            "source_node_id": current_node_id,
+                                            "output": agent_output,
+                                            "timestamp": datetime.utcnow().isoformat(),
+                                            "agent_index": i
+                                        }
+                                        existing_inputs.append(input_data)
+                                        workflow_state.set_state(aggregator_key, existing_inputs)
+                                        
+                                        logger.info(f"[AGGREGATOR] Stored input from {agent_name} for aggregator {aggregator['node_id']} ({len(existing_inputs)} total inputs)")
+                                        
+                                        # Check if we have collected all required inputs for this aggregator
+                                        required_inputs = self._count_upstream_nodes(aggregator["node_id"], workflow_edges)
+                                        
+                                        if len(existing_inputs) >= required_inputs:
+                                            # All inputs collected - process aggregation
+                                            yield {
+                                                "type": "aggregator_execution_start",
+                                                "aggregator_id": aggregator["node_id"],
+                                                "aggregation_strategy": aggregator["aggregation_strategy"],
+                                                "collected_inputs": len(existing_inputs),
+                                                "required_inputs": required_inputs,
+                                                "workflow_id": workflow_id,
+                                                "execution_id": execution_id,
+                                                "timestamp": datetime.utcnow().isoformat()
+                                            }
+                                            
+                                            # Extract just the outputs for aggregation
+                                            aggregator_inputs = [inp["output"] for inp in existing_inputs]
+                                            
+                                            aggregator_result = await self._process_aggregator_node(
+                                                aggregator, aggregator_inputs, workflow_id, execution_id
+                                            )
+                                            
+                                            if aggregator_result:
+                                                yield {
+                                                    "type": "aggregator_execution_complete",
+                                                    "aggregator_id": aggregator["node_id"],
+                                                    "aggregated_result": aggregator_result.get("aggregated_result"),
+                                                    "confidence_score": aggregator_result.get("confidence_score"),
+                                                    "source_analysis": aggregator_result.get("source_analysis"),
+                                                    "metadata": aggregator_result.get("metadata"),
+                                                    "input_sources": [inp["source_agent"] for inp in existing_inputs],
+                                                    "workflow_id": workflow_id,
+                                                    "execution_id": execution_id,
+                                                    "timestamp": datetime.utcnow().isoformat()
+                                                }
+                                                
+                                                # Clear the collected inputs after processing
+                                                workflow_state.clear_state([aggregator_key])
+                                        else:
+                                            # Still waiting for more inputs
+                                            yield {
+                                                "type": "aggregator_input_collected",
+                                                "aggregator_id": aggregator["node_id"],
+                                                "source_agent": agent_name,
+                                                "collected_count": len(existing_inputs),
+                                                "required_count": required_inputs,
+                                                "workflow_id": workflow_id,
+                                                "execution_id": execution_id,
+                                                "timestamp": datetime.utcnow().isoformat()
+                                            }
                 
             except Exception as e:
                 logger.error(f"[AGENT WORKFLOW] Agent {agent_name} failed: {e}")
@@ -3301,6 +3412,461 @@ Please process this request independently and provide your analysis."""
         except Exception as e:
             logger.error(f"[PARALLEL] Error combining results: {e}")
             return f"Error combining results: {str(e)}"
+    
+    async def _process_aggregator_node(
+        self,
+        aggregator: Dict[str, Any],
+        input_data: Any,
+        workflow_id: int,
+        execution_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Process aggregator node to intelligently combine multiple agent outputs"""
+        try:
+            # Extract aggregator configuration
+            aggregation_strategy = aggregator.get("aggregation_strategy", "semantic_merge")
+            confidence_threshold = aggregator.get("confidence_threshold", 0.3)
+            max_inputs = aggregator.get("max_inputs", 0)
+            deduplication_enabled = aggregator.get("deduplication_enabled", True)
+            similarity_threshold = aggregator.get("similarity_threshold", 0.85)
+            quality_weights = aggregator.get("quality_weights", {
+                "length": 0.2,
+                "coherence": 0.3,
+                "relevance": 0.3,
+                "completeness": 0.2
+            })
+            output_format = aggregator.get("output_format", "comprehensive")
+            include_source_attribution = aggregator.get("include_source_attribution", True)
+            conflict_resolution = aggregator.get("conflict_resolution", "highlight_conflicts")
+            semantic_analysis = aggregator.get("semantic_analysis", True)
+            preserve_structure = aggregator.get("preserve_structure", False)
+            fallback_strategy = aggregator.get("fallback_strategy", "return_best")
+            aggregator_node_id = aggregator["node_id"]
+            
+            logger.info(f"[AGGREGATOR] Processing aggregator node {aggregator_node_id} with strategy: {aggregation_strategy}")
+            
+            # Handle input data - could be list of agent outputs or single input
+            if isinstance(input_data, list):
+                agent_outputs = input_data
+            elif isinstance(input_data, dict) and "inputs" in input_data:
+                agent_outputs = input_data["inputs"]
+            elif isinstance(input_data, str):
+                # Try to parse as JSON array
+                try:
+                    import json
+                    agent_outputs = json.loads(input_data)
+                    if not isinstance(agent_outputs, list):
+                        agent_outputs = [input_data]
+                except:
+                    agent_outputs = [input_data]
+            else:
+                agent_outputs = [input_data]
+            
+            logger.info(f"[AGGREGATOR] Processing {len(agent_outputs)} agent outputs")
+            
+            # Apply max_inputs limit if specified
+            if max_inputs > 0 and len(agent_outputs) > max_inputs:
+                agent_outputs = agent_outputs[:max_inputs]
+                logger.info(f"[AGGREGATOR] Limited inputs to {max_inputs} items")
+            
+            # Pre-process outputs for quality scoring
+            processed_outputs = []
+            for i, output in enumerate(agent_outputs):
+                processed_output = self._analyze_output_quality(output, quality_weights, i)
+                processed_outputs.append(processed_output)
+            
+            # Apply confidence threshold filtering
+            filtered_outputs = [
+                output for output in processed_outputs 
+                if output.get("confidence_score", 0) >= confidence_threshold
+            ]
+            
+            if not filtered_outputs:
+                logger.warning(f"[AGGREGATOR] No outputs meet confidence threshold {confidence_threshold}")
+                if fallback_strategy == "return_best":
+                    filtered_outputs = [max(processed_outputs, key=lambda x: x.get("confidence_score", 0))]
+                elif fallback_strategy == "error":
+                    return {"error": "No outputs meet confidence threshold"}
+                elif fallback_strategy == "empty_result":
+                    return {"aggregated_result": "", "confidence_score": 0.0}
+                else:  # simple_merge
+                    filtered_outputs = processed_outputs
+            
+            logger.info(f"[AGGREGATOR] {len(filtered_outputs)} outputs passed confidence threshold")
+            
+            # Apply deduplication if enabled
+            if deduplication_enabled:
+                filtered_outputs = self._deduplicate_outputs(filtered_outputs, similarity_threshold)
+                logger.info(f"[AGGREGATOR] After deduplication: {len(filtered_outputs)} outputs remain")
+            
+            # Apply aggregation strategy
+            if aggregation_strategy == "semantic_merge":
+                result = self._semantic_merge_outputs(filtered_outputs, semantic_analysis, preserve_structure)
+            elif aggregation_strategy == "weighted_vote":
+                result = self._weighted_vote_outputs(filtered_outputs, quality_weights)
+            elif aggregation_strategy == "consensus_ranking":
+                result = self._consensus_ranking_outputs(filtered_outputs)
+            elif aggregation_strategy == "relevance_weighted":
+                result = self._relevance_weighted_outputs(filtered_outputs)
+            elif aggregation_strategy == "confidence_filter":
+                result = self._confidence_filter_outputs(filtered_outputs, confidence_threshold)
+            elif aggregation_strategy == "diversity_preservation":
+                result = self._diversity_preservation_outputs(filtered_outputs)
+            elif aggregation_strategy == "temporal_priority":
+                result = self._temporal_priority_outputs(filtered_outputs)
+            elif aggregation_strategy == "simple_concatenate":
+                result = self._simple_concatenate_outputs(filtered_outputs)
+            elif aggregation_strategy == "best_selection":
+                result = self._best_selection_output(filtered_outputs)
+            elif aggregation_strategy == "structured_fusion":
+                result = self._structured_fusion_outputs(filtered_outputs, preserve_structure)
+            else:
+                logger.warning(f"[AGGREGATOR] Unknown strategy {aggregation_strategy}, falling back to semantic_merge")
+                result = self._semantic_merge_outputs(filtered_outputs, semantic_analysis, preserve_structure)
+            
+            # Apply conflict resolution
+            if conflict_resolution != "include_all_perspectives":
+                result = self._resolve_conflicts(result, conflict_resolution, filtered_outputs)
+            
+            # Format output according to output_format
+            formatted_result = self._format_aggregated_output(
+                result, output_format, include_source_attribution, filtered_outputs
+            )
+            
+            # Calculate overall confidence score
+            overall_confidence = self._calculate_overall_confidence(filtered_outputs, aggregation_strategy)
+            
+            # Generate source analysis
+            source_analysis = self._generate_source_analysis(filtered_outputs, processed_outputs)
+            
+            # Generate metadata
+            metadata = {
+                "strategy_used": aggregation_strategy,
+                "inputs_processed": len(agent_outputs),
+                "inputs_after_filtering": len(filtered_outputs),
+                "confidence_threshold": confidence_threshold,
+                "deduplication_applied": deduplication_enabled,
+                "output_format": output_format,
+                "conflict_resolution": conflict_resolution,
+                "processing_timestamp": datetime.utcnow().isoformat()
+            }
+            
+            logger.info(f"[AGGREGATOR] Aggregation completed with {overall_confidence:.2f} confidence")
+            
+            return {
+                "aggregated_result": formatted_result,
+                "confidence_score": overall_confidence,
+                "source_analysis": source_analysis,
+                "metadata": metadata,
+                "raw_inputs": agent_outputs,
+                "processed_inputs": filtered_outputs
+            }
+            
+        except Exception as e:
+            logger.error(f"[AGGREGATOR] Error processing aggregator node: {e}")
+            
+            # Apply fallback strategy on error
+            if fallback_strategy == "return_best" and agent_outputs:
+                try:
+                    best_output = max(agent_outputs, key=lambda x: len(str(x)))
+                    return {
+                        "aggregated_result": str(best_output),
+                        "confidence_score": 0.5,
+                        "source_analysis": {"fallback": True},
+                        "metadata": {"error": str(e), "fallback_applied": True}
+                    }
+                except:
+                    pass
+            
+            return {"error": f"Aggregation failed: {str(e)}"}
+    
+    def _analyze_output_quality(self, output: Any, quality_weights: Dict[str, float], index: int) -> Dict[str, Any]:
+        """Analyze quality of individual output and assign confidence score"""
+        try:
+            output_text = str(output)
+            
+            # Calculate quality factors
+            length_score = min(len(output_text) / 1000.0, 1.0)  # Normalize to 0-1
+            
+            # Simple coherence heuristic (punctuation and structure)
+            sentences = output_text.count('.') + output_text.count('!') + output_text.count('?')
+            coherence_score = min(sentences / max(len(output_text.split()), 1), 1.0)
+            
+            # Relevance heuristic (placeholder - in real implementation would use embedding similarity)
+            relevance_score = 0.7  # Default moderate relevance
+            
+            # Completeness heuristic (length and structure indicators)
+            completeness_indicators = output_text.count('\n') + output_text.count(':') + output_text.count('-')
+            completeness_score = min(completeness_indicators / 10.0, 1.0)
+            
+            # Calculate weighted confidence score
+            confidence_score = (
+                length_score * quality_weights.get("length", 0.2) +
+                coherence_score * quality_weights.get("coherence", 0.3) +
+                relevance_score * quality_weights.get("relevance", 0.3) +
+                completeness_score * quality_weights.get("completeness", 0.2)
+            )
+            
+            return {
+                "original_output": output,
+                "text": output_text,
+                "confidence_score": confidence_score,
+                "quality_factors": {
+                    "length": length_score,
+                    "coherence": coherence_score,
+                    "relevance": relevance_score,
+                    "completeness": completeness_score
+                },
+                "index": index,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"[AGGREGATOR] Error analyzing output quality: {e}")
+            return {
+                "original_output": output,
+                "text": str(output),
+                "confidence_score": 0.1,
+                "quality_factors": {},
+                "index": index,
+                "error": str(e)
+            }
+    
+    def _deduplicate_outputs(self, outputs: List[Dict[str, Any]], similarity_threshold: float) -> List[Dict[str, Any]]:
+        """Remove duplicate or highly similar outputs"""
+        try:
+            if len(outputs) <= 1:
+                return outputs
+            
+            unique_outputs = []
+            for output in outputs:
+                is_duplicate = False
+                current_text = output.get("text", "").lower().strip()
+                
+                for existing in unique_outputs:
+                    existing_text = existing.get("text", "").lower().strip()
+                    
+                    # Simple similarity check (in real implementation would use embeddings)
+                    if current_text == existing_text:
+                        is_duplicate = True
+                        break
+                    
+                    # Check substring similarity
+                    if len(current_text) > 0 and len(existing_text) > 0:
+                        overlap = len(set(current_text.split()) & set(existing_text.split()))
+                        similarity = overlap / max(len(set(current_text.split())), len(set(existing_text.split())))
+                        
+                        if similarity >= similarity_threshold:
+                            # Keep the one with higher confidence
+                            if output.get("confidence_score", 0) <= existing.get("confidence_score", 0):
+                                is_duplicate = True
+                                break
+                            else:
+                                unique_outputs.remove(existing)
+                
+                if not is_duplicate:
+                    unique_outputs.append(output)
+            
+            return unique_outputs
+            
+        except Exception as e:
+            logger.error(f"[AGGREGATOR] Error in deduplication: {e}")
+            return outputs
+    
+    def _semantic_merge_outputs(self, outputs: List[Dict[str, Any]], semantic_analysis: bool, preserve_structure: bool) -> str:
+        """Advanced semantic merging of outputs"""
+        try:
+            if not outputs:
+                return ""
+            
+            if len(outputs) == 1:
+                return outputs[0].get("text", "")
+            
+            # Sort by confidence score
+            sorted_outputs = sorted(outputs, key=lambda x: x.get("confidence_score", 0), reverse=True)
+            
+            # For now, implement intelligent concatenation
+            # In full implementation, this would use AI for semantic fusion
+            merged_sections = []
+            
+            for i, output in enumerate(sorted_outputs):
+                confidence = output.get("confidence_score", 0)
+                text = output.get("text", "")
+                
+                if confidence > 0.7:
+                    weight = "High Confidence"
+                elif confidence > 0.4:
+                    weight = "Medium Confidence"
+                else:
+                    weight = "Low Confidence"
+                
+                section = f"**Source {i+1} ({weight}):**\n{text}"
+                merged_sections.append(section)
+            
+            return "\n\n".join(merged_sections)
+            
+        except Exception as e:
+            logger.error(f"[AGGREGATOR] Error in semantic merge: {e}")
+            return self._simple_concatenate_outputs(outputs)
+    
+    def _weighted_vote_outputs(self, outputs: List[Dict[str, Any]], quality_weights: Dict[str, float]) -> str:
+        """Quality-weighted voting on outputs"""
+        try:
+            if not outputs:
+                return ""
+            
+            # Calculate weighted scores
+            weighted_outputs = []
+            for output in outputs:
+                total_weight = sum(
+                    output.get("quality_factors", {}).get(factor, 0) * weight
+                    for factor, weight in quality_weights.items()
+                )
+                weighted_outputs.append({
+                    "output": output,
+                    "weight": total_weight
+                })
+            
+            # Sort by weight
+            weighted_outputs.sort(key=lambda x: x["weight"], reverse=True)
+            
+            # Return top weighted result with vote summary
+            best = weighted_outputs[0]["output"]
+            vote_summary = f"Selected result with weight {weighted_outputs[0]['weight']:.3f} from {len(outputs)} candidates."
+            
+            return f"{vote_summary}\n\n{best.get('text', '')}"
+            
+        except Exception as e:
+            logger.error(f"[AGGREGATOR] Error in weighted vote: {e}")
+            return self._simple_concatenate_outputs(outputs)
+    
+    def _simple_concatenate_outputs(self, outputs: List[Dict[str, Any]]) -> str:
+        """Simple concatenation fallback"""
+        try:
+            texts = [output.get("text", "") for output in outputs if output.get("text")]
+            return "\n\n".join(texts)
+        except:
+            return "Error in concatenation"
+    
+    def _best_selection_output(self, outputs: List[Dict[str, Any]]) -> str:
+        """Select single best output"""
+        try:
+            if not outputs:
+                return ""
+            best = max(outputs, key=lambda x: x.get("confidence_score", 0))
+            return best.get("text", "")
+        except:
+            return ""
+    
+    def _consensus_ranking_outputs(self, outputs: List[Dict[str, Any]]) -> str:
+        """Consensus-based ranking (simplified implementation)"""
+        return self._weighted_vote_outputs(outputs, {"confidence": 1.0})
+    
+    def _relevance_weighted_outputs(self, outputs: List[Dict[str, Any]]) -> str:
+        """Relevance-weighted combination (simplified implementation)"""
+        return self._weighted_vote_outputs(outputs, {"relevance": 0.8, "coherence": 0.2})
+    
+    def _confidence_filter_outputs(self, outputs: List[Dict[str, Any]], threshold: float) -> str:
+        """Filter by confidence and merge high-confidence results"""
+        high_confidence = [o for o in outputs if o.get("confidence_score", 0) >= threshold]
+        return self._simple_concatenate_outputs(high_confidence)
+    
+    def _diversity_preservation_outputs(self, outputs: List[Dict[str, Any]]) -> str:
+        """Preserve diverse perspectives"""
+        return self._simple_concatenate_outputs(outputs)  # Keep all for diversity
+    
+    def _temporal_priority_outputs(self, outputs: List[Dict[str, Any]]) -> str:
+        """Prioritize by timestamp (most recent first)"""
+        try:
+            sorted_outputs = sorted(outputs, key=lambda x: x.get("timestamp", ""), reverse=True)
+            return self._simple_concatenate_outputs(sorted_outputs)
+        except:
+            return self._simple_concatenate_outputs(outputs)
+    
+    def _structured_fusion_outputs(self, outputs: List[Dict[str, Any]], preserve_structure: bool) -> str:
+        """Fuse structured data"""
+        # For now, fall back to simple concatenation
+        # In full implementation, would handle JSON/object merging
+        return self._simple_concatenate_outputs(outputs)
+    
+    def _resolve_conflicts(self, result: str, conflict_resolution: str, outputs: List[Dict[str, Any]]) -> str:
+        """Resolve conflicts in aggregated result"""
+        # Simplified implementation - in practice would use NLP to detect conflicts
+        if conflict_resolution == "highlight_conflicts":
+            return f"[Conflicts may exist between sources]\n\n{result}"
+        return result
+    
+    def _format_aggregated_output(self, result: str, output_format: str, include_attribution: bool, outputs: List[Dict[str, Any]]) -> str:
+        """Format the final aggregated output"""
+        try:
+            if output_format == "comprehensive":
+                formatted = f"# Comprehensive Analysis\n\n{result}"
+                if include_attribution:
+                    formatted += f"\n\n*Based on {len(outputs)} source(s)*"
+                return formatted
+            elif output_format == "summary":
+                # Truncate for summary
+                summary = result[:500] + "..." if len(result) > 500 else result
+                return f"## Executive Summary\n\n{summary}"
+            elif output_format == "structured":
+                return f"```\n{result}\n```"
+            elif output_format == "ranked_list":
+                lines = result.split('\n')
+                ranked = "\n".join(f"{i+1}. {line}" for i, line in enumerate(lines[:10]) if line.strip())
+                return f"## Ranked Results\n\n{ranked}"
+            elif output_format == "consensus":
+                return f"**Consensus Statement:**\n\n{result}"
+            else:  # raw_merge
+                return result
+        except:
+            return result
+    
+    def _calculate_overall_confidence(self, outputs: List[Dict[str, Any]], strategy: str) -> float:
+        """Calculate overall confidence score for aggregated result"""
+        try:
+            if not outputs:
+                return 0.0
+            
+            scores = [output.get("confidence_score", 0) for output in outputs]
+            
+            if strategy in ["weighted_vote", "best_selection"]:
+                return max(scores)
+            elif strategy == "consensus_ranking":
+                return sum(scores) / len(scores)  # Average
+            else:
+                # Weighted average based on confidence distribution
+                return sum(score * (i + 1) for i, score in enumerate(sorted(scores, reverse=True))) / sum(range(1, len(scores) + 1))
+        except:
+            return 0.5
+    
+    def _generate_source_analysis(self, filtered_outputs: List[Dict[str, Any]], all_outputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Generate analysis of input sources"""
+        try:
+            return {
+                "total_sources": len(all_outputs),
+                "sources_used": len(filtered_outputs),
+                "average_confidence": sum(o.get("confidence_score", 0) for o in filtered_outputs) / max(len(filtered_outputs), 1),
+                "quality_distribution": {
+                    "high": len([o for o in filtered_outputs if o.get("confidence_score", 0) > 0.7]),
+                    "medium": len([o for o in filtered_outputs if 0.4 <= o.get("confidence_score", 0) <= 0.7]),
+                    "low": len([o for o in filtered_outputs if o.get("confidence_score", 0) < 0.4])
+                },
+                "source_types": "mixed"  # Could analyze agent types if available
+            }
+        except:
+            return {"error": "Could not generate source analysis"}
+    
+    def _count_upstream_nodes(self, target_node_id: str, workflow_edges: List[Dict[str, Any]]) -> int:
+        """Count the number of nodes that feed into a target node"""
+        try:
+            upstream_count = len([
+                edge for edge in workflow_edges 
+                if edge.get("target") == target_node_id
+            ])
+            logger.debug(f"[AGGREGATOR] Node {target_node_id} has {upstream_count} upstream connections")
+            return upstream_count
+        except Exception as e:
+            logger.error(f"[AGGREGATOR] Error counting upstream nodes for {target_node_id}: {e}")
+            return 1  # Fallback to assume at least 1 input
     
     async def _process_condition_node(
         self,

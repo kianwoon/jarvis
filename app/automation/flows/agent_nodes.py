@@ -77,6 +77,14 @@ def get_agent_node_schema() -> Dict[str, Any]:
             }
         ],
         "properties": {
+            "label": {
+                "type": "string",
+                "label": "Node Title",
+                "description": "Descriptive title for this agent node",
+                "required": False,
+                "placeholder": "Describe what this agent does (e.g., 'Data Analyzer', 'Report Generator')",
+                "default": ""
+            },
             "agent_name": {
                 "type": "select",
                 "label": "Select Agent",
@@ -983,6 +991,187 @@ def get_cache_node_schema() -> Dict[str, Any]:
         }
     }
 
+def get_aggregator_node_schema() -> Dict[str, Any]:
+    """Get schema for Aggregator Node - Advanced multi-agent output combination"""
+    return {
+        "type": "AggregatorNode",
+        "name": "Output Aggregator",
+        "description": "Intelligently combine multiple agent outputs using advanced aggregation strategies",
+        "category": "Control",
+        "icon": "🔄",
+        "color": "#8B5CF6",
+        "inputs": [
+            {
+                "name": "inputs",
+                "type": "array",
+                "label": "Agent Outputs",
+                "description": "Multiple agent outputs to combine and aggregate"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "aggregated_result",
+                "type": "any",
+                "label": "Aggregated Result",
+                "description": "Final combined result from all inputs"
+            },
+            {
+                "name": "confidence_score",
+                "type": "number",
+                "label": "Confidence Score",
+                "description": "Confidence level of the aggregated result (0-1)"
+            },
+            {
+                "name": "source_analysis",
+                "type": "object",
+                "label": "Source Analysis",
+                "description": "Analysis of input sources and their contributions"
+            },
+            {
+                "name": "metadata",
+                "type": "object",
+                "label": "Aggregation Metadata",
+                "description": "Details about the aggregation process"
+            }
+        ],
+        "properties": {
+            "aggregation_strategy": {
+                "type": "select",
+                "label": "Aggregation Strategy",
+                "description": "Method for combining multiple agent outputs",
+                "required": True,
+                "options": [
+                    {"value": "semantic_merge", "label": "Semantic Merge (AI-powered content fusion)"},
+                    {"value": "weighted_vote", "label": "Weighted Vote (Quality-based voting)"},
+                    {"value": "consensus_ranking", "label": "Consensus Ranking (Cross-validation)"},
+                    {"value": "relevance_weighted", "label": "Relevance Weighted (Score-based ranking)"},
+                    {"value": "confidence_filter", "label": "Confidence Filter (High-confidence only)"},
+                    {"value": "diversity_preservation", "label": "Diversity Preservation (Balanced perspectives)"},
+                    {"value": "temporal_priority", "label": "Temporal Priority (Recent results favored)"},
+                    {"value": "simple_concatenate", "label": "Simple Concatenate (Basic text merge)"},
+                    {"value": "best_selection", "label": "Best Selection (Highest quality single result)"},
+                    {"value": "structured_fusion", "label": "Structured Fusion (JSON/object merging)"}
+                ],
+                "default": "semantic_merge"
+            },
+            "confidence_threshold": {
+                "type": "number",
+                "label": "Confidence Threshold",
+                "description": "Minimum confidence score to include in aggregation (0.0-1.0)",
+                "required": False,
+                "default": 0.3,
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.1
+            },
+            "max_inputs": {
+                "type": "number",
+                "label": "Maximum Inputs",
+                "description": "Maximum number of inputs to process (0 = unlimited)",
+                "required": False,
+                "default": 0,
+                "min": 0,
+                "max": 20
+            },
+            "deduplication_enabled": {
+                "type": "boolean",
+                "label": "Enable Deduplication",
+                "description": "Remove duplicate or highly similar content",
+                "default": True
+            },
+            "similarity_threshold": {
+                "type": "number",
+                "label": "Similarity Threshold",
+                "description": "Threshold for considering content as duplicate (0.0-1.0)",
+                "required": False,
+                "default": 0.85,
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
+                "show_when": {"deduplication_enabled": True}
+            },
+            "quality_weights": {
+                "type": "json",
+                "label": "Quality Weights",
+                "description": "Weights for different quality factors in scoring",
+                "required": False,
+                "default": {
+                    "length": 0.2,
+                    "coherence": 0.3,
+                    "relevance": 0.3,
+                    "completeness": 0.2
+                }
+            },
+            "output_format": {
+                "type": "select",
+                "label": "Output Format",
+                "description": "Format of the aggregated result",
+                "required": True,
+                "options": [
+                    {"value": "comprehensive", "label": "Comprehensive Report"},
+                    {"value": "summary", "label": "Executive Summary"},
+                    {"value": "structured", "label": "Structured Data"},
+                    {"value": "ranked_list", "label": "Ranked List"},
+                    {"value": "consensus", "label": "Consensus Statement"},
+                    {"value": "raw_merge", "label": "Raw Merged Content"}
+                ],
+                "default": "comprehensive"
+            },
+            "include_source_attribution": {
+                "type": "boolean",
+                "label": "Include Source Attribution",
+                "description": "Include references to which agents contributed which parts",
+                "default": True
+            },
+            "conflict_resolution": {
+                "type": "select",
+                "label": "Conflict Resolution",
+                "description": "How to handle contradictory information",
+                "required": True,
+                "options": [
+                    {"value": "highlight_conflicts", "label": "Highlight Conflicts"},
+                    {"value": "majority_wins", "label": "Majority Wins"},
+                    {"value": "quality_weighted", "label": "Quality Weighted Decision"},
+                    {"value": "include_all_perspectives", "label": "Include All Perspectives"},
+                    {"value": "ask_human", "label": "Flag for Human Review"}
+                ],
+                "default": "highlight_conflicts"
+            },
+            "semantic_analysis": {
+                "type": "boolean",
+                "label": "Enable Semantic Analysis",
+                "description": "Use AI for deeper semantic understanding of content",
+                "default": True
+            },
+            "preserve_structure": {
+                "type": "boolean",
+                "label": "Preserve Input Structure",
+                "description": "Maintain original structure of input data when possible",
+                "default": False
+            },
+            "validation_rules": {
+                "type": "json",
+                "label": "Validation Rules",
+                "description": "Custom rules for validating aggregated output",
+                "required": False,
+                "default": {}
+            },
+            "fallback_strategy": {
+                "type": "select",
+                "label": "Fallback Strategy",
+                "description": "What to do if aggregation fails",
+                "required": True,
+                "options": [
+                    {"value": "return_best", "label": "Return Best Single Input"},
+                    {"value": "simple_merge", "label": "Fall Back to Simple Merge"},
+                    {"value": "error", "label": "Throw Error"},
+                    {"value": "empty_result", "label": "Return Empty Result"}
+                ],
+                "default": "return_best"
+            }
+        }
+    }
+
 def get_all_node_schemas() -> List[Dict[str, Any]]:
     """Get all available node schemas for the visual editor"""
     return [
@@ -992,6 +1181,7 @@ def get_all_node_schemas() -> List[Dict[str, Any]]:
         get_trigger_node_schema(),
         get_condition_node_schema(),
         get_parallel_node_schema(),
+        get_aggregator_node_schema(),
         get_state_node_schema(),
         get_router_node_schema(),
         get_transform_node_schema(),
