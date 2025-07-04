@@ -32,22 +32,52 @@
   --animation-low: 1.01;         /* Minimal scale for subtle feedback */
 }
 
-/* FUCK IT - Let's use a simple but visible animation */
+/* Enhanced Siri-like animation for AgentNode */
 @keyframes siriGlow {
   0% {
     transform: scale(1);
-    border-width: 2px;
-    opacity: 1;
+    box-shadow: 
+      0 0 0 0 rgba(156, 39, 176, 0.8),
+      0 0 0 0 rgba(156, 39, 176, 0.6),
+      0 0 0 0 rgba(156, 39, 176, 0.4),
+      0 0 20px rgba(156, 39, 176, 0.3);
+    border-color: rgba(156, 39, 176, 1);
+  }
+  25% {
+    transform: scale(1.08);
+    box-shadow: 
+      0 0 0 8px rgba(255, 64, 129, 0.6),
+      0 0 0 16px rgba(63, 81, 181, 0.4),
+      0 0 0 24px rgba(33, 150, 243, 0.3),
+      0 0 40px rgba(156, 39, 176, 0.5);
+    border-color: rgba(255, 64, 129, 1);
   }
   50% {
-    transform: scale(1.1);
-    border-width: 4px;
-    opacity: 0.8;
+    transform: scale(1.12);
+    box-shadow: 
+      0 0 0 12px rgba(33, 150, 243, 0.6),
+      0 0 0 24px rgba(0, 188, 212, 0.4),
+      0 0 0 36px rgba(76, 175, 80, 0.3),
+      0 0 60px rgba(33, 150, 243, 0.6);
+    border-color: rgba(33, 150, 243, 1);
+  }
+  75% {
+    transform: scale(1.08);
+    box-shadow: 
+      0 0 0 8px rgba(255, 152, 0, 0.6),
+      0 0 0 16px rgba(255, 193, 7, 0.4),
+      0 0 0 24px rgba(255, 235, 59, 0.3),
+      0 0 40px rgba(255, 152, 0, 0.5);
+    border-color: rgba(255, 152, 0, 1);
   }
   100% {
     transform: scale(1);
-    border-width: 2px;
-    opacity: 1;
+    box-shadow: 
+      0 0 0 0 rgba(156, 39, 176, 0.8),
+      0 0 0 0 rgba(156, 39, 176, 0.6),
+      0 0 0 0 rgba(156, 39, 176, 0.4),
+      0 0 20px rgba(156, 39, 176, 0.3);
+    border-color: rgba(156, 39, 176, 1);
   }
 }
 
@@ -409,6 +439,25 @@
   animation: controlGlow var(--pulse-duration) infinite ease-in-out !important;
   position: relative !important;
   z-index: 10 !important;
+  border: 2px solid var(--color-control) !important;
+  /* Force override MUI inline styles */
+  transform: scale(1) !important;
+  transition: none !important;
+}
+
+/* More specific selector to override MUI Card styles */
+.MuiCard-root.workflow-node--running-control {
+  animation: controlGlow var(--pulse-duration) infinite ease-in-out !important;
+  transform: scale(1) !important;
+  transition: none !important;
+  border: 2px solid var(--color-control) !important;
+}
+
+/* Even more specific for ParallelNode */
+.react-flow__node-parallelnode .MuiCard-root.workflow-node--running-control {
+  animation: controlGlow var(--pulse-duration) infinite ease-in-out !important;
+  transform: scale(1) !important;
+  transition: none !important;
   border: 2px solid var(--color-control) !important;
 }
 
