@@ -3291,6 +3291,9 @@ Please process this request independently and provide your analysis."""
             if agent_outputs is None:
                 agent_outputs = {}
             
+            # Extract cache nodes from agent plan
+            cache_nodes = agent_plan.get("cache_nodes", []) if agent_plan else []
+            
             # Find all agent nodes connected downstream from this parallel node
             downstream_agents = []
             all_agents = agent_plan.get("agents", []) if agent_plan else []
@@ -3427,8 +3430,11 @@ Please process this request independently and provide your analysis."""
                         # IMPORTANT: Add agent output to main agent_outputs dictionary
                         if result.get("status") == "completed":
                             agent_name = result["agent_name"]
-                            agent_outputs[agent_name] = result.get("output", "")
-                            logger.info(f"[PARALLEL] Added output from {agent_name} to agent_outputs")
+                            agent_node_id = result["agent_id"]
+                            # Use node_id as key if multiple agents have same name
+                            output_key = agent_node_id if agent_node_id else agent_name
+                            agent_outputs[output_key] = result.get("output", "")
+                            logger.info(f"[PARALLEL] Added output from {agent_name} (key: {output_key}) to agent_outputs")
                 
                 completed_count = len([r for r in results if not isinstance(r, Exception) and r.get("status") == "completed"])
             else:
@@ -3464,6 +3470,58 @@ Please process this request independently and provide your analysis."""
                 "execution_id": execution_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
+            
+            # Process cache nodes connected to the executed agents
+            if cache_nodes:
+                for result in results:
+                    if isinstance(result, dict) and result.get("status") == "completed":
+                        agent_node_id = result.get("agent_id")
+                        agent_output = result.get("output", "")
+                        
+                        # Find cache nodes connected to this agent
+                        for edge in workflow_edges:
+                            if edge.get("source") == agent_node_id:
+                                target_id = edge.get("target")
+                                
+                                # Check if target is a cache node
+                                for cache in cache_nodes:
+                                    if cache["node_id"] == target_id:
+                                        logger.info(f"[PARALLEL] Processing CacheNode {target_id} for agent {agent_node_id}")
+                                        
+                                        # Store result in cache
+                                        cache_key = f"workflow_{workflow_id}_node_{agent_node_id}_output"
+                                        cache_stored = await self._store_cache_result(
+                                            cache_key,
+                                            agent_output,
+                                            cache.get("ttl", 3600),
+                                            "",  # No specific condition
+                                            cache.get("max_cache_size", 10) * 1024 * 1024
+                                        )
+                                        
+                                        if cache_stored:
+                                            yield {
+                                                "type": "cache_stored",
+                                                "agent_name": result.get("agent_name", "Unknown"),
+                                                "node_id": agent_node_id,
+                                                "cache_id": cache["node_id"],
+                                                "cache_key": cache_key,
+                                                "ttl": cache.get("ttl", 3600),
+                                                "workflow_id": workflow_id,
+                                                "execution_id": execution_id,
+                                                "timestamp": datetime.utcnow().isoformat()
+                                            }
+                                        
+                                        # Store cache node output in workflow state
+                                        if workflow_state:
+                                            cache_node_result = {
+                                                "node_id": cache["node_id"],
+                                                "output": agent_output,
+                                                "cache_hit": False,
+                                                "cache_key": cache_key,
+                                                "source_agent": agent_node_id,
+                                                "timestamp": datetime.utcnow().isoformat()
+                                            }
+                                            workflow_state.set_state(f"node_output_{cache['node_id']}", cache_node_result, f"cache_{cache['node_id']}_result")
             
             # Store parallel node output in workflow state if available
             if workflow_state:
