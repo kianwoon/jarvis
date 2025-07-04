@@ -3352,6 +3352,16 @@ Please process this request independently and provide your analysis."""
             
             logger.info(f"[PARALLEL] Starting parallel execution of {total_count} agents with strategy: {combine_strategy}")
             
+            # Yield node start event for UI grow effect
+            yield {
+                "type": "node_start",
+                "node_id": parallel_node_id,
+                "node_type": "ParallelNode", 
+                "workflow_id": workflow_id,
+                "execution_id": execution_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
             # Yield parallel execution start event
             yield {
                 "type": "parallel_execution_start",
@@ -3638,6 +3648,17 @@ Please process this request independently and provide your analysis."""
                 }
                 workflow_state.set_state(f"node_output_{parallel_node_id}", parallel_result, f"parallel_{parallel_node_id}_result")
             
+            # Yield node complete event for UI grow effect
+            yield {
+                "type": "node_complete",
+                "node_id": parallel_node_id,
+                "node_type": "ParallelNode",
+                "output": combined_output,
+                "workflow_id": workflow_id,
+                "execution_id": execution_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
         except Exception as e:
             logger.error(f"[PARALLEL] Error processing parallel node: {e}")
             yield {
@@ -3771,12 +3792,28 @@ Please provide a well-structured summary that integrates all the agent outputs a
                             # Check for different event types
                             if event.get("type") == "agent_response":
                                 ai_summary += event.get("content", "")
-                            elif event.get("type") == "completion":
+                            elif event.get("type") in ["completion", "enhanced_completion", "agent_complete"]:
                                 # Enhanced completion contains the full response
                                 ai_summary = event.get("content", "")
                                 break
                         
                         if ai_summary:
+                            # Clean thinking tags from AI summary
+                            import re
+                            # Remove thinking tags and extract content after them
+                            if "<think>" in ai_summary and "</think>" in ai_summary:
+                                # Extract content after thinking tags
+                                think_end = ai_summary.find("</think>")
+                                if think_end != -1:
+                                    cleaned_summary = ai_summary[think_end + 8:].strip()
+                                    if cleaned_summary:
+                                        ai_summary = cleaned_summary
+                                    else:
+                                        # If no content after think tags, extract from inside
+                                        think_match = re.search(r'<think>(.*?)</think>', ai_summary, re.DOTALL)
+                                        if think_match:
+                                            ai_summary = think_match.group(1).strip()
+                            
                             logger.info(f"[PARALLEL] AI summary generated successfully (length: {len(ai_summary)})")
                             return ai_summary
                         else:
@@ -3858,7 +3895,7 @@ Please provide:
                             # Check for different event types
                             if event.get("type") == "agent_response":
                                 consensus_text += event.get("content", "")
-                            elif event.get("type") == "completion":
+                            elif event.get("type") in ["completion", "enhanced_completion", "agent_complete"]:
                                 # Enhanced completion contains the full response
                                 consensus_text = event.get("content", "")
                                 break
