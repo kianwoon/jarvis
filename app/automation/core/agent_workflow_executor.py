@@ -3813,17 +3813,13 @@ Please provide a well-structured summary that integrates all the agent outputs a
                         
                         # Extract the summary from the generator
                         ai_summary = ""
-                        event_count = 0
                         async for event in summary_result:
-                            event_count += 1
                             event_type = event.get("type", "unknown")
-                            logger.info(f"[PARALLEL AI] Processing event {event_count}: {event_type}")
                             
-                            # Check for different event types
+                            # Only process meaningful events, ignore agent_token spam
                             if event.get("type") == "agent_response":
                                 content = event.get("content", "")
                                 ai_summary += content
-                                logger.info(f"[PARALLEL AI] Added agent_response content: {len(content)} chars")
                             elif event.get("type") in ["completion", "enhanced_completion", "agent_complete"]:
                                 # Enhanced completion contains the full response
                                 content = event.get("content", "")
@@ -3831,12 +3827,7 @@ Please provide a well-structured summary that integrates all the agent outputs a
                                     ai_summary = content
                                     logger.info(f"[PARALLEL AI] Got {event_type} with content: {len(content)} chars")
                                     break
-                                else:
-                                    logger.warning(f"[PARALLEL AI] {event_type} event had no content")
-                            else:
-                                logger.info(f"[PARALLEL AI] Unhandled event type: {event_type}")
-                        
-                        logger.info(f"[PARALLEL AI] Finished processing {event_count} events, final summary length: {len(ai_summary)}")
+                            # Ignore agent_token and other noise events silently
                         
                         if ai_summary:
                             # Clean thinking tags from AI summary
