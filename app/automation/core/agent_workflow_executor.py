@@ -935,6 +935,65 @@ class AgentWorkflowExecutor:
         if state_nodes and workflow_state:
             self._process_state_operations(state_nodes, workflow_state, edges=[])
         
+        # Check if workflow starts with a ParallelNode
+        # This handles cases where Start → ParallelNode → Agents
+        execution_sequence = agent_plan.get("execution_sequence", [])
+        agent_outputs = {}  # Initialize agent outputs dictionary
+        
+        # Find if any parallel node is at the beginning (connected from Start)
+        initial_parallel_node = None
+        if parallel_nodes and execution_sequence:
+            # Check if a parallel node appears early in the execution sequence
+            for i, node_id in enumerate(execution_sequence[:3]):  # Check first 3 nodes
+                for parallel in parallel_nodes:
+                    if parallel["node_id"] == node_id:
+                        # Verify it's connected from Start node
+                        for edge in workflow_edges:
+                            if edge.get("target") == node_id and "start" in edge.get("source", "").lower():
+                                initial_parallel_node = parallel
+                                logger.info(f"[WORKFLOW] Found initial ParallelNode: {node_id}")
+                                break
+                        break
+                if initial_parallel_node:
+                    break
+        
+        # If workflow starts with ParallelNode, process it first
+        if initial_parallel_node:
+            logger.info(f"[WORKFLOW] Processing initial ParallelNode: {initial_parallel_node['node_id']}")
+            
+            # Process the parallel node
+            async for parallel_event in self._process_parallel_node(
+                initial_parallel_node,
+                query,  # Use the query as input
+                workflow_edges,
+                workflow_id,
+                execution_id,
+                agent_plan,
+                workflow_state,
+                execution_trace,
+                agent_outputs
+            ):
+                yield parallel_event
+            
+            # After parallel execution, check if we need to continue with other nodes
+            # For now, if ParallelNode is processed, we can skip the regular agent execution
+            # since agents were already executed within the parallel node
+            
+            # Yield final response with OutputNode configuration
+            output_node = agent_plan.get("output_node")
+            final_response = self._synthesize_agent_outputs(agent_outputs, query, output_node)
+            
+            yield {
+                "type": "workflow_result",
+                "response": final_response,
+                "agent_outputs": agent_outputs,
+                "workflow_id": workflow_id,
+                "execution_id": execution_id,
+                "output_config": output_node
+            }
+            
+            return  # Exit early since parallel node handled the execution
+        
         # Prepare agents list for multi-agent system
         selected_agents = []
         for agent_node in agents:
@@ -1560,36 +1619,19 @@ class AgentWorkflowExecutor:
                             for parallel in parallel_nodes:
                                 if parallel["node_id"] == target_id:
                                     # Process parallel execution logic
-                                    yield {
-                                        "type": "parallel_execution_start",
-                                        "parallel_id": parallel["node_id"],
-                                        "max_parallel": parallel["max_parallel"],
-                                        "combine_strategy": parallel["combine_strategy"],
-                                        "wait_for_all": parallel["wait_for_all"],
-                                        "workflow_id": workflow_id,
-                                        "execution_id": execution_id,
-                                        "timestamp": datetime.utcnow().isoformat()
-                                    }
-                                    
-                                    parallel_result = await self._process_parallel_node(
-                                        parallel, agent_output, workflow_edges, workflow_id, execution_id
-                                    )
-                                    
-                                    if parallel_result:
-                                        yield {
-                                            "type": "parallel_execution_complete",
-                                            "parallel_id": parallel["node_id"],
-                                            "results": parallel_result["results"],
-                                            "summary": parallel_result.get("summary"),
-                                            "completed_count": parallel_result.get("completed_count", 0),
-                                            "total_count": parallel_result.get("total_count", 0),
-                                            "progress_percentage": parallel_result.get("progress_percentage", 0),
-                                            "agent_status": parallel_result.get("agent_status", []),
-                                            "strategy_used": parallel_result.get("strategy_used", "merge"),
-                                            "workflow_id": workflow_id,
-                                            "execution_id": execution_id,
-                                            "timestamp": datetime.utcnow().isoformat()
-                                        }
+                                    # Process parallel node with async generator
+                                    async for parallel_event in self._process_parallel_node(
+                                        parallel, 
+                                        agent_output, 
+                                        workflow_edges, 
+                                        workflow_id, 
+                                        execution_id,
+                                        agent_plan,
+                                        workflow_state,
+                                        execution_trace,
+                                        agent_outputs
+                                    ):
+                                        yield parallel_event
                 
                 # Process condition nodes after agent execution
                 if condition_nodes and current_node_id:
@@ -3232,32 +3274,49 @@ Please process this request independently and provide your analysis."""
         input_data: str,
         workflow_edges: List[Dict[str, Any]],
         workflow_id: int,
-        execution_id: str
-    ) -> Optional[Dict[str, Any]]:
-        """Process parallel node to execute multiple agents simultaneously"""
+        execution_id: str,
+        agent_plan: Dict[str, Any] = None,
+        workflow_state: WorkflowState = None,
+        execution_trace = None,
+        agent_outputs: Dict[str, str] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process parallel node to execute multiple agents simultaneously with proper UI event streaming"""
         try:
             max_parallel = parallel.get("max_parallel", 3)
             wait_for_all = parallel.get("wait_for_all", True)
             combine_strategy = parallel.get("combine_strategy", "merge")
             parallel_node_id = parallel["node_id"]
             
-            # Find all agents connected downstream from this parallel node
+            # Initialize agent_outputs if not provided
+            if agent_outputs is None:
+                agent_outputs = {}
+            
+            # Find all agent nodes connected downstream from this parallel node
             downstream_agents = []
+            all_agents = agent_plan.get("agents", []) if agent_plan else []
+            
             for edge in workflow_edges:
                 if edge.get("source") == parallel_node_id:
                     target_id = edge.get("target")
-                    # Look for agent nodes connected to this parallel node
-                    # Note: This would need to be enhanced to actually find and execute agents
-                    # For now, we'll simulate parallel execution
-                    downstream_agents.append({
-                        "node_id": target_id,
-                        "agent_name": f"Agent_{target_id}",
-                        "input": input_data
-                    })
+                    
+                    # Find the actual agent node from the workflow
+                    for agent in all_agents:
+                        if agent.get("node_id") == target_id:
+                            downstream_agents.append(agent)
+                            logger.info(f"[PARALLEL] Found downstream agent: {agent['agent_name']} (node: {target_id})")
+                            break
             
             if not downstream_agents:
                 logger.warning(f"[PARALLEL] No downstream agents found for parallel node {parallel_node_id}")
-                return None
+                yield {
+                    "type": "parallel_execution_error",
+                    "parallel_id": parallel_node_id,
+                    "error": "No downstream agents found",
+                    "workflow_id": workflow_id,
+                    "execution_id": execution_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                return
             
             # Limit to max_parallel agents
             agents_to_execute = downstream_agents[:max_parallel]
@@ -3265,103 +3324,167 @@ Please process this request independently and provide your analysis."""
             
             logger.info(f"[PARALLEL] Starting parallel execution of {total_count} agents with strategy: {combine_strategy}")
             
-            # Execute agents in parallel with progress tracking
+            # Yield parallel execution start event
+            yield {
+                "type": "parallel_execution_start",
+                "parallel_id": parallel_node_id,
+                "max_parallel": max_parallel,
+                "combine_strategy": combine_strategy,
+                "wait_for_all": wait_for_all,
+                "agents_to_execute": [{"agent_name": a["agent_name"], "node_id": a["node_id"]} for a in agents_to_execute],
+                "workflow_id": workflow_id,
+                "execution_id": execution_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            # Execute agents in parallel with proper streaming
             results = []
             completed_count = 0
             
-            # Create progress tracking for each agent
-            agent_status = []
+            # Start all agent executions and yield node_start events
             for i, agent in enumerate(agents_to_execute):
-                agent_status.append({
-                    "agentId": agent["node_id"],
+                # Emit node_start event for UI animation
+                yield {
+                    "type": "node_start",
+                    "node_id": agent["node_id"],
                     "agent_name": agent["agent_name"],
-                    "status": "pending",
-                    "progress": 0
-                })
-            
-            # Simulate parallel execution with progress updates
-            # In a real implementation, this would use asyncio.gather() or similar to execute actual agents
-            import asyncio
-            
-            async def execute_parallel_agent(agent_info, index):
-                # Update status to running
-                agent_status[index]["status"] = "running"
-                agent_status[index]["progress"] = 10
-                
-                # Simulate some processing time
-                await asyncio.sleep(0.1)
-                agent_status[index]["progress"] = 50
-                
-                await asyncio.sleep(0.1)
-                agent_status[index]["progress"] = 80
-                
-                # Create result
-                mock_result = {
-                    "agent_id": agent_info["node_id"],
-                    "agent_name": agent_info["agent_name"],
-                    "output": f"Parallel agent {index+1} processed: {input_data[:100]}...",
-                    "status": "completed",
-                    "execution_time": 1.5,
-                    "tools_used": []
+                    "workflow_id": workflow_id,
+                    "execution_id": execution_id,
+                    "timestamp": datetime.utcnow().isoformat()
                 }
-                
-                # Mark as completed
-                agent_status[index]["status"] = "completed"
-                agent_status[index]["progress"] = 100
-                
-                return mock_result
+            
+            # Execute agents using the same pattern as sequential execution
+            async def execute_single_parallel_agent(agent: Dict[str, Any], index: int) -> Dict[str, Any]:
+                """Execute a single agent within parallel execution"""
+                try:
+                    logger.info(f"[PARALLEL] Executing agent {agent['agent_name']} (index: {index})")
+                    
+                    # Build agent prompt (simplified for parallel execution)
+                    agent_prompt = input_data
+                    if agent.get("custom_prompt"):
+                        agent_prompt = f"{agent['custom_prompt']}\n\n{input_data}"
+                    
+                    # Execute using _execute_single_agent
+                    result = await self._execute_single_agent(
+                        agent, 
+                        agent_prompt, 
+                        workflow_id, 
+                        execution_id,
+                        execution_trace,
+                        workflow_state,
+                        index
+                    )
+                    
+                    return {
+                        "agent_id": agent["node_id"],
+                        "agent_name": agent["agent_name"],
+                        "output": result.get("output", ""),
+                        "status": "completed",
+                        "tools_used": result.get("tools_used", [])
+                    }
+                except Exception as e:
+                    logger.error(f"[PARALLEL] Error executing agent {agent['agent_name']}: {e}")
+                    return {
+                        "agent_id": agent["node_id"],
+                        "agent_name": agent["agent_name"],
+                        "output": f"Error: {str(e)}",
+                        "status": "failed",
+                        "error": str(e)
+                    }
             
             # Execute all agents in parallel
             if wait_for_all:
                 # Wait for all agents to complete
-                tasks = [execute_parallel_agent(agent, i) for i, agent in enumerate(agents_to_execute)]
-                results = await asyncio.gather(*tasks)
-                completed_count = len(results)
+                tasks = [execute_single_parallel_agent(agent, i) for i, agent in enumerate(agents_to_execute)]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Process results and emit completion events
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        # Handle exception case
+                        agent = agents_to_execute[i]
+                        yield {
+                            "type": "node_error",
+                            "node_id": agent["node_id"],
+                            "agent_name": agent["agent_name"],
+                            "error": str(result),
+                            "workflow_id": workflow_id,
+                            "execution_id": execution_id,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    else:
+                        # Emit node_complete event for UI animation
+                        yield {
+                            "type": "node_complete",
+                            "node_id": result["agent_id"],
+                            "agent_name": result["agent_name"],
+                            "output": result.get("output", ""),
+                            "workflow_id": workflow_id,
+                            "execution_id": execution_id,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                        
+                        # IMPORTANT: Add agent output to main agent_outputs dictionary
+                        if result.get("status") == "completed":
+                            agent_name = result["agent_name"]
+                            agent_outputs[agent_name] = result.get("output", "")
+                            logger.info(f"[PARALLEL] Added output from {agent_name} to agent_outputs")
+                
+                completed_count = len([r for r in results if not isinstance(r, Exception) and r.get("status") == "completed"])
             else:
-                # Execute agents with limited parallelism
-                semaphore = asyncio.Semaphore(max_parallel)
-                
-                async def bounded_execute(agent_info, index):
-                    async with semaphore:
-                        return await execute_parallel_agent(agent_info, index)
-                
-                tasks = [bounded_execute(agent, i) for i, agent in enumerate(agents_to_execute)]
-                results = await asyncio.gather(*tasks)
-                completed_count = len([r for r in results if r.get("status") == "completed"])
+                # Execute agents with limited parallelism (not commonly used)
+                logger.warning("[PARALLEL] Limited parallelism mode not fully implemented for real agent execution")
+                results = []
+                completed_count = 0
             
             # Apply combine strategy
-            combined_output = self._combine_parallel_results(results, combine_strategy)
+            combined_output = self._combine_parallel_results(
+                [r for r in results if not isinstance(r, Exception)], 
+                combine_strategy
+            )
             
             # Generate summary if needed
             summary = None
             if combine_strategy == "summary":
-                summary = f"Parallel execution completed: {completed_count}/{total_count} agents successful"
+                summary = combined_output
             
             logger.info(f"[PARALLEL] Parallel node {parallel_node_id} completed: {completed_count}/{total_count} agents")
             
-            return {
-                "results": results,
+            # Yield parallel execution complete event
+            yield {
+                "type": "parallel_execution_complete",
+                "parallel_id": parallel_node_id,
+                "results": [r for r in results if not isinstance(r, Exception)],
                 "combined_output": combined_output,
                 "summary": summary,
                 "completed_count": completed_count,
                 "total_count": total_count,
                 "strategy_used": combine_strategy,
-                "agent_status": agent_status,
-                "progress_percentage": (completed_count / total_count * 100) if total_count > 0 else 0
+                "workflow_id": workflow_id,
+                "execution_id": execution_id,
+                "timestamp": datetime.utcnow().isoformat()
             }
+            
+            # Store parallel node output in workflow state if available
+            if workflow_state:
+                parallel_result = {
+                    "node_id": parallel_node_id,
+                    "combined_output": combined_output,
+                    "individual_results": results,
+                    "summary": summary,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                workflow_state.set_state(f"node_output_{parallel_node_id}", parallel_result, f"parallel_{parallel_node_id}_result")
             
         except Exception as e:
             logger.error(f"[PARALLEL] Error processing parallel node: {e}")
-            return {
-                "results": [],
-                "combined_output": f"Parallel execution failed: {str(e)}",
-                "summary": f"Error: {str(e)}",
-                "completed_count": 0,
-                "total_count": 0,
-                "strategy_used": combine_strategy,
-                "agent_status": [],
-                "progress_percentage": 0,
-                "error": str(e)
+            yield {
+                "type": "parallel_execution_error",
+                "parallel_id": parallel_node_id,
+                "error": str(e),
+                "workflow_id": workflow_id,
+                "execution_id": execution_id,
+                "timestamp": datetime.utcnow().isoformat()
             }
     
     def _combine_parallel_results(
