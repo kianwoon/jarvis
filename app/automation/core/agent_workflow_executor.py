@@ -3385,7 +3385,53 @@ Please process this request independently and provide your analysis."""
             async def execute_single_parallel_agent(agent: Dict[str, Any], index: int) -> Dict[str, Any]:
                 """Execute a single agent within parallel execution"""
                 try:
-                    logger.info(f"[PARALLEL] Executing agent {agent['agent_name']} (index: {index})")
+                    from app.automation.integrations.redis_bridge import workflow_redis
+                    
+                    agent_node_id = agent["node_id"]
+                    logger.info(f"[PARALLEL] Processing agent {agent['agent_name']} (index: {index})")
+                    
+                    # Check if there's a cache node connected to this agent
+                    cached_result = None
+                    cache_checked = False
+                    
+                    for edge in workflow_edges:
+                        if edge.get("source") == agent_node_id:
+                            target_id = edge.get("target")
+                            
+                            # Check if target is a cache node
+                            for cache in cache_nodes:
+                                if cache["node_id"] == target_id:
+                                    logger.info(f"[PARALLEL] Checking cache node {target_id} for agent {agent_node_id}")
+                                    
+                                    # Check cache using the cache_node_key pattern
+                                    cache_key = f"cache_{workflow_id}_{cache['node_id']}"
+                                    cached_data = workflow_redis.get_value(cache_key)
+                                    
+                                    if cached_data:
+                                        logger.info(f"[PARALLEL] Cache HIT for agent {agent['agent_name']} from cache node {target_id}")
+                                        cached_result = cached_data
+                                        cache_checked = True
+                                        break
+                                    else:
+                                        logger.info(f"[PARALLEL] Cache MISS for agent {agent['agent_name']} from cache node {target_id}")
+                            
+                            if cached_result:
+                                break
+                    
+                    # If we have a cached result, use it
+                    if cached_result:
+                        logger.info(f"[PARALLEL] Using cached result for agent {agent['agent_name']}")
+                        return {
+                            "agent_id": agent_node_id,
+                            "agent_name": agent["agent_name"],
+                            "output": cached_result,
+                            "status": "completed",
+                            "tools_used": [],
+                            "from_cache": True
+                        }
+                    
+                    # No cache hit, execute the agent
+                    logger.info(f"[PARALLEL] Executing agent {agent['agent_name']} (no cache hit)")
                     
                     # Build agent prompt (simplified for parallel execution)
                     agent_prompt = input_data
@@ -3404,11 +3450,12 @@ Please process this request independently and provide your analysis."""
                     )
                     
                     return {
-                        "agent_id": agent["node_id"],
+                        "agent_id": agent_node_id,
                         "agent_name": agent["agent_name"],
                         "output": result.get("output", ""),
                         "status": "completed",
-                        "tools_used": result.get("tools_used", [])
+                        "tools_used": result.get("tools_used", []),
+                        "from_cache": False
                     }
                 except Exception as e:
                     logger.error(f"[PARALLEL] Error executing agent {agent['agent_name']}: {e}")
@@ -3417,7 +3464,8 @@ Please process this request independently and provide your analysis."""
                         "agent_name": agent["agent_name"],
                         "output": f"Error: {str(e)}",
                         "status": "failed",
-                        "error": str(e)
+                        "error": str(e),
+                        "from_cache": False
                     }
             
             # Execute all agents in parallel
@@ -3447,6 +3495,7 @@ Please process this request independently and provide your analysis."""
                             "node_id": result["agent_id"],
                             "agent_name": result["agent_name"],
                             "output": result.get("output", ""),
+                            "from_cache": result.get("from_cache", False),
                             "workflow_id": workflow_id,
                             "execution_id": execution_id,
                             "timestamp": datetime.utcnow().isoformat()
@@ -3469,9 +3518,11 @@ Please process this request independently and provide your analysis."""
                 completed_count = 0
             
             # Apply combine strategy
-            combined_output = self._combine_parallel_results(
+            combined_output = await self._combine_parallel_results(
                 [r for r in results if not isinstance(r, Exception)], 
-                combine_strategy
+                combine_strategy,
+                workflow_id,
+                execution_id
             )
             
             # Generate summary if needed
@@ -3479,7 +3530,12 @@ Please process this request independently and provide your analysis."""
             if combine_strategy == "summary":
                 summary = combined_output
             
-            logger.info(f"[PARALLEL] Parallel node {parallel_node_id} completed: {completed_count}/{total_count} agents")
+            # Count cache hits
+            cache_hits = len([r for r in results if not isinstance(r, Exception) and r.get("from_cache", False)])
+            if cache_hits > 0:
+                logger.info(f"[PARALLEL] Parallel node {parallel_node_id} completed: {completed_count}/{total_count} agents ({cache_hits} from cache)")
+            else:
+                logger.info(f"[PARALLEL] Parallel node {parallel_node_id} completed: {completed_count}/{total_count} agents")
             
             # Yield parallel execution complete event
             yield {
@@ -3500,10 +3556,16 @@ Please process this request independently and provide your analysis."""
             if cache_nodes:
                 for result in results:
                     if isinstance(result, dict) and result.get("status") == "completed":
+                        # Skip cache storage if result came from cache
+                        if result.get("from_cache", False):
+                            logger.info(f"[PARALLEL] Skipping cache storage for agent {result.get('agent_name')} - result from cache")
+                            continue
+                            
                         agent_node_id = result.get("agent_id")
                         agent_output = result.get("output", "")
                         
-                        # Find cache nodes connected to this agent
+                        # Find ALL cache nodes connected to this agent
+                        connected_cache_nodes = []
                         for edge in workflow_edges:
                             if edge.get("source") == agent_node_id:
                                 target_id = edge.get("target")
@@ -3511,54 +3573,59 @@ Please process this request independently and provide your analysis."""
                                 # Check if target is a cache node
                                 for cache in cache_nodes:
                                     if cache["node_id"] == target_id:
-                                        logger.info(f"[PARALLEL] Processing CacheNode {target_id} for agent {agent_node_id}")
-                                        
-                                        # Store result in cache with multiple keys for lookup
-                                        # Primary key with agent node ID
-                                        agent_cache_key = f"workflow_{workflow_id}_node_{agent_node_id}_output"
-                                        cache_stored = await self._store_cache_result(
-                                            agent_cache_key,
-                                            agent_output,
-                                            cache.get("ttl", 3600),
-                                            "",  # No specific condition
-                                            cache.get("max_cache_size", 10) * 1024 * 1024
-                                        )
-                                        
-                                        # Also store with cache node ID for easy lookup
-                                        cache_node_key = f"cache_{workflow_id}_{cache['node_id']}"
-                                        await self._store_cache_result(
-                                            cache_node_key,
-                                            agent_output,
-                                            cache.get("ttl", 3600),
-                                            "",  # No specific condition
-                                            cache.get("max_cache_size", 10) * 1024 * 1024
-                                        )
-                                        
-                                        if cache_stored:
-                                            yield {
-                                                "type": "cache_stored",
-                                                "agent_name": result.get("agent_name", "Unknown"),
-                                                "node_id": agent_node_id,
-                                                "cache_id": cache["node_id"],
-                                                "cache_key": agent_cache_key,
-                                                "cache_node_key": cache_node_key,
-                                                "ttl": cache.get("ttl", 3600),
-                                                "workflow_id": workflow_id,
-                                                "execution_id": execution_id,
-                                                "timestamp": datetime.utcnow().isoformat()
-                                            }
-                                        
-                                        # Store cache node output in workflow state
-                                        if workflow_state:
-                                            cache_node_result = {
-                                                "node_id": cache["node_id"],
-                                                "output": agent_output,
-                                                "cache_hit": False,
-                                                "cache_key": cache_key,
-                                                "source_agent": agent_node_id,
-                                                "timestamp": datetime.utcnow().isoformat()
-                                            }
-                                            workflow_state.set_state(f"node_output_{cache['node_id']}", cache_node_result, f"cache_{cache['node_id']}_result")
+                                        connected_cache_nodes.append(cache)
+                                        logger.info(f"[PARALLEL] Found CacheNode {target_id} connected to agent {agent_node_id}")
+                        
+                        # Process each connected cache node
+                        for cache in connected_cache_nodes:
+                            logger.info(f"[PARALLEL] Processing CacheNode {cache['node_id']} for agent {agent_node_id}")
+                            
+                            # Store result in cache with multiple keys for lookup
+                            # Primary key with agent node ID
+                            agent_cache_key = f"workflow_{workflow_id}_node_{agent_node_id}_output"
+                            cache_stored = await self._store_cache_result(
+                                agent_cache_key,
+                                agent_output,
+                                cache.get("ttl", 3600),
+                                "",  # No specific condition
+                                cache.get("max_cache_size", 10) * 1024 * 1024
+                            )
+                            
+                            # Also store with cache node ID for easy lookup
+                            cache_node_key = f"cache_{workflow_id}_{cache['node_id']}"
+                            await self._store_cache_result(
+                                cache_node_key,
+                                agent_output,
+                                cache.get("ttl", 3600),
+                                "",  # No specific condition
+                                cache.get("max_cache_size", 10) * 1024 * 1024
+                            )
+                            
+                            if cache_stored:
+                                yield {
+                                    "type": "cache_stored",
+                                    "agent_name": result.get("agent_name", "Unknown"),
+                                    "node_id": agent_node_id,
+                                    "cache_id": cache["node_id"],
+                                    "cache_key": agent_cache_key,
+                                    "cache_node_key": cache_node_key,
+                                    "ttl": cache.get("ttl", 3600),
+                                    "workflow_id": workflow_id,
+                                    "execution_id": execution_id,
+                                    "timestamp": datetime.utcnow().isoformat()
+                                }
+                            
+                            # Store cache node output in workflow state
+                            if workflow_state:
+                                cache_node_result = {
+                                    "node_id": cache["node_id"],
+                                    "output": agent_output,
+                                    "cache_hit": False,
+                                    "cache_key": cache_node_key,
+                                    "source_agent": agent_node_id,
+                                    "timestamp": datetime.utcnow().isoformat()
+                                }
+                                workflow_state.set_state(f"node_output_{cache['node_id']}", cache_node_result, f"cache_{cache['node_id']}_result")
             
             # Store parallel node output in workflow state if available
             if workflow_state:
@@ -3582,10 +3649,12 @@ Please process this request independently and provide your analysis."""
                 "timestamp": datetime.utcnow().isoformat()
             }
     
-    def _combine_parallel_results(
+    async def _combine_parallel_results(
         self,
         results: List[Dict[str, Any]],
-        strategy: str
+        strategy: str,
+        workflow_id: int = None,
+        execution_id: str = None
     ) -> str:
         """Combine results from parallel agent execution based on strategy"""
         try:
@@ -3607,31 +3676,216 @@ Please process this request independently and provide your analysis."""
                 return merged
             
             elif strategy == "best":
-                # Select the longest/most detailed result as "best"
-                best_result = max(results, key=lambda r: len(r.get("output", "")))
-                return f"Best result from {best_result.get('agent_name', 'Unknown')}:\n{best_result.get('output', '')}"
+                # Select the best result based on multiple criteria
+                logger.info(f"[PARALLEL] Selecting best result from {len(results)} outputs")
+                
+                if not results:
+                    return "No results to select from"
+                
+                # Score each result based on multiple factors
+                scored_results = []
+                for result in results:
+                    output = result.get("output", "")
+                    score = 0
+                    
+                    # Length score (longer is generally more detailed)
+                    score += min(len(output) / 100, 10)  # Cap at 10 points
+                    
+                    # Tool usage score (agents that used tools may have fresher data)
+                    tools_used = result.get("tools_used", [])
+                    score += len(tools_used) * 5  # 5 points per tool used
+                    
+                    # Structure score (check for headers, lists, etc.)
+                    if "##" in output or "**" in output:
+                        score += 3  # Structured content
+                    if "\n-" in output or "\n*" in output or "\n1." in output:
+                        score += 2  # Has lists
+                    
+                    # Error penalty
+                    if "error" in result.get("status", "").lower():
+                        score -= 20
+                    
+                    scored_results.append((result, score))
+                
+                # Select the highest scoring result
+                best_result, best_score = max(scored_results, key=lambda x: x[1])
+                agent_name = best_result.get("agent_name", "Unknown")
+                
+                logger.info(f"[PARALLEL] Selected {agent_name} as best result (score: {best_score})")
+                return f"## Best Result (from {agent_name})\n\n{best_result.get('output', '')}"
             
             elif strategy == "summary":
-                # Create a summary of all results
-                summaries = []
-                for result in results:
+                # Use AI to create an intelligent summary of all results
+                logger.info(f"[PARALLEL] Generating AI summary of {len(results)} agent outputs")
+                
+                # Collect all outputs for summarization
+                all_outputs = []
+                for i, result in enumerate(results):
                     agent_name = result.get("agent_name", "Unknown")
-                    output_preview = result.get("output", "")[:100]
-                    summaries.append(f"- {agent_name}: {output_preview}...")
-                return f"Summary of {len(results)} parallel executions:\n" + "\n".join(summaries)
+                    output = result.get("output", "")
+                    all_outputs.append(f"**Agent {i+1} ({agent_name}):**\n{output}")
+                
+                combined_text = "\n\n---\n\n".join(all_outputs)
+                
+                # If outputs are too short, just merge them
+                if len(combined_text) < 200:
+                    return combined_text
+                
+                # Create a summary using AI
+                try:
+                    # Build summarization prompt
+                    summary_prompt = f"""Please provide a comprehensive summary of the following {len(results)} agent outputs. 
+Synthesize the key information from all agents into a cohesive summary that captures the main points, findings, and insights.
+Focus on combining complementary information and highlighting any differences or unique contributions from each agent.
+
+{combined_text}
+
+Please provide a well-structured summary that integrates all the agent outputs above."""
+                    
+                    # Use the dynamic agent system to generate summary
+                    if self.dynamic_agent_system:
+                        logger.info("[PARALLEL] Calling AI for summary generation")
+                        
+                        # Create a simple agent configuration for summarization
+                        summary_agent = {
+                            "name": "Summary Generator",
+                            "role": "summarizer",
+                            "system_prompt": "You are an expert at creating concise, comprehensive summaries that integrate multiple perspectives and sources of information.",
+                            "config": {
+                                "temperature": 0.3,
+                                "max_tokens": 1000
+                            }
+                        }
+                        
+                        # Execute summary generation - no await needed, it returns an async generator
+                        summary_result = self.dynamic_agent_system.execute_agent(
+                            agent_name="Summary Generator",
+                            agent_data=summary_agent,
+                            query=summary_prompt,
+                            context={}
+                        )
+                        
+                        # Extract the summary from the generator
+                        ai_summary = ""
+                        async for event in summary_result:
+                            # Check for different event types
+                            if event.get("type") == "agent_response":
+                                ai_summary += event.get("content", "")
+                            elif event.get("type") == "completion":
+                                # Enhanced completion contains the full response
+                                ai_summary = event.get("content", "")
+                                break
+                        
+                        if ai_summary:
+                            logger.info(f"[PARALLEL] AI summary generated successfully (length: {len(ai_summary)})")
+                            return ai_summary
+                        else:
+                            logger.warning("[PARALLEL] AI summary generation returned empty result")
+                    else:
+                        logger.warning("[PARALLEL] No dynamic agent system available for AI summary")
+                    
+                except Exception as e:
+                    logger.error(f"[PARALLEL] Error generating AI summary: {e}")
+                
+                # Fallback to merged output if AI summary fails
+                logger.info("[PARALLEL] Falling back to merged output")
+                return f"## Combined Agent Outputs\n\n{combined_text}"
             
             elif strategy == "vote":
-                # Simple voting mechanism - return most common output
-                outputs = [result.get("output", "") for result in results]
-                if outputs:
-                    # For now, just return the first output
-                    # In a real implementation, this would analyze outputs for consensus
-                    return f"Consensus result:\n{outputs[0]}"
-                return "No consensus reached"
+                # Intelligent voting mechanism - find consensus among outputs
+                logger.info(f"[PARALLEL] Analyzing {len(results)} outputs for consensus")
+                
+                if not results:
+                    return "No results for voting"
+                
+                if len(results) == 1:
+                    # Only one result, return it
+                    return results[0].get("output", "")
+                
+                # Use AI to analyze outputs and find consensus
+                try:
+                    # Collect all outputs
+                    outputs_text = []
+                    for i, result in enumerate(results):
+                        agent_name = result.get("agent_name", f"Agent {i+1}")
+                        output = result.get("output", "")
+                        outputs_text.append(f"**{agent_name}:**\n{output}")
+                    
+                    combined_outputs = "\n\n---\n\n".join(outputs_text)
+                    
+                    # Create consensus analysis prompt
+                    consensus_prompt = f"""Analyze the following {len(results)} agent outputs and determine the consensus or majority opinion.
+
+Look for:
+1. Common themes and agreements across outputs
+2. Key facts or conclusions that multiple agents agree on
+3. Any significant disagreements or contradictions
+4. The majority viewpoint if opinions differ
+
+Agent Outputs:
+{combined_outputs}
+
+Please provide:
+1. The consensus findings that most or all agents agree on
+2. Any notable disagreements with a note on which view has more support
+3. A final synthesized answer based on the majority consensus"""
+                    
+                    # Use AI to find consensus
+                    if self.dynamic_agent_system:
+                        logger.info("[PARALLEL] Using AI to analyze consensus")
+                        
+                        consensus_agent = {
+                            "name": "Consensus Analyzer",
+                            "role": "analyzer",
+                            "system_prompt": "You are an expert at analyzing multiple viewpoints and finding consensus, identifying majority opinions, and synthesizing coherent conclusions from diverse inputs.",
+                            "config": {
+                                "temperature": 0.2,  # Low temperature for consistency
+                                "max_tokens": 800
+                            }
+                        }
+                        
+                        # Execute consensus analysis - no await needed, it returns an async generator
+                        consensus_result = self.dynamic_agent_system.execute_agent(
+                            agent_name="Consensus Analyzer",
+                            agent_data=consensus_agent,
+                            query=consensus_prompt,
+                            context={}
+                        )
+                        
+                        # Extract consensus
+                        consensus_text = ""
+                        async for event in consensus_result:
+                            # Check for different event types
+                            if event.get("type") == "agent_response":
+                                consensus_text += event.get("content", "")
+                            elif event.get("type") == "completion":
+                                # Enhanced completion contains the full response
+                                consensus_text = event.get("content", "")
+                                break
+                        
+                        if consensus_text:
+                            logger.info(f"[PARALLEL] Consensus analysis completed")
+                            return f"## Consensus Result\n\n{consensus_text}"
+                    
+                    # Fallback: Simple similarity check
+                    logger.info("[PARALLEL] Falling back to simple consensus check")
+                    
+                    # Check if outputs are very similar (simple approach)
+                    if len(set(output.strip().lower() for output in [r.get("output", "") for r in results])) == 1:
+                        # All outputs are identical
+                        return f"## Unanimous Result\n\n{results[0].get('output', '')}"
+                    
+                    # Return the most common theme
+                    return f"## Voting Result\n\nMultiple viewpoints detected. Showing all outputs:\n\n{combined_outputs}"
+                    
+                except Exception as e:
+                    logger.error(f"[PARALLEL] Error in voting analysis: {e}")
+                    # Fallback to first result
+                    return f"## Voting Result (Fallback)\n\n{results[0].get('output', '')}"
             
             else:
                 # Default to merge
-                return self._combine_parallel_results(results, "merge")
+                return await self._combine_parallel_results(results, "merge", workflow_id, execution_id)
                 
         except Exception as e:
             logger.error(f"[PARALLEL] Error combining results: {e}")
