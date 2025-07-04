@@ -206,30 +206,30 @@
 
 /* Node Category Specific Animations */
 
-/* Agent Nodes Animation (Simple purple like other nodes) */
+/* Agent Nodes Animation (Deep purple like other nodes) */
 @keyframes agentGlow {
   0% {
     box-shadow: 
-      0 0 0 0 rgba(156, 39, 176, 0.7),
-      0 0 0 0 rgba(156, 39, 176, 0.5),
-      0 0 20px rgba(156, 39, 176, 0.3);
-    border-color: rgba(156, 39, 176, 1) !important;
+      0 0 0 0 rgba(103, 58, 183, 0.7),
+      0 0 0 0 rgba(103, 58, 183, 0.5),
+      0 0 20px rgba(103, 58, 183, 0.3);
+    border-color: rgba(103, 58, 183, 1) !important;
     transform: scale(1) !important;
   }
   50% {
     box-shadow: 
-      0 0 0 12px rgba(156, 39, 176, 0.4),
-      0 0 0 24px rgba(156, 39, 176, 0.2),
-      0 0 40px rgba(156, 39, 176, 0.6);
-    border-color: rgba(171, 71, 188, 1) !important;
+      0 0 0 12px rgba(103, 58, 183, 0.4),
+      0 0 0 24px rgba(103, 58, 183, 0.2),
+      0 0 40px rgba(103, 58, 183, 0.6);
+    border-color: rgba(126, 87, 194, 1) !important;
     transform: scale(1.15) !important;
   }
   100% {
     box-shadow: 
-      0 0 0 0 rgba(156, 39, 176, 0.7),
-      0 0 0 0 rgba(156, 39, 176, 0.5),
-      0 0 20px rgba(156, 39, 176, 0.3);
-    border-color: rgba(156, 39, 176, 1) !important;
+      0 0 0 0 rgba(103, 58, 183, 0.7),
+      0 0 0 0 rgba(103, 58, 183, 0.5),
+      0 0 20px rgba(103, 58, 183, 0.3);
+    border-color: rgba(103, 58, 183, 1) !important;
     transform: scale(1) !important;
   }
 }
