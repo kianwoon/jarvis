@@ -3800,21 +3800,34 @@ Please provide a well-structured summary that integrates all the agent outputs a
                         if ai_summary:
                             # Clean thinking tags from AI summary
                             import re
+                            original_length = len(ai_summary)
+                            
                             # Remove thinking tags and extract content after them
                             if "<think>" in ai_summary and "</think>" in ai_summary:
-                                # Extract content after thinking tags
+                                # First try to extract content after thinking tags
                                 think_end = ai_summary.find("</think>")
                                 if think_end != -1:
                                     cleaned_summary = ai_summary[think_end + 8:].strip()
-                                    if cleaned_summary:
+                                    if cleaned_summary and len(cleaned_summary) > 50:  # Substantial content after think tags
                                         ai_summary = cleaned_summary
+                                        logger.info(f"[PARALLEL] Extracted content after think tags: {len(ai_summary)} chars")
                                     else:
-                                        # If no content after think tags, extract from inside
+                                        # No substantial content after think tags, extract from inside
                                         think_match = re.search(r'<think>(.*?)</think>', ai_summary, re.DOTALL)
                                         if think_match:
                                             ai_summary = think_match.group(1).strip()
+                                            logger.info(f"[PARALLEL] Extracted content from inside think tags: {len(ai_summary)} chars")
+                                else:
+                                    # Malformed thinking tags, remove them
+                                    ai_summary = re.sub(r'</?think>', '', ai_summary).strip()
+                                    logger.info(f"[PARALLEL] Removed malformed think tags: {len(ai_summary)} chars")
                             
-                            logger.info(f"[PARALLEL] AI summary generated successfully (length: {len(ai_summary)})")
+                            # Ensure we have substantial content
+                            if len(ai_summary) < 50:
+                                logger.warning(f"[PARALLEL] AI summary too short ({len(ai_summary)} chars), falling back to merge")
+                                return None  # Will trigger fallback to merged output
+                            
+                            logger.info(f"[PARALLEL] AI summary processed successfully (original: {original_length}, final: {len(ai_summary)})")
                             return ai_summary
                         else:
                             logger.warning("[PARALLEL] AI summary generation returned empty result")
