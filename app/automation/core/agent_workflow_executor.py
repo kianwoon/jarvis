@@ -1475,8 +1475,19 @@ class AgentWorkflowExecutor:
                     
                     if cache_config:
                         # Store the agent result in cache
+                        primary_cache_key = cache_result.get("cache_key", "")
                         cache_stored = await self._store_cache_result(
-                            cache_result.get("cache_key", ""),
+                            primary_cache_key,
+                            agent_output,
+                            cache_config.get("ttl", 3600),
+                            cache_result.get("cache_condition", ""),
+                            cache_config.get("max_cache_size", 10) * 1024 * 1024
+                        )
+                        
+                        # Also store with cache node ID for easy lookup
+                        cache_node_key = f"cache_{workflow_id}_{cache_config['node_id']}"
+                        await self._store_cache_result(
+                            cache_node_key,
                             agent_output,
                             cache_config.get("ttl", 3600),
                             cache_result.get("cache_condition", ""),
@@ -1489,7 +1500,8 @@ class AgentWorkflowExecutor:
                                 "agent_name": agent_name,
                                 "node_id": agent_node_id,
                                 "cache_id": cache_config["node_id"],
-                                "cache_key": cache_result.get("cache_key", ""),
+                                "cache_key": primary_cache_key,
+                                "cache_node_key": cache_node_key,
                                 "ttl": cache_config.get("ttl", 3600),
                                 "workflow_id": workflow_id,
                                 "execution_id": execution_id,
@@ -2351,19 +2363,32 @@ Please process this request independently and provide your analysis."""
             agent_output = list(agent_outputs.values())[0]
             return self._format_output(agent_output, output_format, include_metadata, include_tool_calls, original_query)
         
-        # For multiple agents, return the LAST agent's output (which should be the synthesizer)
-        # The last agent in a properly designed workflow should have already synthesized all previous outputs
-        final_agent_output = list(agent_outputs.values())[-1]
-        
-        # Only combine all outputs if explicitly requested via include_metadata
-        if include_metadata:
-            synthesis = f"Based on analysis from {len(agent_outputs)} AI agents:\n\n"
-            for agent_name, output in agent_outputs.items():
-                synthesis += f"**{agent_name}:**\n{output}\n\n"
-            synthesis += f"**Final Synthesis:**\n{final_agent_output}"
+        # For multiple agents, combine their outputs
+        # If output format is markdown (from OutputNode), use a clean merge
+        if output_format == "markdown" or len(agent_outputs) > 1:
+            # Combine all agent outputs with clear separation
+            synthesis_parts = []
+            
+            # Sort by key to ensure consistent ordering
+            sorted_outputs = sorted(agent_outputs.items())
+            
+            for i, (agent_key, output) in enumerate(sorted_outputs):
+                # Extract agent name from key (could be node ID or agent name)
+                agent_name = agent_key
+                # Try to make the name more readable if it's a node ID
+                if agent_key.startswith("agentnode-"):
+                    agent_name = f"Agent {i+1}"
+                
+                synthesis_parts.append(f"## {agent_name}\n\n{output}")
+            
+            synthesis = "\n\n---\n\n".join(synthesis_parts)
+            
+            # Add metadata header if requested
+            if include_metadata:
+                synthesis = f"# Analysis from {len(agent_outputs)} AI Agents\n\n{synthesis}"
         else:
-            # Return only the final synthesizer output (clean, no concatenation)
-            synthesis = final_agent_output
+            # For single agent or when explicitly not combining
+            synthesis = list(agent_outputs.values())[-1]
         
         return self._format_output(synthesis, output_format, include_metadata, include_tool_calls, original_query)
     
@@ -3488,10 +3513,21 @@ Please process this request independently and provide your analysis."""
                                     if cache["node_id"] == target_id:
                                         logger.info(f"[PARALLEL] Processing CacheNode {target_id} for agent {agent_node_id}")
                                         
-                                        # Store result in cache
-                                        cache_key = f"workflow_{workflow_id}_node_{agent_node_id}_output"
+                                        # Store result in cache with multiple keys for lookup
+                                        # Primary key with agent node ID
+                                        agent_cache_key = f"workflow_{workflow_id}_node_{agent_node_id}_output"
                                         cache_stored = await self._store_cache_result(
-                                            cache_key,
+                                            agent_cache_key,
+                                            agent_output,
+                                            cache.get("ttl", 3600),
+                                            "",  # No specific condition
+                                            cache.get("max_cache_size", 10) * 1024 * 1024
+                                        )
+                                        
+                                        # Also store with cache node ID for easy lookup
+                                        cache_node_key = f"cache_{workflow_id}_{cache['node_id']}"
+                                        await self._store_cache_result(
+                                            cache_node_key,
                                             agent_output,
                                             cache.get("ttl", 3600),
                                             "",  # No specific condition
@@ -3504,7 +3540,8 @@ Please process this request independently and provide your analysis."""
                                                 "agent_name": result.get("agent_name", "Unknown"),
                                                 "node_id": agent_node_id,
                                                 "cache_id": cache["node_id"],
-                                                "cache_key": cache_key,
+                                                "cache_key": agent_cache_key,
+                                                "cache_node_key": cache_node_key,
                                                 "ttl": cache.get("ttl", 3600),
                                                 "workflow_id": workflow_id,
                                                 "execution_id": execution_id,
@@ -3555,13 +3592,19 @@ Please process this request independently and provide your analysis."""
             if not results:
                 return "No results to combine"
             
+            logger.info(f"[PARALLEL] Combining {len(results)} results with strategy: {strategy}")
+            
             if strategy == "merge":
                 # Merge all outputs
                 combined = []
                 for i, result in enumerate(results):
                     output = result.get("output", "")
-                    combined.append(f"**Agent {i+1} ({result.get('agent_name', 'Unknown')}):**\n{output}")
-                return "\n\n".join(combined)
+                    agent_name = result.get("agent_name", "Unknown")
+                    logger.info(f"[PARALLEL] Adding output from {agent_name} (length: {len(output)})")
+                    combined.append(f"**Agent {i+1} ({agent_name}):**\n{output}")
+                merged = "\n\n".join(combined)
+                logger.info(f"[PARALLEL] Merged output length: {len(merged)}")
+                return merged
             
             elif strategy == "best":
                 # Select the longest/most detailed result as "best"
