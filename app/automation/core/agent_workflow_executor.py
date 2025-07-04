@@ -944,10 +944,10 @@ class AgentWorkflowExecutor:
         initial_parallel_node = None
         if parallel_nodes and execution_sequence:
             # Check if a parallel node appears early in the execution sequence
-            for i, node_id in enumerate(execution_sequence[:3]):  # Check first 3 nodes
+            for i, node_id in enumerate(execution_sequence[:6]):  # Check first 6 nodes to account for trigger/group nodes
                 for parallel in parallel_nodes:
                     if parallel["node_id"] == node_id:
-                        # Verify it's connected from Start node
+                        # Verify it's connected from Start node (directly or indirectly)
                         for edge in workflow_edges:
                             if edge.get("target") == node_id and "start" in edge.get("source", "").lower():
                                 initial_parallel_node = parallel
@@ -981,7 +981,17 @@ class AgentWorkflowExecutor:
             
             # Yield final response with OutputNode configuration
             output_node = agent_plan.get("output_node")
-            final_response = self._synthesize_agent_outputs(agent_outputs, query, output_node)
+            
+            # Check if ParallelNode generated a combined output (AI summary)
+            parallel_result = workflow_state.get_state(f"node_output_{initial_parallel_node['node_id']}")
+            if parallel_result and parallel_result.get("combined_output"):
+                # Use the AI summary from parallel execution instead of individual agent outputs
+                final_response = parallel_result["combined_output"]
+                logger.info(f"[WORKFLOW] Using AI summary from ParallelNode: {len(final_response)} chars")
+            else:
+                # Fallback to synthesizing individual agent outputs
+                final_response = self._synthesize_agent_outputs(agent_outputs, query, output_node)
+                logger.info(f"[WORKFLOW] Using synthesized agent outputs: {len(final_response)} chars")
             
             yield {
                 "type": "workflow_result",
@@ -3799,7 +3809,7 @@ Please provide a well-structured summary that integrates all the agent outputs a
                             "system_prompt": "You are an expert at creating concise, comprehensive summaries that integrate multiple perspectives and sources of information.",
                             "config": {
                                 "temperature": 0.3,
-                                "max_tokens": 1000
+                                "max_tokens": 4000
                             }
                         }
                         
