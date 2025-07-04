@@ -3352,17 +3352,7 @@ Please process this request independently and provide your analysis."""
             
             logger.info(f"[PARALLEL] Starting parallel execution of {total_count} agents with strategy: {combine_strategy}")
             
-            # Yield node start event for UI grow effect
-            start_event = {
-                "type": "node_start",
-                "node_id": parallel_node_id,
-                "node_type": "ParallelNode", 
-                "workflow_id": workflow_id,
-                "execution_id": execution_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            logger.info(f"[PARALLEL ANIMATION] Yielding node_start event: {start_event}")
-            yield start_event
+            # DON'T emit node_start here - wait until actual processing begins
             
             # Yield parallel execution start event
             yield {
@@ -3482,6 +3472,18 @@ Please process this request independently and provide your analysis."""
             
             # Execute all agents in parallel
             if wait_for_all:
+                # Emit node_start right before heavy processing begins
+                start_event = {
+                    "type": "node_start",
+                    "node_id": parallel_node_id,
+                    "node_type": "ParallelNode", 
+                    "workflow_id": workflow_id,
+                    "execution_id": execution_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                logger.info(f"[PARALLEL ANIMATION] Yielding node_start event before agent execution: {start_event}")
+                yield start_event
+                
                 # Wait for all agents to complete
                 tasks = [execute_single_parallel_agent(agent, i) for i, agent in enumerate(agents_to_execute)]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -3524,18 +3526,37 @@ Please process this request independently and provide your analysis."""
                 
                 completed_count = len([r for r in results if not isinstance(r, Exception) and r.get("status") == "completed"])
             else:
+                # Emit node_start right before limited parallelism processing
+                start_event = {
+                    "type": "node_start",
+                    "node_id": parallel_node_id,
+                    "node_type": "ParallelNode", 
+                    "workflow_id": workflow_id,
+                    "execution_id": execution_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                logger.info(f"[PARALLEL ANIMATION] Yielding node_start event before limited parallelism: {start_event}")
+                yield start_event
+                
                 # Execute agents with limited parallelism (not commonly used)
                 logger.warning("[PARALLEL] Limited parallelism mode not fully implemented for real agent execution")
                 results = []
                 completed_count = 0
             
-            # Apply combine strategy
+            # Apply combine strategy (this is where the heavy AI processing happens)
+            logger.info(f"[PARALLEL] Starting combine strategy '{combine_strategy}' - this may take time for AI processing")
+            
+            # If this is an AI summary strategy, ensure animation is still running
+            if combine_strategy == "summary":
+                logger.info(f"[PARALLEL ANIMATION] AI summary strategy - ParallelNode {parallel_node_id} should be animating during processing")
+            
             combined_output = await self._combine_parallel_results(
                 [r for r in results if not isinstance(r, Exception)], 
                 combine_strategy,
                 workflow_id,
                 execution_id
             )
+            logger.info(f"[PARALLEL] Combine strategy completed")
             
             # Generate summary if needed
             summary = None
