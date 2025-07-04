@@ -183,24 +183,24 @@
       0 0 0 0 rgba(33, 150, 243, 0.7),
       0 0 0 0 rgba(33, 150, 243, 0.5),
       0 0 20px rgba(33, 150, 243, 0.3);
-    border-color: rgba(33, 150, 243, 1);
-    transform: scale(1);
+    border-color: rgba(33, 150, 243, 1) !important;
+    transform: scale(1) !important;
   }
   50% {
     box-shadow: 
       0 0 0 12px rgba(33, 150, 243, 0.4),
       0 0 0 24px rgba(33, 150, 243, 0.2),
       0 0 40px rgba(33, 150, 243, 0.6);
-    border-color: rgba(66, 165, 245, 1);
-    transform: scale(1.1);  /* FIXED: Much more visible 10% growth instead of 2% */
+    border-color: rgba(66, 165, 245, 1) !important;
+    transform: scale(1.15) !important;  /* Even more dramatic 15% growth for visibility */
   }
   100% {
     box-shadow: 
       0 0 0 0 rgba(33, 150, 243, 0.7),
       0 0 0 0 rgba(33, 150, 243, 0.5),
       0 0 20px rgba(33, 150, 243, 0.3);
-    border-color: rgba(33, 150, 243, 1);
-    transform: scale(1);
+    border-color: rgba(33, 150, 243, 1) !important;
+    transform: scale(1) !important;
   }
 }
 

@@ -3813,14 +3813,30 @@ Please provide a well-structured summary that integrates all the agent outputs a
                         
                         # Extract the summary from the generator
                         ai_summary = ""
+                        event_count = 0
                         async for event in summary_result:
+                            event_count += 1
+                            event_type = event.get("type", "unknown")
+                            logger.info(f"[PARALLEL AI] Processing event {event_count}: {event_type}")
+                            
                             # Check for different event types
                             if event.get("type") == "agent_response":
-                                ai_summary += event.get("content", "")
+                                content = event.get("content", "")
+                                ai_summary += content
+                                logger.info(f"[PARALLEL AI] Added agent_response content: {len(content)} chars")
                             elif event.get("type") in ["completion", "enhanced_completion", "agent_complete"]:
                                 # Enhanced completion contains the full response
-                                ai_summary = event.get("content", "")
-                                break
+                                content = event.get("content", "")
+                                if content:
+                                    ai_summary = content
+                                    logger.info(f"[PARALLEL AI] Got {event_type} with content: {len(content)} chars")
+                                    break
+                                else:
+                                    logger.warning(f"[PARALLEL AI] {event_type} event had no content")
+                            else:
+                                logger.info(f"[PARALLEL AI] Unhandled event type: {event_type}")
+                        
+                        logger.info(f"[PARALLEL AI] Finished processing {event_count} events, final summary length: {len(ai_summary)}")
                         
                         if ai_summary:
                             # Clean thinking tags from AI summary
@@ -3850,11 +3866,11 @@ Please provide a well-structured summary that integrates all the agent outputs a
                             # Ensure we have substantial content
                             if len(ai_summary) < 50:
                                 logger.warning(f"[PARALLEL] AI summary too short ({len(ai_summary)} chars), falling back to merge")
-                                return None  # Will trigger fallback to merged output
-                            
-                            logger.info(f"[PARALLEL] AI summary processed successfully (original: {original_length}, final: {len(ai_summary)})")
-                            logger.info(f"[PARALLEL AI SUMMARY] Final content preview: {ai_summary[:200]}...")
-                            return ai_summary
+                                # Don't return None, fall through to merged output
+                            else:
+                                logger.info(f"[PARALLEL] AI summary processed successfully (original: {original_length}, final: {len(ai_summary)})")
+                                logger.info(f"[PARALLEL AI SUMMARY] Final content preview: {ai_summary[:200]}...")
+                                return ai_summary
                         else:
                             logger.warning("[PARALLEL] AI summary generation returned empty result")
                     else:
@@ -3862,10 +3878,12 @@ Please provide a well-structured summary that integrates all the agent outputs a
                     
                 except Exception as e:
                     logger.error(f"[PARALLEL] Error generating AI summary: {e}")
+                    import traceback
+                    logger.error(f"[PARALLEL] Full traceback: {traceback.format_exc()}")
                 
                 # Fallback to merged output if AI summary fails
-                logger.info("[PARALLEL] Falling back to merged output")
-                return f"## Combined Agent Outputs\n\n{combined_text}"
+                logger.warning("[PARALLEL] AI summary failed, falling back to merged output")
+                return f"## Combined Agent Outputs (AI Summary Failed)\n\n{combined_text}"
             
             elif strategy == "vote":
                 # Intelligent voting mechanism - find consensus among outputs
