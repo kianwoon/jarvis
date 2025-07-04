@@ -557,5 +557,70 @@ async def force_resource_cleanup():
         }
         
     except Exception as e:
-        logger.error(f"[AUTOMATION API] Error during force cleanup: {e}")
+        logger.error(f"[AUTOMATION API] Error in force cleanup: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/test/parallel-animation/{node_id}")
+async def test_parallel_animation(node_id: str):
+    """
+    Test endpoint to trigger ParallelNode animation events for debugging
+    """
+    from fastapi.responses import StreamingResponse
+    import json
+    import asyncio
+    
+    async def test_animation_stream():
+        """Send test animation events"""
+        try:
+            logger.info(f"[TEST ANIMATION] Starting test for ParallelNode {node_id}")
+            
+            # Send node start event
+            start_event = {
+                "type": "node_start",
+                "node_id": node_id,
+                "node_type": "ParallelNode",
+                "workflow_id": 999,
+                "execution_id": "test-animation",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            logger.info(f"[TEST ANIMATION] Sending start event: {start_event}")
+            yield f"data: {json.dumps(start_event)}\n\n"
+            
+            # Wait 3 seconds to simulate processing
+            await asyncio.sleep(3)
+            
+            # Send node complete event  
+            complete_event = {
+                "type": "node_complete",
+                "node_id": node_id,
+                "node_type": "ParallelNode", 
+                "output": "Test animation completed",
+                "workflow_id": 999,
+                "execution_id": "test-animation",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            logger.info(f"[TEST ANIMATION] Sending complete event: {complete_event}")
+            yield f"data: {json.dumps(complete_event)}\n\n"
+            
+            logger.info(f"[TEST ANIMATION] Test completed for ParallelNode {node_id}")
+            
+        except Exception as e:
+            logger.error(f"[TEST ANIMATION] Error: {e}")
+            error_event = {
+                "type": "node_error",
+                "node_id": node_id,
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            yield f"data: {json.dumps(error_event)}\n\n"
+    
+    return StreamingResponse(
+        test_animation_stream(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream"
+        }
+    )

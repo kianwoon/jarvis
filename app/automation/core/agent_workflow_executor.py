@@ -3353,7 +3353,7 @@ Please process this request independently and provide your analysis."""
             logger.info(f"[PARALLEL] Starting parallel execution of {total_count} agents with strategy: {combine_strategy}")
             
             # Yield node start event for UI grow effect
-            yield {
+            start_event = {
                 "type": "node_start",
                 "node_id": parallel_node_id,
                 "node_type": "ParallelNode", 
@@ -3361,6 +3361,8 @@ Please process this request independently and provide your analysis."""
                 "execution_id": execution_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
+            logger.info(f"[PARALLEL ANIMATION] Yielding node_start event: {start_event}")
+            yield start_event
             
             # Yield parallel execution start event
             yield {
@@ -3649,7 +3651,7 @@ Please process this request independently and provide your analysis."""
                 workflow_state.set_state(f"node_output_{parallel_node_id}", parallel_result, f"parallel_{parallel_node_id}_result")
             
             # Yield node complete event for UI grow effect
-            yield {
+            complete_event = {
                 "type": "node_complete",
                 "node_id": parallel_node_id,
                 "node_type": "ParallelNode",
@@ -3658,6 +3660,8 @@ Please process this request independently and provide your analysis."""
                 "execution_id": execution_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
+            logger.info(f"[PARALLEL ANIMATION] Yielding node_complete event: {complete_event}")
+            yield complete_event
             
         except Exception as e:
             logger.error(f"[PARALLEL] Error processing parallel node: {e}")
@@ -3828,6 +3832,7 @@ Please provide a well-structured summary that integrates all the agent outputs a
                                 return None  # Will trigger fallback to merged output
                             
                             logger.info(f"[PARALLEL] AI summary processed successfully (original: {original_length}, final: {len(ai_summary)})")
+                            logger.info(f"[PARALLEL AI SUMMARY] Final content preview: {ai_summary[:200]}...")
                             return ai_summary
                         else:
                             logger.warning("[PARALLEL] AI summary generation returned empty result")
