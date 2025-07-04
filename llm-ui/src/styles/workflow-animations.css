@@ -395,6 +395,25 @@
   position: relative !important;
   z-index: 10 !important;
   border: 2px solid var(--color-agent) !important;
+  /* Force override MUI inline styles */
+  transform: scale(1) !important;
+  transition: none !important;
+}
+
+/* More specific selector to override MUI Card styles */
+.MuiCard-root.workflow-node--running-agent {
+  animation: agentGlow var(--pulse-duration) infinite ease-in-out !important;
+  transform: scale(1) !important;
+  transition: none !important;
+  border: 2px solid var(--color-agent) !important;
+}
+
+/* Even more specific for AgentNode */
+.react-flow__node-agentnode .MuiCard-root.workflow-node--running-agent {
+  animation: agentGlow var(--pulse-duration) infinite ease-in-out !important;
+  transform: scale(1) !important;
+  transition: none !important;
+  border: 2px solid var(--color-agent) !important;
 }
 
 /* Removed growing ring effects - AgentNode now uses simple animation like other nodes */
