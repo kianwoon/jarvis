@@ -41,24 +41,63 @@ class PostgresBridge:
         finally:
             db.close()
     
-    def create_workflow(self, workflow_data: Dict[str, Any]) -> Optional[int]:
-        """Create new workflow"""
+    def check_workflow_name_exists(self, name: str, created_by: str = "system") -> bool:
+        """Check if a workflow name already exists for a user"""
         db = SessionLocal()
         try:
+            existing = db.query(AutomationWorkflow).filter(
+                AutomationWorkflow.name == name,
+                AutomationWorkflow.created_by == created_by
+            ).first()
+            return existing is not None
+        except Exception as e:
+            logger.error(f"[POSTGRES BRIDGE] Error checking workflow name: {e}")
+            return False
+        finally:
+            db.close()
+    
+    def create_workflow(self, workflow_data: Dict[str, Any]) -> Optional[int]:
+        """Create new workflow with duplicate detection and auto-rename"""
+        db = SessionLocal()
+        try:
+            name = workflow_data["name"]
+            created_by = workflow_data.get("created_by", "system")
+            
+            # Check for existing workflow with same name and user
+            existing_workflow = db.query(AutomationWorkflow).filter(
+                AutomationWorkflow.name == name,
+                AutomationWorkflow.created_by == created_by
+            ).first()
+            
+            if existing_workflow:
+                logger.warning(f"[POSTGRES BRIDGE] Workflow with name '{name}' already exists for user '{created_by}'")
+                # Auto-increment name to avoid duplicates
+                counter = 1
+                original_name = name
+                while existing_workflow:
+                    name = f"{original_name} ({counter})"
+                    existing_workflow = db.query(AutomationWorkflow).filter(
+                        AutomationWorkflow.name == name,
+                        AutomationWorkflow.created_by == created_by
+                    ).first()
+                    counter += 1
+                
+                logger.info(f"[POSTGRES BRIDGE] Auto-renamed workflow to '{name}' to avoid duplicate")
+            
             workflow = AutomationWorkflow(
-                name=workflow_data["name"],
+                name=name,
                 description=workflow_data.get("description"),
                 langflow_config=workflow_data["langflow_config"],
                 trigger_config=workflow_data.get("trigger_config"),
                 is_active=workflow_data.get("is_active", True),
-                created_by=workflow_data.get("created_by", "system")
+                created_by=created_by
             )
             
             db.add(workflow)
             db.commit()
             db.refresh(workflow)
             
-            logger.info(f"[POSTGRES BRIDGE] Created workflow: {workflow.id}")
+            logger.info(f"[POSTGRES BRIDGE] Created workflow: {workflow.id} with name '{name}'")
             return workflow.id
         except Exception as e:
             logger.error(f"[POSTGRES BRIDGE] Error creating workflow: {e}")

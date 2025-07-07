@@ -23,17 +23,32 @@ _conversation_cache = {}  # In-memory fallback
 # Simple query cache for RAG results (in-memory, expires after 5 minutes)
 import time
 _rag_cache = {}  # {query_hash: (result, timestamp)}
-RAG_CACHE_TTL = 300  # 5 minutes
-RAG_CACHE_MAX_SIZE = 100  # Maximum cache entries to prevent memory bloat
+
+def get_rag_cache_settings():
+    """Get RAG cache settings"""
+    from app.core.rag_settings_cache import get_performance_settings
+    perf_settings = get_performance_settings()
+    return {
+        'ttl': perf_settings.get('cache_ttl_hours', 2) * 3600,  # Convert to seconds
+        'max_size': get_document_retrieval_settings().get('cache_max_size', 100)
+    }
+
+def get_document_retrieval_settings():
+    """Get document retrieval settings"""
+    from app.core.rag_settings_cache import get_document_retrieval_settings as _get_settings
+    return _get_settings()
 
 def _cache_rag_result(query_hash: int, result: tuple, current_time: float):
     """Helper function to cache RAG results with cleanup"""
     _rag_cache[query_hash] = (result, current_time)
     # Clean up cache if it gets too large
-    if len(_rag_cache) > RAG_CACHE_MAX_SIZE:
+    cache_settings = get_rag_cache_settings()
+    max_size = cache_settings['max_size']
+    if len(_rag_cache) > max_size:
         # Remove oldest entries
         sorted_cache = sorted(_rag_cache.items(), key=lambda x: x[1][1])
-        for old_key, _ in sorted_cache[:20]:  # Remove 20 oldest entries
+        entries_to_remove = min(20, len(_rag_cache) - max_size + 20)  # Remove extra entries
+        for old_key, _ in sorted_cache[:entries_to_remove]:
             del _rag_cache[old_key]
 
 def get_redis_conversation_client():
@@ -1577,7 +1592,9 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
     
     if query_hash in _rag_cache:
         cached_result, timestamp = _rag_cache[query_hash]
-        if current_time - timestamp < RAG_CACHE_TTL:
+        cache_settings = get_rag_cache_settings()
+        cache_ttl = cache_settings['ttl']
+        if current_time - timestamp < cache_ttl:
             print(f"[DEBUG] handle_rag_query: Using cached result for query")
             return cached_result
         else:
@@ -1704,11 +1721,13 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
     # Retrieve relevant documents - optimized for performance
     # IMPORTANT: Milvus with COSINE distance returns lower scores for more similar vectors
     # Score range: 0 (identical) to 2 (opposite)
-    # Get similarity threshold from settings to avoid hardcoding
-    llm_settings = get_llm_settings()
-    rag_config = llm_settings.get('rag_settings', {})
-    SIMILARITY_THRESHOLD = rag_config.get('similarity_threshold', 1.5)  # Very inclusive for initial retrieval (let re-ranking filter)
-    NUM_DOCS = rag_config.get('num_docs_retrieve', 20)  # Configurable document retrieval count
+    # Get RAG settings from new centralized configuration
+    from app.core.rag_settings_cache import get_document_retrieval_settings, get_search_strategy_settings
+    doc_settings = get_document_retrieval_settings()
+    search_settings = get_search_strategy_settings()
+    
+    SIMILARITY_THRESHOLD = doc_settings.get('similarity_threshold', 1.5)
+    NUM_DOCS = doc_settings.get('num_docs_retrieve', 20)
     
     # Use LLM to expand queries for better recall
     queries_to_try = llm_expand_query(question, llm_cfg)
@@ -2038,11 +2057,11 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
             
             instruction = reranker.create_task_specific_instruction(task_type)
             
-            # Perform reranking with hybrid scoring
+            # Perform reranking with hybrid scoring (uses settings for rerank_weight)
             rerank_results = reranker.rerank_with_hybrid_score(
                 query=question,
                 documents=docs_to_rerank,
-                rerank_weight=0.7,  # Give 70% weight to Qwen reranker
+                rerank_weight=None,  # Use settings default
                 instruction=instruction
             )
             
@@ -2146,6 +2165,11 @@ Documents to score:
     # Sort by final score
     filtered_and_ranked.sort(key=lambda x: x[4], reverse=True)
     
+    # Get settings before using them
+    llm_settings = get_llm_settings()
+    rag_config = llm_settings.get('rag_settings', {})
+    max_final_docs = rag_config.get('max_final_docs', 8)
+    
     # Take top documents after reranking, but ensure diversity
     filtered_docs = []
     seen_content_hashes = set()
@@ -2159,7 +2183,6 @@ Documents to score:
             seen_content_hashes.add(content_hash)
             filtered_docs.append(doc)
             
-        max_final_docs = rag_config.get('max_final_docs', 8)
         if len(filtered_docs) >= max_final_docs:  # Take up to configurable number of diverse documents
             break
     
@@ -2169,9 +2192,7 @@ Documents to score:
     context = "\n\n".join([doc.page_content for doc in filtered_docs])
     
     # Extract sources with collection information and content
-    # Get content limits from settings to avoid hardcoding
-    llm_settings = get_llm_settings()
-    rag_config = llm_settings.get('rag_settings', {})
+    # Get content limits from settings (already loaded above)
     content_preview_limit = rag_config.get('content_preview_limit', 500)
     
     sources = []
@@ -3677,7 +3698,7 @@ def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> 
         if tool_name == "knowledge_search":
             # Import and call RAG service
             import asyncio
-            from app.mcp_services.rag_mcp_service import execute_rag_search
+            from app.mcp_services.rag_mcp_service import execute_rag_search, execute_rag_search_sync
             
             # Extract parameters with defaults
             query = parameters.get('query', '')
@@ -3687,38 +3708,16 @@ def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> 
             
             # Execute RAG search
             try:
+                # Try to get the running loop
                 loop = asyncio.get_running_loop()
-                # Run in thread if in async context
-                import threading
-                result_container = {'result': None, 'exception': None}
-                
-                def run_search():
-                    try:
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        result = new_loop.run_until_complete(
-                            execute_rag_search(query, collections, max_documents, include_content)
-                        )
-                        result_container['result'] = result
-                        new_loop.close()
-                    except Exception as e:
-                        result_container['exception'] = e
-                
-                thread = threading.Thread(target=run_search)
-                thread.start()
-                thread.join(timeout=30.0)  # 30 second timeout for RAG search
-                
-                if thread.is_alive():
-                    logger.error("RAG search timed out after 30 seconds")
-                    result_container['exception'] = Exception("RAG search operation timed out")
-                
-                if result_container['exception']:
-                    raise result_container['exception']
-                    
-                return result_container['result']
+                logger.info("RAG search: Running in async context, using sync version")
+                # If we're in an async context, use the sync version directly
+                # This avoids the thread/event loop issues
+                return execute_rag_search_sync(query, collections, max_documents, include_content)
                 
             except RuntimeError:
-                # No event loop running, safe to call directly
+                # No event loop running, safe to call async version
+                logger.info("RAG search: No event loop, using asyncio.run")
                 return asyncio.run(execute_rag_search(query, collections, max_documents, include_content))
                 
         else:

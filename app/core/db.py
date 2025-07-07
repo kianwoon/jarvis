@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, JSON, TIMESTAMP, text, Boolean, ForeignKey, func, Float
+from sqlalchemy import create_engine, Column, Integer, String, JSON, TIMESTAMP, text, Boolean, ForeignKey, func, Float, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from app.core.config import get_settings
@@ -197,6 +197,11 @@ class AutomationWorkflow(Base):
     created_by = Column(String(255), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Unique constraint on workflow name per user to prevent duplicates
+    __table_args__ = (
+        UniqueConstraint('name', 'created_by', name='uq_workflow_name_per_user'),
+    )
     
     # Relationships
     executions = relationship("AutomationExecution", back_populates="workflow", cascade="all, delete-orphan")

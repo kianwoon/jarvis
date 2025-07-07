@@ -880,6 +880,8 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
   const [executionLogs, setExecutionLogs] = useState<any[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isAutoSaving, setIsAutoSaving] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveTimeoutRef, setSaveTimeoutRef] = useState<NodeJS.Timeout | null>(null);
   
   // I/O Display states
   const [showAllIO, setShowAllIO] = useState(false);
@@ -3086,8 +3088,21 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     });
   };
 
-  // Save workflow
-  const handleSave = async () => {
+  // Internal save function (actual save logic)
+  const performSave = async () => {
+    // Prevent concurrent saves
+    if (isSaving || isAutoSaving) {
+      console.log('Save already in progress, skipping...');
+      return;
+    }
+
+    // Validate workflow name before saving
+    if (!currentWorkflowName || currentWorkflowName.trim() === '' || currentWorkflowName === 'New Workflow') {
+      setExecutionError('Please provide a workflow name before saving');
+      return;
+    }
+    
+    setIsSaving(true);
     console.log('=== SAVE WORKFLOW START ===');
     console.log('Current nodes:', nodes.length);
     console.log('Current edges:', edges.length);
@@ -3129,24 +3144,30 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       const enhancedCacheNodeEdges = enhancedEdges.filter(edge => 
         cacheNodes.some(n => n.id === edge.source || n.id === edge.target)
       );
-      console.log('🔍 [CACHE DEBUG] Enhanced edges:', enhancedEdges);
       console.log('🔍 [CACHE DEBUG] Enhanced CacheNode edges:', enhancedCacheNodeEdges);
       
       const workflowData = {
         name: currentWorkflowName || 'Untitled Workflow',
-        description: 'Visual workflow created with custom editor',
+        description: `Enhanced automation workflow with ${nodes.length} nodes and ${enhancedEdges.length} connections`,
         langflow_config: {
           nodes: transformedNodes,
           edges: enhancedEdges,
           execution_sequence: executionSequence,
           node_relationships: nodeRelationships,
-          connectivity_type: '4-way',
-          version: '2.0'
+          workflow_type: workflowType || 'agent_based',
+          version: "2.0",
+          metadata: {
+            created_at: new Date().toISOString(),
+            total_nodes: transformedNodes.length,
+            total_edges: enhancedEdges.length,
+            node_types: [...new Set(transformedNodes.map(n => n.data?.type || n.type))],
+            has_cache_nodes: transformedCacheNodes.length > 0,
+            cache_node_count: transformedCacheNodes.length
+          }
         },
         is_active: true
       };
       
-      console.log('Workflow data to save:', workflowData);
       console.log('Langflow config nodes count:', transformedNodes.length);
       console.log('Langflow config edges count:', enhancedEdges.length);
       
@@ -3188,7 +3209,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           console.log('New workflow created with ID:', result.id);
         }
         
-        if (onSave) onSave(workflowData);
+        if (onSave) onSave(result);
         // Don't close the editor - let user continue editing
         setSaveSuccess(true);
         // Reset unsaved changes flag after successful save
@@ -3209,9 +3230,37 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       } else {
         setExecutionError(`Failed to save workflow: ${error.message}`);
       }
+    } finally {
+      setIsSaving(false);
     }
     console.log('=== SAVE WORKFLOW END ===');
   };
+
+  // Debounced save function (prevents rapid clicking)
+  const handleSave = useCallback(() => {
+    // Clear any existing timeout
+    if (saveTimeoutRef) {
+      clearTimeout(saveTimeoutRef);
+    }
+    
+    // Set new timeout for debouncing (500ms delay)
+    const timeoutId = setTimeout(() => {
+      performSave();
+      setSaveTimeoutRef(null);
+    }, 500);
+    
+    setSaveTimeoutRef(timeoutId);
+    console.log('Save scheduled with 500ms delay...');
+  }, [saveTimeoutRef]);
+  
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef) {
+        clearTimeout(saveTimeoutRef);
+      }
+    };
+  }, [saveTimeoutRef]);
 
   // Execute workflow with streaming support
   const handleExecute = async () => {
@@ -3811,9 +3860,14 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               </IconButton>
             </Tooltip>
             
-            <Tooltip title="Save Workflow">
-              <IconButton onClick={handleSave} size="small">
-                <SaveIcon />
+            <Tooltip title={isSaving ? "Saving workflow..." : "Save Workflow"}>
+              <IconButton 
+                onClick={handleSave} 
+                size="small"
+                disabled={isSaving || isAutoSaving}
+                color={isSaving ? 'info' : 'default'}
+              >
+                {isSaving ? <CircularProgress size={20} /> : <SaveIcon />}
               </IconButton>
             </Tooltip>
             
@@ -3987,8 +4041,14 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               <Button onClick={() => onLayout()} variant="outlined" size="small">
                 Auto Layout
               </Button>
-              <Button onClick={handleSave} variant="contained" size="small" startIcon={<SaveIcon />}>
-                Save Workflow
+              <Button 
+                onClick={handleSave} 
+                variant="contained" 
+                size="small" 
+                startIcon={isSaving ? <CircularProgress size={16} /> : <SaveIcon />}
+                disabled={isSaving || isAutoSaving}
+              >
+                {isSaving ? 'Saving...' : 'Save Workflow'}
               </Button>
               <Button onClick={onClose} variant="outlined" size="small">
                 Close

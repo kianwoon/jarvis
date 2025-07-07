@@ -15,6 +15,21 @@ logger = logging.getLogger(__name__)
 def register_rag_mcp_tool():
     """Register RAG search as an MCP tool"""
     
+    # Get available collections for the description
+    from app.core.collection_registry_cache import get_all_collections
+    collections_list = []
+    try:
+        collections = get_all_collections()
+        if collections:
+            collections_list = [f"{c.get('collection_name', '')}" for c in collections]
+    except Exception as e:
+        logger.warning(f"Could not fetch collections for tool description: {e}")
+    
+    # Build collections description
+    collections_desc = "Optional: Specific collections to search. If not provided, auto-detects best collections."
+    if collections_list:
+        collections_desc += f" Available collections: {', '.join(collections_list)}"
+    
     db = SessionLocal()
     try:
         # Check if tool already exists
@@ -35,7 +50,7 @@ def register_rag_mcp_tool():
                     "collections": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional: Specific collections to search. If not provided, auto-detects best collections"
+                        "description": collections_desc
                     },
                     "max_documents": {
                         "type": "integer",

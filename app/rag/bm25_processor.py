@@ -26,16 +26,23 @@ class BM25Processor:
     Enhanced BM25 processor that integrates with existing Milvus infrastructure
     """
     
-    def __init__(self, k1: float = 1.2, b: float = 0.75):
+    def __init__(self, k1: float = None, b: float = None):
         """
-        Initialize BM25 processor with standard parameters
+        Initialize BM25 processor with configurable parameters
         
         Args:
-            k1: Controls term frequency saturation (typically 1.2-2.0)
-            b: Controls document length normalization (typically 0.75)
+            k1: Controls term frequency saturation (typically 1.2-2.0) - uses settings if None
+            b: Controls document length normalization (typically 0.75) - uses settings if None
         """
-        self.k1 = k1
-        self.b = b
+        # Load from settings if not provided
+        if k1 is None or b is None:
+            from app.core.rag_settings_cache import get_bm25_settings
+            bm25_settings = get_bm25_settings()
+            self.k1 = k1 if k1 is not None else bm25_settings.get('k1', 1.2)
+            self.b = b if b is not None else bm25_settings.get('b', 0.75)
+        else:
+            self.k1 = k1
+            self.b = b
         
         # Enhanced stop words for better keyword extraction
         self.stop_words = {

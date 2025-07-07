@@ -741,17 +741,31 @@ class AgentWorkflowExecutor:
         if not query and input_data and trigger_nodes:
             # If we have trigger nodes and special trigger input format
             if input_data.get("trigger_data") is not None:
-                trigger_data = input_data.get("trigger_data", {})
-                query_params = input_data.get("query_params", {})
-                headers = input_data.get("headers", {})
+                # Use enhanced message extraction if available
+                extracted_message = input_data.get("message", "")
+                formatted_query = input_data.get("formatted_query", "")
                 
-                # Construct query from trigger data
-                if trigger_data:
-                    query = f"Process the external trigger data: {json.dumps(trigger_data, indent=2)}"
-                elif query_params:
-                    query = f"Process the query parameters: {json.dumps(query_params, indent=2)}"
+                # Prioritize formatted query, then message, then fallback to old behavior
+                if formatted_query:
+                    query = formatted_query
+                    logger.info(f"[TRIGGER] Using formatted query from trigger: {len(query)} chars")
+                elif extracted_message:
+                    query = extracted_message
+                    logger.info(f"[TRIGGER] Using extracted message from trigger: {len(query)} chars")
                 else:
-                    query = "Process external trigger request"
+                    # Fallback to legacy trigger data processing for backward compatibility
+                    trigger_data = input_data.get("trigger_data", {})
+                    query_params = input_data.get("query_params", {})
+                    headers = input_data.get("headers", {})
+                    
+                    # Construct query from trigger data (legacy)
+                    if trigger_data:
+                        query = f"Process the external trigger data: {json.dumps(trigger_data, indent=2)}"
+                    elif query_params:
+                        query = f"Process the query parameters: {json.dumps(query_params, indent=2)}"
+                    else:
+                        query = "Process external trigger request"
+                    logger.info(f"[TRIGGER] Using legacy trigger data processing")
             else:
                 # Standard input data processing
                 query = f"Process the following data: {json.dumps(input_data, indent=2)}"
@@ -4036,21 +4050,28 @@ Please provide:
             
             logger.info(f"[AGGREGATOR] Processing {len(agent_outputs)} agent outputs")
             
+            # Apply security validation
+            from aggregator_node_critical_fixes import AggregatorNodeSecurityFixes
+            is_valid, error_message = AggregatorNodeSecurityFixes.validate_input_limits(agent_outputs)
+            if not is_valid:
+                logger.error(f"[AGGREGATOR] Security validation failed: {error_message}")
+                return {"error": f"Input validation failed: {error_message}"}
+            
             # Apply max_inputs limit if specified
             if max_inputs > 0 and len(agent_outputs) > max_inputs:
                 agent_outputs = agent_outputs[:max_inputs]
                 logger.info(f"[AGGREGATOR] Limited inputs to {max_inputs} items")
             
-            # Pre-process outputs for quality scoring
+            # Pre-process outputs for quality scoring with security
             processed_outputs = []
             for i, output in enumerate(agent_outputs):
-                processed_output = self._analyze_output_quality(output, quality_weights, i)
+                processed_output = AggregatorNodeSecurityFixes.safe_analyze_output_quality(output, quality_weights, i)
                 processed_outputs.append(processed_output)
             
-            # Apply confidence threshold filtering
+            # Apply confidence threshold filtering with validation
             filtered_outputs = [
                 output for output in processed_outputs 
-                if output.get("confidence_score", 0) >= confidence_threshold
+                if AggregatorNodeSecurityFixes.validate_confidence_score(output.get("confidence_score", 0)) >= confidence_threshold
             ]
             
             if not filtered_outputs:
@@ -4068,12 +4089,12 @@ Please provide:
             
             # Apply deduplication if enabled
             if deduplication_enabled:
-                filtered_outputs = self._deduplicate_outputs(filtered_outputs, similarity_threshold)
+                filtered_outputs = await self._deduplicate_outputs(filtered_outputs, similarity_threshold)
                 logger.info(f"[AGGREGATOR] After deduplication: {len(filtered_outputs)} outputs remain")
             
             # Apply aggregation strategy
             if aggregation_strategy == "semantic_merge":
-                result = self._semantic_merge_outputs(filtered_outputs, semantic_analysis, preserve_structure)
+                result = await self._semantic_merge_outputs(filtered_outputs, semantic_analysis, preserve_structure)
             elif aggregation_strategy == "weighted_vote":
                 result = self._weighted_vote_outputs(filtered_outputs, quality_weights)
             elif aggregation_strategy == "consensus_ranking":
@@ -4094,7 +4115,7 @@ Please provide:
                 result = self._structured_fusion_outputs(filtered_outputs, preserve_structure)
             else:
                 logger.warning(f"[AGGREGATOR] Unknown strategy {aggregation_strategy}, falling back to semantic_merge")
-                result = self._semantic_merge_outputs(filtered_outputs, semantic_analysis, preserve_structure)
+                result = await self._semantic_merge_outputs(filtered_outputs, semantic_analysis, preserve_structure)
             
             # Apply conflict resolution
             if conflict_resolution != "include_all_perspectives":
@@ -4204,8 +4225,8 @@ Please provide:
                 "error": str(e)
             }
     
-    def _deduplicate_outputs(self, outputs: List[Dict[str, Any]], similarity_threshold: float) -> List[Dict[str, Any]]:
-        """Remove duplicate or highly similar outputs"""
+    async def _deduplicate_outputs(self, outputs: List[Dict[str, Any]], similarity_threshold: float) -> List[Dict[str, Any]]:
+        """Remove duplicate or highly similar outputs with AI-powered similarity analysis"""
         try:
             if len(outputs) <= 1:
                 return outputs
@@ -4218,23 +4239,80 @@ Please provide:
                 for existing in unique_outputs:
                     existing_text = existing.get("text", "").lower().strip()
                     
-                    # Simple similarity check (in real implementation would use embeddings)
+                    # Simple exact match check first
                     if current_text == existing_text:
                         is_duplicate = True
                         break
                     
-                    # Check substring similarity
+                    # Use basic word overlap similarity
                     if len(current_text) > 0 and len(existing_text) > 0:
-                        overlap = len(set(current_text.split()) & set(existing_text.split()))
-                        similarity = overlap / max(len(set(current_text.split())), len(set(existing_text.split())))
+                        current_words = set(current_text.split())
+                        existing_words = set(existing_text.split())
                         
-                        if similarity >= similarity_threshold:
-                            # Keep the one with higher confidence
-                            if output.get("confidence_score", 0) <= existing.get("confidence_score", 0):
-                                is_duplicate = True
-                                break
-                            else:
-                                unique_outputs.remove(existing)
+                        if len(current_words) > 5 and len(existing_words) > 5:  # Only for substantial text
+                            overlap = len(current_words & existing_words)
+                            total_unique = len(current_words | existing_words)
+                            similarity = overlap / total_unique if total_unique > 0 else 0
+                            
+                            # For high similarity, use AI to make final decision
+                            if similarity >= (similarity_threshold * 0.8):  # Pre-filter with lower threshold
+                                try:
+                                    # Use AI for semantic similarity analysis
+                                    from app.core.langgraph_agents_cache import get_agent_by_role
+                                    analysis_agent = get_agent_by_role("analysis")
+                                    
+                                    if analysis_agent and len(current_text) > 100 and len(existing_text) > 100:
+                                        similarity_prompt = f"""Please analyze if these two text passages are semantically similar or duplicates.
+
+Text A: {current_text[:500]}...
+
+Text B: {existing_text[:500]}...
+
+Consider:
+1. Core meaning and intent
+2. Factual content overlap
+3. Different phrasings of same information
+
+Respond with just: SIMILAR or DIFFERENT"""
+
+                                        from app.langchain.dynamic_agent_system import DynamicMultiAgentSystem
+                                        agent_system = DynamicMultiAgentSystem(
+                                            agents=[analysis_agent],
+                                            workflow_id=None,
+                                            execution_id="similarity_check"
+                                        )
+                                        
+                                        async for response in agent_system.arun(
+                                            query=similarity_prompt,
+                                            workflow_state=None,
+                                            execution_trace=None,
+                                            detailed_response=False
+                                        ):
+                                            if response.get("type") == "agent_output":
+                                                ai_result = response.get("output", "").strip().upper()
+                                                if "SIMILAR" in ai_result:
+                                                    logger.info(f"[AGGREGATOR] AI detected semantic similarity for deduplication")
+                                                    similarity = similarity_threshold + 0.1  # Force similarity above threshold
+                                                break
+                                                
+                                except Exception as e:
+                                    logger.debug(f"[AGGREGATOR] AI similarity check failed: {e}, using basic similarity")
+                            
+                            if similarity >= similarity_threshold:
+                                # Keep the one with higher confidence
+                                if output.get("confidence_score", 0) <= existing.get("confidence_score", 0):
+                                    is_duplicate = True
+                                    break
+                                else:
+                                    unique_outputs.remove(existing)
+                        else:
+                            # For short texts, use exact substring similarity
+                            if similarity >= similarity_threshold:
+                                if output.get("confidence_score", 0) <= existing.get("confidence_score", 0):
+                                    is_duplicate = True
+                                    break
+                                else:
+                                    unique_outputs.remove(existing)
                 
                 if not is_duplicate:
                     unique_outputs.append(output)
@@ -4245,8 +4323,8 @@ Please provide:
             logger.error(f"[AGGREGATOR] Error in deduplication: {e}")
             return outputs
     
-    def _semantic_merge_outputs(self, outputs: List[Dict[str, Any]], semantic_analysis: bool, preserve_structure: bool) -> str:
-        """Advanced semantic merging of outputs"""
+    async def _semantic_merge_outputs(self, outputs: List[Dict[str, Any]], semantic_analysis: bool, preserve_structure: bool) -> str:
+        """Advanced semantic merging of outputs with AI support"""
         try:
             if not outputs:
                 return ""
@@ -4257,8 +4335,62 @@ Please provide:
             # Sort by confidence score
             sorted_outputs = sorted(outputs, key=lambda x: x.get("confidence_score", 0), reverse=True)
             
-            # For now, implement intelligent concatenation
-            # In full implementation, this would use AI for semantic fusion
+            # Use AI for semantic fusion if semantic_analysis is enabled and we have multiple high-quality outputs
+            if semantic_analysis and len(sorted_outputs) > 1:
+                try:
+                    # Get an analysis agent for semantic fusion
+                    from app.core.langgraph_agents_cache import get_agent_by_role
+                    analysis_agent = get_agent_by_role("analysis")
+                    
+                    if analysis_agent:
+                        # Prepare input texts for semantic fusion
+                        input_texts = []
+                        for i, output in enumerate(sorted_outputs):
+                            confidence = output.get("confidence_score", 0)
+                            text = output.get("text", "")
+                            input_texts.append(f"Source {i+1} (confidence: {confidence:.2f}):\n{text}")
+                        
+                        # Create fusion prompt
+                        fusion_prompt = f"""Please analyze and semantically merge the following {len(input_texts)} text sources into a coherent, comprehensive result. 
+
+Focus on:
+1. Identifying common themes and consolidating overlapping information
+2. Resolving any contradictions by noting them or prioritizing higher-confidence sources
+3. Creating a unified narrative that preserves the most important information
+4. Maintaining factual accuracy while improving coherence
+
+Input Sources:
+{chr(10).join(input_texts)}
+
+Please provide a well-structured, comprehensive merge that represents the best synthesis of all sources."""
+
+                        # Use the agent system for semantic fusion
+                        from app.langchain.dynamic_agent_system import DynamicMultiAgentSystem
+                        agent_system = DynamicMultiAgentSystem(
+                            agents=[analysis_agent],
+                            workflow_id=None,
+                            execution_id="semantic_merge"
+                        )
+                        
+                        # Execute semantic fusion
+                        async for response in agent_system.arun(
+                            query=fusion_prompt,
+                            workflow_state=None,
+                            execution_trace=None,
+                            detailed_response=False
+                        ):
+                            if response.get("type") == "agent_output":
+                                ai_merged_result = response.get("output", "")
+                                if ai_merged_result and len(ai_merged_result.strip()) > 50:
+                                    logger.info(f"[AGGREGATOR] Successfully used AI for semantic fusion")
+                                    return ai_merged_result
+                        
+                        logger.warning(f"[AGGREGATOR] AI semantic fusion failed, falling back to basic merge")
+                        
+                except Exception as e:
+                    logger.warning(f"[AGGREGATOR] AI semantic fusion error: {e}, falling back to basic merge")
+            
+            # Fallback to intelligent concatenation
             merged_sections = []
             
             for i, output in enumerate(sorted_outputs):

@@ -239,7 +239,7 @@ class QwenReranker:
         query: str,
         documents: List[Tuple[any, float]],
         top_k: Optional[int] = None,
-        rerank_weight: float = 0.7,
+        rerank_weight: Optional[float] = None,
         instruction: Optional[str] = None
     ) -> List[RerankResult]:
         """
@@ -257,6 +257,12 @@ class QwenReranker:
         """
         # Get reranking results
         results = self.rerank(query, documents, instruction=instruction)
+        
+        # Get rerank weight from settings if not provided
+        if rerank_weight is None:
+            from app.core.rag_settings_cache import get_reranking_settings
+            rerank_settings = get_reranking_settings()
+            rerank_weight = rerank_settings.get('rerank_weight', 0.7)
         
         # Calculate hybrid scores
         original_weight = 1 - rerank_weight

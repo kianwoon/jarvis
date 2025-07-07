@@ -330,154 +330,7 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
     console.log(`AgentNode ${id} - Status: ${executionData.status}, Class: ${statusInfo.nodeClass}, isExecuting: ${isExecuting}`);
   }, [executionData.status, statusInfo.nodeClass, isExecuting]);
   
-  // Removed JavaScript animation loop - now using CSS animations like ParallelNode
-  
-  // Calculate animated box-shadow based on frame
-  const getAnimatedBoxShadow = () => {
-    if (!isExecuting) return 'none';
-    
-    // Convert frame (0-100) to radians for smooth sine wave
-    const progress = animationFrame / 100;
-    const radians = progress * Math.PI * 2;
-    
-    // Calculate ring sizes using sine wave for smooth pulsing - thinner rings
-    const ring1Size = 5 + Math.sin(radians) * 3; // Inner ring (2-8px)
-    const ring2Size = 12 + Math.sin(radians + 0.5) * 5; // (7-17px)
-    const ring3Size = 22 + Math.sin(radians + 1) * 8; // (14-30px)
-    const ring4Size = 35 + Math.sin(radians + 1.5) * 12; // (23-47px)
-    const ring5Size = 52 + Math.sin(radians + 2) * 15; // Outer ring (37-67px)
-    
-    // Calculate opacity for each ring - more subtle
-    const ring1Opacity = 0.5 + Math.sin(radians) * 0.2;
-    const ring2Opacity = 0.3 + Math.sin(radians + 0.5) * 0.15;
-    const ring3Opacity = 0.2 + Math.sin(radians + 1) * 0.1;
-    const ring4Opacity = 0.12 + Math.sin(radians + 1.5) * 0.08;
-    const ring5Opacity = 0.06 + Math.sin(radians + 2) * 0.04;
-    
-    // Create a continuous, flowing gradient like Siri
-    const colorProgress = (progress * 2) % 1; // Continuous color flow
-    
-    // HSL-based color generation for smooth spectrum transitions
-    const getColor = (offset = 0) => {
-      const adjustedProgress = (colorProgress + offset) % 1;
-      
-      // Use HSL for smooth rainbow transitions
-      // Hue: 0-360 degrees for full spectrum
-      // Add sine wave modulation for more organic movement
-      const hue = (adjustedProgress * 360 + Math.sin(progress * Math.PI * 4) * 30) % 360;
-      
-      // Saturation: High but with slight variation for shimmer
-      const saturation = 85 + Math.sin(progress * Math.PI * 6 + offset * Math.PI) * 15;
-      
-      // Lightness: Bright with subtle pulsing
-      const lightness = 55 + Math.sin(progress * Math.PI * 3 + offset * Math.PI * 2) * 10;
-      
-      // Convert HSL to RGB
-      const h = hue / 360;
-      const s = saturation / 100;
-      const l = lightness / 100;
-      
-      let r: number, g: number, b: number;
-      
-      if (s === 0) {
-        r = g = b = l; // achromatic
-      } else {
-        const hue2rgb = (p: number, q: number, t: number) => {
-          if (t < 0) t += 1;
-          if (t > 1) t -= 1;
-          if (t < 1/6) return p + (q - p) * 6 * t;
-          if (t < 1/2) return q;
-          if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-          return p;
-        };
-        
-        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-        const p = 2 * l - q;
-        
-        r = hue2rgb(p, q, h + 1/3);
-        g = hue2rgb(p, q, h);
-        b = hue2rgb(p, q, h - 1/3);
-      }
-      
-      return {
-        r: Math.round(r * 255),
-        g: Math.round(g * 255),
-        b: Math.round(b * 255)
-      };
-    };
-    
-    // Get colors for each ring with offset for iridescent variety
-    const color1 = getColor(0);
-    const color2 = getColor(0.15);  // Closer spacing for smoother gradient
-    const color3 = getColor(0.3);
-    const color4 = getColor(0.45);
-    const color5 = getColor(0.6);
-    const color6 = getColor(0.75);  // Extra color for inner glow
-    const color7 = getColor(0.9);   // Extra color for outer glow
-    
-    // Create multiple shadow layers for iridescent glow effect
-    return `
-      0 0 0 ${ring1Size}px rgba(${color1.r}, ${color1.g}, ${color1.b}, ${ring1Opacity}),
-      0 0 0 ${ring2Size}px rgba(${color2.r}, ${color2.g}, ${color2.b}, ${ring2Opacity}),
-      0 0 0 ${ring3Size}px rgba(${color3.r}, ${color3.g}, ${color3.b}, ${ring3Opacity}),
-      0 0 0 ${ring4Size}px rgba(${color4.r}, ${color4.g}, ${color4.b}, ${ring4Opacity}),
-      0 0 0 ${ring5Size}px rgba(${color5.r}, ${color5.g}, ${color5.b}, ${ring5Opacity}),
-      0 0 ${8 + Math.sin(radians * 2) * 4}px rgba(${color6.r}, ${color6.g}, ${color6.b}, 0.4),
-      0 0 ${15 + Math.sin(radians * 1.5) * 6}px rgba(${color7.r}, ${color7.g}, ${color7.b}, 0.25),
-      0 0 ${25 + Math.sin(radians) * 10}px rgba(${color1.r}, ${color1.g}, ${color1.b}, 0.15),
-      inset 0 0 ${4 + Math.sin(radians * 3) * 2}px rgba(${color3.r}, ${color3.g}, ${color3.b}, 0.2)
-    `;
-  };
-  
-  // Calculate animated scale
-  const getAnimatedScale = () => {
-    if (!isExecuting) return 1;
-    const progress = animationFrame / 100;
-    const radians = progress * Math.PI * 2;
-    return 1 + Math.sin(radians) * 0.02; // 0.98-1.02 scale
-  };
-  
-  // Get animated border color
-  const getAnimatedBorderColor = () => {
-    if (!isExecuting) return '#9c27b0';
-    
-    const progress = animationFrame / 100;
-    const colorProgress = (progress * 2) % 1; // Match the box-shadow color flow
-    
-    // Use HSL for smooth spectrum transitions - same as box-shadow
-    const hue = (colorProgress * 360 + Math.sin(progress * Math.PI * 4) * 30) % 360;
-    const saturation = 90 + Math.sin(progress * Math.PI * 5) * 10; // Slightly higher saturation for border
-    const lightness = 50 + Math.sin(progress * Math.PI * 3) * 10;
-    
-    // Convert HSL to RGB
-    const h = hue / 360;
-    const s = saturation / 100;
-    const l = lightness / 100;
-    
-    let r: number, g: number, b: number;
-    
-    if (s === 0) {
-      r = g = b = l;
-    } else {
-      const hue2rgb = (p: number, q: number, t: number) => {
-        if (t < 0) t += 1;
-        if (t > 1) t -= 1;
-        if (t < 1/6) return p + (q - p) * 6 * t;
-        if (t < 1/2) return q;
-        if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-        return p;
-      };
-      
-      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      const p = 2 * l - q;
-      
-      r = hue2rgb(p, q, h + 1/3);
-      g = hue2rgb(p, q, h);
-      b = hue2rgb(p, q, h - 1/3);
-    }
-    
-    return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
-  };
+  // Animation now handled entirely by CSS - removed JavaScript animation code
 
   // Helper function to get badge styling based on execution status
   const getBadgeColor = (status: string) => {
@@ -1866,12 +1719,12 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
                   border: '1px solid rgba(0,0,0,0.1)'
                 }}
                 className="accordion-scroll-container"
+                onPointerDown={(e) => e.stopPropagation()}
                 onWheel={(e) => {
-                  // Prevent ReactFlow zoom and handle scroll manually
-                  e.preventDefault();
+                  // Stop propagation to prevent ReactFlow zoom
                   e.stopPropagation();
                   
-                  // Manual scroll
+                  // Manual scroll (avoid preventDefault for passive compatibility)
                   const container = e.currentTarget;
                   container.scrollTop += e.deltaY;
                 }}

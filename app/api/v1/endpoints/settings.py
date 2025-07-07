@@ -7,6 +7,7 @@ from app.core.embedding_settings_cache import reload_embedding_settings
 from app.core.iceberg_settings_cache import reload_iceberg_settings
 from app.core.mcp_tools_cache import reload_enabled_mcp_tools
 from app.core.large_generation_settings_cache import reload_large_generation_settings, validate_large_generation_config, merge_with_defaults
+from app.core.rag_settings_cache import reload_rag_settings
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
 import requests
@@ -96,7 +97,124 @@ def initialize_mcp_tables(db: Session = Depends(get_db)):
 def get_settings(category: str, db: Session = Depends(get_db)):
     settings_row = db.query(SettingsModel).filter(SettingsModel.category == category).first()
     if not settings_row:
+        # Return default settings for specific categories
+        if category == 'rag':
+            from app.core.rag_settings_cache import get_default_rag_settings
+            default_settings = get_default_rag_settings()
+            return {"category": category, "settings": default_settings}
+        elif category == 'large_generation':
+            from app.core.large_generation_settings_cache import DEFAULT_LARGE_GENERATION_CONFIG
+            # Flatten the nested structure for UI
+            flattened_settings = {
+                # Detection thresholds
+                "strong_number_threshold": DEFAULT_LARGE_GENERATION_CONFIG["detection_thresholds"]["strong_number_threshold"],
+                "medium_number_threshold": DEFAULT_LARGE_GENERATION_CONFIG["detection_thresholds"]["medium_number_threshold"],
+                "small_number_threshold": DEFAULT_LARGE_GENERATION_CONFIG["detection_thresholds"]["small_number_threshold"],
+                "min_items_for_chunking": DEFAULT_LARGE_GENERATION_CONFIG["detection_thresholds"]["min_items_for_chunking"],
+                # Scoring parameters
+                "numeric_score_weight": DEFAULT_LARGE_GENERATION_CONFIG["scoring_parameters"].get("numeric_score_weight", 0.5),
+                "keyword_score_weight": DEFAULT_LARGE_GENERATION_CONFIG["scoring_parameters"].get("keyword_score_weight", 0.3),
+                "pattern_score_weight": DEFAULT_LARGE_GENERATION_CONFIG["scoring_parameters"]["pattern_score_weight"],
+                "score_multiplier_for_chunks": DEFAULT_LARGE_GENERATION_CONFIG["scoring_parameters"]["score_multiplier"],
+                "chunking_bonus_multiplier": DEFAULT_LARGE_GENERATION_CONFIG["scoring_parameters"].get("chunking_bonus_multiplier", 1.5),
+                # Processing parameters
+                "items_per_chunk": DEFAULT_LARGE_GENERATION_CONFIG["processing_parameters"]["default_chunk_size"],
+                "target_chunk_count": DEFAULT_LARGE_GENERATION_CONFIG["processing_parameters"]["max_target_count"],
+                "time_per_chunk": DEFAULT_LARGE_GENERATION_CONFIG["processing_parameters"]["estimated_seconds_per_chunk"],
+                "base_time": DEFAULT_LARGE_GENERATION_CONFIG["processing_parameters"].get("base_time", 10),
+                "confidence_threshold": DEFAULT_LARGE_GENERATION_CONFIG["confidence_calculation"]["max_score_for_confidence"],
+                # Memory management
+                "redis_ttl": DEFAULT_LARGE_GENERATION_CONFIG["memory_management"]["redis_conversation_ttl"],
+                "max_messages": DEFAULT_LARGE_GENERATION_CONFIG["memory_management"]["max_redis_messages"],
+                "max_history_display": DEFAULT_LARGE_GENERATION_CONFIG["memory_management"]["conversation_history_display"],
+                "enable_memory_optimization": True,
+                # Keywords and patterns
+                "keywords": DEFAULT_LARGE_GENERATION_CONFIG["keywords_and_patterns"]["large_output_indicators"],
+                "regex_patterns": DEFAULT_LARGE_GENERATION_CONFIG["keywords_and_patterns"]["large_patterns"]
+            }
+            return {"category": category, "settings": flattened_settings}
+        elif category == 'langfuse':
+            # Return default langfuse settings
+            default_langfuse = {
+                "enabled": False,
+                "host": "https://cloud.langfuse.com",
+                "project_id": "",
+                "public_key": "",
+                "secret_key": "",
+                "langfuse_sample_rate": 1.0,
+                "debug_mode": False,
+                "flush_at": 15,
+                "flush_interval": 0.5,
+                "timeout": 30,
+                "s3_enabled": False,
+                "s3_bucket_name": "",
+                "s3_endpoint_url": "",
+                "s3_access_key_id": "",
+                "s3_secret_access_key": "",
+                "custom_model_definitions": {}
+            }
+            return {"category": category, "settings": default_langfuse}
         raise HTTPException(status_code=404, detail="Settings not found")
+    
+    # Special handling for large_generation to flatten nested structure for UI
+    if category == 'large_generation' and settings_row.settings:
+        # Check if settings are in nested format
+        if "detection_thresholds" in settings_row.settings:
+            # Convert nested structure to flattened structure for UI
+            flattened_settings = {
+                # Detection thresholds
+                "strong_number_threshold": settings_row.settings.get("detection_thresholds", {}).get("strong_number_threshold", 30),
+                "medium_number_threshold": settings_row.settings.get("detection_thresholds", {}).get("medium_number_threshold", 20),
+                "small_number_threshold": settings_row.settings.get("detection_thresholds", {}).get("small_number_threshold", 20),
+                "min_items_for_chunking": settings_row.settings.get("detection_thresholds", {}).get("min_items_for_chunking", 20),
+                # Scoring parameters
+                "numeric_score_weight": settings_row.settings.get("scoring_parameters", {}).get("numeric_score_weight", 0.5),
+                "keyword_score_weight": settings_row.settings.get("scoring_parameters", {}).get("keyword_score_weight", 0.3),
+                "pattern_score_weight": settings_row.settings.get("scoring_parameters", {}).get("pattern_score_weight", 2),
+                "score_multiplier_for_chunks": settings_row.settings.get("scoring_parameters", {}).get("score_multiplier", 15),
+                "chunking_bonus_multiplier": settings_row.settings.get("scoring_parameters", {}).get("chunking_bonus_multiplier", 1.5),
+                # Processing parameters
+                "items_per_chunk": settings_row.settings.get("processing_parameters", {}).get("default_chunk_size", 15),
+                "target_chunk_count": settings_row.settings.get("processing_parameters", {}).get("max_target_count", 500),
+                "time_per_chunk": settings_row.settings.get("processing_parameters", {}).get("estimated_seconds_per_chunk", 45),
+                "base_time": settings_row.settings.get("processing_parameters", {}).get("base_time", 10),
+                "confidence_threshold": settings_row.settings.get("confidence_calculation", {}).get("max_score_for_confidence", 5.0),
+                # Memory management
+                "redis_ttl": settings_row.settings.get("memory_management", {}).get("redis_conversation_ttl", 7 * 24 * 3600),
+                "max_messages": settings_row.settings.get("memory_management", {}).get("max_redis_messages", 50),
+                "max_history_display": settings_row.settings.get("memory_management", {}).get("conversation_history_display", 10),
+                "enable_memory_optimization": True,
+                # Keywords and patterns
+                "keywords": settings_row.settings.get("keywords_and_patterns", {}).get("large_output_indicators", []),
+                "regex_patterns": settings_row.settings.get("keywords_and_patterns", {}).get("large_patterns", [])
+            }
+            return {"category": category, "settings": flattened_settings}
+        else:
+            # Already in flattened format
+            return {"category": category, "settings": settings_row.settings}
+    
+    # Special handling for RAG settings to ensure proper migration
+    if category == 'rag' and settings_row:
+        from app.core.rag_settings_cache import get_default_rag_settings
+        settings = settings_row.settings.copy() if settings_row.settings else {}
+        
+        # Ensure collection_selection exists with all required fields
+        if 'collection_selection' not in settings:
+            settings['collection_selection'] = get_default_rag_settings()['collection_selection']
+        else:
+            # Merge with defaults to ensure all fields exist
+            default_collection_selection = get_default_rag_settings()['collection_selection']
+            settings['collection_selection'] = {
+                **default_collection_selection,
+                **settings.get('collection_selection', {})
+            }
+        
+        # Remove old collection_selection_rules if it exists
+        if 'collection_selection_rules' in settings:
+            del settings['collection_selection_rules']
+        
+        return {"category": category, "settings": settings}
+    
     return {"category": category, "settings": settings_row.settings}
 
 @router.put("/{category}")
@@ -153,8 +271,38 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save settings: {str(e)}")
     
-    # If updating LLM settings, reload cache
+    # If updating LLM settings, handle query_classifier properly and reload cache
     if category == 'llm':
+        # Ensure query_classifier is properly nested if present in top-level
+        if 'query_classifier' in update.settings and isinstance(update.settings['query_classifier'], dict):
+            # query_classifier is already nested, good
+            pass
+        else:
+            # Check if query_classifier fields are at top level and need to be nested
+            query_classifier_fields = [
+                'min_confidence_threshold', 'max_classifications', 'classifier_max_tokens',
+                'enable_hybrid_detection', 'confidence_decay_factor', 'pattern_combination_bonus',
+                'llm_direct_threshold', 'multi_agent_threshold', 'direct_execution_threshold',
+                'system_prompt'
+            ]
+            
+            # Extract query_classifier fields if they exist at top level
+            query_classifier_data = {}
+            for field in query_classifier_fields:
+                if field in settings_for_db:
+                    query_classifier_data[field] = settings_for_db[field]
+                    # Remove from top level
+                    del settings_for_db[field]
+            
+            # Add query_classifier as nested object if we found any fields
+            if query_classifier_data:
+                settings_for_db['query_classifier'] = query_classifier_data
+        
+        # Update the database row with the properly structured settings
+        settings_row.settings = settings_for_db
+        db.commit()
+        db.refresh(settings_row)
+        
         reload_llm_settings()
     
     # If updating storage settings, reload all related caches
@@ -162,6 +310,32 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         reload_vector_db_settings()
         reload_embedding_settings()
         reload_iceberg_settings()
+    
+    # If updating RAG settings, ensure proper structure and reload cache
+    if category == 'rag':
+        from app.core.rag_settings_cache import reload_rag_settings, get_default_rag_settings
+        
+        # Ensure collection_selection exists with all required fields
+        if 'collection_selection' not in settings_for_db:
+            settings_for_db['collection_selection'] = get_default_rag_settings()['collection_selection']
+        else:
+            # Merge with defaults to ensure all fields exist
+            default_collection_selection = get_default_rag_settings()['collection_selection']
+            settings_for_db['collection_selection'] = {
+                **default_collection_selection,
+                **settings_for_db.get('collection_selection', {})
+            }
+        
+        # Remove old collection_selection_rules if it exists
+        if 'collection_selection_rules' in settings_for_db:
+            del settings_for_db['collection_selection_rules']
+        
+        # Update the database with migrated settings
+        settings_row.settings = settings_for_db
+        db.commit()
+        db.refresh(settings_row)
+        
+        reload_rag_settings()
     
     # If updating MCP settings, handle special processing
     if category == 'mcp':
@@ -172,8 +346,49 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
     if category == 'large_generation':
         logger.info("Processing large generation settings")
         
+        # Convert flattened UI structure back to nested structure
+        nested_settings = {
+            "detection_thresholds": {
+                "strong_number_threshold": update.settings.get("strong_number_threshold", 30),
+                "medium_number_threshold": update.settings.get("medium_number_threshold", 20),
+                "small_number_threshold": update.settings.get("small_number_threshold", 20),
+                "min_items_for_chunking": update.settings.get("min_items_for_chunking", 20)
+            },
+            "scoring_parameters": {
+                "numeric_score_weight": update.settings.get("numeric_score_weight", 0.5),
+                "keyword_score_weight": update.settings.get("keyword_score_weight", 0.3),
+                "pattern_score_weight": update.settings.get("pattern_score_weight", 2),
+                "score_multiplier": update.settings.get("score_multiplier_for_chunks", 15),
+                "chunking_bonus_multiplier": update.settings.get("chunking_bonus_multiplier", 1.5),
+                "min_score_for_keywords": 3,
+                "min_score_for_medium_numbers": 2,
+                "default_comprehensive_items": 30,
+                "min_estimated_items": 10
+            },
+            "confidence_calculation": {
+                "max_score_for_confidence": update.settings.get("confidence_threshold", 5.0),
+                "max_number_for_confidence": 100.0
+            },
+            "processing_parameters": {
+                "default_chunk_size": update.settings.get("items_per_chunk", 15),
+                "max_target_count": update.settings.get("target_chunk_count", 500),
+                "estimated_seconds_per_chunk": update.settings.get("time_per_chunk", 45)
+            },
+            "memory_management": {
+                "redis_conversation_ttl": update.settings.get("redis_ttl", 7 * 24 * 3600),
+                "max_redis_messages": update.settings.get("max_messages", 50),
+                "max_memory_messages": 20,
+                "conversation_history_display": update.settings.get("max_history_display", 10)
+            },
+            "keywords_and_patterns": {
+                "large_output_indicators": update.settings.get("keywords", []),
+                "comprehensive_keywords": ["comprehensive", "detailed", "all", "many"],
+                "large_patterns": update.settings.get("regex_patterns", [])
+            }
+        }
+        
         # Merge with defaults to ensure all required fields exist
-        merged_settings = merge_with_defaults(update.settings)
+        merged_settings = merge_with_defaults(nested_settings)
         
         # Validate configuration
         is_valid, error_msg = validate_large_generation_config(merged_settings)
@@ -181,11 +396,11 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
             logger.error(f"Invalid large generation configuration: {error_msg}")
             raise HTTPException(status_code=400, detail=f"Invalid configuration: {error_msg}")
         
-        # Update the database with merged settings
-        settings_row.settings = merged_settings
+        # Store the flattened version for UI consistency
+        settings_row.settings = update.settings
         db.commit()
         
-        # Reload cache
+        # Reload cache with nested structure
         reload_large_generation_settings()
         logger.info("Large generation settings validated and cache reloaded")
     

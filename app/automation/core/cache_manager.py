@@ -69,7 +69,7 @@ class UniversalCacheManager:
                     "node": node,
                     "upstream": [],
                     "downstream": [],
-                    "config": node.get("data", {}).get("node", {})
+                    "config": node.get("data", {})
                 }
         
         # Second pass: analyze edges to determine relationships

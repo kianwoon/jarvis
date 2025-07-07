@@ -8,11 +8,15 @@ Auto-detects collections, performs hybrid search, returns structured results.
 
 import time
 import logging
+import hashlib
+import json as json_module
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 
 from app.core.llm_settings_cache import get_llm_settings
+from app.core.rag_settings_cache import get_collection_selection_settings, get_document_retrieval_settings
 from app.core.collection_registry_cache import get_all_collections
+from app.core.redis_client import get_redis_client
 from app.langchain.service import handle_rag_query
 
 logger = logging.getLogger(__name__)
@@ -21,7 +25,7 @@ class RAGSearchRequest(BaseModel):
     """Request model for RAG search"""
     query: str
     collections: Optional[List[str]] = None
-    max_documents: int = 8
+    max_documents: Optional[int] = None  # Will use settings default if not provided
     include_content: bool = True
 
 class RAGSearchResponse(BaseModel):
@@ -42,6 +46,55 @@ class RAGMCPService:
     def __init__(self):
         self.service_name = "rag_search"
         self.version = "1.0.0"
+        self.cache_prefix = "rag_mcp:"
+        self._redis_client = None
+    
+    def _get_cache_client(self):
+        """Get Redis client for caching"""
+        if self._redis_client is None:
+            self._redis_client = get_redis_client()
+        return self._redis_client
+    
+    def _generate_cache_key(self, query: str, collections: List[str], max_docs: int) -> str:
+        """Generate cache key from query parameters"""
+        # Create a deterministic hash of the query parameters
+        cache_data = {
+            "query": query.lower().strip(),
+            "collections": sorted(collections) if collections else [],
+            "max_docs": max_docs
+        }
+        cache_str = json_module.dumps(cache_data, sort_keys=True)
+        query_hash = hashlib.md5(cache_str.encode()).hexdigest()
+        return f"{self.cache_prefix}{query_hash}"
+    
+    def _get_cached_result(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Get cached result if available"""
+        client = self._get_cache_client()
+        if not client:
+            return None
+        
+        try:
+            cached_data = client.get(cache_key)
+            if cached_data:
+                logger.info(f"RAG MCP: Cache hit for key {cache_key}")
+                return json_module.loads(cached_data)
+        except Exception as e:
+            logger.warning(f"RAG MCP: Cache retrieval error: {e}")
+        
+        return None
+    
+    def _cache_result(self, cache_key: str, result: Dict[str, Any], ttl_hours: int):
+        """Cache the search result"""
+        client = self._get_cache_client()
+        if not client:
+            return
+        
+        try:
+            ttl_seconds = ttl_hours * 3600
+            client.setex(cache_key, ttl_seconds, json_module.dumps(result))
+            logger.info(f"RAG MCP: Cached result with key {cache_key}, TTL {ttl_hours}h")
+        except Exception as e:
+            logger.warning(f"RAG MCP: Cache storage error: {e}")
     
     async def search_documents(self, request: RAGSearchRequest) -> Dict[str, Any]:
         """
@@ -58,6 +111,31 @@ class RAGMCPService:
         try:
             logger.info(f"RAG MCP: Processing query: {request.query[:100]}...")
             
+            # Get performance settings for caching
+            from app.core.rag_settings_cache import get_performance_settings
+            perf_settings = get_performance_settings()
+            cache_enabled = perf_settings.get('enable_caching', True)
+            cache_ttl_hours = perf_settings.get('cache_ttl_hours', 2)
+            
+            # Check cache if enabled
+            cache_hit = False
+            if cache_enabled:
+                # Get max documents for cache key
+                doc_settings = get_document_retrieval_settings()
+                max_docs = request.max_documents or doc_settings.get('max_documents_mcp', 8)
+                
+                # Generate cache key before determining collections
+                temp_collections = request.collections or []
+                cache_key = self._generate_cache_key(request.query, temp_collections, max_docs)
+                
+                # Check cache
+                cached_result = self._get_cached_result(cache_key)
+                if cached_result:
+                    cache_hit = True
+                    cached_result['search_metadata']['cache_hit'] = True
+                    cached_result['search_metadata']['execution_time_ms'] = int((time.time() - start_time) * 1000)
+                    return self._format_jsonrpc_response(cached_result, None)
+            
             # Get collections to search
             collections_to_search = await self._determine_collections(
                 request.query, 
@@ -72,24 +150,35 @@ class RAGMCPService:
                 collection_strategy="specific" if request.collections else "auto"
             )
             
+            # Get max documents from settings if not provided
+            doc_settings = get_document_retrieval_settings()
+            max_docs = request.max_documents or doc_settings.get('max_documents_mcp', 8)
+            
             # Process and format results
             documents = self._format_documents(
                 sources, 
-                request.max_documents,
+                max_docs,
                 request.include_content
             )
             
             execution_time = int((time.time() - start_time) * 1000)
             
             # Build search metadata
+            from app.core.rag_settings_cache import get_search_strategy_settings, get_performance_settings
+            search_settings = get_search_strategy_settings()
+            perf_settings = get_performance_settings()
+            
             search_metadata = {
                 "vector_search_results": len(sources) if sources else 0,
-                "keyword_search_results": 0,  # Will be enhanced later
-                "hybrid_fusion_applied": True,
+                "keyword_search_results": len(sources) if sources else 0,  # Both contribute in hybrid search
+                "hybrid_fusion_applied": search_settings.get('search_strategy', 'auto') in ['auto', 'hybrid'],
                 "collections_auto_detected": not bool(request.collections),
-                "cache_hit": False,  # Will be enhanced with cache detection
+                "cache_hit": cache_hit,
                 "similarity_threshold_used": self._get_similarity_threshold(),
-                "search_strategy": "hybrid_vector_keyword"
+                "search_strategy": search_settings.get('search_strategy', 'auto'),
+                "semantic_weight": search_settings.get('semantic_weight', 0.7),
+                "keyword_weight": search_settings.get('keyword_weight', 0.3),
+                "caching_enabled": perf_settings.get('enable_caching', True)
             }
             
             response = RAGSearchResponse(
@@ -104,6 +193,12 @@ class RAGMCPService:
             )
             
             logger.info(f"RAG MCP: Found {len(documents)} documents in {execution_time}ms")
+            
+            # Cache the result if caching is enabled
+            if cache_enabled and not cache_hit:
+                # Regenerate cache key with actual collections searched
+                final_cache_key = self._generate_cache_key(request.query, collections_to_search, max_docs)
+                self._cache_result(final_cache_key, response.dict(), cache_ttl_hours)
             
             return self._format_jsonrpc_response(response.dict(), None)
             
@@ -146,48 +241,298 @@ class RAGMCPService:
         return await self._auto_detect_collections(query)
     
     async def _auto_detect_collections(self, query: str) -> List[str]:
-        """Auto-detect best collections for the query"""
+        """Auto-detect best collections for the query using LLM"""
+        # Get collection selection settings
+        selection_settings = get_collection_selection_settings()
+        
+        # Check if LLM selection is enabled
+        if not selection_settings.get('enable_llm_selection', True):
+            # Fallback to simple selection based on description overlap
+            return self._simple_collection_selection(query)
+        
+        # TEMPORARY: Add quick timeout check to prevent hanging
+        import asyncio
+        try:
+            # Use asyncio.wait_for to enforce a hard timeout
+            result = await asyncio.wait_for(
+                self._try_llm_selection(query, selection_settings),
+                timeout=10.0  # 10 second hard timeout for LLM selection
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.warning("RAG MCP: LLM selection timed out after 10s, using simple fallback")
+            return self._simple_collection_selection(query)
+    
+    async def _try_llm_selection(self, query: str, selection_settings: Dict) -> List[str]:
+        """Try LLM-based collection selection with proper error handling"""
         # Get available collections
+        collections = get_all_collections()
+        if not collections:
+            return selection_settings.get('fallback_collections', ["default_knowledge"])
+        
+        try:
+            # Check cache first if enabled
+            if selection_settings.get('cache_selections', True):
+                cache_key = f"{self.cache_prefix}collection_sel:{hashlib.md5(query.lower().encode()).hexdigest()}"
+                client = self._get_cache_client()
+                if client:
+                    cached = client.get(cache_key)
+                    if cached:
+                        logger.info(f"RAG MCP: Using cached collection selection for query")
+                        return json_module.loads(cached)
+            
+            # Format collections for prompt
+            collections_info = []
+            for coll in collections:
+                name = coll.get('collection_name', '')
+                desc = coll.get('description', 'No description')
+                doc_count = coll.get('document_count', 0)
+                collections_info.append(f"- {name}: {desc} ({doc_count} documents)")
+            
+            collections_text = "\n".join(collections_info)
+            
+            # Build prompt from template
+            prompt_template = selection_settings.get('selection_prompt_template', 
+                "Given the following query and available collections, determine which collections are most relevant to search:\n\nQuery: {query}\n\nAvailable Collections:\n{collections}\n\nReturn only the collection names that are relevant, separated by commas.")
+            
+            prompt = prompt_template.format(query=query, collections=collections_text)
+            logger.debug(f"RAG MCP: LLM selection prompt length: {len(prompt)} chars")
+            
+            # Make LLM call - use sync version in thread context
+            import asyncio
+            try:
+                # Check if we're in a thread with a new event loop (not the main loop)
+                import threading
+                if threading.current_thread() != threading.main_thread():
+                    logger.info("RAG MCP: Using sync LLM call (in thread context)")
+                    response = self._call_llm_for_selection_sync(prompt)
+                else:
+                    response = await self._call_llm_for_selection(prompt)
+            except Exception as e:
+                logger.warning(f"RAG MCP: Falling back to sync LLM call due to: {e}")
+                response = self._call_llm_for_selection_sync(prompt)
+            
+            # Parse response
+            selected = self._parse_llm_collection_response(response, collections)
+            
+            # Limit to max collections
+            max_collections = selection_settings.get('max_collections', 3)
+            selected = selected[:max_collections]
+            
+            # Cache the result if enabled
+            if selection_settings.get('cache_selections', True) and client and selected:
+                client.setex(cache_key, 3600, json_module.dumps(selected))  # Cache for 1 hour
+            
+            return selected if selected else selection_settings.get('fallback_collections', ["default_knowledge"])
+            
+        except Exception as e:
+            error_msg = str(e) if str(e) else f"Unknown error of type {type(e).__name__}"
+            logger.error(f"RAG MCP: LLM collection selection failed: {error_msg}")
+            return selection_settings.get('fallback_collections', ["default_knowledge"])
+    
+    async def _call_llm_for_selection(self, prompt: str) -> str:
+        """Make LLM call for collection selection"""
+        import httpx
+        import json
+        
+        # Get timeout from performance settings
+        from app.core.rag_settings_cache import get_performance_settings
+        perf_settings = get_performance_settings()
+        timeout_seconds = perf_settings.get('connection_timeout_s', 30)
+        
+        # Use Ollama directly like the rest of the system
+        from app.core.llm_settings_cache import get_llm_settings
+        llm_settings = get_llm_settings()
+        model_name = llm_settings.get("model", "qwen3:30b-a3b")
+        
+        llm_api_url = "http://localhost:11434/api/generate"
+        
+        # Use low temperature for more deterministic selection
+        payload = {
+            "model": model_name,
+            "prompt": prompt,
+            "stream": False,  # Get complete response at once
+            "options": {
+                "temperature": 0.3,
+                "top_p": 0.9,
+                "num_predict": 200,  # Collection names should be short
+                "num_ctx": llm_settings.get("context_length", 32768)
+            }
+        }
+        
+        response_text = ""
+        try:
+            logger.info(f"RAG MCP: Making async LLM selection call to {llm_api_url} with timeout {timeout_seconds}s")
+            logger.debug(f"RAG MCP: Payload: {json.dumps(payload, indent=2)}")
+            
+            # Use async httpx client
+            logger.info("RAG MCP: Creating async httpx client...")
+            # Keep using localhost - it works in both Docker and local environments
+            # The backend API is accessible on localhost:8000 inside the container
+            
+            async with httpx.AsyncClient(timeout=float(timeout_seconds)) as client:
+                logger.info("RAG MCP: Async client created, making POST request...")
+                response = await client.post(llm_api_url, json=payload)
+                response.raise_for_status()
+                logger.debug(f"RAG MCP: LLM selection response status: {response.status_code}")
+                
+                # Parse Ollama JSON response
+                response_data = response.json()
+                response_text = response_data.get("response", "")
+                
+                # Extract actual response if wrapped in thinking tags
+                import re
+                if '<think>' in response_text:
+                    # Try to extract content after </think>
+                    parts = re.split(r'</think>', response_text, 1)
+                    if len(parts) > 1:
+                        response_text = parts[1].strip()
+                
+                logger.debug(f"RAG MCP: LLM selection response length: {len(response_text)}")
+        except httpx.ConnectError as e:
+            logger.error(f"RAG MCP: Failed to connect to LLM API at {llm_api_url}: {str(e)}")
+            raise Exception(f"Failed to connect to LLM API: {str(e)}")
+        except httpx.TimeoutException as e:
+            logger.warning(f"RAG MCP: LLM selection timeout after {timeout_seconds}s: {str(e)}")
+            raise Exception(f"LLM call timed out after {timeout_seconds} seconds")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"RAG MCP: LLM selection HTTP error {e.response.status_code}: {str(e)}")
+            raise Exception(f"LLM HTTP error: {e.response.status_code}")
+        except Exception as e:
+            logger.error(f"RAG MCP: LLM selection unexpected error: {type(e).__name__}: {str(e)}")
+            import traceback
+            logger.error(f"RAG MCP: Traceback: {traceback.format_exc()}")
+            raise Exception(f"LLM call failed: {type(e).__name__}")
+        
+        if not response_text:
+            logger.warning("RAG MCP: LLM selection returned empty response")
+            raise Exception("LLM returned empty response")
+        
+        return response_text.strip()
+    
+    def _call_llm_for_selection_sync(self, prompt: str) -> str:
+        """Make synchronous LLM call for collection selection"""
+        import httpx
+        import json
+        
+        # Get timeout from performance settings
+        from app.core.rag_settings_cache import get_performance_settings
+        perf_settings = get_performance_settings()
+        timeout_seconds = perf_settings.get('connection_timeout_s', 30)
+        
+        # Use Ollama directly like the rest of the system
+        from app.core.llm_settings_cache import get_llm_settings
+        llm_settings = get_llm_settings()
+        model_name = llm_settings.get("model", "qwen3:30b-a3b")
+        
+        llm_api_url = "http://localhost:11434/api/generate"
+        
+        # Use low temperature for more deterministic selection
+        payload = {
+            "model": model_name,
+            "prompt": prompt,
+            "stream": False,  # Get complete response at once
+            "options": {
+                "temperature": 0.3,
+                "top_p": 0.9,
+                "num_predict": 200,  # Collection names should be short
+                "num_ctx": llm_settings.get("context_length", 32768)
+            }
+        }
+        
+        response_text = ""
+        try:
+            logger.info(f"RAG MCP: Making sync LLM selection call to {llm_api_url} with timeout {timeout_seconds}s")
+            logger.debug(f"RAG MCP: Payload: {json.dumps(payload, indent=2)}")
+            # Use synchronous call like standard chat
+            with httpx.Client(timeout=float(timeout_seconds)) as client:
+                response = client.post(llm_api_url, json=payload)
+                response.raise_for_status()
+                logger.debug(f"RAG MCP: LLM selection response status: {response.status_code}")
+                
+                # Parse Ollama JSON response
+                response_data = response.json()
+                response_text = response_data.get("response", "")
+                
+                # Extract actual response if wrapped in thinking tags
+                import re
+                if '<think>' in response_text:
+                    # Try to extract content after </think>
+                    parts = re.split(r'</think>', response_text, 1)
+                    if len(parts) > 1:
+                        response_text = parts[1].strip()
+                
+                logger.debug(f"RAG MCP: LLM selection response length: {len(response_text)}")
+        except httpx.TimeoutException as e:
+            logger.warning(f"RAG MCP: LLM selection timeout after {timeout_seconds}s: {str(e)}")
+            raise Exception(f"LLM call timed out after {timeout_seconds} seconds")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"RAG MCP: LLM selection HTTP error {e.response.status_code}: {str(e)}")
+            raise Exception(f"LLM HTTP error: {e.response.status_code}")
+        except Exception as e:
+            logger.error(f"RAG MCP: LLM selection unexpected error: {type(e).__name__}: {str(e)}")
+            import traceback
+            logger.error(f"RAG MCP: Traceback: {traceback.format_exc()}")
+            raise Exception(f"LLM call failed: {type(e).__name__}")
+        
+        if not response_text:
+            logger.warning("RAG MCP: LLM selection returned empty response")
+            raise Exception("LLM returned empty response")
+        
+        return response_text.strip()
+    
+    def _parse_llm_collection_response(self, response: str, available_collections: List[Dict]) -> List[str]:
+        """Parse LLM response to extract collection names"""
+        # Get all available collection names
+        available_names = [c.get('collection_name', '') for c in available_collections]
+        
+        # Clean and split response
+        response = response.lower().strip()
+        
+        # Handle different response formats
+        selected = []
+        
+        # Try comma-separated format first
+        parts = [p.strip() for p in response.split(',')]
+        
+        # Also try newline-separated
+        if len(parts) == 1 and '\n' in response:
+            parts = [p.strip() for p in response.split('\n')]
+        
+        # Match against available collections (case-insensitive)
+        for part in parts:
+            # Clean up common formatting
+            part = part.strip('- ').strip('* ').strip()
+            
+            # Find matching collection
+            for available_name in available_names:
+                if available_name.lower() == part or part in available_name.lower():
+                    if available_name not in selected:
+                        selected.append(available_name)
+                    break
+        
+        return selected
+    
+    def _simple_collection_selection(self, query: str) -> List[str]:
+        """Simple fallback collection selection based on description overlap"""
         collections = get_all_collections()
         if not collections:
             return ["default_knowledge"]
         
-        # Simple keyword-based collection selection
-        # This can be enhanced with ML-based classification later
         query_lower = query.lower()
-        
-        # Get collection selection rules from settings
-        llm_settings = get_llm_settings()
-        collection_config = llm_settings.get('collection_selection', {})
-        selection_rules = collection_config.get('auto_selection_rules', {})
-        
         selected = []
+        
         for collection in collections:
             collection_name = collection.get('collection_name', '')
             collection_desc = collection.get('description', '').lower()
             
-            # Check if query matches collection description or rules
-            if self._query_matches_collection(query_lower, collection_name, collection_desc, selection_rules):
+            # Check description overlap
+            if collection_desc and any(word in query_lower for word in collection_desc.split() if len(word) > 3):
                 selected.append(collection_name)
         
-        # Fallback to default if no matches
-        return selected if selected else ["default_knowledge"]
-    
-    def _query_matches_collection(self, query: str, collection_name: str, description: str, rules: Dict) -> bool:
-        """Check if query matches a collection based on rules"""
-        
-        # Check custom rules from settings
-        collection_rules = rules.get(collection_name, {})
-        keywords = collection_rules.get('keywords', [])
-        
-        if keywords and any(keyword in query for keyword in keywords):
-            return True
-        
-        # Check description overlap
-        if description and any(word in query for word in description.split() if len(word) > 3):
-            return True
-        
-        return False
+        # Get fallback collections from settings
+        selection_settings = get_collection_selection_settings()
+        return selected if selected else selection_settings.get('fallback_collections', ["default_knowledge"])
     
     def _format_documents(self, sources: List[Dict], max_docs: int, include_content: bool) -> List[Dict[str, Any]]:
         """Format source documents for agent consumption"""
@@ -196,16 +541,37 @@ class RAGMCPService:
             return []
         
         documents = []
+        total_docs = min(len(sources), max_docs)
+        
         for i, source in enumerate(sources[:max_docs]):
+            # Calculate relevance score based on position (top documents are most relevant)
+            # Use exponential decay: 1.0 for first doc, decreasing for subsequent docs
+            position_score = 1.0 * (0.9 ** i)
+            
+            # Extract metadata from source
+            file_path = source.get("file", "Unknown")
+            collection_name = source.get("collection", "default_knowledge")
+            page_num = source.get("page")
+            
+            # Generate chunk ID from file path and page
+            chunk_id = f"{collection_name}:{file_path.split('/')[-1]}:p{page_num if page_num else 0}"
+            
+            # Get current timestamp for document retrieval time
+            from datetime import datetime, timezone
+            retrieval_time = datetime.now(timezone.utc).isoformat()
+            
             doc = {
                 "id": f"doc_{i+1}",
-                "source": source.get("file", "Unknown"),
-                "relevance_score": 0.85,  # Will be enhanced with actual scores
-                "collection": source.get("collection", "default_knowledge"),
+                "source": file_path,
+                "relevance_score": round(position_score, 3),
+                "collection": collection_name,
                 "metadata": {
-                    "page": source.get("page"),
-                    "chunk_id": f"chunk_{i+1}",
-                    "created_at": "2024-01-01T00:00:00Z"  # Will be enhanced with actual timestamps
+                    "page": page_num,
+                    "chunk_id": chunk_id,
+                    "position_in_results": i + 1,
+                    "total_results": total_docs,
+                    "retrieved_at": retrieval_time,
+                    "content_length": len(source.get("content", "")) if "content" in source else None
                 }
             }
             
@@ -218,9 +584,8 @@ class RAGMCPService:
     
     def _get_similarity_threshold(self) -> float:
         """Get similarity threshold from settings"""
-        llm_settings = get_llm_settings()
-        rag_config = llm_settings.get('rag_settings', {})
-        return rag_config.get('similarity_threshold', 1.5)
+        doc_settings = get_document_retrieval_settings()
+        return doc_settings.get('similarity_threshold', 1.5)
     
     def _format_jsonrpc_response(self, result: Optional[Dict], error: Optional[str]) -> Dict[str, Any]:
         """Format response as JSON-RPC 2.0"""
@@ -255,3 +620,23 @@ async def execute_rag_search(query: str, collections: List[str] = None, max_docu
     )
     
     return await rag_service.search_documents(request)
+
+def execute_rag_search_sync(query: str, collections: List[str] = None, max_documents: int = 8, include_content: bool = True) -> Dict[str, Any]:
+    """Synchronous entry point for MCP tool execution - for use in sync contexts"""
+    import asyncio
+    
+    request = RAGSearchRequest(
+        query=query,
+        collections=collections,
+        max_documents=max_documents,
+        include_content=include_content
+    )
+    
+    # Create a new event loop for this sync call
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        result = loop.run_until_complete(rag_service.search_documents(request))
+        return result
+    finally:
+        loop.close()

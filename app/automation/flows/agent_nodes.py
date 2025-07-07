@@ -728,6 +728,18 @@ def get_trigger_node_schema() -> Dict[str, Any]:
                 "type": "object",
                 "label": "Request Headers",
                 "description": "HTTP headers from trigger request"
+            },
+            {
+                "name": "message",
+                "type": "string",
+                "label": "Extracted Message",
+                "description": "User instruction/query extracted from request data"
+            },
+            {
+                "name": "formatted_query",
+                "type": "string",
+                "label": "Formatted Query",
+                "description": "Agent-ready query constructed from request data"
             }
         ],
         "properties": {
@@ -854,6 +866,47 @@ def get_trigger_node_schema() -> Dict[str, Any]:
                 "label": "Log Requests",
                 "description": "Log all incoming trigger requests for debugging",
                 "default": True
+            },
+            "message_extraction_strategy": {
+                "type": "select",
+                "label": "Message Extraction Strategy",
+                "description": "How to extract user message/instruction from request",
+                "required": False,
+                "options": [
+                    {"value": "auto", "label": "Auto-detect (smart extraction)"},
+                    {"value": "body_text", "label": "Request Body as Text"},
+                    {"value": "query_param", "label": "Specific Query Parameter"},
+                    {"value": "json_field", "label": "JSON Field from Body"},
+                    {"value": "combined", "label": "Combined Sources"}
+                ],
+                "default": "auto"
+            },
+            "message_source_field": {
+                "type": "string",
+                "label": "Message Source Field",
+                "description": "Field name for message extraction (query param or JSON field)",
+                "required": False,
+                "placeholder": "message, query, instruction, etc.",
+                "show_when": {"message_extraction_strategy": ["query_param", "json_field"]}
+            },
+            "enable_parameter_extraction": {
+                "type": "boolean",
+                "label": "Enable Parameter Extraction",
+                "description": "Extract and format parameters for agent consumption",
+                "default": True
+            },
+            "parameter_sources": {
+                "type": "multiselect",
+                "label": "Parameter Sources",
+                "description": "Sources to extract parameters from",
+                "required": False,
+                "options": [
+                    {"value": "query_params", "label": "Query Parameters"},
+                    {"value": "body_json", "label": "JSON Body Fields"},
+                    {"value": "headers", "label": "Request Headers"}
+                ],
+                "default": ["query_params", "body_json"],
+                "show_when": {"enable_parameter_extraction": True}
             },
             "webhook_url": {
                 "type": "string",
@@ -1002,10 +1055,28 @@ def get_aggregator_node_schema() -> Dict[str, Any]:
         "color": "#8B5CF6",
         "inputs": [
             {
-                "name": "inputs",
-                "type": "array",
-                "label": "Agent Outputs",
-                "description": "Multiple agent outputs to combine and aggregate"
+                "name": "input-top",
+                "type": "any",
+                "label": "Input 1",
+                "description": "First input from AgentNode, OutputNode, or ParallelNode"
+            },
+            {
+                "name": "input-left",
+                "type": "any", 
+                "label": "Input 2",
+                "description": "Second input from AgentNode, OutputNode, or ParallelNode"
+            },
+            {
+                "name": "input-right",
+                "type": "any",
+                "label": "Input 3", 
+                "description": "Third input from AgentNode, OutputNode, or ParallelNode"
+            },
+            {
+                "name": "input-top-2",
+                "type": "any",
+                "label": "Input 4",
+                "description": "Fourth input from AgentNode, OutputNode, or ParallelNode"
             }
         ],
         "outputs": [

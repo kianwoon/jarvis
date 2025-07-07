@@ -290,6 +290,61 @@ async def clear_cache(cache_key: str) -> Dict[str, Any]:
         logger.error(f"[CACHE API] Error clearing cache {cache_key}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
 
+@router.delete("/cache/clear-node/{node_id}")
+async def clear_node_cache(
+    node_id: str,
+    workflow_id: Optional[int] = Query(None)
+) -> Dict[str, Any]:
+    """Clear ALL cache entries for a specific node"""
+    try:
+        # Search for all cache keys matching this node
+        search_patterns = [
+            f"*{node_id}*",  # General pattern for node_id
+            f"cache_{workflow_id}_{node_id}" if workflow_id else f"cache_{node_id}",  # Fallback pattern
+        ]
+        
+        all_cache_keys = []
+        for pattern in search_patterns:
+            cache_keys = workflow_redis.get_cache_keys_pattern(pattern)
+            if cache_keys:
+                all_cache_keys.extend(cache_keys)
+        
+        # Remove duplicates
+        all_cache_keys = list(set(all_cache_keys))
+        
+        if not all_cache_keys:
+            return {
+                "node_id": node_id,
+                "cleared_count": 0,
+                "message": "No cache entries found for this node"
+            }
+        
+        # Clear each cache key
+        cleared_count = 0
+        cleared_keys = []
+        for cache_key in all_cache_keys:
+            try:
+                if workflow_redis.delete_value(cache_key):
+                    cleared_count += 1
+                    cleared_keys.append(cache_key)
+                    logger.info(f"[CACHE API] Cleared cache key: {cache_key}")
+            except Exception as e:
+                logger.warning(f"[CACHE CLEAR] Failed to clear {cache_key}: {e}")
+        
+        return {
+            "node_id": node_id,
+            "cleared_count": cleared_count,
+            "total_found": len(all_cache_keys),
+            "cleared_keys": cleared_keys,
+            "success_rate": f"{(cleared_count / len(all_cache_keys) * 100):.1f}%",
+            "message": f"Cleared {cleared_count} out of {len(all_cache_keys)} cache entries for node {node_id}",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"[CACHE API] Error clearing cache for node {node_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear node cache: {str(e)}")
+
 @router.delete("/cache/clear-all")
 async def clear_all_cache(workflow_id: Optional[int] = Query(None)) -> Dict[str, Any]:
     """Clear all cache entries or all for a specific workflow"""

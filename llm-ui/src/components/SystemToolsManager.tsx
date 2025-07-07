@@ -283,20 +283,24 @@ const SystemToolsManager: React.FC<SystemToolsManagerProps> = ({ onRefresh }) =>
           </Typography>
           <Box>
             <Tooltip title="Refresh Redis Cache for MCP Tools">
-              <IconButton onClick={refreshSystemToolsCache} disabled={loading}>
-                <RefreshIcon />
-              </IconButton>
+              <span>
+                <IconButton onClick={refreshSystemToolsCache} disabled={loading}>
+                  <RefreshIcon />
+                </IconButton>
+              </span>
             </Tooltip>
             <Tooltip title="Reinstall System Tools">
-              <Button 
-                variant="outlined" 
-                size="small" 
-                onClick={reinstallSystemTools}
-                disabled={loading}
-                sx={{ ml: 1 }}
-              >
-                Reinstall
-              </Button>
+              <span>
+                <Button 
+                  variant="outlined" 
+                  size="small" 
+                  onClick={reinstallSystemTools}
+                  disabled={loading}
+                  sx={{ ml: 1 }}
+                >
+                  Reinstall
+                </Button>
+              </span>
             </Tooltip>
           </Box>
         </Box>

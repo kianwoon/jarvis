@@ -289,7 +289,7 @@ Please answer the user's question using the information from the uploaded docume
                 # Collect the streamed data
                 if chunk and chunk.strip():
                     collected_output += chunk
-                    logger.info(f"[TRACE DEBUG] Chunk received: {chunk[:200]}...")
+                    # logger.info(f"[TRACE DEBUG] Chunk received: {chunk[:200]}...")  # Commented out to reduce log noise
                     
                     # Try to extract the final answer from the response chunks
                     if '"answer"' in chunk:
@@ -297,9 +297,9 @@ Please answer the user's question using the information from the uploaded docume
                             chunk_data = json_module.loads(chunk.strip())
                             if "answer" in chunk_data:
                                 final_answer = chunk_data["answer"]
-                                logger.info(f"[TRACE DEBUG] Extracted final answer: {final_answer[:100]}...")
+                                # logger.info(f"[TRACE DEBUG] Extracted final answer: {final_answer[:100]}...")  # Commented out
                                 if final_answer:
-                                    logger.info(f"[TRACE DEBUG] Final answer: {final_answer[:100]}...")
+                                    pass  # logger.info(f"[TRACE DEBUG] Final answer: {final_answer[:100]}...")  # Commented out
                             if "source" in chunk_data:
                                 source_info = chunk_data["source"]
                                 logger.info(f"[TRACE DEBUG] Extracted source info: {source_info}")
@@ -993,7 +993,7 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
                 # Collect the streamed data
                 if chunk and chunk.strip():
                     collected_output += chunk
-                    logger.info(f"[TRACE DEBUG] Direct tool chunk received: {chunk[:200]}...")
+                    # logger.info(f"[TRACE DEBUG] Direct tool chunk received: {chunk[:200]}...")  # Commented out to reduce log noise
                     
                     # Try to extract the final answer from the response chunks
                     if '"answer"' in chunk:
@@ -1001,9 +1001,9 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
                             chunk_data = json_module.loads(chunk.strip())
                             if "answer" in chunk_data:
                                 final_answer = chunk_data["answer"]
-                                logger.info(f"[TRACE DEBUG] Direct tool extracted final answer: {final_answer[:100]}...")
+                                # logger.info(f"[TRACE DEBUG] Direct tool extracted final answer: {final_answer[:100]}...")  # Commented out
                                 if final_answer:
-                                    logger.info(f"[TRACE DEBUG] Direct tool final answer: {final_answer[:100]}...")
+                                    pass  # logger.info(f"[TRACE DEBUG] Direct tool final answer: {final_answer[:100]}...")  # Commented out
                             if "source" in chunk_data:
                                 source_info = chunk_data["source"]
                                 logger.info(f"[TRACE DEBUG] Direct tool extracted source info: {source_info}")

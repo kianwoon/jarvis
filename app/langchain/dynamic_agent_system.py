@@ -977,6 +977,19 @@ Required JSON format:
                             for param_name, param_schema in properties.items():
                                 param_type = param_schema.get('type', 'string')
                                 param_desc = param_schema.get('description', '')
+                                
+                                # Special handling for knowledge_search collections parameter
+                                if tool_name == "knowledge_search" and param_name == "collections":
+                                    # Get available collections dynamically
+                                    try:
+                                        from app.core.collection_registry_cache import get_all_collections
+                                        collections = get_all_collections()
+                                        if collections:
+                                            collection_names = [c.get('collection_name', '') for c in collections]
+                                            param_desc = f"Optional: Specific collections to search. Available collections: {', '.join(collection_names)}. If not provided, auto-detects best collections."
+                                    except Exception as e:
+                                        logger.debug(f"Could not fetch collections for prompt: {e}")
+                                
                                 context_str += f"\n    - {param_name} ({param_type}): {param_desc}"
                 
                 # Add example usage
@@ -993,6 +1006,9 @@ Required JSON format:
                             example_params[param_name] = 10
                         elif param_name == "to":
                             example_params[param_name] = ["recipient@email.com"]
+                        elif example_tool == "knowledge_search" and param_name == "collections":
+                            # Omit collections parameter in example to encourage auto-detection
+                            continue
                         else:
                             example_params[param_name] = f"<{param_name} value>"
                 
@@ -1003,6 +1019,15 @@ Required JSON format:
                 context_str += "\n\n**HOW TO USE TOOLS:**"
                 context_str += f"\n\nTo use {example_tool}, output this JSON format first:"
                 context_str += f"\n{example_json}"
+                
+                # Special instruction for knowledge_search
+                if "knowledge_search" in verified_tools:
+                    context_str += "\n\n**IMPORTANT for knowledge_search:**"
+                    context_str += "\n- DO NOT make up collection names!"
+                    context_str += "\n- Either omit the 'collections' parameter to auto-detect, OR"
+                    context_str += "\n- Use ONLY the available collections listed in the tool description"
+                    context_str += "\n- Preferred: Let the system auto-detect collections by omitting the parameter"
+                
                 context_str += "\n\nThen provide your analysis after the tool executes."
             else:
                 # Fallback to basic format if tool specs aren't available
@@ -1561,11 +1586,24 @@ TASK: Provide your analysis of the query above."""
                     elif agent_data and "tools" in agent_data:
                         available_tools_list = agent_data["tools"]
                     
-                    # Filter tool calls to only include available tools
+                    # Filter tool calls to only include available tools and deduplicate
                     valid_tool_calls = []
+                    seen_tool_calls = set()  # Track unique tool calls
+                    
                     for tool_call in tool_calls:
                         tool_name = tool_call.get("tool")
                         if tool_name:
+                            # Create a unique identifier for this tool call
+                            tool_params = tool_call.get("parameters", {})
+                            tool_signature = f"{tool_name}:{json.dumps(tool_params, sort_keys=True)}"
+                            
+                            # Skip if we've already seen this exact tool call
+                            if tool_signature in seen_tool_calls:
+                                logger.info(f"[TOOL DEDUP] Skipping duplicate tool call: {tool_name} with same parameters")
+                                continue
+                            
+                            seen_tool_calls.add(tool_signature)
+                            
                             if not available_tools_list or tool_name in available_tools_list:
                                 # Tool is allowed (either no restrictions or in allowed list)
                                 valid_tool_calls.append(tool_call)

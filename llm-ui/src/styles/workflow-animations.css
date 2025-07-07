@@ -206,7 +206,8 @@
 
 /* Node Category Specific Animations */
 
-/* Agent Nodes Animation (Apple Siri-like color flow effect) */
+
+/* Agent Nodes Animation (Modified: No scaling, just glow and border colors) */
 @keyframes agentGlow {
   0% {
     box-shadow: 
@@ -214,7 +215,6 @@
       0 0 0 0 rgba(156, 39, 176, 0.6),
       0 0 20px rgba(156, 39, 176, 0.4);
     border-color: rgba(156, 39, 176, 1) !important;
-    transform: scale(1) !important;
   }
   20% {
     box-shadow: 
@@ -222,7 +222,6 @@
       0 0 0 16px rgba(233, 30, 99, 0.4),
       0 0 30px rgba(255, 64, 129, 0.5);
     border-color: rgba(255, 64, 129, 1) !important;
-    transform: scale(1.05) !important;
   }
   40% {
     box-shadow: 
@@ -230,7 +229,6 @@
       0 0 0 24px rgba(3, 169, 244, 0.4),
       0 0 40px rgba(33, 150, 243, 0.6);
     border-color: rgba(33, 150, 243, 1) !important;
-    transform: scale(1.1) !important;
   }
   60% {
     box-shadow: 
@@ -238,7 +236,6 @@
       0 0 0 20px rgba(0, 172, 193, 0.4),
       0 0 35px rgba(0, 188, 212, 0.5);
     border-color: rgba(0, 188, 212, 1) !important;
-    transform: scale(1.08) !important;
   }
   80% {
     box-shadow: 
@@ -246,7 +243,6 @@
       0 0 0 12px rgba(123, 31, 162, 0.4),
       0 0 25px rgba(103, 58, 183, 0.5);
     border-color: rgba(103, 58, 183, 1) !important;
-    transform: scale(1.03) !important;
   }
   100% {
     box-shadow: 
@@ -254,7 +250,6 @@
       0 0 0 0 rgba(156, 39, 176, 0.6),
       0 0 20px rgba(156, 39, 176, 0.4);
     border-color: rgba(156, 39, 176, 1) !important;
-    transform: scale(1) !important;
   }
 }
 
@@ -424,6 +419,7 @@
   transition: none !important;
 }
 
+
 /* More specific selector to override MUI Card styles */
 .MuiCard-root.workflow-node--running-agent {
   animation: agentGlow var(--pulse-duration) infinite ease-in-out !important;
@@ -432,6 +428,7 @@
   border: 2px solid var(--color-agent) !important;
 }
 
+
 /* Even more specific for AgentNode */
 .react-flow__node-agentnode .MuiCard-root.workflow-node--running-agent {
   animation: agentGlow var(--pulse-duration) infinite ease-in-out !important;
@@ -439,6 +436,7 @@
   transition: none !important;
   border: 2px solid var(--color-agent) !important;
 }
+
 
 /* Removed growing ring effects - AgentNode now uses simple animation like other nodes */
 

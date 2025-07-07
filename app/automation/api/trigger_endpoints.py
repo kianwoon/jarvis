@@ -28,6 +28,128 @@ router = APIRouter()
 # Rate limiting storage (in production, use Redis)
 rate_limit_storage = {}
 
+def extract_message_from_request(
+    request_data: Dict[str, Any],
+    query_params: Dict[str, Any],
+    headers: Dict[str, str],
+    trigger_config: Dict[str, Any]
+) -> tuple[str, str]:
+    """
+    Extract user message and create formatted query from request data
+    
+    Returns:
+        tuple: (extracted_message, formatted_query)
+    """
+    strategy = trigger_config.get("message_extraction_strategy", "auto")
+    message_field = trigger_config.get("message_source_field", "")
+    
+    extracted_message = ""
+    
+    if strategy == "auto":
+        # Auto-detect strategy: prioritize common message fields
+        message_candidates = [
+            query_params.get("message"),
+            query_params.get("query"),
+            query_params.get("instruction"),
+            query_params.get("prompt"),
+            request_data.get("message") if isinstance(request_data, dict) else None,
+            request_data.get("query") if isinstance(request_data, dict) else None,
+            request_data.get("instruction") if isinstance(request_data, dict) else None,
+            request_data.get("prompt") if isinstance(request_data, dict) else None,
+        ]
+        
+        # Find first non-empty candidate
+        for candidate in message_candidates:
+            if candidate and isinstance(candidate, str) and candidate.strip():
+                extracted_message = candidate.strip()
+                break
+        
+        # If no explicit message found, try to convert body to string
+        if not extracted_message and request_data:
+            if isinstance(request_data, str):
+                extracted_message = request_data.strip()
+            elif isinstance(request_data, dict):
+                # If dict has only one string value, use that
+                string_values = [v for v in request_data.values() if isinstance(v, str) and v.strip()]
+                if len(string_values) == 1:
+                    extracted_message = string_values[0].strip()
+    
+    elif strategy == "body_text":
+        # Use entire request body as text
+        if isinstance(request_data, str):
+            extracted_message = request_data.strip()
+        elif isinstance(request_data, dict):
+            extracted_message = json.dumps(request_data, indent=2)
+    
+    elif strategy == "query_param" and message_field:
+        # Extract from specific query parameter
+        extracted_message = query_params.get(message_field, "").strip()
+    
+    elif strategy == "json_field" and message_field:
+        # Extract from specific JSON field in body
+        if isinstance(request_data, dict):
+            extracted_message = str(request_data.get(message_field, "")).strip()
+    
+    elif strategy == "combined":
+        # Combine multiple sources
+        parts = []
+        if query_params.get("message"):
+            parts.append(f"Message: {query_params['message']}")
+        if isinstance(request_data, dict):
+            for key, value in request_data.items():
+                if isinstance(value, str) and value.strip():
+                    parts.append(f"{key}: {value}")
+        extracted_message = "\n".join(parts)
+    
+    # Create formatted query for agents
+    formatted_query = _create_formatted_query(extracted_message, query_params, request_data, trigger_config)
+    
+    return extracted_message, formatted_query
+
+def _create_formatted_query(
+    message: str, 
+    query_params: Dict[str, Any], 
+    request_data: Dict[str, Any],
+    trigger_config: Dict[str, Any]
+) -> str:
+    """Create an agent-friendly formatted query"""
+    
+    # Start with the extracted message
+    if message:
+        formatted_parts = [message]
+    else:
+        formatted_parts = ["Process the following request:"]
+    
+    # Add parameters if enabled
+    if trigger_config.get("enable_parameter_extraction", True):
+        parameter_sources = trigger_config.get("parameter_sources", ["query_params", "body_json"])
+        
+        # Extract parameters from enabled sources
+        parameters = {}
+        
+        if "query_params" in parameter_sources and query_params:
+            # Filter out message-related params
+            message_keys = {"message", "query", "instruction", "prompt"}
+            for key, value in query_params.items():
+                if key.lower() not in message_keys and value:
+                    parameters[key] = value
+        
+        if "body_json" in parameter_sources and isinstance(request_data, dict):
+            # Filter out message-related fields
+            message_keys = {"message", "query", "instruction", "prompt"}
+            for key, value in request_data.items():
+                if key.lower() not in message_keys and value:
+                    parameters[key] = value
+        
+        # Add parameters to query if any found
+        if parameters:
+            param_lines = ["", "Parameters:"]
+            for key, value in parameters.items():
+                param_lines.append(f"- {key}: {value}")
+            formatted_parts.extend(param_lines)
+    
+    return "\n".join(formatted_parts)
+
 # Pydantic models for trigger endpoints
 class TriggerRequest(BaseModel):
     """Request model for external trigger"""
@@ -296,16 +418,26 @@ async def execute_external_trigger(
         if trigger_config.get("log_requests", True):
             logger.info(f"Trigger {trigger_id} called: {request.method} from {request.client.host}")
         
-        # Prepare workflow input
+        # Extract message and create formatted query
+        logger.info(f"Extracting message from request for trigger: {trigger_id}")
+        extracted_message, formatted_query = extract_message_from_request(
+            request_data, query_params, request_headers, trigger_config
+        )
+        logger.info(f"Message extracted: '{extracted_message[:100]}{'...' if len(extracted_message) > 100 else ''}'")
+        logger.info(f"Formatted query created: '{formatted_query[:100]}{'...' if len(formatted_query) > 100 else ''}'")
+        
+        # Prepare workflow input with enhanced trigger data
         logger.info(f"Preparing workflow input for trigger: {trigger_id}")
         workflow_input = {
             "trigger_data": request_data,
             "query_params": query_params,
             "headers": request_headers,
+            "message": extracted_message,
+            "formatted_query": formatted_query,
             "method": request.method,
             "timestamp": datetime.utcnow().isoformat()
         }
-        logger.info(f"Workflow input prepared: {workflow_input}")
+        logger.info(f"Workflow input prepared with message extraction")
         
         # Generate execution ID
         execution_id = str(uuid.uuid4())

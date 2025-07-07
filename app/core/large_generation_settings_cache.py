@@ -73,7 +73,52 @@ def get_large_generation_settings_from_db() -> Dict[str, Any]:
         try:
             setting_row = db.query(Settings).filter(Settings.category == "large_generation").first()
             if setting_row and setting_row.settings:
-                return setting_row.settings
+                # Check if settings are in flattened format (from UI)
+                if "detection_thresholds" not in setting_row.settings and "strong_number_threshold" in setting_row.settings:
+                    # Convert flattened UI structure back to nested structure
+                    nested_settings = {
+                        "detection_thresholds": {
+                            "strong_number_threshold": setting_row.settings.get("strong_number_threshold", 30),
+                            "medium_number_threshold": setting_row.settings.get("medium_number_threshold", 20),
+                            "small_number_threshold": setting_row.settings.get("small_number_threshold", 20),
+                            "min_items_for_chunking": setting_row.settings.get("min_items_for_chunking", 20)
+                        },
+                        "scoring_parameters": {
+                            "numeric_score_weight": setting_row.settings.get("numeric_score_weight", 0.5),
+                            "keyword_score_weight": setting_row.settings.get("keyword_score_weight", 0.3),
+                            "pattern_score_weight": setting_row.settings.get("pattern_score_weight", 2),
+                            "score_multiplier": setting_row.settings.get("score_multiplier_for_chunks", 15),
+                            "chunking_bonus_multiplier": setting_row.settings.get("chunking_bonus_multiplier", 1.5),
+                            "min_score_for_keywords": 3,
+                            "min_score_for_medium_numbers": 2,
+                            "default_comprehensive_items": 30,
+                            "min_estimated_items": 10
+                        },
+                        "confidence_calculation": {
+                            "max_score_for_confidence": setting_row.settings.get("confidence_threshold", 5.0),
+                            "max_number_for_confidence": 100.0
+                        },
+                        "processing_parameters": {
+                            "default_chunk_size": setting_row.settings.get("items_per_chunk", 15),
+                            "max_target_count": setting_row.settings.get("target_chunk_count", 500),
+                            "estimated_seconds_per_chunk": setting_row.settings.get("time_per_chunk", 45)
+                        },
+                        "memory_management": {
+                            "redis_conversation_ttl": setting_row.settings.get("redis_ttl", 7 * 24 * 3600),
+                            "max_redis_messages": setting_row.settings.get("max_messages", 50),
+                            "max_memory_messages": 20,
+                            "conversation_history_display": setting_row.settings.get("max_history_display", 10)
+                        },
+                        "keywords_and_patterns": {
+                            "large_output_indicators": setting_row.settings.get("keywords", []),
+                            "comprehensive_keywords": ["comprehensive", "detailed", "all", "many"],
+                            "large_patterns": setting_row.settings.get("regex_patterns", [])
+                        }
+                    }
+                    return nested_settings
+                else:
+                    # Already in nested format
+                    return setting_row.settings
             else:
                 # Return default configuration if no settings found
                 return DEFAULT_LARGE_GENERATION_CONFIG
@@ -133,7 +178,61 @@ def reload_large_generation_settings() -> Dict[str, Any]:
     print("[DEBUG] Reloading large generation settings from database")
     
     # Get fresh settings from database
-    settings = get_large_generation_settings_from_db()
+    db = SessionLocal()
+    try:
+        setting_row = db.query(Settings).filter(Settings.category == "large_generation").first()
+        if setting_row and setting_row.settings:
+            # Check if settings are in flattened format (from UI)
+            if "detection_thresholds" not in setting_row.settings and "strong_number_threshold" in setting_row.settings:
+                # Convert flattened UI structure back to nested structure for cache
+                nested_settings = {
+                    "detection_thresholds": {
+                        "strong_number_threshold": setting_row.settings.get("strong_number_threshold", 30),
+                        "medium_number_threshold": setting_row.settings.get("medium_number_threshold", 20),
+                        "small_number_threshold": setting_row.settings.get("small_number_threshold", 20),
+                        "min_items_for_chunking": setting_row.settings.get("min_items_for_chunking", 20)
+                    },
+                    "scoring_parameters": {
+                        "numeric_score_weight": setting_row.settings.get("numeric_score_weight", 0.5),
+                        "keyword_score_weight": setting_row.settings.get("keyword_score_weight", 0.3),
+                        "pattern_score_weight": setting_row.settings.get("pattern_score_weight", 2),
+                        "score_multiplier": setting_row.settings.get("score_multiplier_for_chunks", 15),
+                        "chunking_bonus_multiplier": setting_row.settings.get("chunking_bonus_multiplier", 1.5),
+                        "min_score_for_keywords": 3,
+                        "min_score_for_medium_numbers": 2,
+                        "default_comprehensive_items": 30,
+                        "min_estimated_items": 10
+                    },
+                    "confidence_calculation": {
+                        "max_score_for_confidence": setting_row.settings.get("confidence_threshold", 5.0),
+                        "max_number_for_confidence": 100.0
+                    },
+                    "processing_parameters": {
+                        "default_chunk_size": setting_row.settings.get("items_per_chunk", 15),
+                        "max_target_count": setting_row.settings.get("target_chunk_count", 500),
+                        "estimated_seconds_per_chunk": setting_row.settings.get("time_per_chunk", 45)
+                    },
+                    "memory_management": {
+                        "redis_conversation_ttl": setting_row.settings.get("redis_ttl", 7 * 24 * 3600),
+                        "max_redis_messages": setting_row.settings.get("max_messages", 50),
+                        "max_memory_messages": 20,
+                        "conversation_history_display": setting_row.settings.get("max_history_display", 10)
+                    },
+                    "keywords_and_patterns": {
+                        "large_output_indicators": setting_row.settings.get("keywords", []),
+                        "comprehensive_keywords": ["comprehensive", "detailed", "all", "many"],
+                        "large_patterns": setting_row.settings.get("regex_patterns", [])
+                    }
+                }
+                settings = nested_settings
+            else:
+                # Already in nested format
+                settings = setting_row.settings
+        else:
+            # Return default configuration if no settings found
+            settings = DEFAULT_LARGE_GENERATION_CONFIG
+    finally:
+        db.close()
     
     # Update cache
     cache_large_generation_settings(settings)
