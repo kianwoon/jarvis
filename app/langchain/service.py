@@ -3674,7 +3674,7 @@ def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> 
     logger = logging.getLogger(__name__)
     
     try:
-        if tool_name == "rag_search":
+        if tool_name == "knowledge_search":
             # Import and call RAG service
             import asyncio
             from app.mcp_services.rag_mcp_service import execute_rag_search

@@ -31,8 +31,8 @@ async def startup_event():
     """Initialize background tasks on startup"""
     # Initialize models first
     logger.info("Running startup initialization tasks...")
-    from app.core.startup import initialize_models
-    asyncio.create_task(initialize_models())
+    from app.core.startup import startup_tasks
+    asyncio.create_task(startup_tasks())
     
     logger.info("Starting MCP process monitor...")
     asyncio.create_task(start_process_monitor())
