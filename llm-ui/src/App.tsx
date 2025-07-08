@@ -29,6 +29,7 @@ import {
   ListItemText
 } from '@mui/material';
 import DatabaseTableManager from './components/settings/DatabaseTableManager';
+import FileUploadComponent from './components/shared/FileUploadComponent';
 import {
   Send as SendIcon,
   Clear as ClearIcon,
@@ -690,6 +691,48 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
     localStorage.removeItem(storageKey);
   };
 
+  // File upload handlers
+  const handleFileUploadStart = (file: File) => {
+    const uploadMessage: Message = {
+      id: `upload-${Date.now()}`,
+      role: 'user',
+      content: `📎 Uploading ${file.name}...`,
+      timestamp: new Date(),
+      status: 'sending'
+    };
+    setMessages(prev => [...prev, uploadMessage]);
+  };
+
+  const handleFileUploadSuccess = (result: any) => {
+    const successMessage: Message = {
+      id: `upload-success-${Date.now()}`,
+      role: 'assistant',
+      content: `✅ Successfully processed **${result.filename}**\n\n` +
+               `• **${result.unique_chunks}** chunks added to knowledge base\n` +
+               `• **Collection:** ${result.collection}\n` +
+               `• **File type:** ${result.file_type}\n` +
+               (result.classified_type ? `• **Document type:** ${result.classified_type}\n` : '') +
+               (result.duplicates_filtered ? `• **Duplicates filtered:** ${result.duplicates_filtered}\n` : '') +
+               `\nYou can now ask questions about this document!`,
+      timestamp: new Date(),
+      status: 'complete',
+      source: result.collection
+    };
+    setMessages(prev => [...prev, successMessage]);
+  };
+
+  const handleFileUploadError = (error: string) => {
+    const errorMessage: Message = {
+      id: `upload-error-${Date.now()}`,
+      role: 'assistant',
+      content: `❌ **Upload failed:** ${error}`,
+      timestamp: new Date(),
+      status: 'error',
+      error
+    };
+    setMessages(prev => [...prev, errorMessage]);
+  };
+
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Chat Controls */}
@@ -697,24 +740,23 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Typography variant="h6">{title}</Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={thinking}
-                  onChange={(e) => setThinking(e.target.checked)}
-                  size="small"
-                />
-              }
-              label={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  <ThinkingIcon fontSize="small" />
-                  <Typography variant="body2">Thinking</Typography>
-                </Box>
-              }
-            />
-            <Button onClick={clearChat} size="small" variant="outlined" startIcon={<ClearIcon />}>
-              Clear
-            </Button>
+            {title !== 'Standard Chat' && (
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={thinking}
+                    onChange={(e) => setThinking(e.target.checked)}
+                    size="small"
+                  />
+                }
+                label={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <ThinkingIcon fontSize="small" />
+                    <Typography variant="body2">Thinking</Typography>
+                  </Box>
+                }
+              />
+            )}
           </Box>
         </Box>
       </Box>
@@ -906,6 +948,7 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
           <TextField
             fullWidth
             multiline
+            minRows={2}
             maxRows={4}
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -913,8 +956,18 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
             placeholder={`Ask ${title}...`}
             disabled={loading}
             variant="outlined"
-            size="small"
           />
+          {title === 'Standard Chat' && (
+            <Box sx={{ position: 'relative' }}>
+              <FileUploadComponent
+                onUploadStart={handleFileUploadStart}
+                onUploadSuccess={handleFileUploadSuccess}
+                onUploadError={handleFileUploadError}
+                disabled={loading}
+                autoClassify={true}
+              />
+            </Box>
+          )}
           <Button
             variant="contained"
             onClick={sendMessage}
@@ -1088,6 +1141,21 @@ function App() {
               Jarvis AI Assistant
             </Typography>
             
+            {/* New Session Button - only for Standard Chat */}
+            {tabValue === 0 && (
+              <Button
+                variant="outlined"
+                onClick={() => {
+                  // Clear standard chat messages - use same key pattern as ChatInterface
+                  const storageKey = 'jarvis-chat-standard-chat';
+                  localStorage.removeItem(storageKey);
+                  window.location.reload();
+                }}
+                sx={{ mr: 2, color: 'white', borderColor: 'white' }}
+              >
+                New Session
+              </Button>
+            )}
 
             {/* Dark Mode Toggle */}
             <IconButton onClick={toggleDarkMode} color="inherit">

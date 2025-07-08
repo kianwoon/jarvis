@@ -308,16 +308,28 @@ function MultiAgentApp() {
                   {activeAgents.map((agent) => (
                     <Grid item xs={12} md={activeAgents.length <= 2 ? 6 : activeAgents.length <= 4 ? 3 : 2.4} key={agent.id}>
                       <Paper sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                        <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider', backgroundColor: 'primary.main' }}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                        <Box sx={{ 
+                          p: 2, 
+                          borderBottom: 1, 
+                          borderColor: 'divider', 
+                          backgroundColor: 'primary.main',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          height: '80px',
+                          minHeight: '80px'
+                        }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             <GroupIcon sx={{ color: 'white' }} />
-                            <Typography variant="h6" sx={{ color: 'white', fontWeight: 'bold' }}>
-                              {agent.name}
-                            </Typography>
+                            <Box>
+                              <Typography variant="h6" sx={{ color: 'white', fontWeight: 'bold', lineHeight: 1.2 }}>
+                                {agent.name}
+                              </Typography>
+                              <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.9)', lineHeight: 1 }}>
+                                {agent.role}
+                              </Typography>
+                            </Box>
                           </Box>
-                          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.9)' }}>
-                            {agent.role}
-                          </Typography>
                         </Box>
                         <Box sx={{ flex: 1, overflow: 'auto', p: 1 }}>
                           {/* Agent-specific response area */}
