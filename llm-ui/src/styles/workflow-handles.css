@@ -1,0 +1,86 @@
+/* Workflow Handle Styles */
+.react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #1976d2;
+  transition: all 0.2s ease;
+}
+
+.react-flow__handle:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 0 4px rgba(25, 118, 210, 0.2);
+}
+
+.react-flow__handle-top {
+  top: -4px;
+}
+
+.react-flow__handle-bottom {
+  bottom: -4px;
+}
+
+.react-flow__handle-left {
+  left: -4px;
+}
+
+.react-flow__handle-right {
+  right: -4px;
+}
+
+/* Handle connection indicators */
+.react-flow__handle.connecting {
+  background: #4caf50;
+  box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.3);
+}
+
+.react-flow__handle.valid {
+  background: #4caf50;
+}
+
+.react-flow__handle.invalid {
+  background: #f44336;
+}
+
+/* Custom handle types */
+.react-flow__handle.source {
+  background: #2196f3;
+}
+
+.react-flow__handle.target {
+  background: #ff9800;
+}
+
+/* Handle labels */
+.handle-label {
+  position: absolute;
+  font-size: 10px;
+  color: #666;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.handle-label.top {
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.handle-label.bottom {
+  bottom: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.handle-label.left {
+  left: -40px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.handle-label.right {
+  right: -40px;
+  top: 50%;
+  transform: translateY(-50%);
+}

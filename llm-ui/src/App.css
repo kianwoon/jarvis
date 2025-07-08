@@ -1,0 +1,10 @@
+/* Minimal CSS - MUI handles most styling */
+body {
+  margin: 0;
+  font-family: 'Roboto', 'Helvetica', 'Arial', sans-serif;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+}

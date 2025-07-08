@@ -1,13 +1,110 @@
-*.pyc
-*.md
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
 .env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Node.js (for llm-ui)
+node_modules/
+**/node_modules/
+llm-ui/node_modules/
+simple_gmail_mcp/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build outputs
+llm-ui/build/
+llm-ui/dist/
+*.tgz
+*.tar.gz
+
+# Cache directories
 */llm_cache/*
-llm-ui/*
-node_modules/*
-app/api/routes/__pycache__/*
-app/core/__pycache__/*
-node_modules
-/.venv
-/venv
-/app/core/__pycache__
-/scripts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment files
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Large directories that shouldn't be tracked
+data/
+cache/
+tmp/
+temp/
+.cache/
+
+# Model files and large binaries
+*.bin
+*.model
+*.pkl
+*.pickle
+*.h5
+*.ckpt
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Documentation (keep only essential)
+# Allow specific documentation files but ignore auto-generated
+!README.md
+!CLAUDE.md
+!CLAUDE.local.md
+# But ignore all other markdown files
+*.md
