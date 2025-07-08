@@ -202,6 +202,22 @@ const legacyNodeCategories = {
       ]
     },
     {
+      type: 'parallelnode',
+      label: 'Parallel Execution',
+      icon: <HierarchicalIcon />,
+      color: '#00bcd4',
+      description: 'Execute multiple branches in parallel for concurrent processing',
+      inputs: [
+        { id: 'input', label: 'Input', type: 'any', description: 'Data to send to all branches' }
+      ],
+      outputs: [
+        { id: 'parallel-1', label: 'Branch 1', type: 'any', description: 'First parallel branch' },
+        { id: 'parallel-2', label: 'Branch 2', type: 'any', description: 'Second parallel branch' },
+        { id: 'parallel-3', label: 'Branch 3', type: 'any', description: 'Third parallel branch' },
+        { id: 'summary', label: 'Summary', type: 'any', description: 'Aggregated results from all branches' }
+      ]
+    },
+    {
       type: 'triggernode',
       label: 'External Trigger',
       icon: <WebhookIcon />,
@@ -1266,6 +1282,27 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         }));
       }
     }
+
+    // Force ParallelNode animation on parallel_execution_start
+    if (log.type === 'parallel_execution_start') {
+      if (log.parallel_id) {
+        setNodes(nds => nds.map(node => {
+          if (node.id === log.parallel_id) {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                executionData: {
+                  status: 'running',
+                  timestamp: log.timestamp
+                }
+              }
+            };
+          }
+          return node;
+        }));
+      }
+    }
     
     if (log.type === 'agent_complete' || log.type === 'node_complete' || log.type === 'agent_result' || log.type === 'agent_execution_complete') {
       if (log.node_id) {
@@ -1281,6 +1318,35 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
                   tools_used: log.tools_used || node.data.executionData?.tools_used,
                   status: 'success',
                   timestamp: log.timestamp,
+                  error: null
+                }
+              }
+            };
+          }
+          return node;
+        }));
+      }
+    }
+    
+    // Handle parallel execution completion
+    if (log.type === 'parallel_execution_complete') {
+      if (log.parallel_id) {
+        setNodes(nds => nds.map(node => {
+          if (node.id === log.parallel_id) {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                executionData: {
+                  ...node.data.executionData,
+                  status: 'success',
+                  timestamp: log.timestamp,
+                  results: log.results,
+                  combined_output: log.combined_output,
+                  summary: log.summary,
+                  completed_count: log.completed_count,
+                  total_count: log.total_count,
+                  strategy_used: log.strategy_used,
                   error: null
                 }
               }
@@ -1360,7 +1426,25 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       }
     }
     
-    // Handle workflow completion
+    // Force stop all ParallelNode animations when workflow completes
+    if (log.type === 'workflow_result') {
+      setNodes(nds => nds.map(node => {
+        if (node.type === 'parallelnode') {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              executionData: {
+                ...node.data.executionData,
+                status: 'success'
+              }
+            }
+          };
+        }
+        return node;
+      }));
+    }
+    
     if (log.type === 'workflow_result') {
       
       // Find output node to get format configuration
@@ -2427,10 +2511,11 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             ...node,
             type: 'parallelnode',
             data: {
-              label: 'Parallel Execution',
-              maxParallel: nodeData.node.max_parallel || 3,
-              waitForAll: nodeData.node.wait_for_all || true,
-              combineStrategy: nodeData.node.combine_strategy || 'merge'
+              label: nodeData.node.label || 'Parallel Execution',
+              // Store backend properties directly
+              max_parallel: nodeData.node.max_parallel || 3,
+              wait_for_all: nodeData.node.wait_for_all ?? true,
+              combine_strategy: nodeData.node.combine_strategy || 'merge'
             }
           };
 
@@ -2953,9 +3038,9 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             data: {
               type: 'ParallelNode',
               node: {
-                max_parallel: nodeData.maxParallel || 3,
-                wait_for_all: nodeData.waitForAll || true,
-                combine_strategy: nodeData.combineStrategy || 'merge'
+                max_parallel: nodeData.max_parallel || nodeData.maxParallel || 3,
+                wait_for_all: nodeData.wait_for_all ?? nodeData.waitForAll ?? true,
+                combine_strategy: nodeData.combine_strategy || nodeData.combineStrategy || 'merge'
               }
             }
           };
@@ -3512,44 +3597,78 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     }
 
     // Calculate group box position and size based on selected nodes
-    const selectedPositions = selectedNodes.map(node => ({
-      x: node.position.x,
-      y: node.position.y,
-      width: node.width || 320, // Default width
-      height: node.height || 280 // Default height
-    }));
+    // We need to get actual node dimensions, defaulting to reasonable sizes if not available
+    const nodeRects = selectedNodes.map(node => {
+      // Get actual node dimensions or use defaults based on node type
+      let width = node.width || 400;
+      let height = node.height || 300;
+      
+      // Adjust defaults based on node type
+      if (node.type === 'start' || node.type === 'end') {
+        width = node.width || 120;
+        height = node.height || 71;
+      } else if (node.type === 'agentnode' || node.type === 'agent') {
+        width = node.width || 400;
+        height = node.height || 391;
+      } else if (node.type === 'routernode') {
+        width = node.width || 600;
+        height = node.height || 633;
+      } else if (node.type === 'outputnode') {
+        width = node.width || 450;
+        height = node.height || 170;
+      } else if (node.type === 'cachenode') {
+        width = node.width || 450;
+        height = node.height || 272;
+      }
+      
+      return {
+        x: node.position.x,
+        y: node.position.y,
+        width: width,
+        height: height
+      };
+    });
 
-    const minX = Math.min(...selectedPositions.map(pos => pos.x)) - 30;
-    const minY = Math.min(...selectedPositions.map(pos => pos.y)) - 50;
-    const maxX = Math.max(...selectedPositions.map(pos => pos.x + pos.width)) + 30;
-    const maxY = Math.max(...selectedPositions.map(pos => pos.y + pos.height)) + 30;
+    // Calculate bounding box with padding
+    const padding = 40;
+    const minX = Math.min(...nodeRects.map(rect => rect.x)) - padding;
+    const minY = Math.min(...nodeRects.map(rect => rect.y)) - padding - 20; // Extra top padding for title
+    const maxX = Math.max(...nodeRects.map(rect => rect.x + rect.width)) + padding;
+    const maxY = Math.max(...nodeRects.map(rect => rect.y + rect.height)) + padding;
 
-    // Create simple group box node
-    const groupBoxId = `group-${Date.now()}`;
+    // Create group box node
+    const groupBoxId = `groupbox-${Date.now()}`;
     const groupBox: Node = {
       id: groupBoxId,
       type: 'groupBox',
       position: { x: minX, y: minY },
       data: {
-        label: 'Group Box',
-        title: `Group ${nodeCounter}`,
-        borderColor: 'gray'
+        title: `Group ${selectedNodes.length} nodes`,
+        label: selectedNodes.map(n => n.data.label || n.type).join(', '),
+        borderColor: '#9c27b0',
+        backgroundColor: 'rgba(156, 39, 176, 0.05)',
+        opacity: 1
       },
       style: {
         width: maxX - minX,
         height: maxY - minY,
-        zIndex: -1 // Behind other nodes
+        zIndex: -1000 // Ensure it's behind all other nodes
       },
+      width: maxX - minX,
+      height: maxY - minY,
       draggable: true,
       selectable: true
     };
 
-    // Add group box to nodes
-    setNodes(prevNodes => [...prevNodes, groupBox]);
+    // Add group box to nodes (at the beginning so it renders behind)
+    setNodes(prevNodes => [groupBox, ...prevNodes]);
     setNodeCounter(prev => prev + 1);
     
     // Clear selection
     setSelectedNodeIds([]);
+    
+    // Show success message using existing notification system
+    setSaveSuccess(true);
     
   }, [nodes, selectedNodeIds, nodeCounter, setNodes]);
 

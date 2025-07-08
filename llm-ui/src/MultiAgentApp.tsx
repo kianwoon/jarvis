@@ -51,7 +51,7 @@ function MultiAgentApp() {
 
   // Session management
   const [sessionId] = useState(() => `multi-agent-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`);
-  const storageKey = 'jarvis-multi-agent-conversations';
+  const storageKey = 'jarvis-multi-agent-chat'; // Static key like standard chat
 
   // Create theme
   const theme = createTheme({
@@ -83,22 +83,60 @@ function MultiAgentApp() {
   // Save conversations to localStorage
   useEffect(() => {
     if (messages.length > 0) {
-      const conversations = JSON.parse(localStorage.getItem(storageKey) || '{}');
-      conversations[sessionId] = messages;
-      localStorage.setItem(storageKey, JSON.stringify(conversations));
+      console.log('Saving messages to localStorage:', messages.length, 'messages');
+      localStorage.setItem(storageKey, JSON.stringify(messages));
+      console.log('Messages saved to key:', storageKey);
     }
-  }, [messages, sessionId, storageKey]);
+  }, [messages, storageKey]);
 
 
   const loadConversationHistory = () => {
     try {
-      const conversations = JSON.parse(localStorage.getItem(storageKey) || '{}');
-      if (conversations[sessionId]) {
-        const savedMessages = conversations[sessionId].map((msg: any) => ({
+      console.log('Loading conversation history with key:', storageKey);
+      const savedMessages = localStorage.getItem(storageKey);
+      console.log('Saved messages from localStorage:', savedMessages);
+      if (savedMessages) {
+        const parsed = JSON.parse(savedMessages);
+        console.log('Parsed messages:', parsed);
+        const restoredMessages = parsed.map((msg: any) => ({
           ...msg,
           timestamp: new Date(msg.timestamp)
         }));
-        setMessages(savedMessages);
+        setMessages(restoredMessages);
+        
+        // Restore activeAgents from assistant messages with agent_contributions
+        const assistantMessages = restoredMessages.filter((msg: any) => msg.role === 'assistant');
+        const allAgentContributions = assistantMessages.flatMap((msg: any) => msg.agent_contributions || []);
+        
+        if (allAgentContributions.length > 0) {
+          const uniqueAgents = Array.from(new Set(allAgentContributions.map((contrib: any) => contrib.agent_name)))
+            .map(agentName => ({
+              id: agentName.toLowerCase().replace(/\s+/g, '-'),
+              name: agentName,
+              role: allAgentContributions.find((contrib: any) => contrib.agent_name === agentName)?.agent_role || 'AI Agent',
+              system_prompt: '',
+              tools: [],
+              description: '',
+              is_active: true,
+              config: {}
+            }));
+          
+          console.log('Restoring active agents:', uniqueAgents);
+          setActiveAgents(uniqueAgents);
+          
+          // Set collaboration phase to complete
+          setCollaborationPhase({
+            phase: 'complete',
+            status: 'complete',
+            progress: 100,
+            description: 'Previous collaboration session',
+            agents_involved: uniqueAgents.map(agent => agent.name)
+          });
+        }
+        
+        console.log('Messages and agents loaded successfully');
+      } else {
+        console.log('No saved messages found');
       }
     } catch (error) {
       console.error('Error loading conversation history:', error);
@@ -126,9 +164,7 @@ function MultiAgentApp() {
     });
     
     // Clear from localStorage
-    const conversations = JSON.parse(localStorage.getItem(storageKey) || '{}');
-    delete conversations[sessionId];
-    localStorage.setItem(storageKey, JSON.stringify(conversations));
+    localStorage.removeItem(storageKey);
   };
 
   const goToStandardChat = () => {

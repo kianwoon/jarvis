@@ -46,6 +46,9 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
   setActiveAgents
 }) => {
   const [input, setInput] = useState('');
+  
+  // Debug: Log messages received by component
+  console.log('MultiAgentChat received messages:', messages.length, messages);
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;

@@ -435,18 +435,39 @@ class AgentWorkflowExecutor:
             # Check for router nodes
             elif node_type == "RouterNode" or node.get("type") == "routernode":
                 router_config = node_data.get("node", {}) or node_data
+                
+                # Transform routes to match expected format
+                transformed_routes = []
+                for route in router_config.get("routes", []):
+                    # Extract match values from condition
+                    condition = route.get("condition", "")
+                    match_values = [condition] if condition else []
+                    
+                    # Get target nodes - support both 'output' and 'target_nodes'
+                    target_nodes = route.get("target_nodes", [])
+                    if not target_nodes and route.get("output"):
+                        target_nodes = [route["output"]]
+                    
+                    transformed_route = {
+                        "id": route.get("id", ""),
+                        "match_values": match_values,
+                        "target_nodes": target_nodes,
+                        "description": route.get("description", "")
+                    }
+                    transformed_routes.append(transformed_route)
+                
                 router_nodes.append({
                     "node_id": node.get("id"),
                     "label": router_config.get("label", "Router"),
                     "routing_mode": router_config.get("routing_mode", "multi-select"),
                     "match_type": router_config.get("match_type", "exact"),
-                    "routes": router_config.get("routes", []),
+                    "routes": transformed_routes,
                     "fallback_route": router_config.get("fallback_route", ""),
                     "case_sensitive": router_config.get("case_sensitive", False),
                     "output_field": router_config.get("output_field", ""),
                     "position": node.get("position", {})
                 })
-                logger.info(f"[WORKFLOW CONVERSION] Found RouterNode: {node.get('id')} with {len(router_config.get('routes', []))} routes")
+                logger.info(f"[WORKFLOW CONVERSION] Found RouterNode: {node.get('id')} with {len(transformed_routes)} routes")
             
             # Check for parallel nodes
             elif node_type == "ParallelNode" or node.get("type") == "parallelnode":
@@ -3187,20 +3208,31 @@ Please process this request independently and provide your analysis."""
             
             # Extract the value to match against
             match_value = agent_output
+            
+            # Clean up agent output - remove think tags
+            if "<think>" in match_value and "</think>" in match_value:
+                # Remove think tags and their content
+                import re
+                match_value = re.sub(r'<think>.*?</think>', '', match_value, flags=re.DOTALL).strip()
+                logger.debug(f"[ROUTER DEBUG] Cleaned agent output (removed think tags): '{match_value}'")
+            
             if output_field:
                 # Try to extract specific field from output
                 try:
                     import json
-                    output_data = json.loads(agent_output)
-                    match_value = output_data.get(output_field, agent_output)
+                    output_data = json.loads(match_value)
+                    match_value = output_data.get(output_field, match_value)
                 except:
                     # If not JSON or field not found, use full output
                     pass
             
             # Convert to string for matching
-            match_value = str(match_value)
+            match_value = str(match_value).strip()
             if not case_sensitive:
                 match_value = match_value.lower()
+            
+            logger.info(f"[ROUTER DEBUG] Processing router {router['node_id']} - match_type: {match_type}, case_sensitive: {case_sensitive}")
+            logger.info(f"[ROUTER DEBUG] Agent output to match: '{match_value}' (length: {len(match_value)})")
             
             matched_routes = []
             target_nodes = set()
@@ -3210,10 +3242,14 @@ Please process this request independently and provide your analysis."""
                 route_matched = False
                 route_values = route.get("match_values", [])
                 
+                logger.debug(f"[ROUTER DEBUG] Checking route {route.get('id')}: match_values={route_values}, target_nodes={route.get('target_nodes', [])}")
+                
                 for value in route_values:
                     test_value = str(value)
                     if not case_sensitive:
                         test_value = test_value.lower()
+                    
+                    logger.debug(f"[ROUTER DEBUG] Comparing match_value='{match_value}' with test_value='{test_value}' using match_type='{match_type}'")
                     
                     # Apply matching based on type
                     if match_type == "exact":
