@@ -105,11 +105,14 @@ const PortalSelect: React.FC<PortalSelectProps> = ({
               </IconButton>
             </InputAdornment>
           }
-          inputComponent={() => (
-            <Box sx={{ display: 'flex', alignItems: 'center', px: 1.5, py: 0.5, minHeight: 32 }}>
+          inputProps={{
+            sx: { display: 'none' }
+          }}
+          startAdornment={
+            <Box sx={{ display: 'flex', alignItems: 'center', px: 1.5, py: 0.5, minHeight: 32, width: '100%' }}>
               {getDisplayValue()}
             </Box>
-          )}
+          }
         />
       </FormControl>
 

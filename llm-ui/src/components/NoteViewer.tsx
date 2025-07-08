@@ -9,6 +9,8 @@ import {
   Box,
   Paper
 } from '@mui/material';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface NoteViewerProps {
   open: boolean;
@@ -30,6 +32,14 @@ const NoteViewer: React.FC<NoteViewerProps> = ({
   content = "",
   notes = []
 }) => {
+  // Helper function to clean output text
+  const cleanOutputText = (text: string) => {
+    // Remove <think> tags and their content
+    const withoutThinkTags = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    
+    // Clean up extra whitespace
+    return withoutThinkTags.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+  };
   return (
     <Dialog
       open={open}
@@ -40,10 +50,23 @@ const NoteViewer: React.FC<NoteViewerProps> = ({
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         {content && (
-          <Box sx={{ mb: 2 }}>
-            <Typography variant="body1" style={{ whiteSpace: 'pre-wrap' }}>
-              {content}
-            </Typography>
+          <Box sx={{ 
+            mb: 2,
+            '& pre': { 
+              bgcolor: 'action.hover', 
+              p: 1, 
+              borderRadius: 1,
+              overflow: 'auto'
+            },
+            '& code': {
+              bgcolor: 'action.hover',
+              px: 0.5,
+              borderRadius: 0.5
+            }
+          }}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {cleanOutputText(content)}
+            </ReactMarkdown>
           </Box>
         )}
         

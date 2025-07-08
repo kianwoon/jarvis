@@ -53,6 +53,7 @@ interface RouterNodeProps {
     defaultRoute?: string;
     evaluationMode?: 'first_match' | 'all_matches' | 'weighted';
     contextVariables?: string[];
+    connectedNodes?: string[]; // Array of connected node IDs from edges
     executionData?: {
       status?: 'idle' | 'running' | 'success' | 'error';
       matchedRoute?: string;
@@ -79,6 +80,40 @@ const RouterNode: React.FC<RouterNodeProps> = ({ data, id, updateNodeData, showI
   const [defaultRoute, setDefaultRoute] = useState(data.defaultRoute || 'default_handler');
   const [evaluationMode, setEvaluationMode] = useState(data.evaluationMode || 'first_match');
   const [editingCondition, setEditingCondition] = useState<string | null>(null);
+
+  // Sync routes with connected nodes when connections change
+  useEffect(() => {
+    if (data.connectedNodes && data.connectedNodes.length > 0) {
+      // Get existing routes map for preservation of conditions and descriptions
+      const existingRoutesMap = new Map(routes.map(route => [route.output, route]));
+      
+      // Create routes for all connected nodes
+      const newRoutes: RouteRule[] = data.connectedNodes.map((nodeId, index) => {
+        const existing = existingRoutesMap.get(nodeId);
+        if (existing) {
+          // Preserve existing route data
+          return existing;
+        } else {
+          // Create new route for newly connected node
+          return {
+            id: `${Date.now()}_${index}`,
+            condition: '', // User needs to fill this in
+            output: nodeId,
+            description: `Route to ${nodeId}`
+          };
+        }
+      });
+
+      // Remove routes that are no longer connected
+      const connectedSet = new Set(data.connectedNodes);
+      const filteredRoutes = newRoutes.filter(route => connectedSet.has(route.output));
+      
+      // Only update if routes actually changed
+      if (JSON.stringify(filteredRoutes) !== JSON.stringify(routes)) {
+        setRoutes(filteredRoutes);
+      }
+    }
+  }, [data.connectedNodes]);
 
   // Update parent node data when local state changes
   useEffect(() => {
@@ -139,7 +174,12 @@ const RouterNode: React.FC<RouterNodeProps> = ({ data, id, updateNodeData, showI
   };
 
   const getOutputOptions = () => {
-    // In a real implementation, this would fetch available downstream nodes
+    // Return connected nodes if available, otherwise show default options
+    if (data.connectedNodes && data.connectedNodes.length > 0) {
+      return data.connectedNodes;
+    }
+    
+    // Default options when no nodes are connected
     return [
       'question_handler',
       'command_handler',
@@ -208,7 +248,7 @@ const RouterNode: React.FC<RouterNodeProps> = ({ data, id, updateNodeData, showI
         <Box sx={{ mb: 2 }}>
           <PortalSelect
             value={routingType}
-            onChange={(value) => setRoutingType(value as string)}
+            onChange={(value) => setRoutingType(value as 'simple' | 'expression' | 'ai_based')}
             label="Routing Type"
             options={[
               { value: 'simple', label: 'Simple (Field Comparison)' },
@@ -230,6 +270,15 @@ const RouterNode: React.FC<RouterNodeProps> = ({ data, id, updateNodeData, showI
             <Box display="flex" alignItems="center" gap={1} width="100%">
               <RuleIcon sx={{ fontSize: 20 }} />
               <Typography variant="body2" fontWeight={500}>Routing Rules</Typography>
+              {data.connectedNodes && data.connectedNodes.length > 0 && (
+                <Chip 
+                  label="Auto-managed" 
+                  size="small" 
+                  color="primary"
+                  variant="outlined"
+                  sx={{ ml: 1 }}
+                />
+              )}
               <Box flexGrow={1} />
               <Chip 
                 label={`${routes.length} routes`} 
@@ -240,6 +289,13 @@ const RouterNode: React.FC<RouterNodeProps> = ({ data, id, updateNodeData, showI
           </AccordionSummary>
           <AccordionDetails>
             <Box>
+              {data.connectedNodes && data.connectedNodes.length > 0 && (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  <Typography variant="caption">
+                    Routes are automatically managed based on connected nodes. Add or remove connections to update routes.
+                  </Typography>
+                </Alert>
+              )}
               <TableContainer component={Paper} variant="outlined" sx={{ mb: 2 }}>
                 <Table size="small">
                   <TableHead>
@@ -251,7 +307,7 @@ const RouterNode: React.FC<RouterNodeProps> = ({ data, id, updateNodeData, showI
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {routes.map((route, index) => (
+                    {routes.map((route) => (
                       <TableRow key={route.id}>
                         <TableCell>
                           {editingCondition === route.id ? (
@@ -356,7 +412,7 @@ const RouterNode: React.FC<RouterNodeProps> = ({ data, id, updateNodeData, showI
               {/* Evaluation Mode */}
               <PortalSelect
                 value={evaluationMode}
-                onChange={(value) => setEvaluationMode(value as string)}
+                onChange={(value) => setEvaluationMode(value as 'first_match' | 'all_matches' | 'weighted')}
                 label="Evaluation Mode"
                 options={[
                   { value: 'first_match', label: 'First Match (Stop on first true)' },

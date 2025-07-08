@@ -428,38 +428,6 @@ const getNodeHandles = (nodeType: string) => {
   };
 };
 
-// Create a factory function for nodeTypes to avoid recreating them
-const createNodeTypes = (updateNodeData: any, showIOGetter: () => boolean, handleOutputNodeViewReport: any, setAccordionOpen: any) => ({
-  llm: (props: any) => <LLMNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  mcpTool: (props: any) => <MCPToolNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  agent: (props: any) => <AgentNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  redis: (props: any) => <RedisNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  condition: (props: any) => <ConditionNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  start: (props: any) => <StartNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  end: (props: any) => <EndNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  http: (props: any) => <HttpNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  loop: (props: any) => <LoopNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  variable: (props: any) => <VariableNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  dataMapper: (props: any) => <DataMapperNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  switch: (props: any) => <SwitchNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  delay: (props: any) => <DelayNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  errorHandler: (props: any) => <ErrorHandlerNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  statenode: (props: any) => <StateNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  groupBox: (props: any) => <GroupBoxNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  
-  // Agent-based workflow node types
-  agentnode: (props: any) => <AgentNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} onAccordionStateChange={setAccordionOpen} />,
-  inputnode: (props: any) => <InputNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  outputnode: (props: any) => <OutputNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} onViewReport={handleOutputNodeViewReport} />,
-  conditionnode: (props: any) => <ConditionNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  parallelnode: (props: any) => <ParallelNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  routernode: (props: any) => <RouterNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  transformnode: (props: any) => <TransformNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  cachenode: (props: any) => <CacheNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  triggernode: (props: any) => <TriggerNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-  aggregatornode: (props: any) => <AggregatorNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
-});
-
 // Function to migrate legacy handle IDs to the correct directional handle IDs
 const migrateEdgeHandleIds = (edges: Edge[], nodes: Node[]): Edge[] => {
   
@@ -555,13 +523,22 @@ const migrateEdgeHandleIds = (edges: Edge[], nodes: Node[]): Edge[] => {
       } else if (targetNode.type === 'parallelnode') {
         // ParallelNode: 'input' is the current correct handle ID - no migration needed
         // ParallelNode uses 'input' as its legitimate target handle
+        console.log(`🔧 [MIGRATION] ParallelNode target handle '${edge.targetHandle}' is current format - no migration needed`);
       }
     }
     
     // Log migration results
     const wasChanged = newSourceHandle !== edge.sourceHandle || newTargetHandle !== edge.targetHandle;
+    console.log(`🔧 [MIGRATION] Edge ${edge.id} result:`, {
+      originalSourceHandle: edge.sourceHandle,
+      newSourceHandle: newSourceHandle,
+      originalTargetHandle: edge.targetHandle,
+      newTargetHandle: newTargetHandle,
+      changed: wasChanged
+    });
     
     if (wasChanged) {
+      console.log(`✅ [MIGRATION] Migrated edge ${edge.id}: ${edge.sourceHandle} -> ${newSourceHandle}, ${edge.targetHandle} -> ${newTargetHandle}`);
     }
     
     return {
@@ -571,11 +548,20 @@ const migrateEdgeHandleIds = (edges: Edge[], nodes: Node[]): Edge[] => {
     };
   });
   
+  console.log('🔧 [MIGRATION] Migration complete. Total edges processed:', migratedEdges.length);
   return migratedEdges;
 };
 
 // Helper function to validate connection compatibility
-const isValidConnection = (sourceType: string, sourceHandle: string, targetType: string, targetHandle: string, workflowType: string) => {
+const isValidConnection = (sourceType: string, sourceHandle: string, targetType: string, targetHandle: string) => {
+  // Use the dynamic template lookup that works for both legacy and agent-based nodes
+  const sourceTemplate = getCurrentNodeTemplate(sourceType);
+  const targetTemplate = getCurrentNodeTemplate(targetType);
+  
+  console.log(`Connection validation: ${sourceType} -> ${targetType}`);
+  console.log('Source template:', sourceTemplate);
+  console.log('Target template:', targetTemplate);
+  
   // For agent-based nodes, allow most connections since they're flexible
   if (workflowType === 'agent_based') {
     // Allow connections between agent nodes
@@ -613,6 +599,7 @@ const isValidConnection = (sourceType: string, sourceHandle: string, targetType:
   
   // Fallback to legacy validation if templates not found
   if (!sourceTemplate || !targetTemplate) {
+    console.log('Templates not found, allowing connection');
     return true;
   }
   
@@ -620,6 +607,7 @@ const isValidConnection = (sourceType: string, sourceHandle: string, targetType:
   const targetInput = targetTemplate.inputs?.find((input: any) => input.id === targetHandle);
   
   if (!sourceOutput || !targetInput) {
+    console.log('Handles not found, allowing connection');
     return true;
   }
   
@@ -640,6 +628,7 @@ const isValidConnection = (sourceType: string, sourceHandle: string, targetType:
   const targetCompatible = compatibleTypes[targetInput.type] || [];
   
   const isCompatible = sourceCompatible.includes(targetInput.type) || targetCompatible.includes(sourceOutput.type);
+  console.log(`Connection ${isCompatible ? 'allowed' : 'blocked'}: ${sourceOutput.type} -> ${targetInput.type}`);
   
   return isCompatible;
 };
@@ -707,6 +696,7 @@ const getLayoutedElements = (
 
 // Safe fallback function - always uses grid to prevent clustering
 const getLayoutedElementsLegacy = (nodes: Node[], edges: Edge[], direction = 'TB') => {
+  console.log('[LAYOUT] Using safe grid fallback to prevent clustering');
   return getLayoutedElements(nodes, edges, { 
     direction: direction as 'TB' | 'BT' | 'LR' | 'RL',
     algorithm: 'grid'
@@ -823,8 +813,8 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
   onSave,
   initialWorkflow,
   onBack,
-  isNewWorkflow = false,
-}) => {
+  isNewWorkflow = false
+) => {
   // Remove debug logs
   
   const [nodes, setNodes, baseOnNodesChange] = useNodesState([]);
@@ -888,7 +878,6 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
   
   // I/O Display states
   const [showAllIO, setShowAllIO] = useState(false);
-  const showAllIORef = useRef(showAllIO);
 
   // Enhanced Layout states
   const [layoutOptions, setLayoutOptions] = useState<LayoutOptions>(defaultLayoutOptions);
@@ -923,7 +912,6 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       }))
     );
   }, [showFlowAnimation, setEdges]);
-
 
   // Function to calculate and assign sequence information to agent nodes
   const calculateAndAssignSequenceInfo = useCallback((currentNodes: Node[], currentEdges: Edge[]) => {
@@ -1002,29 +990,12 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       if (workflowId) {
         // If we have a workflowId, it will be loaded by the separate data loading useEffect
         // Don't do anything here, let the database loading handle it
+        console.log('WorkflowId exists, will be loaded from database:', workflowId);
       } else if (initialWorkflow) {
         // If we have an initial workflow but no workflowId, load it
+        console.log('Loading initial workflow');
         const { nodes: initialNodes = [], edges: initialEdges = [] } = initialWorkflow;
-        
-        // Initialize RouterNodes with connected nodes
-        const nodesWithRouterConnections = initialNodes.map((node: any) => {
-          if (node.type === 'routernode' || node.type === 'router') {
-            const connectedNodeIds = initialEdges
-              .filter((edge: any) => edge.source === node.id)
-              .map((edge: any) => edge.target);
-            
-            return {
-              ...node,
-              data: {
-                ...node.data,
-                connectedNodes: connectedNodeIds
-              }
-            };
-          }
-          return node;
-        });
-        
-        setNodes(nodesWithRouterConnections);
+        setNodes(initialNodes);
         setEdges(initialEdges);
         setCurrentWorkflowName(workflowName || initialWorkflow.name || 'Untitled Workflow');
         
@@ -1040,6 +1011,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         setNodeCounter(maxCounter + 1);
       } else {
         // If no workflowId and no initial workflow, we're creating a new workflow
+        console.log('Creating new workflow - resetting state');
         setNodes([]);
         setEdges([]);
         setNodeCounter(1);
@@ -1052,22 +1024,9 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
   }, [workflowId, open, initialWorkflow]);
   
   // Handle expand/collapse all I/O
-  const handleToggleAllIO = useCallback(() => {
-    const newShowAllIO = !showAllIO;
-    setShowAllIO(newShowAllIO);
-    showAllIORef.current = newShowAllIO;
-    
-    // Update all nodes to include the showIO property
-    setNodes((nds) => 
-      nds.map(node => ({
-        ...node,
-        data: {
-          ...node.data,
-          showIO: newShowAllIO
-        }
-      }))
-    );
-  }, [showAllIO, setNodes]);
+  const handleToggleAllIO = () => {
+    setShowAllIO(!showAllIO);
+  };
 
   // Handle node context menu (right-click)
   const handleNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
@@ -1096,6 +1055,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     const nodesToCopy = nodes.filter(node => selectedNodeIds.includes(node.id));
     if (nodesToCopy.length > 0) {
       setCopiedNodes(nodesToCopy);
+      console.log(`Copied ${nodesToCopy.length} nodes`);
     }
   }, [nodes, selectedNodeIds]);
 
@@ -1143,6 +1103,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     // Select the new nodes
     setSelectedNodeIds(newNodes.map(n => n.id));
     
+    console.log(`Duplicated ${newNodes.length} nodes`);
   }, [nodes, selectedNodeIds, nodeCounter, setNodesWithChangeTracking, edges, calculateAndAssignSequenceInfo]);
 
   // Paste copied nodes
@@ -1196,6 +1157,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     // Select the new nodes
     setSelectedNodeIds(newNodes.map(n => n.id));
     
+    console.log(`Pasted ${newNodes.length} nodes`);
   }, [copiedNodes, nodeCounter, setNodesWithChangeTracking, edges, calculateAndAssignSequenceInfo]);
 
   // Keyboard shortcuts for copy/paste
@@ -1244,9 +1206,11 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
 
   // Process execution logs and update node execution data
   const processExecutionLogForNodes = useCallback((log: any) => {
+    console.log('Processing execution log for nodes:', log);
     
     // Handle individual agent/node execution updates
     if (log.type === 'agent_start' || log.type === 'node_start' || log.type === 'agent_execution_start') {
+      console.log('Agent/Node started:', log);
       if (log.node_id) {
         setNodes(nds => nds.map(node => {
           if (node.id === log.node_id) {
@@ -1268,6 +1232,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     }
     
     if (log.type === 'agent_complete' || log.type === 'node_complete' || log.type === 'agent_result' || log.type === 'agent_execution_complete') {
+      console.log('Agent/Node completed:', log);
       if (log.node_id) {
         setNodes(nds => nds.map(node => {
           if (node.id === log.node_id) {
@@ -1292,6 +1257,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     }
     
     if (log.type === 'agent_error' || log.type === 'node_error' || log.type === 'agent_execution_error') {
+      console.log('Agent/Node error:', log);
       if (log.node_id) {
         setNodes(nds => nds.map(node => {
           if (node.id === log.node_id) {
@@ -1315,6 +1281,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     
     // Handle router decision events
     if (log.type === 'router_decision') {
+      console.log('Router decision made:', log);
       if (log.router_id) {
         setNodes(nds => nds.map(node => {
           if (node.id === log.router_id) {
@@ -1338,6 +1305,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     
     // Handle condition evaluation events
     if (log.type === 'condition_evaluation_complete') {
+      console.log('Condition evaluation complete:', log);
       if (log.condition_id) {
         setNodes(nds => nds.map(node => {
           if (node.id === log.condition_id) {
@@ -1362,6 +1330,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     
     // Handle workflow completion
     if (log.type === 'workflow_result') {
+      console.log('Workflow completed with result:', log);
       
       // Find output node to get format configuration
       const outputNode = nodes.find(node => 
@@ -1370,6 +1339,9 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         (node.data.node && node.data.node.type === 'OutputNode')
       );
       
+      console.log('🔧 [AUTO-DISPLAY DEBUG] Found OutputNode:', outputNode);
+      console.log('🔧 [AUTO-DISPLAY DEBUG] OutputNode.data:', outputNode?.data);
+      console.log('🔧 [AUTO-DISPLAY DEBUG] OutputNode.data.node:', outputNode?.data?.node);
       
       // Prioritize output format from backend (saved database values) over frontend UI
       const outputFormat = log.output_config?.output_format ||
@@ -1393,10 +1365,16 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       setWorkflowResult(workflowData);
       
       // Update OutputNode to show report is available and populate execution data
+      console.log('🔧 [OUTPUT UPDATE] Updating OutputNode with execution data');
       setNodes(nds => nds.map(node => {
         if (node.data.type === 'OutputNode' || 
             node.type === 'outputnode' ||
             (node.data.node && node.data.node.type === 'OutputNode')) {
+          console.log('🔧 [OUTPUT UPDATE] Found OutputNode, updating with:', {
+            status: log.error ? 'error' : 'success',
+            output: workflowData.content,
+            hasReport: true
+          });
           return {
             ...node,
             data: {
@@ -1416,6 +1394,10 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       }));
       
       // Check OutputNode configuration for auto-behavior from backend result
+      console.log('🔧 [AUTO-DISPLAY DEBUG] Checking auto-display configuration...');
+      console.log('🔧 [AUTO-DISPLAY DEBUG] log.output_config:', log.output_config);
+      console.log('🔧 [AUTO-DISPLAY DEBUG] outputNode?.data?.auto_display:', outputNode?.data?.auto_display);
+      console.log('🔧 [AUTO-DISPLAY DEBUG] outputNode?.data?.node?.auto_display:', outputNode?.data?.node?.auto_display);
       
       // Prioritize configuration from backend (saved database values) over frontend UI
       const autoDisplay = outputNode ? (
@@ -1429,9 +1411,12 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
                       outputNode?.data?.node?.auto_save ??
                       false; // Default to false if no configuration found
       
+      console.log('🔧 [AUTO-DISPLAY DEBUG] Final autoDisplay value:', autoDisplay);
+      console.log('🔧 [AUTO-DISPLAY DEBUG] Final autoSave value:', autoSave);
       
       if (autoDisplay && autoSave) {
         // Both auto actions
+        console.log('🔧 [AUTO-DISPLAY DEBUG] Executing: Both auto-display and auto-save');
         setNoteViewerOpen(true);
         downloadWorkflowOutput(
           workflowData.content,
@@ -1441,9 +1426,11 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         );
       } else if (autoDisplay) {
         // Auto display only
+        console.log('🔧 [AUTO-DISPLAY DEBUG] Executing: Auto-display only');
         setNoteViewerOpen(true);
       } else if (autoSave) {
         // Auto save only
+        console.log('🔧 [AUTO-DISPLAY DEBUG] Executing: Auto-save only');
         downloadWorkflowOutput(
           workflowData.content,
           workflowData.format as any,
@@ -1452,9 +1439,11 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         );
       } else if (outputNode) {
         // If both auto options are disabled, show completion dialog for user choice
+        console.log('🔧 [AUTO-DISPLAY DEBUG] Executing: Opening completion dialog');
         setCompletionDialogOpen(true);
       } else {
         // No output node, no completion dialog
+        console.log('🔧 [AUTO-DISPLAY DEBUG] No output node found, skipping completion dialog');
       }
       
       setIsExecuting(false);
@@ -1646,40 +1635,18 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
 
   // Function to update node data
   const updateNodeData = useCallback((nodeId: string, newData: any) => {
+    console.log(`CustomWorkflowEditor: updateNodeData called for node ${nodeId}:`, newData);
     setNodes((nds) =>
       nds.map((node) => {
         if (node.id === nodeId) {
           const updatedNode = { ...node, data: { ...node.data, ...newData } };
+          console.log(`CustomWorkflowEditor: Node ${nodeId} updated. New data:`, updatedNode.data);
           return updatedNode;
         }
         return node;
       })
     );
   }, [setNodes]);
-
-  // Update RouterNode connected nodes when edges change
-  useEffect(() => {
-    // Find all router nodes
-    const routerNodes = nodes.filter(node => 
-      node.type === 'routernode' || node.type === 'router'
-    );
-
-    // For each router node, find connected target nodes
-    routerNodes.forEach(routerNode => {
-      const connectedNodeIds = edges
-        .filter(edge => edge.source === routerNode.id)
-        .map(edge => edge.target);
-
-      // Update the router node data with connected nodes if changed
-      const currentConnectedNodes = routerNode.data.connectedNodes || [];
-      if (JSON.stringify(currentConnectedNodes.sort()) !== JSON.stringify(connectedNodeIds.sort())) {
-        updateNodeData(routerNode.id, {
-          ...routerNode.data,
-          connectedNodes: connectedNodeIds
-        });
-      }
-    });
-  }, [edges, nodes, updateNodeData]);
 
   // Fetch agent-based node schemas from backend
   const fetchAgentNodeSchemas = useCallback(async () => {
@@ -1689,16 +1656,19 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       
       if (response.ok) {
         const data = await response.json();
+        console.log('Loaded agent node schemas:', data);
         
         setAgentNodeSchemas(data.schema);
         setNodeCategories(data.categories || []);
         setIsLoadingSchemas(false);
       } else {
+        console.error('Failed to fetch agent node schemas:', response.status);
         // Fallback to legacy mode if API fails
         setWorkflowType('legacy');
         setIsLoadingSchemas(false);
       }
     } catch (error) {
+      console.error('Error fetching agent node schemas:', error);
       // Fallback to legacy mode if API fails
       setWorkflowType('legacy');
       setIsLoadingSchemas(false);
@@ -1736,17 +1706,37 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     };
   }, [getCurrentNodeTemplate]);
 
-  // Create nodeTypes with updateNodeData callback
-  // Note: We use a factory function and getter to avoid recreating nodeTypes
-  const nodeTypes: NodeTypes = useMemo(() => 
-    createNodeTypes(
-      updateNodeData, 
-      () => showAllIORef.current,
-      handleOutputNodeViewReport,
-      setAccordionOpen
-    ), 
-    [updateNodeData, handleOutputNodeViewReport, setAccordionOpen]
-  );
+  // Create nodeTypes with updateNodeData callback and showIO prop
+  const nodeTypes: NodeTypes = useMemo(() => ({
+    llm: (props: any) => <LLMNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    mcpTool: (props: any) => <MCPToolNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    agent: (props: any) => <AgentNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    redis: (props: any) => <RedisNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    condition: (props: any) => <ConditionNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    start: (props: any) => <StartNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    end: (props: any) => <EndNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    http: (props: any) => <HttpNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    loop: (props: any) => <LoopNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    variable: (props: any) => <VariableNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    dataMapper: (props: any) => <DataMapperNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    switch: (props: any) => <SwitchNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    delay: (props: any) => <DelayNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    errorHandler: (props: any) => <ErrorHandlerNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    statenode: (props: any) => <StateNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    groupBox: (props: any) => <GroupBoxNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    
+    // Agent-based workflow node types
+    agentnode: (props: any) => <AgentNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} onAccordionStateChange={setAccordionOpen} />,
+    inputnode: (props: any) => <InputNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    outputnode: (props: any) => <OutputNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} onViewReport={handleOutputNodeViewReport} />,
+    conditionnode: (props: any) => <ConditionNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    parallelnode: (props: any) => <ParallelNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    routernode: (props: any) => <RouterNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    transformnode: (props: any) => <TransformNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    cachenode: (props: any) => <CacheNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    triggernode: (props: any) => <TriggerNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+    aggregatornode: (props: any) => <AggregatorNode {...props} updateNodeData={updateNodeData} showIO={showAllIO} />,
+  }), [updateNodeData, showAllIO, handleOutputNodeViewReport]);
 
   // Create edgeTypes with custom edge components for better direction visibility
   const edgeTypes = useMemo(() => ({
@@ -1806,8 +1796,11 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     if (open && workflowId) {
       // Only clear state if workflowId has actually changed (not just object reference)
       if (previousWorkflowIdRef.current !== workflowId) {
-        // Don't clear nodes and edges - let loadWorkflowData handle it
+        console.log('🔧 [STATE CLEANUP] Clearing previous workflow state for new workflowId:', workflowId, 'previous:', previousWorkflowIdRef.current);
+        setNodes([]);
+        setEdges([]);
         setCurrentWorkflowName('Loading...');
+        setNodeCounter(1);
         
         // Clear any execution state
         setExecutionError(null);
@@ -1815,16 +1808,16 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         setExecutionLogs([]);
         setCompletionDialogOpen(false);
         setNoteViewerOpen(false);
-        
-        // Update the ref to track this workflowId
-        previousWorkflowIdRef.current = workflowId;
+      } else {
+        console.log('🔧 [STATE CLEANUP] WorkflowId unchanged, skipping state reset:', workflowId);
       }
     }
-  }, [workflowId, open]);
+  }, [workflowId]);
 
   // Load workflow data immediately when workflowId is provided
   useEffect(() => {
     if (workflowId) {
+      console.log('LOADING WORKFLOW', workflowId);
       loadWorkflowData(workflowId);
     }
   }, [workflowId]);
@@ -1832,16 +1825,22 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
   const loadWorkflowData = async (id: number) => {
     try {
       // Loading workflow from database
+      console.log('FETCHING WORKFLOW', id);
       const response = await fetch(`http://127.0.0.1:8000/api/v1/automation/workflows/${id}`);
       if (response.ok) {
         const workflow = await response.json();
+        console.log('WORKFLOW LOADED', workflow);
         // Workflow loaded successfully
         
         const langflowConfig = workflow.langflow_config || {};
+        console.log('🔧 [EDGE DEBUG] LangFlow config:', langflowConfig);
         
         setCurrentWorkflowName(workflow.name);
         
         if (langflowConfig.nodes && langflowConfig.edges) {
+          console.log('🔧 [EDGE DEBUG] Processing nodes and edges...');
+          console.log('🔧 [EDGE DEBUG] Raw nodes:', langflowConfig.nodes);
+          console.log('🔧 [EDGE DEBUG] Raw edges:', langflowConfig.edges);
           
           // DEBUG: Check for CacheNode in raw backend data
           const rawCacheNodes = langflowConfig.nodes.filter(node => 
@@ -1850,25 +1849,36 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           const rawCacheNodeEdges = langflowConfig.edges.filter(edge => 
             rawCacheNodes.some(n => n.id === edge.source || n.id === edge.target)
           );
+          console.log('🔍 [CACHE DEBUG] Raw backend CacheNodes:', rawCacheNodes);
+          console.log('🔍 [CACHE DEBUG] Raw backend CacheNode edges:', rawCacheNodeEdges);
+          console.log('🔍 [CACHE DEBUG] ALL raw backend edges:', langflowConfig.edges);
+          console.log('🔍 [CACHE DEBUG] CacheNode IDs:', rawCacheNodes.map(n => n.id));
           
           // Transform backend format to frontend format for editing
           const frontendNodes = transformNodesFromBackendFormat(langflowConfig.nodes);
+          console.log('🔧 [EDGE DEBUG] Transformed frontend nodes:', frontendNodes);
           
           // DEBUG: Check for CacheNode after transformation
           const frontendCacheNodes = frontendNodes.filter(node => node.type === 'cachenode');
+          console.log('🔍 [CACHE DEBUG] Frontend CacheNodes after transformation:', frontendCacheNodes);
           
           // Migrate legacy handle IDs to correct directional handle IDs
+          console.log('🔧 [EDGE DEBUG] Starting edge migration...');
           const migratedEdges = migrateEdgeHandleIds(langflowConfig.edges, frontendNodes);
+          console.log('🔧 [EDGE DEBUG] Migration completed. Result:', migratedEdges);
           
           // Apply sequence information to agent nodes
           const nodesWithSequenceInfo = calculateAndAssignSequenceInfo(frontendNodes, migratedEdges);
           
+          console.log('🔧 [EDGE DEBUG] Setting nodes:', nodesWithSequenceInfo);
+          console.log('🔧 [EDGE DEBUG] Setting edges:', migratedEdges);
           
           // EMERGENCY: Filter edges to prevent ReactFlow errors
           const validEdges = migratedEdges.filter(edge => {
             // DEBUG: Log every edge being processed, especially CacheNode edges
             const isCacheNodeEdge = rawCacheNodes.some(n => n.id === edge.source || n.id === edge.target);
             if (isCacheNodeEdge) {
+              console.log('🔍 [CACHE DEBUG] Processing CacheNode edge:', edge);
             }
             
             const sourceNode = nodesWithSequenceInfo.find(n => n.id === edge.source);
@@ -1876,7 +1886,12 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             
             // Skip edges with missing nodes
             if (!sourceNode || !targetNode) {
+              console.warn('🚨 [EMERGENCY] Skipping edge with missing nodes:', edge.id);
               if (isCacheNodeEdge) {
+                console.error('🔍 [CACHE DEBUG] CRITICAL: CacheNode edge being filtered due to missing nodes!', edge);
+                console.error('🔍 [CACHE DEBUG] Missing source node:', !sourceNode ? edge.source : 'found');
+                console.error('🔍 [CACHE DEBUG] Missing target node:', !targetNode ? edge.target : 'found');
+                console.error('🔍 [CACHE DEBUG] Available nodes:', nodesWithSequenceInfo.map(n => ({ id: n.id, type: n.type })));
               }
               return false;
             }
@@ -1889,48 +1904,38 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             );
             
             if (isLegacyEdge) {
+              console.warn('🚨 [EMERGENCY] Skipping edge with legacy handles:', edge.id, edge.sourceHandle, edge.targetHandle);
               if (isCacheNodeEdge) {
+                console.error('🔍 [CACHE DEBUG] CRITICAL: CacheNode edge being filtered due to legacy handles!', edge);
+                console.error('🔍 [CACHE DEBUG] Edge handles:', { sourceHandle: edge.sourceHandle, targetHandle: edge.targetHandle });
               }
               return false;
             }
             
             // Log if this is a ParallelNode edge that's being preserved
             if (edge.targetHandle === 'input' && targetNode?.type === 'parallelnode') {
+              console.log('✅ [EDGE FILTER] Preserving ParallelNode edge with legitimate "input" handle:', edge.id);
             }
             
             if (isCacheNodeEdge) {
+              console.log('🔍 [CACHE DEBUG] CacheNode edge PASSED filtering:', edge);
             }
             
             return true;
           });
           
+          console.log('🔧 [EDGE DEBUG] Filtered edges (removed problematic ones):', validEdges);
           
           // DEBUG: Final check for CacheNode edges
           const finalCacheNodeEdges = validEdges.filter(edge => 
             nodesWithSequenceInfo.some(n => n.type === 'cachenode' && (n.id === edge.source || n.id === edge.target))
           );
+          console.log('🔍 [CACHE DEBUG] Final CacheNode edges after filtering:', finalCacheNodeEdges);
           
-          // Initialize RouterNodes with connected nodes
-          const nodesWithRouterConnections = nodesWithSequenceInfo.map(node => {
-            if (node.type === 'routernode' || node.type === 'router') {
-              const connectedNodeIds = validEdges
-                .filter(edge => edge.source === node.id)
-                .map(edge => edge.target);
-              
-              return {
-                ...node,
-                data: {
-                  ...node.data,
-                  connectedNodes: connectedNodeIds
-                }
-              };
-            }
-            return node;
-          });
-          
-          setNodes(nodesWithRouterConnections);
+          setNodes(nodesWithSequenceInfo);
           setEdges(validEdges);
           
+          console.log('🔧 [EDGE DEBUG] Nodes and edges set successfully');
           
           // Set higher node counter to avoid ID conflicts
           const maxId = Math.max(
@@ -1941,36 +1946,49 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             0
           );
           setNodeCounter(maxId + 1);
+          console.log(`Set node counter to: ${maxId + 1}`);
         } else {
+          console.warn('No nodes or edges found in workflow config');
         }
       } else {
+        console.error('Failed to load workflow - HTTP', response.status);
       }
     } catch (error) {
+      console.error('Failed to load workflow:', error);
     }
   };
 
   const onConnect = useCallback(
     (params: Connection) => {
+      console.log('🔗 Connection attempt:', params);
+      console.log('🔗 Workflow type:', workflowType);
       
       // Always allow connections for now - we'll validate at execution time
       if (params.source && params.target) {
         const sourceNode = nodes.find(n => n.id === params.source);
         const targetNode = nodes.find(n => n.id === params.target);
         
+        console.log('🔗 Source node:', sourceNode?.type, 'ID:', sourceNode?.id);
+        console.log('🔗 Target node:', targetNode?.type, 'ID:', targetNode?.id);
+        console.log('🔗 Handles:', params.sourceHandle, '->', params.targetHandle);
         
         if (sourceNode && targetNode) {
           // For agent-based workflows, be very permissive
           if (workflowType === 'agent_based') {
+            console.log('✅ Agent-based connection allowed');
             setEdgesWithChangeTracking((eds) => addEdge(params, eds));
             return;
           }
           
           // For legacy workflows, also be permissive but with some validation
+          console.log('✅ Legacy connection allowed');
           setEdgesWithChangeTracking((eds) => addEdge(params, eds));
           return;
         } else {
+          console.error('❌ Source or target node not found');
         }
       } else {
+        console.error('❌ Missing source or target in connection params');
       }
     },
     [setEdges, nodes, workflowType]
@@ -1978,10 +1996,14 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
 
   // Add new node to the canvas
   const addNode = useCallback((nodeType: string) => {
+    console.log(`Adding node of type: ${nodeType}`);
     const template = getCurrentNodeTemplate(nodeType);
     if (!template) {
+      console.error(`Template not found for node type: ${nodeType}`);
+      console.log('Available templates:', getCurrentNodeTemplates().map(t => t.type));
       return;
     }
+    console.log('Found template:', template);
 
     // Get handle metadata for the node type
     const handles = getCurrentNodeHandles(nodeType);
@@ -2082,10 +2104,12 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
   // Simple auto-spacing using ReactFlow collision detection
   const onLayout = useCallback(async (algorithm?: 'hierarchical' | 'force-directed' | 'grid' | 'smart' | 'execution-sequence' | 'execution-force-directed' | 'execution-layered' | 'execution-semantic') => {
     if (isLayoutAnimating) {
+      console.log('[LAYOUT] Layout already in progress - ignoring request');
       return;
     }
     
     setIsLayoutAnimating(true);
+    console.log('[LAYOUT] 🎨 Starting simple auto-spacing...');
     
     try {
       // Use simple layout that only fixes overlaps
@@ -2096,6 +2120,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         // Note: getIntersectingNodes not available here, will use fallback
       );
       
+      console.log('[LAYOUT] ✨ Simple spacing adjustments completed');
       
       // Apply sequence information after layout
       const nodesWithSequenceInfo = calculateAndAssignSequenceInfo(layoutedNodes, layoutedEdges);
@@ -2105,10 +2130,13 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       setEdges([...layoutedEdges]);
       
     } catch (error) {
+      console.error('[LAYOUT] ❌ Auto-spacing failed:', error);
       // Fallback: keep original positions
+      console.log('[LAYOUT] 🔧 Keeping original positions');
       
     } finally {
       setIsLayoutAnimating(false);
+      console.log('[LAYOUT] ✅ Auto-spacing completed');
     }
   }, [nodes, edges, setNodes, setEdges, layoutOptions, isLayoutAnimating, calculateAndAssignSequenceInfo]);
 
@@ -2184,6 +2212,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
   // Helper function to ensure nodes have valid positions
   const ensureNodePosition = (node: any, index: number) => {
     if (!node.position || typeof node.position.x !== 'number' || typeof node.position.y !== 'number') {
+      console.warn(`Node ${node.id} missing or invalid position, adding default coordinates`);
       return {
         ...node,
         position: { x: 100 + index * 150, y: 100 + index * 100 }
@@ -2193,15 +2222,36 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
   };
 
   const transformNodesFromBackendFormat = (backendNodes: any[]) => {
+    console.log('Starting transformation of backend nodes:', backendNodes);
     
     return backendNodes.map((node, index) => {
+      console.log(`Transforming node ${index}:`, node);
       const nodeData = node.data;
       
       // DEBUG: Log CacheNode specifically
       if (nodeData?.type === 'CacheNode' || node.type === 'cachenode') {
-        // Skip debug logging
+        console.log('🔍 [CACHE DEBUG] Processing CacheNode in transformNodesFromBackendFormat:', {
+          nodeId: node.id,
+          nodeType: node.type,
+          dataType: nodeData?.type,
+          hasDataNode: !!nodeData?.node,
+          fullNodeData: nodeData
+        });
       }
       
+      // If it's already in frontend format, return as-is but ensure position exists
+      if (!nodeData.type || !nodeData.node) {
+        console.log(`Node ${index} already in frontend format:`, node);
+        // DEBUG: Check if we're losing CacheNode here
+        if (nodeData?.type === 'CacheNode' || node.type === 'cachenode') {
+          console.error('🔍 [CACHE DEBUG] CRITICAL: CacheNode being returned as-is without transformation!', node);
+        }
+        
+        return ensureNodePosition(node, index);
+      }
+      
+      console.log(`Node ${index} backend type: ${nodeData.type}`);
+      console.log(`Node ${index} node data:`, nodeData.node);
       
       // Transform based on backend node type
       switch (nodeData.type) {
@@ -2220,6 +2270,13 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           };
           
         case 'JarvisAgentNode':
+          console.log(`CustomWorkflowEditor: Transforming agent node ${node.id} from backend format. State management fields:`, {
+            state_enabled: nodeData.node.state_enabled,
+            state_operation: nodeData.node.state_operation,
+            output_format: nodeData.node.output_format,
+            chain_key: nodeData.node.chain_key,
+            label: nodeData.label
+          });
           return {
             ...node,
             type: 'agent',
@@ -2342,7 +2399,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
 
         // Agent-based node types
         case 'AgentNode':
-          console.log('AgentNode data:', {
+          console.log(`CustomWorkflowEditor: Transforming AgentNode ${node.id} from backend format. State management fields:`, {
             state_enabled: nodeData.node.state_enabled,
             state_operation: nodeData.node.state_operation,
             output_format: nodeData.node.output_format,
@@ -2351,6 +2408,10 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           // Filter out hardcoded model specs from context while preserving legitimate config
           const filteredContext = filterContextCorruption(nodeData.node.context || {});
           
+          console.log('=== LOADING AGENT NODE ===');
+          console.log('Node ID:', node.id);
+          console.log('nodeData.label:', nodeData.label);
+          console.log('Full nodeData:', nodeData);
           const agentResult = {
             ...node,
             type: 'agentnode',
@@ -2374,6 +2435,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               chainKey: nodeData.node.chain_key || ''
             }
           };
+          console.log(`Transformed AgentNode:`, agentResult);
           return agentResult;
 
         case 'InputNode':
@@ -2388,6 +2450,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           };
 
         case 'OutputNode':
+          console.log('🔧 [LOAD DEBUG] Loading OutputNode, nodeData.node:', nodeData.node);
           const loadedOutputNode = {
             ...node,
             type: 'outputnode',
@@ -2407,6 +2470,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               auto_save: nodeData.node.auto_save || false
             }
           };
+          console.log('🔧 [LOAD DEBUG] OutputNode loaded result:', loadedOutputNode);
           return loadedOutputNode;
 
         case 'ConditionNode':
@@ -2482,7 +2546,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           };
 
         case 'CacheNode':
-          console.log('CacheNode data:', {
+          console.log('🔍 [CACHE DEBUG] Transforming CacheNode from backend to frontend:', {
             originalNode: node,
             nodeData: nodeData.node
           });
@@ -2503,10 +2567,11 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               showStatistics: nodeData.node.show_statistics ?? true
             }
           };
+          console.log('🔍 [CACHE DEBUG] CacheNode transformation result:', transformedCacheNode);
           return transformedCacheNode;
           
         case 'TriggerNode':
-          console.log('TriggerNode data:', {
+          console.log('🔍 [TRIGGER DEBUG] Transforming TriggerNode from backend to frontend:', {
             originalNode: node,
             nodeData: nodeData.node
           });
@@ -2531,6 +2596,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               log_requests: nodeData.node.log_requests !== false
             }
           };
+          console.log('🔍 [TRIGGER DEBUG] TriggerNode transformation result:', transformedTriggerNode);
           return transformedTriggerNode;
           
         default:
@@ -2643,7 +2709,9 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
 
   // Transform frontend nodes to backend format for AI-focused workflow
   const transformNodesToBackendFormat = (frontendNodes: Node[]) => {
+    console.log('Transforming nodes to backend format...');
     return frontendNodes.map((node, index) => {
+      console.log(`Transforming node ${index}: ${node.id} (type: ${node.type})`);
       const nodeData = node.data;
       
       // Transform based on node type
@@ -2665,7 +2733,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           };
           
         case 'agent':
-          console.log('agent data:', {
+          console.log(`CustomWorkflowEditor: Transforming agent node ${node.id} to backend format. State management fields:`, {
             stateEnabled: nodeData.stateEnabled,
             stateOperation: nodeData.stateOperation,
             outputFormat: nodeData.outputFormat,
@@ -2868,7 +2936,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           
         // Agent-based workflow node types
         case 'agentnode':
-          console.log('agentnode data:', {
+          console.log(`CustomWorkflowEditor: Transforming agentnode ${node.id} to backend format. State management fields:`, {
             stateEnabled: nodeData.stateEnabled,
             stateOperation: nodeData.stateOperation,
             outputFormat: nodeData.outputFormat,
@@ -2898,6 +2966,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               }
             }
           };
+          console.log(`Saving AgentNode with data:`, agentSaveData);
           return agentSaveData;
           
         case 'inputnode':
@@ -2913,6 +2982,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           };
           
         case 'outputnode':
+          console.log('🔧 [SAVE DEBUG] OutputNode save data:', nodeData);
           const outputNodeResult = {
             ...node,
             data: {
@@ -2926,6 +2996,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               }
             }
           };
+          console.log('🔧 [SAVE DEBUG] OutputNode transformed result:', outputNodeResult);
           return outputNodeResult;
           
         case 'conditionnode':
@@ -3010,7 +3081,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           };
 
         case 'cachenode':
-          console.log('cachenode data:', {
+          console.log('🔍 [CACHE DEBUG] Transforming CacheNode from frontend to backend:', {
             originalNode: node,
             nodeData: nodeData
           });
@@ -3033,6 +3104,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               }
             }
           };
+          console.log('🔍 [CACHE DEBUG] CacheNode backend transformation result:', backendCacheNode);
           return backendCacheNode;
 
         case 'triggernode':
@@ -3059,22 +3131,27 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               }
             }
           };
+          console.log('🔍 [TRIGGER DEBUG] TriggerNode backend transformation result:', backendTriggerNode);
           return backendTriggerNode;
 
         default:
+          console.log(`Unknown node type: ${node.type}, keeping original format`);
           // Keep original format for unknown types
           return ensureNodePosition(node, index);
         }
       } catch (error) {
+        console.error(`Error transforming node ${index} (${node.id}):`, error);
+        console.error('Node data:', nodeData);
         throw new Error(`Failed to transform node ${node.id} (type: ${node.type}): ${error.message}`);
       }
     });
   };
 
   // Internal save function (actual save logic)
-  const performSave = useCallback(async () => {
+  const performSave = async () => {
     // Prevent concurrent saves
     if (isSaving || isAutoSaving) {
+      console.log('Save already in progress, skipping...');
       return;
     }
 
@@ -3085,21 +3162,38 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     }
     
     setIsSaving(true);
+    console.log('=== SAVE WORKFLOW START ===');
+    console.log('🔧 [SAVE DEBUG] Current nodes:', nodes.length);
+    console.log('🔧 [SAVE DEBUG] Current edges:', edges.length);
+    console.log('🔧 [SAVE DEBUG] Workflow ID:', workflowId);
+    console.log('🔧 [SAVE DEBUG] Workflow type:', workflowType);
+    console.log('🔧 [SAVE DEBUG] Nodes state:', nodes);
+    console.log('🔧 [SAVE DEBUG] Open state:', open);
+    console.log('🔧 [SAVE DEBUG] isLoadingSchemas:', isLoadingSchemas);
+    console.log('🔧 [SAVE DEBUG] Template function available:', typeof getCurrentNodeTemplate);
+    console.log('🔧 [SAVE DEBUG] Available templates:', getCurrentNodeTemplates().map(t => t.type));
     
     // DEBUG: Check for CacheNode specifically
     const cacheNodes = nodes.filter(node => node.type === 'cachenode');
     const cacheNodeEdges = edges.filter(edge => 
       cacheNodes.some(n => n.id === edge.source || n.id === edge.target)
     );
+    console.log('🔍 [CACHE DEBUG] CacheNodes before save:', cacheNodes);
+    console.log('🔍 [CACHE DEBUG] CacheNode edges before save:', cacheNodeEdges);
     
     // Transform nodes to backend format
     let transformedNodes = [];
     try {
       // Add safety check for empty nodes
       if (!nodes || nodes.length === 0) {
+        console.error('CRITICAL: No nodes to save! This will result in workflow execution failure.');
+        console.error('🔧 [SAVE DEBUG] Nodes state:', nodes);
+        console.error('🔧 [SAVE DEBUG] Nodes length:', nodes?.length);
+        console.error('🔧 [SAVE DEBUG] Nodes is array:', Array.isArray(nodes));
         
         // Check if this is a new workflow that should have default nodes
         if (!workflowId && workflowType) {
+          console.log('🔧 [SAVE DEBUG] New workflow detected, forcing node initialization');
           const startType = workflowType === 'agent_based' ? 'inputnode' : 'start';
           const endType = workflowType === 'agent_based' ? 'outputnode' : 'end';
           
@@ -3147,7 +3241,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           }
         }
         
-        alert('Cannot save workflow: No nodes found. Please add nodes to your workflow.');
+        setExecutionError('Cannot save workflow: No nodes found. Please add nodes to your workflow.');
         setIsSaving(false);
         return;
       }
@@ -3156,22 +3250,29 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       
       // Validate transformed nodes
       if (!transformedNodes || transformedNodes.length === 0) {
+        console.error('CRITICAL: Node transformation resulted in empty array!');
+        console.error('Original nodes:', nodes);
         setExecutionError('Failed to transform workflow nodes. Please check the console for errors.');
         setIsSaving(false);
         return;
       }
       
+      console.log('Transformed nodes successfully:', transformedNodes.length, 'nodes');
+      console.log('Transformed nodes:', transformedNodes);
       
       // DEBUG: Check transformed CacheNodes
       const transformedCacheNodes = transformedNodes.filter(node => 
         node.data?.type === 'CacheNode' || node.type === 'cachenode'
       );
+      console.log('🔍 [CACHE DEBUG] Transformed CacheNodes:', transformedCacheNodes);
     
       // Enhanced workflow data with execution sequence and relationship mapping
       const executionSequence = calculateExecutionSequence(nodes, edges);
       const nodeRelationships = mapNodeRelationships(edges);
       
       // DEBUG: Check edges before enhancement
+      console.log('🔍 [CACHE DEBUG] Edges before enhancement:', edges);
+      console.log('🔍 [CACHE DEBUG] CacheNode edges before enhancement:', cacheNodeEdges);
       
       const enhancedEdges = enhanceEdgesWithHandleInfo(edges);
       
@@ -3179,6 +3280,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       const enhancedCacheNodeEdges = enhancedEdges.filter(edge => 
         cacheNodes.some(n => n.id === edge.source || n.id === edge.target)
       );
+      console.log('🔍 [CACHE DEBUG] Enhanced CacheNode edges:', enhancedCacheNodeEdges);
       
       const workflowData = {
         name: currentWorkflowName || 'Untitled Workflow',
@@ -3202,10 +3304,14 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         is_active: true
       };
       
+      console.log('Langflow config nodes count:', transformedNodes.length);
+      console.log('Langflow config edges count:', enhancedEdges.length);
       
       // CRITICAL: Final validation before save
       if (!workflowData.langflow_config.nodes || workflowData.langflow_config.nodes.length === 0) {
-        alert('Cannot save workflow: No nodes in final data. This is a critical error.');
+        console.error('CRITICAL: Workflow data has no nodes! Aborting save.');
+        console.error('Workflow data:', workflowData);
+        setExecutionError('Cannot save workflow: No nodes in final data. This is a critical error.');
         setIsSaving(false);
         return;
       }
@@ -3214,6 +3320,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       const finalCacheNodeEdges = workflowData.langflow_config.edges.filter(edge => 
         cacheNodes.some(n => n.id === edge.source || n.id === edge.target)
       );
+      console.log('🔍 [CACHE DEBUG] Final CacheNode edges in workflow data:', finalCacheNodeEdges);
 
       // Always handle save directly to avoid state loss
       {
@@ -3221,6 +3328,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         let response;
         if (workflowId) {
           // Update existing workflow
+          console.log('Updating existing workflow:', workflowId);
           response = await fetch(`http://127.0.0.1:8000/api/v1/automation/workflows/${workflowId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -3228,6 +3336,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           });
         } else {
           // Create new workflow
+          console.log('Creating new workflow');
           response = await fetch('http://127.0.0.1:8000/api/v1/automation/workflows', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3235,23 +3344,30 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           });
         }
 
+        console.log('Save response status:', response.status);
+        console.log('Save response ok:', response.ok);
 
         if (response.ok) {
           const result = await response.json();
+          console.log('Save response:', result);
           
           // CRITICAL: Validate the saved workflow data
           if (result.langflow_config) {
             const savedNodes = result.langflow_config.nodes || [];
             if (savedNodes.length === 0) {
+              console.error('CRITICAL: Backend returned workflow with no nodes!');
+              console.error('Backend response:', result);
               setExecutionError('WARNING: Workflow saved but nodes may be missing. Please refresh and check your workflow.');
               // Don't set success to prevent false confidence
               return;
             }
+            console.log('Backend confirmed save with', savedNodes.length, 'nodes');
           }
           
           // If creating a new workflow, we get the new ID back
           if (!workflowId && result.id) {
             // Update the URL or state to reflect the new workflow ID for future saves
+            console.log('New workflow created with ID:', result.id);
             // Don't update workflowId state here to avoid re-renders that clear the editor
           }
           
@@ -3264,10 +3380,16 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           setHasUnsavedChanges(false);
         } else {
           const errorText = await response.text();
+          console.error('=== SAVE FAILED ===');
+          console.error('Status:', response.status);
+          console.error('Error text:', errorText);
+          console.error('Response headers:', [...response.headers.entries()]);
           setExecutionError(`Failed to save workflow: ${response.status} - ${errorText}`);
         }
       }
     } catch (error) {
+      console.error('=== SAVE WORKFLOW ERROR ===');
+      console.error('Save error:', error);
       if (error.message && error.message.includes('transform')) {
         setExecutionError(`Failed to transform nodes: ${error.message}`);
       } else {
@@ -3276,7 +3398,8 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     } finally {
       setIsSaving(false);
     }
-  }, [nodes, edges, workflowId, currentWorkflowName, workflowType, isSaving, isAutoSaving]);
+    console.log('=== SAVE WORKFLOW END ===');
+  };
 
   // Debounced save function (prevents rapid clicking)
   const handleSave = useCallback(() => {
@@ -3292,7 +3415,8 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     }, 500);
     
     setSaveTimeoutRef(timeoutId);
-  }, [performSave, saveTimeoutRef]);
+    console.log('Save scheduled with 500ms delay...');
+  }, [saveTimeoutRef]);
   
   // Cleanup timeout on unmount
   useEffect(() => {
@@ -3371,6 +3495,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
                 // Update corresponding nodes with execution data
                 processExecutionLogForNodes(logEntry);
               } catch (e) {
+                console.warn('Failed to parse SSE data:', line);
               }
             }
           }
@@ -3394,6 +3519,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         }
       }
     } catch (error) {
+      console.error('Failed to execute workflow:', error);
       setExecutionError(error instanceof Error ? error.message : 'Unknown error occurred');
     } finally {
       setIsExecuting(false);
@@ -3423,6 +3549,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       if (!currentWorkflowName || currentWorkflowName.trim() === '') {
         // For execution auto-save, use a temporary name if none provided
         const tempName = `Workflow_${Date.now()}`;
+        console.log('Using temporary name for execution auto-save:', tempName);
         
         // Temporarily set the workflow name for auto-save
         const originalName = currentWorkflowName;
@@ -3443,6 +3570,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         return true;
       }
     } catch (error) {
+      console.error('Auto-save failed:', error);
       setExecutionError('Failed to auto-save workflow. Please save manually before executing.');
       return false;
     } finally {
@@ -3551,6 +3679,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     // Clear selection
     setSelectedNodeIds([]);
     
+    console.log(`Created simple group box ${groupBoxId} around ${selectedNodes.length} nodes`);
   }, [nodes, selectedNodeIds, nodeCounter, setNodes]);
 
   // Handle node selection changes
@@ -3607,6 +3736,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           const childNodes = getNodesInGroup(movedNode);
           
           if (childNodes.length > 0 && (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1)) {
+            console.log(`Moving group ${movedNode.id} and ${childNodes.length} child nodes by (${deltaX}, ${deltaY})`);
             
             // Move all child nodes by the same delta
             const childChanges = childNodes.map(childNode => ({
@@ -3732,20 +3862,18 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             
             {/* Group Creation Button */}
             <Tooltip title={selectedNodeIds.length > 0 ? `Create Group (${selectedNodeIds.length} selected)` : "Select nodes to group"}>
-              <span>
-                <IconButton
-                  size="small"
-                  onClick={handleCreateGroupFromSelected}
-                  disabled={selectedNodeIds.length === 0}
-                  color={selectedNodeIds.length > 0 ? 'primary' : 'default'}
-                  sx={{ 
-                    border: selectedNodeIds.length > 0 ? '1px solid' : 'none',
-                    borderColor: 'primary.main'
-                  }}
-                >
-                  <GroupIcon />
-                </IconButton>
-              </span>
+              <IconButton
+                size="small"
+                onClick={handleCreateGroupFromSelected}
+                disabled={selectedNodeIds.length === 0}
+                color={selectedNodeIds.length > 0 ? 'primary' : 'default'}
+                sx={{ 
+                  border: selectedNodeIds.length > 0 ? '1px solid' : 'none',
+                  borderColor: 'primary.main'
+                }}
+              >
+                <GroupIcon />
+              </IconButton>
             </Tooltip>
             
             {/* Layout Options Menu */}
@@ -3872,53 +4000,45 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
             
             <Tooltip title="Copy Selected Nodes (Ctrl+C)">
-              <span>
-                <IconButton 
-                  onClick={copyNodes} 
-                  size="small"
-                  disabled={selectedNodeIds.length === 0}
-                >
-                  <ContentCopy />
-                </IconButton>
-              </span>
+              <IconButton 
+                onClick={copyNodes} 
+                size="small"
+                disabled={selectedNodeIds.length === 0}
+              >
+                <ContentCopy />
+              </IconButton>
             </Tooltip>
             
             <Tooltip title="Duplicate Selected Nodes (Ctrl+D)">
-              <span>
-                <IconButton 
-                  onClick={duplicateNodes} 
-                  size="small"
-                  disabled={selectedNodeIds.length === 0}
-                >
-                  <ContentCopy />
-                </IconButton>
-              </span>
+              <IconButton 
+                onClick={duplicateNodes} 
+                size="small"
+                disabled={selectedNodeIds.length === 0}
+              >
+                <ContentCopy />
+              </IconButton>
             </Tooltip>
             
             <Tooltip title={isAutoSaving ? "Auto-saving workflow..." : "Quick Execute Workflow"}>
-              <span>
-                <IconButton 
-                  onClick={handleQuickExecute} 
-                  size="small" 
-                  disabled={!workflowId || isExecuting || isAutoSaving}
-                  color={isExecuting ? 'warning' : isAutoSaving ? 'info' : 'default'}
-                >
-                  {isExecuting || isAutoSaving ? <CircularProgress size={20} /> : <PlayIcon />}
-                </IconButton>
-              </span>
+              <IconButton 
+                onClick={handleQuickExecute} 
+                size="small" 
+                disabled={!workflowId || isExecuting || isAutoSaving}
+                color={isExecuting ? 'warning' : isAutoSaving ? 'info' : 'default'}
+              >
+                {isExecuting || isAutoSaving ? <CircularProgress size={20} /> : <PlayIcon />}
+              </IconButton>
             </Tooltip>
             
             <Tooltip title={isSaving ? "Saving workflow..." : "Save Workflow"}>
-              <span>
-                <IconButton 
-                  onClick={handleSave} 
-                  size="small"
-                  disabled={isSaving || isAutoSaving}
-                  color={isSaving ? 'info' : 'default'}
-                >
-                  {isSaving ? <CircularProgress size={20} /> : <SaveIcon />}
-                </IconButton>
-              </span>
+              <IconButton 
+                onClick={handleSave} 
+                size="small"
+                disabled={isSaving || isAutoSaving}
+                color={isSaving ? 'info' : 'default'}
+              >
+                {isSaving ? <CircularProgress size={20} /> : <SaveIcon />}
+              </IconButton>
             </Tooltip>
             
             <Tooltip title={showAllIO ? "Collapse All I/O" : "Expand All I/O"}>
@@ -4042,6 +4162,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               // Create node at dropped position using the same logic as addNode
               const template = getCurrentNodeTemplate(type);
               if (!template) {
+                console.error(`Template not found for node type: ${type}`);
                 return;
               }
               

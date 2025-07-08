@@ -31,7 +31,17 @@ interface WorkflowResult {
 
 interface EnhancedWorkflowCompletionDialogProps {
   open: boolean;
-  onClose: () => void;
+  onViewNow?: () => void;
+  onSaveOnly?: () => void;
+  onViewAndSave?: () => void;
+  onViewLater?: () => void;
+  onDismiss?: () => void;
+  workflowName?: string;
+  outputFormat?: string;
+  executionTime?: number;
+  metadata?: any;
+  // Legacy props for backward compatibility
+  onClose?: () => void;
   results?: WorkflowResult[];
   overallStatus?: 'success' | 'error' | 'partial';
   totalDuration?: number;
@@ -67,6 +77,16 @@ const getStatusColor = (status: string) => {
 
 const EnhancedWorkflowCompletionDialog: React.FC<EnhancedWorkflowCompletionDialogProps> = ({
   open,
+  onViewNow,
+  onSaveOnly,
+  onViewAndSave,
+  onViewLater,
+  onDismiss,
+  workflowName,
+  outputFormat,
+  executionTime,
+  metadata,
+  // Legacy props for backward compatibility
   onClose,
   results = [],
   overallStatus = 'success',
@@ -78,63 +98,96 @@ const EnhancedWorkflowCompletionDialog: React.FC<EnhancedWorkflowCompletionDialo
   const errorCount = results.filter(r => r.status === 'error').length;
   const completionRate = results.length > 0 ? (successCount / results.length) * 100 : 0;
 
+  // Use workflow name and metadata if available, otherwise fall back to legacy props
+  const displayName = workflowName || 'Workflow';
+  const displayDuration = executionTime || totalDuration;
+  const displayStatus = overallStatus || 'success';
+
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={onDismiss || onClose}
       maxWidth="md"
       fullWidth
     >
       <DialogTitle>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Typography variant="h6">
-            Workflow Execution Complete
+            {displayName} - Execution Complete
           </Typography>
           <Chip 
-            label={overallStatus.toUpperCase()} 
-            color={getStatusColor(overallStatus) as any}
+            label={displayStatus.toUpperCase()} 
+            color={getStatusColor(displayStatus) as any}
             variant="outlined"
           />
         </Box>
       </DialogTitle>
       
       <DialogContent>
-        {/* Progress Summary */}
+        {/* Workflow Summary */}
         <Box sx={{ mb: 3 }}>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-            Completion Rate: {completionRate.toFixed(1)}%
+          <Typography variant="body1" sx={{ mb: 2 }}>
+            Your workflow has completed successfully! What would you like to do with the results?
           </Typography>
-          <LinearProgress 
-            variant="determinate" 
-            value={completionRate}
-            color={overallStatus === 'success' ? 'success' : overallStatus === 'error' ? 'error' : 'warning'}
-            sx={{ mb: 2 }}
-          />
           
           <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
             <Chip 
               icon={<CheckCircleIcon />}
-              label={`${successCount} Successful`}
+              label="Completed"
               color="success"
               variant="outlined"
               size="small"
             />
-            {errorCount > 0 && (
+            {outputFormat && (
               <Chip 
-                icon={<ErrorIcon />}
-                label={`${errorCount} Failed`}
-                color="error"
+                label={`Format: ${outputFormat}`}
                 variant="outlined"
                 size="small"
               />
             )}
-            <Chip 
-              label={`${totalDuration.toFixed(2)}s Total`}
-              variant="outlined"
-              size="small"
-            />
+            {displayDuration > 0 && (
+              <Chip 
+                label={`${displayDuration.toFixed(2)}s`}
+                variant="outlined"
+                size="small"
+              />
+            )}
           </Box>
         </Box>
+
+        {/* Legacy Progress Summary - show if using legacy props */}
+        {results.length > 0 && (
+          <Box sx={{ mb: 3 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Completion Rate: {completionRate.toFixed(1)}%
+            </Typography>
+            <LinearProgress 
+              variant="determinate" 
+              value={completionRate}
+              color={displayStatus === 'success' ? 'success' : displayStatus === 'error' ? 'error' : 'warning'}
+              sx={{ mb: 2 }}
+            />
+            
+            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              <Chip 
+                icon={<CheckCircleIcon />}
+                label={`${successCount} Successful`}
+                color="success"
+                variant="outlined"
+                size="small"
+              />
+              {errorCount > 0 && (
+                <Chip 
+                  icon={<ErrorIcon />}
+                  label={`${errorCount} Failed`}
+                  color="error"
+                  variant="outlined"
+                  size="small"
+                />
+              )}
+            </Box>
+          </Box>
+        )}
 
         <Divider sx={{ mb: 2 }} />
 
@@ -211,6 +264,34 @@ const EnhancedWorkflowCompletionDialog: React.FC<EnhancedWorkflowCompletionDialo
       </DialogContent>
       
       <DialogActions>
+        {/* New workflow completion actions */}
+        {onViewNow && (
+          <Button onClick={onViewNow} variant="contained" color="primary">
+            View Now
+          </Button>
+        )}
+        {onSaveOnly && (
+          <Button onClick={onSaveOnly} variant="outlined">
+            Save Only
+          </Button>
+        )}
+        {onViewAndSave && (
+          <Button onClick={onViewAndSave} variant="contained" color="secondary">
+            View & Save
+          </Button>
+        )}
+        {onViewLater && (
+          <Button onClick={onViewLater} variant="outlined">
+            View Later
+          </Button>
+        )}
+        {onDismiss && (
+          <Button onClick={onDismiss} variant="outlined">
+            Dismiss
+          </Button>
+        )}
+        
+        {/* Legacy actions for backward compatibility */}
         {onDownloadResults && (
           <Button onClick={onDownloadResults} variant="outlined">
             Download Results
@@ -221,9 +302,11 @@ const EnhancedWorkflowCompletionDialog: React.FC<EnhancedWorkflowCompletionDialo
             Retry Failed
           </Button>
         )}
-        <Button onClick={onClose} variant="contained">
-          Close
-        </Button>
+        {onClose && (
+          <Button onClick={onClose} variant="contained">
+            Close
+          </Button>
+        )}
       </DialogActions>
     </Dialog>
   );

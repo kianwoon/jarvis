@@ -1135,7 +1135,7 @@ function App() {
         <Box sx={{ flex: 1, overflow: 'hidden' }}>
           <TabPanel value={tabValue} index={0}>
             <ChatInterface 
-              endpoint="/api/v1/chat/intelligent-chat" 
+              endpoint="/api/v1/langchain/rag" 
               title="Standard Chat"
             />
           </TabPanel>

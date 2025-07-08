@@ -283,24 +283,16 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
 
   // Sync title value from props
   useEffect(() => {
-    console.log('AgentNode: data.label changed:', data.label);
     setTitleValue(data.label || '');
   }, [data.label]);
 
   // Debug effect to monitor all data changes
   useEffect(() => {
-    console.log('AgentNode: Full data object changed:', data);
+    // Monitor data changes for debugging
   }, [data]);
 
   // Sync state management fields from props
   useEffect(() => {
-    console.log('AgentNode: Syncing state management fields from props:', {
-      stateEnabled: data.stateEnabled,
-      stateOperation: data.stateOperation,
-      outputFormat: data.outputFormat,
-      chainKey: data.chainKey
-    });
-    
     if (data.stateEnabled !== undefined) {
       setStateEnabled(data.stateEnabled);
     }
@@ -366,7 +358,7 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
   
   // Debug logging
   useEffect(() => {
-    console.log(`AgentNode ${id} - Status: ${executionData?.status || 'idle'}, isExecuting: ${isExecuting}`);
+    // Monitor execution status for debugging
   }, [executionData?.status, isExecuting, id]);
   
   // Animation now handled entirely by CSS - removed JavaScript animation code
@@ -400,7 +392,7 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
   // Helper function to copy content to clipboard
   const copyToClipboard = (content: string) => {
     navigator.clipboard.writeText(content).then(() => {
-      console.log('Content copied to clipboard');
+      // Content copied to clipboard
     });
   };
 
@@ -515,12 +507,10 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
     const fetchAgentsAndTools = async () => {
       try {
         // Fetch agents
-        console.log('AgentNode: Fetching agents from /api/v1/langgraph/agents');
         const agentsResponse = await fetch('http://127.0.0.1:8000/api/v1/langgraph/agents');
         
         if (agentsResponse.ok) {
           const agentsData = await agentsResponse.json();
-          console.log('AgentNode: Received agents:', agentsData);
           
           if (Array.isArray(agentsData)) {
             // Filter only active agents with complete data
@@ -541,20 +531,17 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
                 is_active: agent.is_active
               }));
             
-            console.log('AgentNode: Setting active agents:', activeAgents);
             setAvailableAgents(activeAgents);
           }
         } else {
-          console.error('AgentNode: Failed to fetch agents:', agentsResponse.status);
+          // Failed to fetch agents
         }
 
         // Fetch MCP tools
-        console.log('AgentNode: Fetching MCP tools from /api/v1/mcp/tools');
         const toolsResponse = await fetch('http://127.0.0.1:8000/api/v1/mcp/tools');
         
         if (toolsResponse.ok) {
           const toolsData = await toolsResponse.json();
-          console.log('AgentNode: Received tools:', toolsData);
           
           if (Array.isArray(toolsData)) {
             const mcpTools = toolsData.map((tool: any) => ({
@@ -568,10 +555,10 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
             setAvailableTools(mcpTools);
           }
         } else {
-          console.error('AgentNode: Failed to fetch tools:', toolsResponse.status);
+          // Failed to fetch tools
         }
       } catch (error) {
-        console.error('AgentNode: Failed to fetch data:', error);
+        // Failed to fetch data
         // Fallback agents
         const fallbackAgents = [
           { 
@@ -635,35 +622,25 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
   useEffect(() => {
     // Only initialize once when agents are loaded and we haven't initialized yet
     if (availableAgents.length > 0 && !isInitialized) {
-      console.log('AgentNode: Initial setup - checking for agent restore');
-      console.log('AgentNode: data.agentName =', data.agentName);
-      console.log('AgentNode: data.tools =', data.tools);
-      console.log('AgentNode: data.context =', data.context);
-      console.log('AgentNode: data.stateEnabled =', data.stateEnabled);
-      console.log('AgentNode: availableAgents =', availableAgents.map(a => a.name));
+      // Initial setup - checking for agent restore
       
       if (data.agentName && availableAgents.some(a => a.name === data.agentName)) {
-        console.log('AgentNode: Restoring agent configuration for:', data.agentName);
         setSelectedAgent(data.agentName);
         
         // Also restore the agent data when loading existing workflow
         const agentData = availableAgents.find(agent => agent.name === data.agentName);
         if (agentData) {
-          console.log('AgentNode: Found agent data:', agentData);
           setSelectedAgentData(agentData);
           
           // If we have stored tools, use them, otherwise use agent defaults
           if (data.tools && Array.isArray(data.tools) && data.tools.length >= 0) {
-            console.log('AgentNode: Restoring saved tools:', data.tools);
             setSelectedTools(data.tools);
           } else {
-            console.log('AgentNode: Using agent default tools:', agentData.tools);
             setSelectedTools(agentData.tools || []);
           }
           
           // If we have stored context, use it, otherwise use agent defaults
           if (data.context && Object.keys(data.context).length > 0) {
-            console.log('AgentNode: Restoring saved context:', data.context);
             setContext(data.context);
           } else {
             const defaultContext = {
@@ -672,21 +649,14 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
               timeout: agentData.config.timeout,
               model: agentData.config.model
             };
-            console.log('AgentNode: Using agent default context:', defaultContext);
             setContext(defaultContext);
           }
         }
       } else {
-        console.log('AgentNode: No agent to restore or agent not found');
+        // No agent to restore or agent not found
       }
 
       // Restore enhanced state management fields - always check all fields
-      console.log('AgentNode: Restoring state management settings:', {
-        stateEnabled: data.stateEnabled,
-        stateOperation: data.stateOperation,
-        outputFormat: data.outputFormat,
-        chainKey: data.chainKey
-      });
       
       // Set each field explicitly to ensure proper restoration
       if (data.stateEnabled !== undefined) {
@@ -708,8 +678,7 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
 
   // Debug: Log current state
   useEffect(() => {
-    console.log('AgentNode DEBUG - availableAgents:', availableAgents);
-    console.log('AgentNode DEBUG - selectedAgent:', selectedAgent);
+    // Monitor current state for debugging
   }, [availableAgents, selectedAgent]);
 
   const handleQueryChange = (newQuery: string) => {
@@ -719,31 +688,21 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
 
 
   const handleToolsChange = (toolName: string, isSelected: boolean) => {
-    console.log('handleToolsChange called:', { toolName, isSelected, currentTools: selectedTools });
-    
     const newSelectedTools = isSelected
       ? [...selectedTools, toolName]
       : selectedTools.filter(t => t !== toolName);
     
-    console.log('New tools after change:', newSelectedTools);
-    
     setSelectedTools(newSelectedTools);
     updateNodeData?.(id, { tools: newSelectedTools });
-    
-    console.log('handleToolsChange completed');
   };
 
   const handleRemoveTool = (toolToRemove: string) => {
-    console.log('handleRemoveTool called:', { toolToRemove, currentTools: selectedTools });
-    
     setSelectedTools(prevTools => {
       const newTools = prevTools.filter(t => t !== toolToRemove);
-      console.log('Removing tool - prev:', prevTools, 'new:', newTools);
       
       // Use setTimeout to ensure the state update happens before calling updateNodeData
       setTimeout(() => {
         updateNodeData?.(id, { tools: newTools });
-        console.log('Updated node data with tools:', newTools);
       }, 0);
       
       return newTools;
@@ -752,31 +711,23 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
 
   // Enhanced state management handlers
   const handleStateEnabledChange = (enabled: boolean) => {
-    console.log(`AgentNode ${id}: State enabled changed from ${stateEnabled} to ${enabled}`);
     setStateEnabled(enabled);
     updateNodeData?.(id, { stateEnabled: enabled });
-    console.log(`AgentNode ${id}: updateNodeData called for stateEnabled:`, enabled);
   };
 
   const handleStateOperationChange = (operation: string) => {
-    console.log(`AgentNode ${id}: State operation changed from ${stateOperation} to ${operation}`);
     setStateOperation(operation as 'merge' | 'replace' | 'append' | 'passthrough');
     updateNodeData?.(id, { stateOperation: operation });
-    console.log(`AgentNode ${id}: updateNodeData called for stateOperation:`, operation);
   };
 
   const handleOutputFormatChange = (format: string) => {
-    console.log(`AgentNode ${id}: Output format changed from ${outputFormat} to ${format}`);
     setOutputFormat(format as 'text' | 'structured' | 'context' | 'full');
     updateNodeData?.(id, { outputFormat: format });
-    console.log(`AgentNode ${id}: updateNodeData called for outputFormat:`, format);
   };
 
   const handleChainKeyChange = (key: string) => {
-    console.log(`AgentNode ${id}: Chain key changed from "${chainKey}" to "${key}"`);
     setChainKey(key);
     updateNodeData?.(id, { chainKey: key });
-    console.log(`AgentNode ${id}: updateNodeData called for chainKey:`, key);
   };
 
   // Determine if we should show I/O panels
@@ -909,14 +860,8 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
                   onChange={(e) => setTitleValue(e.target.value)}
                   onBlur={() => {
                     if (titleValue !== data.label) {
-                      console.log('Saving title on blur:', titleValue, 'previous:', data.label);
-                      console.log('updateNodeData function:', updateNodeData);
-                      console.log('Node ID:', id);
                       if (updateNodeData) {
                         updateNodeData(id, { label: titleValue });
-                        console.log('updateNodeData called successfully');
-                      } else {
-                        console.error('updateNodeData is not available');
                       }
                     }
                     setIsEditingTitle(false);
@@ -926,19 +871,12 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
                       e.preventDefault();
                       e.stopPropagation();
                       if (titleValue !== data.label) {
-                        console.log('Saving title (Enter):', titleValue, 'previous:', data.label);
-                        console.log('updateNodeData function:', updateNodeData);
-                        console.log('Node ID:', id);
                         if (updateNodeData) {
                           updateNodeData(id, { label: titleValue });
-                          console.log('updateNodeData called successfully');
-                        } else {
-                          console.error('updateNodeData is not available');
                         }
                       }
                       setIsEditingTitle(false);
                     } else if (e.key === 'Escape') {
-                      console.log('Canceling title edit');
                       setTitleValue(data.label || '');
                       setIsEditingTitle(false);
                     }

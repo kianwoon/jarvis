@@ -743,13 +743,8 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
             <div className="jarvis-form-grid">
               {Object.entries(categories[categoryKey].fields).map(([key, value]) => 
                 renderField(key, value, 0, (fieldKey, fieldValue) => {
-                  // Handle nested field updates
-                  if (fieldKey.includes('.')) {
-                    // For nested fields, we need to reconstruct the object path
-                    onChange(fieldKey, fieldValue);
-                  } else {
-                    onChange(fieldKey, fieldValue);
-                  }
+                  // Handle nested field updates properly
+                  onChange(fieldKey, fieldValue);
                 })
               )}
             </div>

@@ -18,17 +18,21 @@ import {
   Button,
   Tooltip,
   IconButton,
-  Paper
+  Paper,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material';
 import { 
   Output as OutputIcon,
   ExpandMore as ExpandMoreIcon,
   Settings as SettingsIcon,
-  Visibility as VisibilityIcon,
   Save as SaveIcon,
   Info as InfoIcon,
   FileDownload as DownloadIcon,
-  ContentCopy as CopyIcon
+  ContentCopy as CopyIcon,
+  OpenInNew as OpenInNewIcon
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -43,6 +47,8 @@ interface OutputNodeProps {
     auto_display?: boolean;
     auto_save?: boolean;
     save_path?: string;
+    hasReport?: boolean;
+    lastReportTimestamp?: string;
     executionData?: {
       status?: 'idle' | 'running' | 'success' | 'error';
       output?: any;
@@ -54,16 +60,17 @@ interface OutputNodeProps {
   id: string;
   updateNodeData?: (nodeId: string, newData: any) => void;
   showIO?: boolean;
-  onViewReport?: (data: any) => void;
 }
 
-const OutputNode: React.FC<OutputNodeProps> = ({ data, id, updateNodeData, showIO = true, onViewReport }) => {
+const OutputNode: React.FC<OutputNodeProps> = ({ data, id, updateNodeData, showIO = true }) => {
   const [settingsExpanded, setSettingsExpanded] = useState(false);
+  const [fullReportOpen, setFullReportOpen] = useState(false);
+  
   const [label, setLabel] = useState(data.label || 'Workflow Output');
   const [outputFormat, setOutputFormat] = useState(data.output_format || 'auto');
   const [includeMetadata, setIncludeMetadata] = useState(data.include_metadata || false);
   const [includeToolCalls, setIncludeToolCalls] = useState(data.include_tool_calls || false);
-  const [autoDisplay, setAutoDisplay] = useState(data.auto_display || true);
+  const [autoDisplay, setAutoDisplay] = useState<boolean>(data.auto_display ?? true);
   const [autoSave, setAutoSave] = useState(data.auto_save || false);
   const [savePath, setSavePath] = useState(data.save_path || '');
 
@@ -95,10 +102,24 @@ const OutputNode: React.FC<OutputNodeProps> = ({ data, id, updateNodeData, showI
   const hasExecutionData = data.executionData && data.executionData.status !== 'idle';
   const hasOutput = data.executionData?.output;
 
+  // Helper function to clean output text
+  const cleanOutputText = (text: string) => {
+    // Remove <think> tags and their content
+    const withoutThinkTags = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    
+    // Clean up extra whitespace
+    return withoutThinkTags.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+  };
+
   const renderOutput = () => {
     if (!hasOutput) return null;
     
-    const output = data.executionData?.output;
+    let output = data.executionData?.output;
+    
+    // Clean output if it's a string (remove <think> tags)
+    if (typeof output === 'string') {
+      output = cleanOutputText(output);
+    }
     
     if (outputFormat === 'markdown' || (outputFormat === 'auto' && typeof output === 'string' && output.includes('#'))) {
       return (
@@ -136,18 +157,24 @@ const OutputNode: React.FC<OutputNodeProps> = ({ data, id, updateNodeData, showI
 
   const handleCopyOutput = () => {
     if (hasOutput) {
-      const output = typeof data.executionData?.output === 'string' 
-        ? data.executionData.output 
-        : JSON.stringify(data.executionData?.output, null, 2);
+      let output = data.executionData?.output;
+      if (typeof output === 'string') {
+        output = cleanOutputText(output);
+      } else {
+        output = JSON.stringify(output, null, 2);
+      }
       navigator.clipboard.writeText(output);
     }
   };
 
   const handleDownloadOutput = () => {
     if (hasOutput) {
-      const output = typeof data.executionData?.output === 'string' 
-        ? data.executionData.output 
-        : JSON.stringify(data.executionData?.output, null, 2);
+      let output = data.executionData?.output;
+      if (typeof output === 'string') {
+        output = cleanOutputText(output);
+      } else {
+        output = JSON.stringify(output, null, 2);
+      }
       const blob = new Blob([output], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -195,39 +222,29 @@ const OutputNode: React.FC<OutputNodeProps> = ({ data, id, updateNodeData, showI
         </Box>
 
         {/* Execution Status */}
-        {hasExecutionData && (
-          <>
-            {data.executionData?.status === 'error' ? (
-              <Alert severity="error" sx={{ mb: 2, py: 0.5 }}>
-                {data.executionData?.error || 'An error occurred'}
-              </Alert>
-            ) : hasOutput && (
-              <Box mb={2}>
-                <Box display="flex" alignItems="center" justifyContent="space-between" mb={1}>
-                  <Typography variant="body2" fontWeight={500}>Output:</Typography>
-                  <Box>
-                    <IconButton size="small" onClick={handleCopyOutput} title="Copy output">
-                      <CopyIcon fontSize="small" />
-                    </IconButton>
-                    <IconButton size="small" onClick={handleDownloadOutput} title="Download output">
-                      <DownloadIcon fontSize="small" />
-                    </IconButton>
-                    {onViewReport && (
-                      <IconButton 
-                        size="small" 
-                        onClick={() => onViewReport(data.executionData)}
-                        title="View full report"
-                      >
-                        <VisibilityIcon fontSize="small" />
-                      </IconButton>
-                    )}
-                  </Box>
-                </Box>
-                {renderOutput()}
-              </Box>
-            )}
-          </>
-        )}
+        <Box mb={2}>
+          <Box display="flex" alignItems="center" justifyContent="space-between" mb={1}>
+            <Typography variant="body2" fontWeight={500}>Output:</Typography>
+            <Box>
+              <IconButton 
+                size="small" 
+                onClick={() => {
+                  // Try to find the workflow result from parent component
+                  const workflowEditor = document.querySelector('[data-testid="workflow-editor"]');
+                  if (workflowEditor) {
+                    const event = new CustomEvent('viewWorkflowReport');
+                    workflowEditor.dispatchEvent(event);
+                  } else {
+                    setFullReportOpen(true);
+                  }
+                }}
+                title="View full report"
+              >
+                <OpenInNewIcon fontSize="small" />
+              </IconButton>
+            </Box>
+          </Box>
+        </Box>
 
         {/* Settings */}
         <Accordion 
@@ -245,7 +262,7 @@ const OutputNode: React.FC<OutputNodeProps> = ({ data, id, updateNodeData, showI
               {/* Output Format */}
               <PortalSelect
                 value={outputFormat}
-                onChange={(value) => setOutputFormat(value as string)}
+                onChange={(value) => setOutputFormat(value as 'text' | 'json' | 'markdown' | 'html' | 'auto')}
                 label="Output Format"
                 options={[
                   { value: 'auto', label: 'Auto-detect' },
@@ -348,6 +365,116 @@ const OutputNode: React.FC<OutputNodeProps> = ({ data, id, updateNodeData, showI
         }} 
       />
       {/* No output handle - this is the end of the workflow */}
+      
+      {/* Full Report Dialog */}
+      <Dialog
+        open={fullReportOpen}
+        onClose={() => setFullReportOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box display="flex" alignItems="center" gap={1}>
+            <OutputIcon sx={{ color: getStatusColor() }} />
+            {label} - Full Report
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          {hasOutput ? (
+            <Box>
+              {data.executionData?.status === 'error' ? (
+                <Alert severity="error" sx={{ mb: 2 }}>
+                  {data.executionData?.error || 'An error occurred'}
+                </Alert>
+              ) : (
+                <Box>
+                  {/* Render full output with proper markdown */}
+                  {(() => {
+                    let output = data.executionData?.output;
+                    if (typeof output === 'string') {
+                      output = cleanOutputText(output);
+                    }
+                    
+                    if (outputFormat === 'markdown' || (outputFormat === 'auto' && typeof output === 'string' && output.includes('#'))) {
+                      return (
+                        <Box sx={{ 
+                          '& pre': { 
+                            bgcolor: 'action.hover', 
+                            p: 1, 
+                            borderRadius: 1,
+                            overflow: 'auto'
+                          },
+                          '& code': {
+                            bgcolor: 'action.hover',
+                            px: 0.5,
+                            borderRadius: 0.5
+                          }
+                        }}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {output}
+                          </ReactMarkdown>
+                        </Box>
+                      );
+                    } else if (outputFormat === 'json' || (outputFormat === 'auto' && typeof output === 'object')) {
+                      return (
+                        <Paper variant="outlined" sx={{ p: 2 }}>
+                          <pre style={{ margin: 0, fontSize: '0.9rem', whiteSpace: 'pre-wrap' }}>
+                            {JSON.stringify(output, null, 2)}
+                          </pre>
+                        </Paper>
+                      );
+                    } else {
+                      return (
+                        <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
+                          {typeof output === 'string' ? output : JSON.stringify(output, null, 2)}
+                        </Typography>
+                      );
+                    }
+                  })()}
+                </Box>
+              )}
+              
+              {/* Metadata and Tool Calls if enabled */}
+              {includeMetadata && data.executionData?.metadata && (
+                <Box mt={3}>
+                  <Typography variant="h6" gutterBottom>Metadata</Typography>
+                  <Paper variant="outlined" sx={{ p: 2 }}>
+                    <pre style={{ margin: 0, fontSize: '0.85rem', whiteSpace: 'pre-wrap' }}>
+                      {JSON.stringify(data.executionData.metadata, null, 2)}
+                    </pre>
+                  </Paper>
+                </Box>
+              )}
+              
+              {includeToolCalls && data.executionData?.tool_calls && (
+                <Box mt={3}>
+                  <Typography variant="h6" gutterBottom>Tool Calls</Typography>
+                  <Paper variant="outlined" sx={{ p: 2 }}>
+                    <pre style={{ margin: 0, fontSize: '0.85rem', whiteSpace: 'pre-wrap' }}>
+                      {JSON.stringify(data.executionData.tool_calls, null, 2)}
+                    </pre>
+                  </Paper>
+                </Box>
+              )}
+            </Box>
+          ) : (
+            <Typography color="text.secondary">
+              No output available to display.
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCopyOutput} startIcon={<CopyIcon />}>
+            Copy Output
+          </Button>
+          <Button onClick={handleDownloadOutput} startIcon={<DownloadIcon />}>
+            Download
+          </Button>
+          <Button onClick={() => setFullReportOpen(false)} variant="contained">
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Card>
   );
 };

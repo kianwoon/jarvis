@@ -3850,6 +3850,7 @@ def _map_tool_parameters_service(tool_name: str, params: dict) -> tuple[str, dic
     # Tool name correction mapping - fix common LLM mistakes
     tool_name_mapping = {
         # Common search tool mistakes
+        'search_knowledge': 'knowledge_search',
         'search_internal_knowledge': 'knowledge_search',
         'internal_knowledge_search': 'knowledge_search',
         'search_knowledge_base': 'knowledge_search',
@@ -3893,10 +3894,15 @@ def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> 
             import asyncio
             from app.mcp_services.rag_mcp_service import execute_rag_search, execute_rag_search_sync
             
-            # Extract parameters with defaults
+            # Extract parameters with defaults from RAG config
             query = parameters.get('query', '')
             collections = parameters.get('collections')
-            max_documents = parameters.get('max_documents', 8)
+            
+            # Get max_documents from RAG settings instead of hardcoding
+            from app.core.rag_settings_cache import get_document_retrieval_settings
+            doc_settings = get_document_retrieval_settings()
+            max_documents = parameters.get('max_documents') or doc_settings.get('max_documents_mcp', 8)
+            
             include_content = parameters.get('include_content', True)
             
             # Execute RAG search

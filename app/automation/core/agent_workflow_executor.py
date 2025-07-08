@@ -1196,12 +1196,58 @@ class AgentWorkflowExecutor:
         condition_nodes = condition_nodes or []
         active_target_nodes = set()
         
-        # If we have router nodes, we need to track which agents are selected by routers
+        # Process RouterNodes that are connected from StartNode or InputNode
         if router_nodes:
             for router in router_nodes:
-                # Router will be processed when we encounter agents that output to it
-                # For now, we initialize empty set of target nodes
-                pass
+                router_node_id = router["node_id"]
+                
+                # Check if this router is connected from StartNode or InputNode
+                is_initial_router = False
+                router_input = None
+                
+                for edge in workflow_edges:
+                    if edge.get("target") == router_node_id:
+                        source_id = edge.get("source", "")
+                        # Check if source is StartNode or InputNode
+                        if "start" in source_id.lower() or "input" in source_id.lower():
+                            is_initial_router = True
+                            # For initial routers, use the query as input
+                            router_input = query
+                            break
+                
+                if is_initial_router:
+                    # Check if there's InputNode data in workflow state
+                    if workflow_state and "input" in source_id.lower():
+                        # Try to get InputNode output from workflow state
+                        input_node_output = workflow_state.get_state(f"node_output_{source_id}")
+                        if input_node_output:
+                            router_input = input_node_output
+                            logger.info(f"[ROUTER] Using InputNode data for RouterNode {router_node_id}")
+                    
+                    logger.info(f"[ROUTER] Processing initial RouterNode {router_node_id} with input: {str(router_input)[:100]}...")
+                    
+                    # Process the router with the initial input
+                    router_result = self._process_router_node(
+                        router, router_input, agent_outputs, workflow_edges
+                    )
+                    
+                    if router_result:
+                        active_target_nodes.update(router_result["target_nodes"])
+                        logger.info(f"[ROUTER] Initial router decision: {router_result['matched_routes']} → targets: {list(router_result['target_nodes'])}")
+                        
+                        # Yield router decision event
+                        yield {
+                            "type": "router_decision",
+                            "router_id": router["node_id"],
+                            "matched_routes": router_result["matched_routes"],
+                            "target_nodes": list(router_result["target_nodes"]),
+                            "workflow_id": workflow_id,
+                            "execution_id": execution_id,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "triggered_by": "initial_routing"
+                        }
+                    else:
+                        logger.warning(f"[ROUTER] Initial router {router_node_id} made no routing decision")
         
         for i, agent in enumerate(agents):
             agent_name = agent["name"]

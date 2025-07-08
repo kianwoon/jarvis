@@ -437,17 +437,20 @@ def build_lightweight_decision_prompt() -> str:
 - Need detailed documentation or established knowledge
 - Query involves internal/historical data
 
-**Function Call Format:**
+**CRITICAL: Function Call Format - Use EXACTLY this format:**
 - For tools: call_tool_TOOLNAME(param1="value1", param2="value2")
 - For knowledge: search_knowledge(query="search terms", collections=["collection_name"])
 
-**Instructions:**
-1. Analyze the user's question
-2. Decide if you need tools, knowledge search, both, or neither
-3. Make function calls with appropriate parameters
-4. Provide a comprehensive response based on results
+**MANDATORY Instructions:**
+1. If you need to search knowledge, you MUST call search_knowledge() with the exact format above
+2. Do NOT explain what you will do - just make the function call immediately
+3. Function calls must be on their own line with no extra formatting or markdown
+4. After making function calls, wait for results before providing your response
 
-Keep your reasoning clear and make intelligent decisions about what resources to use.
+**Example for knowledge search:**
+search_knowledge(query="partnership between BeyondSoft and Alibaba", collections=["partnership"])
+
+Make function calls immediately when needed. Do not describe what you will do.
 """
     
     return base_prompt + instructions
@@ -543,9 +546,26 @@ async def parse_function_calls(response_text: str) -> tuple[str, List[Dict], Lis
                     "parameters": parameters
                 })
             elif function_name == 'search_knowledge':
+                logger.info(f"[DEBUG] Routing search_knowledge to RAG searches: {parameters}")
+                # Handle malformed collections parameter
+                collections = parameters.get("collections")
+                if isinstance(collections, str) and collections.startswith('['):
+                    try:
+                        # Try to fix malformed JSON array
+                        collections = json.loads(collections + ']') if not collections.endswith(']') else json.loads(collections)
+                    except:
+                        collections = None
+                
                 rag_searches.append({
                     "query": parameters.get("query", ""),
-                    "collections": parameters.get("collections")
+                    "collections": collections
+                })
+            else:
+                # Unknown function - might be a tool call with different pattern
+                logger.warning(f"[DEBUG] Unknown function pattern: {function_name} - treating as tool call")
+                tool_calls.append({
+                    "tool": function_name,
+                    "parameters": parameters
                 })
         except Exception as e:
             logger.warning(f"Failed to parse function call {function_name}: {e}")
@@ -872,6 +892,10 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 }) + "\n"
                 
                 for tool_call in tool_calls:
+                    # Skip search_knowledge as it should be handled as RAG search
+                    if tool_call['tool'] == 'search_knowledge':
+                        continue
+                        
                     print(f"[DEBUG] Standard chat executing tool {tool_call['tool']} with trace: {trace is not None}")
                     tool_result = await execute_mcp_tool(
                         tool_call["tool"],

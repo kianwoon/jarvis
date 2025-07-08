@@ -633,7 +633,7 @@ class RAGMCPService:
 # Global service instance
 rag_service = RAGMCPService()
 
-async def execute_rag_search(query: str, collections: List[str] = None, max_documents: int = 8, include_content: bool = True) -> Dict[str, Any]:
+async def execute_rag_search(query: str, collections: List[str] = None, max_documents: int = None, include_content: bool = True) -> Dict[str, Any]:
     """Main entry point for MCP tool execution"""
     
     request = RAGSearchRequest(
@@ -645,7 +645,7 @@ async def execute_rag_search(query: str, collections: List[str] = None, max_docu
     
     return await rag_service.search_documents(request)
 
-def execute_rag_search_sync(query: str, collections: List[str] = None, max_documents: int = 8, include_content: bool = True) -> Dict[str, Any]:
+def execute_rag_search_sync(query: str, collections: List[str] = None, max_documents: int = None, include_content: bool = True) -> Dict[str, Any]:
     """Synchronous entry point for MCP tool execution - truly synchronous implementation"""
     import time
     

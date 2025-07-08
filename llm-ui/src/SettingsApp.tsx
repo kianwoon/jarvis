@@ -258,12 +258,24 @@ function SettingsApp() {
     setSuccess(prev => ({ ...prev, [category]: false }));
 
     try {
+      // Clean the data - remove any flat keys that start with "settings."
+      const cleanData = Object.keys(data).reduce((acc, key) => {
+        if (!key.startsWith('settings.')) {
+          acc[key] = data[key];
+        }
+        return acc;
+      }, {} as any);
+
       const response = await fetch(`/api/v1/settings/${category}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(data),
+        body: JSON.stringify({
+          settings: cleanData,
+          persist_to_db: true,
+          reload_cache: true
+        }),
       });
 
       if (!response.ok) {
@@ -290,13 +302,36 @@ function SettingsApp() {
   };
 
   const handleFieldChange = (category: string, field: string, value: any) => {
-    setSettingsData(prev => ({
-      ...prev,
-      [category]: {
-        ...prev[category],
-        [field]: value
+    setSettingsData(prev => {
+      const categoryData = { ...prev[category] };
+      
+      if (field.includes('.')) {
+        // Handle nested field updates (e.g., "document_retrieval.num_docs_retrieve")
+        const keys = field.split('.');
+        let current = categoryData;
+        
+        // Deep clone nested objects to avoid mutation
+        for (let i = 0; i < keys.length - 1; i++) {
+          if (!current[keys[i]]) {
+            current[keys[i]] = {};
+          } else {
+            current[keys[i]] = { ...current[keys[i]] };
+          }
+          current = current[keys[i]];
+        }
+        
+        // Set the final value
+        current[keys[keys.length - 1]] = value;
+      } else {
+        // Handle direct field updates
+        categoryData[field] = value;
       }
-    }));
+      
+      return {
+        ...prev,
+        [category]: categoryData
+      };
+    });
   };
 
   const renderSettingsForm = (category: string) => {

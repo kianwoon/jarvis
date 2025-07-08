@@ -73,7 +73,8 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT json_array_length(langflow_config->'nodes') as node_count FROM automation_workflows WHERE id = 8;\")",
       "WebFetch(domain:reactflow.dev)",
       "Bash(echo:*)",
-      "Bash(git restore:*)"
+      "Bash(git restore:*)",
+      "Bash(perl:*)"
     ],
     "deny": []
   },

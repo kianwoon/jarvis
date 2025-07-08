@@ -54,10 +54,9 @@ def register_rag_mcp_tool():
                     },
                     "max_documents": {
                         "type": "integer",
-                        "description": "Maximum number of documents to return",
-                        "default": 8,
+                        "description": "Maximum number of documents to return (uses RAG config if not specified)",
                         "minimum": 1,
-                        "maximum": 20
+                        "maximum": 50
                     },
                     "include_content": {
                         "type": "boolean",
