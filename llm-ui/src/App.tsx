@@ -28,6 +28,7 @@ import {
   ListItemIcon,
   ListItemText
 } from '@mui/material';
+import DatabaseTableManager from './components/settings/DatabaseTableManager';
 import {
   Send as SendIcon,
   Clear as ClearIcon,
@@ -37,6 +38,7 @@ import {
   Chat as ChatIcon,
   Group as GroupIcon,
   AccountTree as WorkflowIcon,
+  Settings as SettingsIcon,
   CheckCircle as CheckCircleIcon,
   Error as ErrorIcon,
   Schedule as ScheduleIcon,
@@ -927,22 +929,86 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
   );
 }
 
-// Workflow Placeholder
+// Workflow Interface with Automation Management
 function WorkflowInterface() {
+  const [workflowTab, setWorkflowTab] = useState(0);
+  const [automationData, setAutomationData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadAutomationWorkflows = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch('/api/v1/automation/workflows');
+      if (response.ok) {
+        const data = await response.json();
+        setAutomationData(Array.isArray(data) ? data : data.workflows || []);
+      } else {
+        setAutomationData([]);
+      }
+    } catch (err) {
+      setError('Failed to load automation workflows');
+      setAutomationData([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleWorkflowTabChange = (_event: React.SyntheticEvent, newValue: number) => {
+    setWorkflowTab(newValue);
+    if (newValue === 1) {
+      loadAutomationWorkflows();
+    }
+  };
+
+  useEffect(() => {
+    if (workflowTab === 1) {
+      loadAutomationWorkflows();
+    }
+  }, []);
+
   return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 3 }}>
-      <Typography variant="h4" gutterBottom>Workflow Designer</Typography>
-      <Paper sx={{ flex: 1, p: 3, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Box sx={{ textAlign: 'center' }}>
-          <WorkflowIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
-          <Typography variant="h6" gutterBottom>Workflow Editor</Typography>
-          <Typography variant="body2" color="text.secondary">
-            Visual workflow designer will be restored here.
-            <br />
-            Create custom AI workflows with drag-and-drop nodes.
-          </Typography>
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+        <Tabs 
+          value={workflowTab}
+          onChange={handleWorkflowTabChange} 
+          aria-label="workflow tabs"
+          sx={{ px: 2 }}
+        >
+          <Tab label="Visual Designer" id="workflow-tab-0" />
+          <Tab label="Automation & Workflows" id="workflow-tab-1" />
+        </Tabs>
+      </Box>
+
+      {workflowTab === 0 && (
+        <Box sx={{ flex: 1, p: 3 }}>
+          <Typography variant="h4" gutterBottom>Workflow Designer</Typography>
+          <Paper sx={{ flex: 1, p: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+            <Box sx={{ textAlign: 'center' }}>
+              <WorkflowIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
+              <Typography variant="h6" gutterBottom>Visual Workflow Editor</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Visual workflow designer will be restored here.
+                <br />
+                Create custom AI workflows with drag-and-drop nodes.
+              </Typography>
+            </Box>
+          </Paper>
         </Box>
-      </Paper>
+      )}
+
+      {workflowTab === 1 && (
+        <Box sx={{ flex: 1, p: 2 }}>
+          <DatabaseTableManager
+            category="automation"
+            data={automationData}
+            onChange={setAutomationData}
+            onRefresh={loadAutomationWorkflows}
+          />
+        </Box>
+      )}
     </Box>
   );
 }
@@ -952,7 +1018,12 @@ function App() {
     const saved = localStorage.getItem('jarvis-dark-mode');
     return saved ? JSON.parse(saved) : false;
   });
-  const [tabValue, setTabValue] = useState(0);
+  const [tabValue, setTabValue] = useState(() => {
+    // Check URL parameters for initial tab
+    const urlParams = new URLSearchParams(window.location.search);
+    const tab = urlParams.get('tab');
+    return tab ? parseInt(tab, 10) : 0;
+  });
 
   // Create theme based on dark mode state
   const theme = createTheme({
@@ -969,7 +1040,25 @@ function App() {
   });
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
+    if (newValue === 1) {
+      // Redirect to multi-agent page
+      window.location.href = '/multi-agent.html';
+      return;
+    }
+    if (newValue === 3) {
+      // Redirect to settings page
+      window.location.href = '/settings.html';
+      return;
+    }
     setTabValue(newValue);
+    // Update URL parameter
+    const url = new URL(window.location.href);
+    if (newValue === 0) {
+      url.searchParams.delete('tab');
+    } else {
+      url.searchParams.set('tab', newValue.toString());
+    }
+    window.history.pushState({}, '', url.pathname + url.search);
   };
 
   const toggleDarkMode = () => {
@@ -989,6 +1078,16 @@ function App() {
               Jarvis AI Assistant
             </Typography>
             
+            {/* Multi-Agent Mode Button */}
+            <Button
+              variant="outlined"
+              onClick={() => window.location.href = '/multi-agent.html'}
+              sx={{ mr: 2, color: 'white', borderColor: 'white' }}
+              startIcon={<GroupIcon />}
+            >
+              Multi-Agent
+            </Button>
+
             {/* Dark Mode Toggle */}
             <IconButton onClick={toggleDarkMode} color="inherit">
               {darkMode ? <LightModeIcon /> : <DarkModeIcon />}
@@ -1021,6 +1120,12 @@ function App() {
               label="Workflow" 
               id="tab-2"
               aria-controls="tabpanel-2"
+            />
+            <Tab 
+              icon={<SettingsIcon />} 
+              label="Settings" 
+              id="tab-3"
+              aria-controls="tabpanel-3"
             />
           </Tabs>
         </Box>

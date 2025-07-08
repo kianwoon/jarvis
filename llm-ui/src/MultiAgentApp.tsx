@@ -11,18 +11,22 @@ import {
   ThemeProvider,
   createTheme,
   CssBaseline,
-  Button
+  Button,
+  Tabs,
+  Tab
 } from '@mui/material';
 import {
   LightMode as LightModeIcon,
   DarkMode as DarkModeIcon,
-  ArrowBack as ArrowBackIcon,
-  Group as GroupIcon
+  Group as GroupIcon,
+  Chat as ChatIcon,
+  AccountTree as WorkflowIcon,
+  Settings as SettingsIcon
 } from '@mui/icons-material';
 import { Agent, MultiAgentMessage, AgentStatus, CollaborationPhase } from './types/MultiAgent';
-import AgentSelector from './components/multiagent/AgentSelector';
 import CollaborationWorkspace from './components/multiagent/CollaborationWorkspace';
 import MultiAgentChat from './components/multiagent/MultiAgentChat';
+import AgentResponseWindow from './components/multiagent/AgentResponseWindow';
 
 function MultiAgentApp() {
   // Theme management
@@ -32,15 +36,15 @@ function MultiAgentApp() {
   });
 
   // Multi-agent state
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [selectedAgents, setSelectedAgents] = useState<Agent[]>([]);
   const [messages, setMessages] = useState<MultiAgentMessage[]>([]);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({});
+  const [agentStreamingContent, setAgentStreamingContent] = useState<Record<string, string>>({});
+  const [activeAgents, setActiveAgents] = useState<Agent[]>([]);
   const [collaborationPhase, setCollaborationPhase] = useState<CollaborationPhase>({
-    phase: 'selection',
+    phase: 'ready',
     status: 'pending',
     progress: 0,
-    description: 'Select agents for collaboration',
+    description: 'Ready to start multi-agent collaboration',
     agents_involved: []
   });
   const [loading, setLoading] = useState(false);
@@ -66,9 +70,8 @@ function MultiAgentApp() {
     },
   });
 
-  // Load agents on component mount
+  // Load conversation history on component mount
   useEffect(() => {
-    loadAgents();
     loadConversationHistory();
   }, []);
 
@@ -81,19 +84,6 @@ function MultiAgentApp() {
     }
   }, [messages, sessionId, storageKey]);
 
-  const loadAgents = async () => {
-    try {
-      const response = await fetch('/api/v1/langchain/agents');
-      if (response.ok) {
-        const agentsData = await response.json();
-        setAgents(agentsData.agents || []);
-      } else {
-        console.error('Failed to load agents');
-      }
-    } catch (error) {
-      console.error('Error loading agents:', error);
-    }
-  };
 
   const loadConversationHistory = () => {
     try {
@@ -116,39 +106,17 @@ function MultiAgentApp() {
     localStorage.setItem('jarvis-dark-mode', JSON.stringify(newDarkMode));
   };
 
-  const handleAgentSelection = (agents: Agent[]) => {
-    setSelectedAgents(agents);
-    
-    // Update agent statuses
-    const newStatuses: Record<string, AgentStatus> = {};
-    agents.forEach(agent => {
-      newStatuses[agent.name] = {
-        name: agent.name,
-        status: 'selected',
-        current_task: 'Waiting for query'
-      };
-    });
-    setAgentStatuses(newStatuses);
-
-    // Update collaboration phase
-    setCollaborationPhase({
-      phase: 'selection',
-      status: 'complete',
-      progress: 100,
-      description: `Selected ${agents.length} agent${agents.length > 1 ? 's' : ''} for collaboration`,
-      agents_involved: agents.map(a => a.name)
-    });
-  };
 
   const clearConversation = () => {
     setMessages([]);
     setAgentStatuses({});
-    setSelectedAgents([]);
+    setAgentStreamingContent({});
+    setActiveAgents([]);
     setCollaborationPhase({
-      phase: 'selection',
+      phase: 'ready',
       status: 'pending',
       progress: 0,
-      description: 'Select agents for collaboration',
+      description: 'Ready to start multi-agent collaboration',
       agents_involved: []
     });
     
@@ -162,6 +130,33 @@ function MultiAgentApp() {
     window.location.href = '/';
   };
 
+  const goToWorkflow = () => {
+    // Navigate to workflow tab in main app
+    window.location.href = '/?tab=2';
+  };
+
+  const goToSettings = () => {
+    // Navigate to settings page
+    window.location.href = '/settings.html';
+  };
+
+  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
+    switch (newValue) {
+      case 0:
+        goToStandardChat();
+        break;
+      case 1:
+        // Already on multi-agent page, do nothing
+        break;
+      case 2:
+        goToWorkflow();
+        break;
+      case 3:
+        goToSettings();
+        break;
+    }
+  };
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -169,13 +164,8 @@ function MultiAgentApp() {
         {/* Header */}
         <AppBar position="static">
           <Toolbar>
-            <IconButton onClick={goToStandardChat} color="inherit" sx={{ mr: 2 }}>
-              <ArrowBackIcon />
-            </IconButton>
-            
-            <GroupIcon sx={{ mr: 1 }} />
             <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-              Jarvis Multi-Agent Collaboration
+              Jarvis AI Assistant
             </Typography>
             
             <Button
@@ -192,65 +182,118 @@ function MultiAgentApp() {
           </Toolbar>
         </AppBar>
 
+        {/* Navigation Tabs */}
+        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+          <Tabs 
+            value={1}
+            onChange={handleTabChange} 
+            aria-label="jarvis modes"
+            centered
+          >
+            <Tab 
+              icon={<ChatIcon />} 
+              label="Standard Chat" 
+              id="tab-0"
+              aria-controls="tabpanel-0"
+            />
+            <Tab 
+              icon={<GroupIcon />} 
+              label="Multi-Agent" 
+              id="tab-1"
+              aria-controls="tabpanel-1"
+            />
+            <Tab 
+              icon={<WorkflowIcon />} 
+              label="Workflow" 
+              id="tab-2"
+              aria-controls="tabpanel-2"
+            />
+            <Tab 
+              icon={<SettingsIcon />} 
+              label="Settings" 
+              id="tab-3"
+              aria-controls="tabpanel-3"
+            />
+          </Tabs>
+        </Box>
+
         {/* Main Content */}
         <Container maxWidth={false} sx={{ flex: 1, py: 2, overflow: 'hidden' }}>
-          <Grid container spacing={2} sx={{ height: '100%' }}>
-            {/* Agent Selection Panel */}
-            <Grid item xs={12} md={3}>
-              <Paper sx={{ height: '100%', p: 2, overflow: 'auto' }}>
+          <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+            {/* Top Section: Input and Collaboration Status */}
+            <Box sx={{ height: '250px', mb: 2 }}>
+              <Paper sx={{ height: '100%', p: 2, display: 'flex', flexDirection: 'column' }}>
                 <Typography variant="h6" gutterBottom>
-                  Agent Selection
+                  Multi-Agent Collaboration
                 </Typography>
-                <AgentSelector
-                  agents={agents}
-                  selectedAgents={selectedAgents}
-                  onAgentSelection={handleAgentSelection}
-                  collaborationPhase={collaborationPhase}
+                
+                {/* Collaboration Phase Status */}
+                {activeAgents.length > 0 && (
+                  <Box sx={{ mb: 2, maxHeight: '100px', overflow: 'auto' }}>
+                    <CollaborationWorkspace
+                      agentStatuses={agentStatuses}
+                      collaborationPhase={collaborationPhase}
+                      selectedAgents={activeAgents}
+                    />
+                  </Box>
+                )}
+                
+                {/* Input Area */}
+                <MultiAgentChat
+                  messages={messages}
+                  setMessages={setMessages}
+                  sessionId={sessionId}
+                  loading={loading}
+                  setLoading={setLoading}
+                  setAgentStatuses={setAgentStatuses}
+                  setCollaborationPhase={setCollaborationPhase}
+                  agentStatuses={agentStatuses}
+                  setAgentStreamingContent={setAgentStreamingContent}
+                  setActiveAgents={setActiveAgents}
                 />
               </Paper>
-            </Grid>
+            </Box>
 
-            {/* Collaboration Workspace */}
-            <Grid item xs={12} md={6}>
-              <Paper sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-                  <Typography variant="h6">
-                    Collaboration Workspace
+            {/* Bottom Section: Agent Response Windows */}
+            <Box sx={{ flex: 1, overflow: 'auto' }}>
+              {activeAgents.length === 0 ? (
+                <Paper sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Typography variant="h6" color="text.secondary">
+                    Ask a question and agents will be automatically selected to help you
                   </Typography>
-                </Box>
-                <Box sx={{ flex: 1, overflow: 'hidden' }}>
-                  <CollaborationWorkspace
-                    agentStatuses={agentStatuses}
-                    collaborationPhase={collaborationPhase}
-                    selectedAgents={selectedAgents}
-                  />
-                </Box>
-              </Paper>
-            </Grid>
-
-            {/* Chat Interface */}
-            <Grid item xs={12} md={3}>
-              <Paper sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-                  <Typography variant="h6">
-                    Multi-Agent Chat
-                  </Typography>
-                </Box>
-                <Box sx={{ flex: 1, overflow: 'hidden' }}>
-                  <MultiAgentChat
-                    messages={messages}
-                    setMessages={setMessages}
-                    selectedAgents={selectedAgents}
-                    sessionId={sessionId}
-                    loading={loading}
-                    setLoading={setLoading}
-                    setAgentStatuses={setAgentStatuses}
-                    setCollaborationPhase={setCollaborationPhase}
-                  />
-                </Box>
-              </Paper>
-            </Grid>
-          </Grid>
+                </Paper>
+              ) : (
+                <Grid container spacing={2} sx={{ height: '100%' }}>
+                  {activeAgents.map((agent) => (
+                    <Grid item xs={12} md={activeAgents.length <= 2 ? 6 : activeAgents.length <= 4 ? 3 : 2.4} key={agent.id}>
+                      <Paper sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                        <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider', backgroundColor: 'primary.main' }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                            <GroupIcon sx={{ color: 'white' }} />
+                            <Typography variant="h6" sx={{ color: 'white', fontWeight: 'bold' }}>
+                              {agent.name}
+                            </Typography>
+                          </Box>
+                          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.9)' }}>
+                            {agent.role}
+                          </Typography>
+                        </Box>
+                        <Box sx={{ flex: 1, overflow: 'auto', p: 1 }}>
+                          {/* Agent-specific response area */}
+                          <AgentResponseWindow
+                            agent={agent}
+                            agentStatus={agentStatuses[agent.name]}
+                            messages={messages}
+                            streamingContent={agentStreamingContent[agent.name] || ''}
+                          />
+                        </Box>
+                      </Paper>
+                    </Grid>
+                  ))}
+                </Grid>
+              )}
+            </Box>
+          </Box>
         </Container>
       </Box>
     </ThemeProvider>

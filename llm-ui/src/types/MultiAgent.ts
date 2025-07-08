@@ -123,7 +123,7 @@ export interface AgentPerformanceMetrics {
 }
 
 export interface CollaborationPhase {
-  phase: 'selection' | 'execution' | 'communication' | 'synthesis' | 'complete';
+  phase: 'ready' | 'selection' | 'execution' | 'communication' | 'synthesis' | 'complete';
   status: 'pending' | 'active' | 'complete' | 'error';
   progress: number;
   description: string;

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Box,
   TextField,
@@ -6,22 +6,11 @@ import {
   Paper,
   Typography,
   CircularProgress,
-  Alert,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Chip,
-  Divider
+  Alert
 } from '@mui/material';
 import {
-  Send as SendIcon,
-  ExpandMore as ExpandMoreIcon,
-  Group as GroupIcon,
-  Psychology as ThinkingIcon,
-  Build as ToolIcon,
-  Schedule as TimeIcon
+  Send as SendIcon
 } from '@mui/icons-material';
-import { MessageContent } from '../shared/MessageContent';
 import { 
   MultiAgentMessage, 
   Agent, 
@@ -34,37 +23,32 @@ import {
 interface MultiAgentChatProps {
   messages: MultiAgentMessage[];
   setMessages: React.Dispatch<React.SetStateAction<MultiAgentMessage[]>>;
-  selectedAgents: Agent[];
   sessionId: string;
   loading: boolean;
   setLoading: React.Dispatch<React.SetStateAction<boolean>>;
   setAgentStatuses: React.Dispatch<React.SetStateAction<Record<string, AgentStatus>>>;
   setCollaborationPhase: React.Dispatch<React.SetStateAction<CollaborationPhase>>;
+  agentStatuses: Record<string, AgentStatus>;
+  setAgentStreamingContent: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  setActiveAgents: React.Dispatch<React.SetStateAction<Agent[]>>;
 }
 
 const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
   messages,
   setMessages,
-  selectedAgents,
   sessionId,
   loading,
   setLoading,
   setAgentStatuses,
-  setCollaborationPhase
+  setCollaborationPhase,
+  agentStatuses,
+  setAgentStreamingContent,
+  setActiveAgents
 }) => {
   const [input, setInput] = useState('');
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
 
   const sendMessage = async () => {
-    if (!input.trim() || loading || selectedAgents.length === 0) return;
+    if (!input.trim() || loading) return;
 
     const userMessage: MultiAgentMessage = {
       id: `user-${Date.now()}`,
@@ -84,8 +68,13 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
       status: 'active',
       progress: 0,
       description: 'Starting multi-agent collaboration',
-      agents_involved: selectedAgents.map(a => a.name)
+      agents_involved: []
     });
+
+    // Clear previous active agents
+    setActiveAgents([]);
+    setAgentStatuses({});
+    setAgentStreamingContent({});
 
     try {
       const response = await fetch('/api/v1/langchain/multi-agent', {
@@ -96,7 +85,6 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         body: JSON.stringify({
           question: input,
           conversation_id: sessionId,
-          selected_agents: selectedAgents.map(agent => agent.name),
           max_iterations: 10,
           conversation_history: messages.map(msg => ({
             role: msg.role,
@@ -179,7 +167,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
 
       // Reset collaboration phase
       setCollaborationPhase({
-        phase: 'selection',
+        phase: 'ready',
         status: 'pending',
         progress: 0,
         description: 'Error occurred during collaboration',
@@ -195,6 +183,20 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
     switch (data.type) {
       case 'agent_selection':
         console.log('Agent selection:', data);
+        if (data.selected_agents) {
+          // Create agent objects for the selected agents
+          const newAgents: Agent[] = data.selected_agents.map((agentName: string) => ({
+            id: agentName.toLowerCase().replace(/\s+/g, '-'),
+            name: agentName,
+            role: 'AI Agent', // Generic role, will be updated if more info comes
+            system_prompt: '',
+            tools: [],
+            description: '',
+            is_active: true,
+            config: {}
+          }));
+          setActiveAgents(newAgents);
+        }
         setCollaborationPhase({
           phase: 'execution',
           status: 'active',
@@ -215,6 +217,11 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
             start_time: new Date(),
             progress: 0
           }
+        }));
+        // Clear any previous streaming content for this agent
+        setAgentStreamingContent(prev => ({
+          ...prev,
+          [data.agent]: ''
         }));
         break;
 
@@ -245,17 +252,12 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'agent_token':
-        // Handle streaming tokens from agents
-        if (data.agent && data.token) {
-          setMessages(prev => 
-            prev.map(msg => 
-              msg.id === assistantMessage.id ? {
-                ...msg,
-                content: msg.content + data.token
-              } : msg
-            )
-          );
-        }
+        // Handle streaming tokens from agents - route to individual agent windows
+        console.log('Agent token:', data.agent, data.token);
+        setAgentStreamingContent(prev => ({
+          ...prev,
+          [data.agent]: (prev[data.agent] || '') + data.token
+        }));
         break;
 
       case 'agent_tool_start':
@@ -297,12 +299,13 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
           }
         }));
 
-        // Add agent contribution
-        if (data.content && assistantMessage.agent_contributions) {
+        // Add agent contribution using streaming content or provided content
+        if (assistantMessage.agent_contributions) {
+          const streamingContent = data.content || '';
           const contribution: AgentContribution = {
             agent_name: data.agent,
-            agent_role: selectedAgents.find(a => a.name === data.agent)?.role || 'Unknown',
-            content: data.content,
+            agent_role: 'AI Agent', // Generic role
+            content: streamingContent,
             thinking_process: data.thinking,
             tools_used: data.tools_used || [],
             execution_time: data.execution_time || 0,
@@ -320,12 +323,43 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
 
       case 'synthesis_start':
         console.log('Synthesis start:', data);
+        
+        // Add Synthesizer agent to active agents
+        const synthesizerAgent: Agent = {
+          id: 'synthesizer',
+          name: 'Synthesizer',
+          role: 'Final Response Synthesizer',
+          system_prompt: '',
+          tools: [],
+          description: 'Combines and synthesizes all agent responses into a final answer',
+          is_active: true,
+          config: {}
+        };
+        
+        setActiveAgents(prev => {
+          // Only add if not already present
+          const exists = prev.some(agent => agent.id === 'synthesizer');
+          return exists ? prev : [...prev, synthesizerAgent];
+        });
+        
+        // Set synthesizer status
+        setAgentStatuses(prev => ({
+          ...prev,
+          'Synthesizer': {
+            name: 'Synthesizer',
+            status: 'executing',
+            current_task: 'Synthesizing all agent responses',
+            start_time: new Date(),
+            progress: 0
+          }
+        }));
+        
         setCollaborationPhase({
           phase: 'synthesis',
           status: 'active',
           progress: 80,
           description: 'Synthesizing agent responses',
-          agents_involved: selectedAgents.map(a => a.name)
+          agents_involved: Object.keys(agentStatuses)
         });
         break;
 
@@ -341,6 +375,34 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
 
       case 'final_response':
         console.log('Final response:', data);
+        
+        // Update synthesizer status to complete
+        setAgentStatuses(prev => ({
+          ...prev,
+          'Synthesizer': {
+            ...prev['Synthesizer'],
+            status: 'complete',
+            current_task: 'Synthesis completed',
+            progress: 100,
+            end_time: new Date()
+          }
+        }));
+        
+        // Add final response as synthesizer contribution
+        if (assistantMessage.agent_contributions) {
+          const synthesizerContribution: AgentContribution = {
+            agent_name: 'Synthesizer',
+            agent_role: 'Final Response Synthesizer',
+            content: data.response || data.final_answer || '',
+            thinking_process: undefined,
+            tools_used: [],
+            execution_time: 0,
+            status: 'complete'
+          };
+          
+          assistantMessage.agent_contributions.push(synthesizerContribution);
+        }
+        
         assistantMessage.content = data.response || data.final_answer;
         assistantMessage.status = 'complete';
         assistantMessage.execution_summary = data.execution_summary;
@@ -356,7 +418,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
           status: 'complete',
           progress: 100,
           description: 'Collaboration completed successfully',
-          agents_involved: selectedAgents.map(a => a.name)
+          agents_involved: Object.keys(agentStatuses)
         });
         break;
 
@@ -387,136 +449,40 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
     }
   };
 
-  const canSendMessage = !loading && input.trim() && selectedAgents.length > 0;
+  const canSendMessage = !loading && input.trim();
 
   return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Messages Area */}
-      <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-        {messages.length === 0 ? (
-          <Alert severity="info">
+    <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+      {/* Current Question Display */}
+      {messages.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="subtitle2" gutterBottom>
+            Current Question:
+          </Typography>
+          <Paper sx={{ p: 2, backgroundColor: 'primary.main', color: 'white' }}>
+            <Typography variant="body1">
+              {messages[messages.length - 1]?.role === 'user' 
+                ? messages[messages.length - 1].content
+                : messages.find(m => m.role === 'user')?.content || ''
+              }
+            </Typography>
+          </Paper>
+        </Box>
+      )}
+
+      {/* Collaboration Status */}
+      {loading && (
+        <Box sx={{ mb: 2 }}>
+          <Alert severity="info" icon={<CircularProgress size={20} />}>
             <Typography variant="body2">
-              Select agents and start a multi-agent collaboration!
+              Agents are collaborating... Check individual agent windows below for progress.
             </Typography>
           </Alert>
-        ) : (
-          messages.map((message) => (
-            <Box key={message.id} sx={{ mb: 2 }}>
-              <Paper
-                sx={{
-                  p: 2,
-                  backgroundColor: message.role === 'user' ? 'primary.main' : 'background.paper',
-                  color: message.role === 'user' ? 'white' : 'text.primary',
-                  border: message.role === 'assistant' ? 1 : 0,
-                  borderColor: 'divider'
-                }}
-                elevation={2}
-              >
-                <MessageContent content={message.content} />
-
-                {/* Agent Contributions */}
-                {message.agent_contributions && message.agent_contributions.length > 0 && (
-                  <Box sx={{ mt: 2 }}>
-                    <Divider sx={{ mb: 2 }} />
-                    <Typography variant="subtitle2" gutterBottom>
-                      <GroupIcon fontSize="small" sx={{ mr: 0.5 }} />
-                      Agent Contributions ({message.agent_contributions.length})
-                    </Typography>
-                    
-                    {message.agent_contributions.map((contribution, index) => (
-                      <Accordion key={index} sx={{ mb: 1 }}>
-                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="body2" fontWeight="bold">
-                              {contribution.agent_name}
-                            </Typography>
-                            <Chip
-                              label={contribution.agent_role}
-                              size="small"
-                              variant="outlined"
-                            />
-                            {contribution.tools_used.length > 0 && (
-                              <Chip
-                                label={`${contribution.tools_used.length} tools`}
-                                size="small"
-                                icon={<ToolIcon />}
-                                variant="outlined"
-                              />
-                            )}
-                            <Chip
-                              label={`${contribution.execution_time}s`}
-                              size="small"
-                              icon={<TimeIcon />}
-                              variant="outlined"
-                            />
-                          </Box>
-                        </AccordionSummary>
-                        <AccordionDetails>
-                          <MessageContent content={contribution.content} />
-                          
-                          {contribution.thinking_process && (
-                            <Accordion sx={{ mt: 1 }}>
-                              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                  <ThinkingIcon fontSize="small" color="primary" />
-                                  <Typography variant="body2">
-                                    Reasoning Process
-                                  </Typography>
-                                </Box>
-                              </AccordionSummary>
-                              <AccordionDetails>
-                                <MessageContent content={contribution.thinking_process} />
-                              </AccordionDetails>
-                            </Accordion>
-                          )}
-                        </AccordionDetails>
-                      </Accordion>
-                    ))}
-                  </Box>
-                )}
-
-                {/* Execution Summary */}
-                {message.execution_summary && (
-                  <Box sx={{ mt: 2 }}>
-                    <Divider sx={{ mb: 1 }} />
-                    <Typography variant="caption" color="text.secondary">
-                      Collaboration completed in {message.execution_summary.execution_time}s using{' '}
-                      {message.execution_summary.total_agents} agents
-                    </Typography>
-                  </Box>
-                )}
-              </Paper>
-              
-              <Typography 
-                variant="caption" 
-                color="text.secondary" 
-                sx={{ mt: 0.5, px: 1, display: 'block' }}
-              >
-                {message.timestamp.toLocaleTimeString()}
-              </Typography>
-            </Box>
-          ))
-        )}
-        
-        {loading && (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 2 }}>
-            <CircularProgress size={20} />
-            <Typography variant="body2" color="text.secondary">
-              Agents are collaborating...
-            </Typography>
-          </Box>
-        )}
-        
-        <div ref={messagesEndRef} />
-      </Box>
+        </Box>
+      )}
 
       {/* Input Area */}
-      <Box sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
-        {selectedAgents.length === 0 && (
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            Please select at least one agent to start collaboration
-          </Alert>
-        )}
+      <Box sx={{ mt: 'auto' }}>
         
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
           <TextField
@@ -526,11 +492,8 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={selectedAgents.length > 0 
-              ? `Ask ${selectedAgents.map(a => a.name).join(', ')}...`
-              : 'Select agents first...'
-            }
-            disabled={loading || selectedAgents.length === 0}
+            placeholder="Ask your question and agents will be automatically selected..."
+            disabled={loading}
             variant="outlined"
             size="small"
           />

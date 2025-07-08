@@ -7,12 +7,6 @@ import {
   Chip,
   Card,
   CardContent,
-  Timeline,
-  TimelineItem,
-  TimelineSeparator,
-  TimelineConnector,
-  TimelineContent,
-  TimelineDot,
   Accordion,
   AccordionSummary,
   AccordionDetails,
@@ -22,6 +16,14 @@ import {
   ListItemIcon,
   Alert
 } from '@mui/material';
+import {
+  Timeline,
+  TimelineItem,
+  TimelineSeparator,
+  TimelineConnector,
+  TimelineContent,
+  TimelineDot
+} from '@mui/lab';
 import {
   Psychology as ThinkingIcon,
   Build as ToolIcon,
@@ -65,7 +67,7 @@ const CollaborationWorkspace: React.FC<CollaborationWorkspaceProps> = ({
     }
   };
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: string): 'primary' | 'secondary' | 'error' | 'warning' | 'info' | 'success' | undefined => {
     switch (status) {
       case 'thinking':
         return 'primary';
@@ -78,9 +80,11 @@ const CollaborationWorkspace: React.FC<CollaborationWorkspaceProps> = ({
       case 'error':
         return 'error';
       case 'selected':
-        return 'default';
+        return undefined;
+      case 'idle':
+        return undefined;
       default:
-        return 'default';
+        return undefined;
     }
   };
 
@@ -120,7 +124,7 @@ const CollaborationWorkspace: React.FC<CollaborationWorkspaceProps> = ({
           <Chip
             label={collaborationPhase.status}
             size="small"
-            color={getStatusColor(collaborationPhase.status) as any}
+            color={getStatusColor(collaborationPhase.status) || 'default'}
             variant="outlined"
           />
         </Box>
@@ -155,7 +159,7 @@ const CollaborationWorkspace: React.FC<CollaborationWorkspaceProps> = ({
               return (
                 <TimelineItem key={agent.id}>
                   <TimelineSeparator>
-                    <TimelineDot color={getStatusColor(status?.status || 'idle') as any}>
+                    <TimelineDot color={getStatusColor(status?.status || 'idle')}>
                       {getStatusIcon(status?.status || 'idle')}
                     </TimelineDot>
                     {!isLast && <TimelineConnector />}
@@ -171,7 +175,7 @@ const CollaborationWorkspace: React.FC<CollaborationWorkspaceProps> = ({
                           <Chip
                             label={status?.status || 'idle'}
                             size="small"
-                            color={getStatusColor(status?.status || 'idle') as any}
+                            color={getStatusColor(status?.status || 'idle') || 'default'}
                             variant="filled"
                           />
                         </Box>
