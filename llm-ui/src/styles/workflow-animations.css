@@ -207,9 +207,10 @@
 /* Node Category Specific Animations */
 
 
-/* Agent Nodes Animation (Modified: No scaling, just glow and border colors) */
+/* Agent Nodes Animation - Enhanced with growing/scaling effect */
 @keyframes agentGlow {
   0% {
+    transform: scale(1);
     box-shadow: 
       0 0 0 0 rgba(156, 39, 176, 0.8),
       0 0 0 0 rgba(156, 39, 176, 0.6),
@@ -217,6 +218,7 @@
     border-color: rgba(156, 39, 176, 1) !important;
   }
   20% {
+    transform: scale(1.05);
     box-shadow: 
       0 0 0 8px rgba(255, 64, 129, 0.6),
       0 0 0 16px rgba(233, 30, 99, 0.4),
@@ -224,6 +226,7 @@
     border-color: rgba(255, 64, 129, 1) !important;
   }
   40% {
+    transform: scale(1.08);
     box-shadow: 
       0 0 0 12px rgba(33, 150, 243, 0.6),
       0 0 0 24px rgba(3, 169, 244, 0.4),
@@ -231,6 +234,7 @@
     border-color: rgba(33, 150, 243, 1) !important;
   }
   60% {
+    transform: scale(1.06);
     box-shadow: 
       0 0 0 10px rgba(0, 188, 212, 0.6),
       0 0 0 20px rgba(0, 172, 193, 0.4),
@@ -238,6 +242,7 @@
     border-color: rgba(0, 188, 212, 1) !important;
   }
   80% {
+    transform: scale(1.03);
     box-shadow: 
       0 0 0 6px rgba(103, 58, 183, 0.6),
       0 0 0 12px rgba(123, 31, 162, 0.4),
@@ -245,6 +250,7 @@
     border-color: rgba(103, 58, 183, 1) !important;
   }
   100% {
+    transform: scale(1);
     box-shadow: 
       0 0 0 0 rgba(156, 39, 176, 0.8),
       0 0 0 0 rgba(156, 39, 176, 0.6),
@@ -414,8 +420,7 @@
   position: relative !important;
   z-index: 10 !important;
   border: 2px solid var(--color-agent) !important;
-  /* Force override MUI inline styles */
-  transform: scale(1) !important;
+  /* Allow animation to control transform */
   transition: none !important;
 }
 
@@ -423,7 +428,6 @@
 /* More specific selector to override MUI Card styles */
 .MuiCard-root.workflow-node--running-agent {
   animation: agentGlow var(--pulse-duration) infinite ease-in-out !important;
-  transform: scale(1) !important;
   transition: none !important;
   border: 2px solid var(--color-agent) !important;
 }
@@ -432,7 +436,6 @@
 /* Even more specific for AgentNode */
 .react-flow__node-agentnode .MuiCard-root.workflow-node--running-agent {
   animation: agentGlow var(--pulse-duration) infinite ease-in-out !important;
-  transform: scale(1) !important;
   transition: none !important;
   border: 2px solid var(--color-agent) !important;
 }

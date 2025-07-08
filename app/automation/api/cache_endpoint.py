@@ -29,16 +29,20 @@ async def get_cache_status(
             # Search for cache keys matching this node
             search_patterns = [
                 f"*{node_id}*",  # General pattern for node_id
-                f"cache_{workflow_id}_{node_id}" if workflow_id else f"cache_{node_id}",  # Fallback pattern
+                f"default:auto:w{workflow_id}:n{node_id}*" if workflow_id else f"default:auto:*:n{node_id}*",  # New cache format
+                f"cache_{workflow_id}_{node_id}" if workflow_id else f"cache_{node_id}",  # Old format fallback
             ]
             
             actual_cache_key = None
             for pattern in search_patterns:
                 cache_keys = workflow_redis.get_cache_keys_pattern(pattern)
                 if cache_keys:
-                    # Use the first matching cache key
+                    # Log all found keys for debugging
+                    logger.info(f"[CACHE API] Found {len(cache_keys)} cache keys matching pattern '{pattern}': {cache_keys}")
+                    # Sort by key length (longer keys are more specific) and take the most recent
+                    cache_keys.sort(key=len, reverse=True)
                     actual_cache_key = cache_keys[0]
-                    logger.info(f"[CACHE API] Found cache key for node {node_id}: {actual_cache_key}")
+                    logger.info(f"[CACHE API] Selected cache key for node {node_id}: {actual_cache_key}")
                     break
             
             if not actual_cache_key:

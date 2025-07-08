@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Handle, Position } from 'reactflow';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -7,6 +7,7 @@ import rehypeHighlight from 'rehype-highlight';
 import rehypeRaw from 'rehype-raw';
 import '../../styles/workflow-animations.css';
 import '../../styles/accordion-scroll.css';
+import '../../styles/resizable-field.css';
 import { useResizableTextField } from '../../hooks/useResizableTextField';
 import { useNodeExecutionStatus } from '../../hooks/useNodeExecutionStatus';
 import { 
@@ -321,14 +322,52 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
   }, [advancedExpanded, toolsExpanded, onAccordionStateChange]);
 
   // Use the universal execution status hook
-  const { statusInfo, isExecuting } = useNodeExecutionStatus('agentnode', executionData);
+  const { status, isExecuting } = useNodeExecutionStatus({
+    nodeId: id,
+    autoReset: false
+  });
+  
+  // Create statusInfo based on execution data
+  const statusInfo = useMemo(() => {
+    const currentStatus = executionData?.status || 'idle';
+    switch (currentStatus) {
+      case 'running':
+        return {
+          nodeClass: 'workflow-node--running-agent',
+          color: '#ff9800',
+          icon: <RunningIcon />,
+          label: 'Running'
+        };
+      case 'success':
+        return {
+          nodeClass: 'workflow-node--success',
+          color: '#4caf50',
+          icon: <SuccessIcon />,
+          label: 'Success'
+        };
+      case 'error':
+        return {
+          nodeClass: 'workflow-node--error',
+          color: '#f44336',
+          icon: <ErrorIcon />,
+          label: 'Error'
+        };
+      default:
+        return {
+          nodeClass: 'workflow-node--idle',
+          color: '#9e9e9e',
+          icon: <IdleIcon />,
+          label: 'Idle'
+        };
+    }
+  }, [executionData?.status]);
   
   // Removed animation state - now using CSS animations like ParallelNode
   
   // Debug logging
   useEffect(() => {
-    console.log(`AgentNode ${id} - Status: ${executionData.status}, Class: ${statusInfo.nodeClass}, isExecuting: ${isExecuting}`);
-  }, [executionData.status, statusInfo.nodeClass, isExecuting]);
+    console.log(`AgentNode ${id} - Status: ${executionData?.status || 'idle'}, isExecuting: ${isExecuting}`);
+  }, [executionData?.status, isExecuting, id]);
   
   // Animation now handled entirely by CSS - removed JavaScript animation code
 

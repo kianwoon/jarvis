@@ -114,6 +114,19 @@ class PostgresBridge:
             if not workflow:
                 return False
             
+            # Validate langflow_config if it's being updated
+            if 'langflow_config' in updates:
+                langflow_config = updates['langflow_config']
+                if langflow_config and isinstance(langflow_config, dict):
+                    nodes = langflow_config.get('nodes', [])
+                    if not nodes:
+                        logger.error(f"[POSTGRES BRIDGE] CRITICAL: Update contains langflow_config with no nodes for workflow {workflow_id}")
+                        logger.error(f"[POSTGRES BRIDGE] Rejecting update to prevent workflow corruption")
+                        # Reject the update to prevent saving workflows without nodes
+                        return False
+                    else:
+                        logger.info(f"[POSTGRES BRIDGE] Updating workflow {workflow_id} with {len(nodes)} nodes")
+            
             for key, value in updates.items():
                 if hasattr(workflow, key):
                     setattr(workflow, key, value)

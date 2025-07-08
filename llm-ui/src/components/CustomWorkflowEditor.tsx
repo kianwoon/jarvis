@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -86,6 +86,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import '../styles/workflow-handles.css';
+import '../styles/workflow-select-fix.css';
 
 import dagre from 'dagre';
 import { 
@@ -132,11 +133,14 @@ import EnhancedWorkflowCompletionDialog from './EnhancedWorkflowCompletionDialog
 import { downloadWorkflowOutput } from '../utils/fileDownload';
 
 interface CustomWorkflowEditorProps {
-  open: boolean;
-  onClose: () => void;
-  workflowId?: number;
+  open?: boolean;
+  onClose?: () => void;
+  workflowId?: number | string;
   workflowName?: string;
   onSave?: (workflowData: any) => void;
+  initialWorkflow?: any;
+  onBack?: () => void;
+  isNewWorkflow?: boolean;
 }
 
 // Node types will be created dynamically with updateNodeData function
@@ -820,11 +824,14 @@ const getIconForNodeType = (nodeType: string) => {
 };
 
 const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
-  open,
+  open = true,
   onClose,
   workflowId,
   workflowName,
-  onSave
+  onSave,
+  initialWorkflow,
+  onBack,
+  isNewWorkflow = false
 }) => {
   const [nodes, setNodes, baseOnNodesChange] = useNodesState([]);
   const [edges, setEdges, baseOnEdgesChange] = useEdgesState([]);
@@ -992,9 +999,27 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
 
   // Reset workflow state when workflowId changes (switching between create new and edit existing)
   useEffect(() => {
-    if (open) {
-      // If no workflowId, we're creating a new workflow - reset everything
-      if (!workflowId) {
+    if (open || !onClose) { // Either dialog is open or standalone mode
+      // If we have an initial workflow, load it
+      if (initialWorkflow) {
+        console.log('Loading initial workflow');
+        const { nodes: initialNodes = [], edges: initialEdges = [] } = initialWorkflow;
+        setNodes(initialNodes);
+        setEdges(initialEdges);
+        setCurrentWorkflowName(workflowName || initialWorkflow.name || 'Untitled Workflow');
+        
+        // Find the highest node counter
+        let maxCounter = 0;
+        initialNodes.forEach((node: any) => {
+          const match = node.id.match(/-(\d+)$/);
+          if (match) {
+            const num = parseInt(match[1]);
+            if (num > maxCounter) maxCounter = num;
+          }
+        });
+        setNodeCounter(maxCounter + 1);
+      } else if (!workflowId) {
+        // If no workflowId and no initial workflow, we're creating a new workflow
         console.log('Creating new workflow - resetting state');
         setNodes([]);
         setEdges([]);
@@ -1005,7 +1030,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         setShowExecutionPanel(false);
       }
     }
-  }, [workflowId, open, workflowName, setNodes, setEdges]);
+  }, [workflowId, open, workflowName, initialWorkflow, setNodes, setEdges, onClose]);
   
   // Handle expand/collapse all I/O
   const handleToggleAllIO = () => {
@@ -1754,27 +1779,44 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
 
   // Load existing workflow data
   // Clear previous workflow state immediately when opening with new workflowId
+  // Add previousWorkflowId ref to prevent unnecessary resets
+  const previousWorkflowIdRef = useRef<number | null>(null);
+  
   useEffect(() => {
     if (open && workflowId) {
-      console.log('🔧 [STATE CLEANUP] Clearing previous workflow state for new workflowId:', workflowId);
-      setNodes([]);
-      setEdges([]);
-      setCurrentWorkflowName('Loading...');
-      setNodeCounter(1);
-      
-      // Clear any execution state
-      setExecutionError(null);
-      setWorkflowResult(null);
-      setExecutionLogs([]);
-      setCompletionDialogOpen(false);
-      setNoteViewerOpen(false);
+      // Only clear state if workflowId has actually changed (not just object reference)
+      if (previousWorkflowIdRef.current !== workflowId) {
+        console.log('🔧 [STATE CLEANUP] Clearing previous workflow state for new workflowId:', workflowId, 'previous:', previousWorkflowIdRef.current);
+        setNodes([]);
+        setEdges([]);
+        setCurrentWorkflowName('Loading...');
+        setNodeCounter(1);
+        
+        // Clear any execution state
+        setExecutionError(null);
+        setWorkflowResult(null);
+        setExecutionLogs([]);
+        setCompletionDialogOpen(false);
+        setNoteViewerOpen(false);
+      } else {
+        console.log('🔧 [STATE CLEANUP] WorkflowId unchanged, skipping state reset:', workflowId);
+      }
     }
   }, [workflowId, open]);
 
   // Load workflow data without artificial delay
+  // Only load if workflowId has actually changed
   useEffect(() => {
     if (workflowId && open && !isLoadingSchemas) {
-      loadWorkflowData(workflowId);
+      // Only load if this is a new workflowId (first load or actually changed)
+      if (previousWorkflowIdRef.current !== workflowId) {
+        console.log('🔧 [DATA LOAD] Loading workflow data for changed workflowId:', workflowId);
+        loadWorkflowData(workflowId);
+        // Update the ref after loading data
+        previousWorkflowIdRef.current = workflowId;
+      } else {
+        console.log('🔧 [DATA LOAD] WorkflowId unchanged, skipping data reload:', workflowId);
+      }
     }
   }, [workflowId, open, isLoadingSchemas]);
 
@@ -2163,6 +2205,18 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
   };
 
   // Transform backend nodes to frontend format
+  // Helper function to ensure nodes have valid positions
+  const ensureNodePosition = (node: any, index: number) => {
+    if (!node.position || typeof node.position.x !== 'number' || typeof node.position.y !== 'number') {
+      console.warn(`Node ${node.id} missing or invalid position, adding default coordinates`);
+      return {
+        ...node,
+        position: { x: 100 + index * 150, y: 100 + index * 100 }
+      };
+    }
+    return node;
+  };
+
   const transformNodesFromBackendFormat = (backendNodes: any[]) => {
     console.log('Starting transformation of backend nodes:', backendNodes);
     
@@ -2181,14 +2235,15 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         });
       }
       
-      // If it's already in frontend format, return as-is
+      // If it's already in frontend format, return as-is but ensure position exists
       if (!nodeData.type || !nodeData.node) {
         console.log(`Node ${index} already in frontend format:`, node);
         // DEBUG: Check if we're losing CacheNode here
         if (nodeData?.type === 'CacheNode' || node.type === 'cachenode') {
           console.error('🔍 [CACHE DEBUG] CRITICAL: CacheNode being returned as-is without transformation!', node);
         }
-        return node;
+        
+        return ensureNodePosition(node, index);
       }
       
       console.log(`Node ${index} backend type: ${nodeData.type}`);
@@ -3078,7 +3133,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         default:
           console.log(`Unknown node type: ${node.type}, keeping original format`);
           // Keep original format for unknown types
-          return node;
+          return ensureNodePosition(node, index);
         }
       } catch (error) {
         console.error(`Error transforming node ${index} (${node.id}):`, error);
@@ -3097,7 +3152,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     }
 
     // Validate workflow name before saving
-    if (!currentWorkflowName || currentWorkflowName.trim() === '' || currentWorkflowName === 'New Workflow') {
+    if (!currentWorkflowName || currentWorkflowName.trim() === '') {
       setExecutionError('Please provide a workflow name before saving');
       return;
     }
@@ -3119,8 +3174,27 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     console.log('🔍 [CACHE DEBUG] CacheNode edges before save:', cacheNodeEdges);
     
     // Transform nodes to backend format
+    let transformedNodes = [];
     try {
-      const transformedNodes = transformNodesToBackendFormat(nodes);
+      // Add safety check for empty nodes
+      if (!nodes || nodes.length === 0) {
+        console.error('CRITICAL: No nodes to save! This will result in workflow execution failure.');
+        setExecutionError('Cannot save workflow: No nodes found. Please add nodes to your workflow.');
+        setIsSaving(false);
+        return;
+      }
+      
+      transformedNodes = transformNodesToBackendFormat(nodes);
+      
+      // Validate transformed nodes
+      if (!transformedNodes || transformedNodes.length === 0) {
+        console.error('CRITICAL: Node transformation resulted in empty array!');
+        console.error('Original nodes:', nodes);
+        setExecutionError('Failed to transform workflow nodes. Please check the console for errors.');
+        setIsSaving(false);
+        return;
+      }
+      
       console.log('Transformed nodes successfully:', transformedNodes.length, 'nodes');
       console.log('Transformed nodes:', transformedNodes);
       
@@ -3171,56 +3245,85 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       console.log('Langflow config nodes count:', transformedNodes.length);
       console.log('Langflow config edges count:', enhancedEdges.length);
       
+      // CRITICAL: Final validation before save
+      if (!workflowData.langflow_config.nodes || workflowData.langflow_config.nodes.length === 0) {
+        console.error('CRITICAL: Workflow data has no nodes! Aborting save.');
+        console.error('Workflow data:', workflowData);
+        setExecutionError('Cannot save workflow: No nodes in final data. This is a critical error.');
+        setIsSaving(false);
+        return;
+      }
+      
       // DEBUG: Final check of CacheNode edges in workflow data
       const finalCacheNodeEdges = workflowData.langflow_config.edges.filter(edge => 
         cacheNodes.some(n => n.id === edge.source || n.id === edge.target)
       );
       console.log('🔍 [CACHE DEBUG] Final CacheNode edges in workflow data:', finalCacheNodeEdges);
 
-      let response;
-      if (workflowId) {
-        // Update existing workflow
-        console.log('Updating existing workflow:', workflowId);
-        response = await fetch(`http://127.0.0.1:8000/api/v1/automation/workflows/${workflowId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(workflowData),
-        });
-      } else {
-        // Create new workflow
-        console.log('Creating new workflow');
-        response = await fetch('http://127.0.0.1:8000/api/v1/automation/workflows', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(workflowData),
-        });
-      }
-
-      console.log('Save response status:', response.status);
-      console.log('Save response ok:', response.ok);
-
-      if (response.ok) {
-        const result = await response.json();
-        console.log('Save response:', result);
-        
-        // If creating a new workflow, we get the new ID back
-        if (!workflowId && result.id) {
-          // Update the URL or state to reflect the new workflow ID for future saves
-          console.log('New workflow created with ID:', result.id);
+      // Always handle save directly to avoid state loss
+      {
+        // Make API calls directly
+        let response;
+        if (workflowId) {
+          // Update existing workflow
+          console.log('Updating existing workflow:', workflowId);
+          response = await fetch(`http://127.0.0.1:8000/api/v1/automation/workflows/${workflowId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(workflowData),
+          });
+        } else {
+          // Create new workflow
+          console.log('Creating new workflow');
+          response = await fetch('http://127.0.0.1:8000/api/v1/automation/workflows', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(workflowData),
+          });
         }
-        
-        if (onSave) onSave(result);
-        // Don't close the editor - let user continue editing
-        setSaveSuccess(true);
-        // Reset unsaved changes flag after successful save
-        setHasUnsavedChanges(false);
-      } else {
-        const errorText = await response.text();
-        console.error('=== SAVE FAILED ===');
-        console.error('Status:', response.status);
-        console.error('Error text:', errorText);
-        console.error('Response headers:', [...response.headers.entries()]);
-        setExecutionError(`Failed to save workflow: ${response.status} - ${errorText}`);
+
+        console.log('Save response status:', response.status);
+        console.log('Save response ok:', response.ok);
+
+        if (response.ok) {
+          const result = await response.json();
+          console.log('Save response:', result);
+          
+          // CRITICAL: Validate the saved workflow data
+          if (result.langflow_config) {
+            const savedNodes = result.langflow_config.nodes || [];
+            if (savedNodes.length === 0) {
+              console.error('CRITICAL: Backend returned workflow with no nodes!');
+              console.error('Backend response:', result);
+              setExecutionError('WARNING: Workflow saved but nodes may be missing. Please refresh and check your workflow.');
+              // Don't set success to prevent false confidence
+              return;
+            }
+            console.log('Backend confirmed save with', savedNodes.length, 'nodes');
+          }
+          
+          // If creating a new workflow, we get the new ID back
+          if (!workflowId && result.id) {
+            // Update the URL or state to reflect the new workflow ID for future saves
+            console.log('New workflow created with ID:', result.id);
+            // Don't update workflowId state here to avoid re-renders that clear the editor
+          }
+          
+          // Backend cache issue detected - the save is successful but cache isn't updating
+          // We need to restart the backend or fix the cache invalidation on the backend side
+          
+          // Don't close the editor - let user continue editing
+          setSaveSuccess(true);
+          // Reset unsaved changes flag after successful save
+          setHasUnsavedChanges(false);
+        } else {
+          const errorText = await response.text();
+          console.error('=== SAVE FAILED ===');
+          console.error('Status:', response.status);
+          console.error('Error text:', errorText);
+          console.error('Response headers:', [...response.headers.entries()]);
+          setExecutionError(`Failed to save workflow: ${response.status} - ${errorText}`);
+        }
       }
     } catch (error) {
       console.error('=== SAVE WORKFLOW ERROR ===');
@@ -3381,7 +3484,7 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     try {
       // For existing workflows, auto-save before execution
       // Only validate name for manual saves, not auto-saves before execution
-      if (!currentWorkflowName || currentWorkflowName.trim() === '' || currentWorkflowName === 'New Workflow') {
+      if (!currentWorkflowName || currentWorkflowName.trim() === '') {
         // For execution auto-save, use a temporary name if none provided
         const tempName = `Workflow_${Date.now()}`;
         console.log('Using temporary name for execution auto-save:', tempName);
@@ -3618,24 +3721,9 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     height: 120,
   };
 
-  return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      maxWidth={false}
-      fullScreen={isFullscreen}
-      sx={{
-        '& .MuiDialog-paper': {
-          width: '100vw',
-          height: '100vh',
-          maxWidth: 'none',
-          maxHeight: 'none',
-          margin: 0,
-          borderRadius: 0
-        }
-      }}
-    >
-      <DialogTitle>
+  const editorContent = (
+    <>
+      <Box component={onClose ? DialogTitle : Paper} sx={onClose ? {} : { p: 2, borderBottom: 1, borderColor: 'divider' }}>
         <Box display="flex" justifyContent="space-between" alignItems="center">
           <Box display="flex" alignItems="center" gap={2}>
             <TextField
@@ -3907,14 +3995,14 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               </IconButton>
             </Tooltip>
             
-            <IconButton onClick={onClose} size="small">
+            <IconButton onClick={onBack || onClose} size="small">
               <CloseIcon />
             </IconButton>
           </Box>
         </Box>
-      </DialogTitle>
+      </Box>
 
-      <DialogContent sx={{ p: 0, display: 'flex', flexDirection: 'column', overflow: 'visible' }}>
+      <Box component={onClose ? DialogContent : Box} sx={{ p: 0, display: 'flex', flexDirection: 'column', overflow: 'visible', flex: 1 }}>
         {/* Node Palette */}
         <Paper elevation={1} sx={{ p: 1, borderBottom: 1, borderColor: 'divider' }}>
           <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
@@ -4048,10 +4136,10 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             </Panel>
           </ReactFlow>
         </Box>
-      </DialogContent>
+      </Box>
 
       {!isFullscreen && (
-        <DialogActions sx={{ px: 3, py: 2, borderTop: 1, borderColor: 'divider' }}>
+        <Box component={onClose ? DialogActions : Box} sx={{ px: 3, py: 2, borderTop: 1, borderColor: 'divider' }}>
           <Box display="flex" justifyContent="space-between" alignItems="center" width="100%">
             <Typography variant="body2" color="text.secondary">
               Nodes: {nodes.length} | Connections: {edges.length}
@@ -4070,12 +4158,12 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               >
                 {isSaving ? 'Saving...' : 'Save Workflow'}
               </Button>
-              <Button onClick={onClose} variant="outlined" size="small">
-                Close
+              <Button onClick={onBack || onClose} variant="outlined" size="small">
+                {onBack ? 'Back' : 'Close'}
               </Button>
             </Box>
           </Box>
-        </DialogActions>
+        </Box>
       )}
 
       {/* Success notification */}
@@ -4191,7 +4279,39 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
         </MenuItem>
       </Menu>
 
-    </Dialog>
+    </>
+  );
+
+  // If onClose is provided, wrap in Dialog (for use in App.tsx)
+  // Otherwise, return the content directly (for use in WorkflowApp)
+  if (onClose) {
+    return (
+      <Dialog
+        open={open}
+        onClose={onClose}
+        maxWidth={false}
+        fullScreen={isFullscreen}
+        sx={{
+          '& .MuiDialog-paper': {
+            width: '100vw',
+            height: '100vh',
+            maxWidth: 'none',
+            maxHeight: 'none',
+            margin: 0,
+            borderRadius: 0
+          }
+        }}
+      >
+        {editorContent}
+      </Dialog>
+    );
+  }
+
+  // Standalone mode (for WorkflowApp)
+  return (
+    <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      {editorContent}
+    </Box>
   );
 };
 

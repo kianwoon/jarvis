@@ -1,0 +1,46 @@
+/* Resizable Field Container Styles */
+.resizable-field-container {
+  position: relative;
+  width: 100%;
+}
+
+.resizable-field-container.resizing {
+  user-select: none;
+}
+
+/* Resize Handle Styles */
+.resize-handle {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60px;
+  height: 4px;
+  background-color: rgba(156, 39, 176, 0.4);
+  border-radius: 2px;
+  cursor: ns-resize;
+  transition: background-color 0.2s ease;
+  z-index: 10;
+}
+
+.resize-handle:hover {
+  background-color: rgba(156, 39, 176, 0.6);
+}
+
+.resize-handle.active {
+  background-color: rgba(156, 39, 176, 0.8);
+}
+
+/* Prevent text selection during resize */
+.resizable-field-container.resizing * {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+/* Visual feedback during resize */
+.resizable-field-container.resizing .MuiInputBase-root {
+  border-color: rgba(156, 39, 176, 0.6);
+  box-shadow: 0 0 0 2px rgba(156, 39, 176, 0.1);
+}

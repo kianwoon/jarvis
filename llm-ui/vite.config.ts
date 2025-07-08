@@ -10,7 +10,8 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         'multi-agent': resolve(__dirname, 'multi-agent.html'),
-        'settings': resolve(__dirname, 'settings.html')
+        'settings': resolve(__dirname, 'settings.html'),
+        'workflow': resolve(__dirname, 'workflow.html')
       }
     }
   },

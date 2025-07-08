@@ -1,0 +1,60 @@
+/* Fix for MUI Select dropdowns in ReactFlow nodes */
+
+/* Ensure ReactFlow container doesn't clip dropdowns */
+.react-flow__renderer {
+  overflow: visible !important;
+}
+
+.react-flow__node {
+  overflow: visible !important;
+}
+
+/* Ensure accordions don't clip content */
+.MuiAccordion-root {
+  overflow: visible !important;
+}
+
+.MuiAccordionDetails-root {
+  overflow: visible !important;
+}
+
+/* Fix z-index for MUI Select menu in ReactFlow context */
+.MuiPaper-root.MuiMenu-paper {
+  z-index: 10000 !important;
+}
+
+/* Ensure Select dropdowns are clickable */
+.MuiSelect-select {
+  cursor: pointer !important;
+}
+
+/* Fix for FormControl in workflow nodes */
+.workflow-select-container {
+  position: relative;
+  z-index: 1;
+}
+
+/* Ensure the dropdown menu appears above everything */
+.MuiPopover-root {
+  z-index: 10000 !important;
+}
+
+/* Fix for MUI Select in Accordion */
+.MuiAccordion-root .MuiSelect-root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Prevent pointer events from being blocked */
+.MuiBackdrop-root {
+  pointer-events: none !important;
+}
+
+/* Ensure menu items are clickable */
+.MuiMenu-list {
+  pointer-events: auto !important;
+}
+
+.MuiMenuItem-root {
+  pointer-events: auto !important;
+}

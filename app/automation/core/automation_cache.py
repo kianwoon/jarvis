@@ -38,6 +38,15 @@ def reload_automation_workflows() -> Dict[str, Any]:
             
             workflows_dict = {}
             for workflow in workflows:
+                # Validate langflow_config has nodes before caching
+                langflow_config = workflow.langflow_config
+                if langflow_config and isinstance(langflow_config, dict):
+                    nodes = langflow_config.get('nodes', [])
+                    if not nodes:
+                        logger.warning(f"[AUTOMATION CACHE] Workflow {workflow.id} has empty nodes array in langflow_config")
+                else:
+                    logger.warning(f"[AUTOMATION CACHE] Workflow {workflow.id} has invalid langflow_config: {type(langflow_config)}")
+                
                 workflows_dict[str(workflow.id)] = {
                     "id": workflow.id,
                     "name": workflow.name,
@@ -61,8 +70,42 @@ def reload_automation_workflows() -> Dict[str, Any]:
 
 def get_workflow_by_id(workflow_id: int) -> Optional[Dict[str, Any]]:
     """Get a specific workflow by ID"""
+    # First try to get from cache
     workflows = get_automation_workflows()
-    return workflows.get(str(workflow_id))
+    workflow = workflows.get(str(workflow_id))
+    
+    # If not found or has invalid data, try direct database query
+    if not workflow or not workflow.get('langflow_config', {}).get('nodes'):
+        logger.warning(f"[AUTOMATION CACHE] Workflow {workflow_id} not found in cache or has no nodes, querying database directly")
+        
+        try:
+            from app.core.db import SessionLocal, AutomationWorkflow
+            db = SessionLocal()
+            try:
+                db_workflow = db.query(AutomationWorkflow).filter(AutomationWorkflow.id == workflow_id).first()
+                if db_workflow:
+                    workflow = {
+                        "id": db_workflow.id,
+                        "name": db_workflow.name,
+                        "description": db_workflow.description,
+                        "langflow_config": db_workflow.langflow_config,
+                        "trigger_config": db_workflow.trigger_config,
+                        "is_active": db_workflow.is_active,
+                        "created_by": db_workflow.created_by or "system",
+                        "created_at": db_workflow.created_at.isoformat() if db_workflow.created_at else None,
+                        "updated_at": db_workflow.updated_at.isoformat() if db_workflow.updated_at else None
+                    }
+                    logger.info(f"[AUTOMATION CACHE] Loaded workflow {workflow_id} directly from database")
+                    
+                    # Update cache with fresh data
+                    workflows[str(workflow_id)] = workflow
+                    cache.set(AUTOMATION_WORKFLOWS_KEY, workflows)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[AUTOMATION CACHE] Failed to load workflow {workflow_id} from database: {e}")
+    
+    return workflow
 
 def cache_workflow_execution(execution_id: str, execution_data: Dict[str, Any], ttl: int = 3600):
     """Cache workflow execution data with TTL"""
@@ -75,10 +118,62 @@ def get_workflow_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     execution_key = f"{AUTOMATION_EXECUTIONS_KEY}:{execution_id}"
     return cache.get(execution_key)
 
-def invalidate_workflow_cache():
-    """Invalidate the workflow cache (for use after database updates)"""
+def invalidate_workflow_cache(workflow_id: Optional[int] = None):
+    """Invalidate the workflow cache and related caches (for use after database updates)"""
+    # Add a small delay to ensure database transaction is committed
+    import time
+    time.sleep(0.1)
+    
+    # Always clear the main workflow cache
     cache.delete(AUTOMATION_WORKFLOWS_KEY)
     logger.info("[AUTOMATION CACHE] Workflow cache invalidated")
+    
+    # If specific workflow, immediately reload it to prevent stale data
+    if workflow_id:
+        logger.info(f"[AUTOMATION CACHE] Preloading workflow {workflow_id} after invalidation")
+        # Force reload from database
+        reload_automation_workflows()
+    
+    # Clear execution cache entries
+    try:
+        # Get all execution cache keys and delete them
+        redis_client = cache._get_client()
+        if redis_client:
+            # Clear execution caches
+            execution_keys = redis_client.keys(f"{cache.key_prefix}{AUTOMATION_EXECUTIONS_KEY}:*")
+            if execution_keys:
+                redis_client.delete(*execution_keys)
+                logger.info(f"[AUTOMATION CACHE] Cleared {len(execution_keys)} execution cache entries")
+            
+            # Clear workflow state caches if workflow_id is provided
+            if workflow_id:
+                state_keys = redis_client.keys(f"{cache.key_prefix}workflow_state:{workflow_id}:*")
+                if state_keys:
+                    redis_client.delete(*state_keys)
+                    logger.info(f"[AUTOMATION CACHE] Cleared {len(state_keys)} workflow state entries for workflow {workflow_id}")
+                
+                # Clear node-level caches for this workflow
+                node_cache_keys = redis_client.keys(f"{cache.key_prefix}cache_{workflow_id}_*")
+                if node_cache_keys:
+                    redis_client.delete(*node_cache_keys)
+                    logger.info(f"[AUTOMATION CACHE] Cleared {len(node_cache_keys)} node cache entries for workflow {workflow_id}")
+            else:
+                # Clear all workflow state caches
+                all_state_keys = redis_client.keys(f"{cache.key_prefix}workflow_state:*")
+                if all_state_keys:
+                    redis_client.delete(*all_state_keys)
+                    logger.info(f"[AUTOMATION CACHE] Cleared {len(all_state_keys)} workflow state entries")
+                
+                # Clear all node-level caches
+                all_node_keys = redis_client.keys(f"{cache.key_prefix}cache_*")
+                if all_node_keys:
+                    redis_client.delete(*all_node_keys)
+                    logger.info(f"[AUTOMATION CACHE] Cleared {len(all_node_keys)} node cache entries")
+                    
+    except Exception as e:
+        logger.error(f"[AUTOMATION CACHE] Error clearing additional caches: {e}")
+    
+    logger.info("[AUTOMATION CACHE] Complete cache invalidation finished")
 
 def get_cache_stats() -> Dict[str, Any]:
     """Get cache statistics"""

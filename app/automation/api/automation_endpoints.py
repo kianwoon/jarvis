@@ -113,7 +113,7 @@ async def create_workflow(workflow: WorkflowCreate):
             raise HTTPException(status_code=500, detail="Failed to create workflow")
         
         # Invalidate cache to refresh
-        invalidate_workflow_cache()
+        invalidate_workflow_cache(workflow_id)
         
         # Get created workflow
         created_workflow = postgres_bridge.get_workflow(workflow_id)
@@ -147,14 +147,27 @@ async def get_workflow(workflow_id: int):
 async def update_workflow(workflow_id: int, updates: WorkflowUpdate):
     """Update automation workflow"""
     try:
+        # Validate workflow data before update
+        update_data = updates.dict(exclude_unset=True)
+        if 'langflow_config' in update_data:
+            langflow_config = update_data['langflow_config']
+            if langflow_config and isinstance(langflow_config, dict):
+                nodes = langflow_config.get('nodes', [])
+                if not nodes:
+                    logger.error(f"[AUTOMATION API] Rejecting workflow update: No nodes in langflow_config")
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Invalid workflow configuration: No nodes found. This would make the workflow non-executable."
+                    )
+        
         # Update in database
-        success = postgres_bridge.update_workflow(workflow_id, updates.dict(exclude_unset=True))
+        success = postgres_bridge.update_workflow(workflow_id, update_data)
         
         if not success:
             raise HTTPException(status_code=404, detail="Workflow not found or update failed")
         
-        # Invalidate cache
-        invalidate_workflow_cache()
+        # Invalidate cache for this specific workflow
+        invalidate_workflow_cache(workflow_id)
         
         # Get updated workflow
         updated_workflow = postgres_bridge.get_workflow(workflow_id)
@@ -178,8 +191,8 @@ async def delete_workflow(workflow_id: int):
         if not success:
             raise HTTPException(status_code=404, detail="Workflow not found")
         
-        # Invalidate cache
-        invalidate_workflow_cache()
+        # Invalidate cache for this specific workflow
+        invalidate_workflow_cache(workflow_id)
         
         logger.info(f"[AUTOMATION API] Deleted workflow: {workflow_id}")
         return {"message": "Workflow deleted successfully"}
