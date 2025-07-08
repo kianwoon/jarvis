@@ -1045,6 +1045,11 @@ function App() {
       window.location.href = '/multi-agent.html';
       return;
     }
+    if (newValue === 2) {
+      // Redirect to workflow page
+      window.location.href = '/workflow.html';
+      return;
+    }
     if (newValue === 3) {
       // Redirect to settings page
       window.location.href = '/settings.html';
@@ -1067,6 +1072,11 @@ function App() {
     localStorage.setItem('jarvis-dark-mode', JSON.stringify(newDarkMode));
   };
 
+  // Set theme data attribute for CSS
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -1078,15 +1088,6 @@ function App() {
               Jarvis AI Assistant
             </Typography>
             
-            {/* Multi-Agent Mode Button */}
-            <Button
-              variant="outlined"
-              onClick={() => window.location.href = '/multi-agent.html'}
-              sx={{ mr: 2, color: 'white', borderColor: 'white' }}
-              startIcon={<GroupIcon />}
-            >
-              Multi-Agent
-            </Button>
 
             {/* Dark Mode Toggle */}
             <IconButton onClick={toggleDarkMode} color="inherit">

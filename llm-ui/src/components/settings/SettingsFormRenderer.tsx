@@ -23,7 +23,9 @@ import {
   Add as AddIcon,
   Delete as DeleteIcon,
   Edit as EditIcon,
-  Refresh as RefreshIcon
+  Refresh as RefreshIcon,
+  Visibility as VisibilityIcon,
+  VisibilityOff as VisibilityOffIcon
 } from '@mui/icons-material';
 import YamlEditor from './YamlEditor';
 import DatabaseTableManager from './DatabaseTableManager';
@@ -106,7 +108,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   }
 
   // Default form rendering for regular settings
-  return renderStandardForm(data, onChange);
+  return renderStandardForm(data, onChange, category);
 };
 
 const renderEnvironmentEditor = (data: any, onChange: (field: string, value: any) => void) => {
@@ -350,71 +352,308 @@ const renderDatabaseTableEditor = (category: string, data: any, onChange: (field
   );
 };
 
-const renderStandardForm = (data: any, onChange: (field: string, value: any) => void) => {
-  const renderField = (key: string, value: any, depth: number = 0) => {
-    const indent = depth * 20;
+const renderStandardForm = (data: any, onChange: (field: string, value: any) => void, category?: string) => {
+  const getDefaultTab = () => {
+    if (category === 'rag') return 'retrieval';
+    if (category === 'storage') return 'vector';
+    return 'settings';
+  };
+  
+  const [activeTab, setActiveTab] = React.useState(getDefaultTab());
+  const [passwordVisibility, setPasswordVisibility] = React.useState<Record<string, boolean>>({});
+
+  // Flatten nested objects and categorize fields into domain-intelligent tabs
+  const categorizeFields = (data: any, category?: string) => {
+    let categories: Record<string, { title: string; fields: Record<string, any> }>;
+    
+    // Define category-specific tab structure
+    if (category === 'rag') {
+      categories = {
+        retrieval: { title: 'Retrieval Settings', fields: {} },
+        reranking: { title: 'Reranking & Scoring', fields: {} },
+        search: { title: 'Search Strategy', fields: {} },
+        processing: { title: 'Document Processing', fields: {} }
+      };
+    } else if (category === 'storage') {
+      categories = {
+        vector: { title: 'Vector Databases (Unstructured)', fields: {} },
+        structured: { title: 'Iceberg (Structured)', fields: {} }
+      };
+    } else {
+      // Default LLM category structure
+      categories = {
+        settings: { title: 'Settings', fields: {} },
+        context: { title: 'Context Length', fields: {} },
+        classifier: { title: 'Query Classifier', fields: {} },
+        thinking: { title: 'Thinking Mode', fields: {} }
+      };
+    }
+
+    // Flatten nested objects recursively
+    const flattenObject = (obj: any, prefix: string = ''): Record<string, any> => {
+      const flattened: Record<string, any> = {};
+      
+      Object.entries(obj).forEach(([key, value]) => {
+        const fullKey = prefix ? `${prefix}.${key}` : key;
+        
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          // Recursively flatten nested objects
+          Object.assign(flattened, flattenObject(value, fullKey));
+        } else {
+          flattened[fullKey] = value;
+        }
+      });
+      
+      return flattened;
+    };
+
+    const flattenedData = flattenObject(data);
+
+    Object.entries(flattenedData).forEach(([key, value]) => {
+      const lowerKey = key.toLowerCase();
+      
+      if (category === 'rag') {
+        // RAG-specific field categorization
+        if (lowerKey.includes('embedding') || lowerKey.includes('vector') || lowerKey.includes('similarity') || 
+            lowerKey.includes('chunk') || lowerKey.includes('top_k') || lowerKey.includes('retrieval')) {
+          categories.retrieval.fields[key] = value;
+        }
+        // Reranking & Scoring
+        else if (lowerKey.includes('rerank') || lowerKey.includes('score') || lowerKey.includes('bm25') || 
+                 lowerKey.includes('weight') || lowerKey.includes('threshold')) {
+          categories.reranking.fields[key] = value;
+        }
+        // Search Strategy
+        else if (lowerKey.includes('search') || lowerKey.includes('query') || lowerKey.includes('strategy') || 
+                 lowerKey.includes('hybrid') || lowerKey.includes('filter')) {
+          categories.search.fields[key] = value;
+        }
+        // Document Processing
+        else if (lowerKey.includes('document') || lowerKey.includes('processing') || lowerKey.includes('indexing') || 
+                 lowerKey.includes('text') || lowerKey.includes('content')) {
+          categories.processing.fields[key] = value;
+        }
+        // Default to retrieval if we can't categorize
+        else {
+          categories.retrieval.fields[key] = value;
+        }
+      } else if (category === 'storage') {
+        // Storage-specific field categorization
+        if (lowerKey.includes('milvus') || lowerKey.includes('qdrant') || lowerKey.includes('vector') || 
+            lowerKey.includes('embedding') || lowerKey.includes('pinecone') || lowerKey.includes('weaviate') ||
+            lowerKey.includes('chroma') || lowerKey.includes('faiss')) {
+          categories.vector.fields[key] = value;
+        }
+        // Iceberg (Structured)
+        else if (lowerKey.includes('iceberg') || lowerKey.includes('spark') || lowerKey.includes('hive') || 
+                 lowerKey.includes('parquet') || lowerKey.includes('table') || lowerKey.includes('catalog') ||
+                 lowerKey.includes('warehouse') || lowerKey.includes('schema')) {
+          categories.structured.fields[key] = value;
+        }
+        // Default: put general storage settings in vector category
+        else {
+          categories.vector.fields[key] = value;
+        }
+      } else {
+        // LLM-specific field categorization
+        if (lowerKey.includes('max_tokens') || lowerKey.includes('context_length') || lowerKey.includes('context')) {
+          categories.context.fields[key] = value;
+        }
+        // Query Classifier Tab - All classifier-related settings
+        else if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {
+          categories.classifier.fields[key] = value;
+        }
+        // Thinking Mode Tab - Thinking-specific parameters (including non-thinking mode)
+        else if (lowerKey.includes('thinking_mode') || lowerKey.includes('thinking') || lowerKey.includes('non_thinking')) {
+          categories.thinking.fields[key] = value;
+        }
+        // Settings Tab - Core model configuration (everything else)
+        else {
+          categories.settings.fields[key] = value;
+        }
+      }
+    });
+
+    // Remove empty categories
+    const filteredCategories: Record<string, { title: string; fields: Record<string, any> }> = {};
+    Object.entries(categories).forEach(([key, category]) => {
+      if (Object.keys(category.fields).length > 0) {
+        filteredCategories[key] = category;
+      }
+    });
+    
+    return filteredCategories;
+  };
+
+  const togglePasswordVisibility = (fieldKey: string) => {
+    setPasswordVisibility(prev => ({ ...prev, [fieldKey]: !prev[fieldKey] }));
+  };
+
+  const renderField = (key: string, value: any, depth: number = 0, customOnChange?: (field: string, value: any) => void) => {
+    const formatLabel = (str: string) => str.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    const onChangeHandler = customOnChange || onChange;
+    
+    // Detect field complexity for layout
+    const isComplexField = (key: string, value: any): boolean => {
+      const lowerKey = key.toLowerCase();
+      
+      // Arrays are always complex
+      if (Array.isArray(value)) return true;
+      
+      // Long text fields (textareas) are complex
+      if (typeof value === 'string' && value.length > 100) return true;
+      
+      // System prompts and other prompt fields are complex
+      if (lowerKey.includes('prompt') || lowerKey.includes('system')) return true;
+      
+      // Slider parameters (identified by specific naming patterns)
+      if (lowerKey.includes('temperature') || lowerKey.includes('top_p') || 
+          lowerKey.includes('top_k') || lowerKey.includes('penalty')) return true;
+      
+      return false;
+    };
+    
+    const isComplex = isComplexField(key, value);
+    const fieldClass = `jarvis-form-group${isComplex ? ' complex' : ''}`;
     
     if (typeof value === 'boolean') {
       return (
-        <Box key={key} sx={{ ml: `${indent}px`, mb: 2 }}>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={value}
-                onChange={(e) => onChange(key, e.target.checked)}
-              />
-            }
-            label={key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-          />
-        </Box>
+        <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
+          <label className="jarvis-form-label">
+            <input
+              type="checkbox"
+              checked={value}
+              onChange={(e) => onChangeHandler(key, e.target.checked)}
+              style={{ marginRight: '8px' }}
+            />
+            {formatLabel(key)}
+          </label>
+        </div>
       );
     }
 
     if (typeof value === 'number') {
-      return (
-        <Box key={key} sx={{ ml: `${indent}px`, mb: 2 }}>
-          <TextField
-            fullWidth
-            type="number"
-            label={key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-            value={value}
-            onChange={(e) => onChange(key, parseFloat(e.target.value) || 0)}
-            variant="outlined"
-            size="small"
-          />
-        </Box>
-      );
+      // Check if this looks like a slider parameter (temperature, top_p, etc.)
+      const isSliderParam = key.toLowerCase().includes('temperature') || 
+                          key.toLowerCase().includes('top_p') || 
+                          key.toLowerCase().includes('top_k') || 
+                          key.toLowerCase().includes('penalty');
+      
+      if (isSliderParam) {
+        const min = key.toLowerCase().includes('top_k') ? 0 : 
+                   key.toLowerCase().includes('temperature') ? 0 : 
+                   key.toLowerCase().includes('top_p') ? 0 : 1;
+        const max = key.toLowerCase().includes('top_k') ? 100 : 
+                   key.toLowerCase().includes('temperature') ? 2 : 
+                   key.toLowerCase().includes('top_p') ? 1 : 2;
+        const step = key.toLowerCase().includes('top_k') ? 1 : 0.01;
+        
+        return (
+          <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
+            <label className="jarvis-form-label">{formatLabel(key)}</label>
+            <div className="jarvis-slider-container">
+              <div className="jarvis-slider-header">
+                <span></span>
+                <span className="jarvis-slider-value">{value}</span>
+              </div>
+              <input
+                type="range"
+                className="jarvis-slider"
+                min={min}
+                max={max}
+                step={step}
+                value={value}
+                onChange={(e) => onChangeHandler(key, parseFloat(e.target.value))}
+              />
+              <div className="jarvis-slider-labels">
+                <span>{min}</span>
+                <span>{max}</span>
+              </div>
+            </div>
+          </div>
+        );
+      } else {
+        return (
+          <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
+            <label className="jarvis-form-label">{formatLabel(key)}</label>
+            <input
+              type="number"
+              className="jarvis-form-input"
+              value={value}
+              onChange={(e) => onChangeHandler(key, parseFloat(e.target.value) || 0)}
+            />
+          </div>
+        );
+      }
     }
 
     if (typeof value === 'string') {
+      const isLongText = value.length > 100;
+      const isPassword = key.toLowerCase().includes('password') || 
+                        key.toLowerCase().includes('secret') || 
+                        key.toLowerCase().includes('key') ||
+                        key.toLowerCase().includes('token') ||
+                        key.toLowerCase().includes('access');
+      
+      const isVisible = passwordVisibility[key] || false;
+      
       return (
-        <Box key={key} sx={{ ml: `${indent}px`, mb: 2 }}>
-          <TextField
-            fullWidth
-            label={key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-            value={value}
-            onChange={(e) => onChange(key, e.target.value)}
-            variant="outlined"
-            size="small"
-            multiline={value.length > 50}
-            rows={value.length > 50 ? 3 : 1}
-            type={key.toLowerCase().includes('password') || key.toLowerCase().includes('secret') || key.toLowerCase().includes('key') ? 'password' : 'text'}
-          />
-        </Box>
+        <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
+          <label className="jarvis-form-label">{formatLabel(key)}</label>
+          {isLongText ? (
+            <textarea
+              className="jarvis-form-textarea"
+              value={value}
+              onChange={(e) => onChangeHandler(key, e.target.value)}
+              placeholder={`Enter ${formatLabel(key).toLowerCase()}...`}
+            />
+          ) : (
+            <div className="jarvis-input-container" style={{ position: 'relative' }}>
+              <input
+                type={isPassword && !isVisible ? 'password' : 'text'}
+                className="jarvis-form-input"
+                value={value}
+                onChange={(e) => onChangeHandler(key, e.target.value)}
+                placeholder={`Enter ${formatLabel(key).toLowerCase()}...`}
+                style={isPassword ? { paddingRight: '40px' } : {}}
+              />
+              {isPassword && (
+                <IconButton
+                  onClick={() => togglePasswordVisibility(key)}
+                  style={{
+                    position: 'absolute',
+                    right: '8px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    padding: '4px',
+                    color: 'var(--jarvis-text-secondary)'
+                  }}
+                  size="small"
+                >
+                  {isVisible ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                </IconButton>
+              )}
+            </div>
+          )}
+          {key.toLowerCase().includes('server') && value && (
+            <div className="jarvis-status-indicator jarvis-status-connected">
+              <div className="jarvis-connection-dot"></div>
+              Connected
+            </div>
+          )}
+        </div>
       );
     }
 
     if (Array.isArray(value)) {
       return (
-        <Box key={key} sx={{ ml: `${indent}px`, mb: 2 }}>
-          <Typography variant="subtitle2" gutterBottom>
-            {key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-          </Typography>
-          <Paper variant="outlined" sx={{ p: 2, maxHeight: '50vh', overflow: 'auto' }}>
+        <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
+          <label className="jarvis-form-label">{formatLabel(key)}</label>
+          <div className="settings-section" style={{ padding: 'var(--jarvis-spacing-md)', maxHeight: '50vh', overflow: 'auto' }}>
             {value.map((item, index) => (
-              <Box key={index} sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center' }}>
-                <TextField
-                  size="small"
+              <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
+                <input
+                  className="jarvis-form-input"
                   value={typeof item === 'object' ? JSON.stringify(item) : item}
                   onChange={(e) => {
                     const newArray = [...value];
@@ -423,61 +662,101 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
                     } catch {
                       newArray[index] = e.target.value;
                     }
-                    onChange(key, newArray);
+                    onChangeHandler(key, newArray);
                   }}
-                  fullWidth
+                  style={{ flex: 1 }}
                 />
-                <IconButton 
-                  size="small" 
+                <button 
+                  className="jarvis-btn jarvis-btn-secondary"
                   onClick={() => {
                     const newArray = value.filter((_, i) => i !== index);
-                    onChange(key, newArray);
+                    onChangeHandler(key, newArray);
                   }}
+                  style={{ padding: '6px 12px', fontSize: '12px' }}
                 >
-                  <DeleteIcon />
-                </IconButton>
-              </Box>
+                  Remove
+                </button>
+              </div>
             ))}
-            <Button 
-              size="small" 
-              startIcon={<AddIcon />}
-              onClick={() => onChange(key, [...value, ''])}
+            <button 
+              className="jarvis-btn jarvis-btn-primary"
+              onClick={() => onChangeHandler(key, [...value, ''])}
+              style={{ padding: '6px 12px', fontSize: '12px' }}
             >
               Add Item
-            </Button>
-          </Paper>
-        </Box>
+            </button>
+          </div>
+        </div>
       );
     }
 
-    if (typeof value === 'object' && value !== null) {
-      return (
-        <Box key={key} sx={{ ml: `${indent}px`, mb: 2 }}>
-          <Typography variant="subtitle2" gutterBottom>
-            {key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-          </Typography>
-          <Paper variant="outlined" sx={{ p: 2, maxHeight: '60vh', overflow: 'auto' }}>
-            {Object.entries(value).map(([subKey, subValue]) => 
-              renderField(`${key}.${subKey}`, subValue, depth + 1)
-            )}
-          </Paper>
-        </Box>
-      );
+    // Skip nested objects since we've already flattened them
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      return null;
     }
 
     return (
-      <Box key={key} sx={{ ml: `${indent}px`, mb: 2 }}>
-        <Typography variant="body2" color="text.secondary">
+      <div key={key} className="jarvis-form-group" style={{ marginLeft: `${depth * 20}px` }}>
+        <div className="jarvis-help-text">
           {key}: {String(value)} (type: {typeof value})
-        </Typography>
-      </Box>
+        </div>
+      </div>
     );
   };
 
+  const categories = categorizeFields(data, category);
+  const categoryKeys = Object.keys(categories);
+  
+  // Set first available category as active if current active tab doesn't exist
+  React.useEffect(() => {
+    if (categoryKeys.length > 0 && !categoryKeys.includes(activeTab)) {
+      setActiveTab(categoryKeys[0]);
+    }
+  }, [categoryKeys, activeTab]);
+
+  if (categoryKeys.length === 0) {
+    return <div className="jarvis-help-text">No settings available to configure.</div>;
+  }
+
   return (
-    <Box>
-      {Object.entries(data).map(([key, value]) => renderField(key, value))}
-    </Box>
+    <div className="jarvis-tabs">
+      {/* Tab Navigation */}
+      <div className="jarvis-tab-list">
+        {categoryKeys.map((categoryKey) => (
+          <button
+            key={categoryKey}
+            className={`jarvis-tab-button ${activeTab === categoryKey ? 'active' : ''}`}
+            onClick={() => setActiveTab(categoryKey)}
+          >
+            {categories[categoryKey].title}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      {categoryKeys.map((categoryKey) => (
+        <div
+          key={categoryKey}
+          className={`jarvis-tab-content ${activeTab === categoryKey ? 'active' : ''}`}
+        >
+          <div className="jarvis-tab-panel">
+            <div className="jarvis-form-grid">
+              {Object.entries(categories[categoryKey].fields).map(([key, value]) => 
+                renderField(key, value, 0, (fieldKey, fieldValue) => {
+                  // Handle nested field updates
+                  if (fieldKey.includes('.')) {
+                    // For nested fields, we need to reconstruct the object path
+                    onChange(fieldKey, fieldValue);
+                  } else {
+                    onChange(fieldKey, fieldValue);
+                  }
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 };
 

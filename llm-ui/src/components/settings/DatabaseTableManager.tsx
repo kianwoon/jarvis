@@ -30,8 +30,7 @@ import {
   Edit as EditIcon,
   Delete as DeleteIcon,
   PlayArrow as RunIcon,
-  Pause as PauseIcon,
-  Visibility as ViewIcon
+  Pause as PauseIcon
 } from '@mui/icons-material';
 
 interface DatabaseTableManagerProps {
@@ -54,7 +53,7 @@ interface WorkflowRecord {
 
 interface CollectionRecord {
   id?: string;
-  name: string;
+  collection_name: string;
   description?: string;
   collection_type: string;
   access_level: 'public' | 'private' | 'restricted';
@@ -81,8 +80,6 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
 }) => {
   const [editDialog, setEditDialog] = useState(false);
   const [editingRecord, setEditingRecord] = useState<any>(null);
-  const [viewDialog, setViewDialog] = useState(false);
-  const [viewingRecord, setViewingRecord] = useState<any>(null);
 
   const getTableHeaders = () => {
     switch (category) {
@@ -109,7 +106,7 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
         } as WorkflowRecord;
       case 'collection_registry':
         return {
-          name: '',
+          collection_name: '',
           description: '',
           collection_type: 'vector',
           access_level: 'public',
@@ -206,7 +203,7 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
       case 'automation':
         return '/api/v1/automation/workflows';
       case 'collection_registry':
-        return '/api/v1/collections';
+        return '/api/v1/collections/';
       case 'langgraph_agents':
         return '/api/v1/langgraph/agents';
       default:
@@ -255,7 +252,7 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
       case 'collection_registry':
         return (
           <TableRow key={record.id || index}>
-            <TableCell>{record.name}</TableCell>
+            <TableCell>{record.collection_name}</TableCell>
             <TableCell>
               <Chip label={record.collection_type} size="small" />
             </TableCell>
@@ -269,9 +266,6 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
             <TableCell>{record.description || 'No description'}</TableCell>
             <TableCell>{record.created_at ? new Date(record.created_at).toLocaleDateString() : 'N/A'}</TableCell>
             <TableCell>
-              <IconButton size="small" onClick={() => setViewingRecord(record) || setViewDialog(true)}>
-                <ViewIcon />
-              </IconButton>
               <IconButton size="small" onClick={() => handleEdit(record)}>
                 <EditIcon />
               </IconButton>
@@ -301,9 +295,6 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
             </TableCell>
             <TableCell>{record.description || 'No description'}</TableCell>
             <TableCell>
-              <IconButton size="small" onClick={() => setViewingRecord(record) || setViewDialog(true)}>
-                <ViewIcon />
-              </IconButton>
               <IconButton size="small" onClick={() => handleEdit(record)}>
                 <EditIcon />
               </IconButton>
@@ -461,6 +452,146 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
             />
           </Box>
         );
+      case 'collection_registry':
+        return (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <TextField
+              label="Collection Name"
+              value={editingRecord.collection_name || ''}
+              onChange={(e) => setEditingRecord({...editingRecord, collection_name: e.target.value})}
+              fullWidth
+              required
+              helperText="Unique identifier for the collection"
+            />
+            <TextField
+              label="Description"
+              value={editingRecord.description || ''}
+              onChange={(e) => setEditingRecord({...editingRecord, description: e.target.value})}
+              fullWidth
+              multiline
+              rows={3}
+              helperText="Brief description of the collection purpose"
+            />
+            <FormControl fullWidth>
+              <InputLabel>Collection Type</InputLabel>
+              <Select
+                value={editingRecord.collection_type || 'general'}
+                onChange={(e) => setEditingRecord({...editingRecord, collection_type: e.target.value})}
+              >
+                <MenuItem value="general">General</MenuItem>
+                <MenuItem value="technical_docs">Technical Documentation</MenuItem>
+                <MenuItem value="regulatory_compliance">Regulatory Compliance</MenuItem>
+                <MenuItem value="product_documentation">Product Documentation</MenuItem>
+                <MenuItem value="risk_management">Risk Management</MenuItem>
+                <MenuItem value="customer_support">Customer Support</MenuItem>
+                <MenuItem value="audit_reports">Audit Reports</MenuItem>
+                <MenuItem value="training_materials">Training Materials</MenuItem>
+                <MenuItem value="partnership">Partnership</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl fullWidth>
+              <InputLabel>Access Level</InputLabel>
+              <Select
+                value={editingRecord.access_config?.restricted === false ? 'public' : 
+                       editingRecord.access_config?.restricted === true ? 'restricted' : 'public'}
+                onChange={(e) => {
+                  const isRestricted = e.target.value === 'restricted';
+                  setEditingRecord({
+                    ...editingRecord, 
+                    access_config: {
+                      ...editingRecord.access_config,
+                      restricted: isRestricted,
+                      allowed_users: isRestricted ? (editingRecord.access_config?.allowed_users || []) : []
+                    }
+                  });
+                }}
+              >
+                <MenuItem value="public">Public</MenuItem>
+                <MenuItem value="restricted">Restricted</MenuItem>
+              </Select>
+            </FormControl>
+            {editingRecord.access_config?.restricted && (
+              <TextField
+                label="Allowed Users (comma-separated)"
+                value={editingRecord.access_config?.allowed_users?.join(', ') || ''}
+                onChange={(e) => {
+                  const users = e.target.value.split(',').map(u => u.trim()).filter(u => u);
+                  setEditingRecord({
+                    ...editingRecord,
+                    access_config: {
+                      ...editingRecord.access_config,
+                      allowed_users: users
+                    }
+                  });
+                }}
+                fullWidth
+                helperText="Enter usernames or roles separated by commas"
+              />
+            )}
+            <TextField
+              label="Chunk Size"
+              type="number"
+              value={editingRecord.metadata_schema?.chunk_size || 1500}
+              onChange={(e) => setEditingRecord({
+                ...editingRecord,
+                metadata_schema: {
+                  ...editingRecord.metadata_schema,
+                  chunk_size: parseInt(e.target.value) || 1500
+                }
+              })}
+              fullWidth
+              helperText="Size of text chunks for processing (default: 1500)"
+            />
+            <TextField
+              label="Chunk Overlap"
+              type="number"
+              value={editingRecord.metadata_schema?.chunk_overlap || 200}
+              onChange={(e) => setEditingRecord({
+                ...editingRecord,
+                metadata_schema: {
+                  ...editingRecord.metadata_schema,
+                  chunk_overlap: parseInt(e.target.value) || 200
+                }
+              })}
+              fullWidth
+              helperText="Overlap between chunks (default: 200)"
+            />
+            <FormControl fullWidth>
+              <InputLabel>Search Strategy</InputLabel>
+              <Select
+                value={editingRecord.search_config?.strategy || 'balanced'}
+                onChange={(e) => setEditingRecord({
+                  ...editingRecord,
+                  search_config: {
+                    ...editingRecord.search_config,
+                    strategy: e.target.value
+                  }
+                })}
+              >
+                <MenuItem value="balanced">Balanced</MenuItem>
+                <MenuItem value="precise">Precise</MenuItem>
+                <MenuItem value="comprehensive">Comprehensive</MenuItem>
+                <MenuItem value="temporal">Temporal</MenuItem>
+                <MenuItem value="exact">Exact</MenuItem>
+              </Select>
+            </FormControl>
+            <TextField
+              label="Similarity Threshold"
+              type="number"
+              inputProps={{ min: 0, max: 1, step: 0.01 }}
+              value={editingRecord.search_config?.similarity_threshold || 0.7}
+              onChange={(e) => setEditingRecord({
+                ...editingRecord,
+                search_config: {
+                  ...editingRecord.search_config,
+                  similarity_threshold: parseFloat(e.target.value) || 0.7
+                }
+              })}
+              fullWidth
+              helperText="Minimum similarity score (0.0 - 1.0, default: 0.7)"
+            />
+          </Box>
+        );
       // Add similar forms for other categories
       default:
         return (
@@ -511,18 +642,34 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
               </TableRow>
             </TableHead>
             <TableBody>
-              {data.sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((record, index) => renderTableRow(record, index))}
+              {data.sort((a, b) => {
+                const nameA = category === 'collection_registry' ? (a.collection_name || '') : (a.name || '');
+                const nameB = category === 'collection_registry' ? (b.collection_name || '') : (b.name || '');
+                return nameA.localeCompare(nameB);
+              }).map((record, index) => renderTableRow(record, index))}
             </TableBody>
           </Table>
         </TableContainer>
       )}
 
       {/* Edit Dialog */}
-      <Dialog open={editDialog} onClose={() => setEditDialog(false)} maxWidth="md" fullWidth>
-        <DialogTitle>
+      <Dialog 
+        open={editDialog} 
+        onClose={() => setEditDialog(false)} 
+        maxWidth="md" 
+        fullWidth
+        PaperProps={{
+          sx: { 
+            maxHeight: '85vh',
+            margin: '48px 32px',
+            overflow: 'hidden'
+          }
+        }}
+      >
+        <DialogTitle sx={{ paddingBottom: '16px' }}>
           {editingRecord?.id ? 'Edit Record' : 'Add New Record'}
         </DialogTitle>
-        <DialogContent>
+        <DialogContent sx={{ overflow: 'auto', paddingTop: '24px !important', paddingBottom: 2 }}>
           {renderEditForm()}
         </DialogContent>
         <DialogActions>
@@ -531,18 +678,6 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
         </DialogActions>
       </Dialog>
 
-      {/* View Dialog */}
-      <Dialog open={viewDialog} onClose={() => setViewDialog(false)} maxWidth="md" fullWidth>
-        <DialogTitle>View Record</DialogTitle>
-        <DialogContent>
-          <pre style={{ fontSize: '12px', overflow: 'auto' }}>
-            {JSON.stringify(viewingRecord, null, 2)}
-          </pre>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setViewDialog(false)}>Close</Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 };

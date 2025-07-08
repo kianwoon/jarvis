@@ -75,6 +75,11 @@ function MultiAgentApp() {
     loadConversationHistory();
   }, []);
 
+  // Set theme data attribute for CSS
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+
   // Save conversations to localStorage
   useEffect(() => {
     if (messages.length > 0) {
@@ -131,8 +136,8 @@ function MultiAgentApp() {
   };
 
   const goToWorkflow = () => {
-    // Navigate to workflow tab in main app
-    window.location.href = '/?tab=2';
+    // Navigate to workflow page
+    window.location.href = '/workflow.html';
   };
 
   const goToSettings = () => {

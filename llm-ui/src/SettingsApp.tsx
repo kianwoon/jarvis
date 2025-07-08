@@ -17,20 +17,7 @@ import {
   ListItemIcon,
   ListItemText,
   Divider,
-  Grid,
-  Card,
-  CardContent,
-  CardHeader,
-  TextField,
-  Switch,
-  FormControlLabel,
-  Button,
-  Alert,
-  CircularProgress,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Chip
+  Grid
 } from '@mui/material';
 import {
   LightMode as LightModeIcon,
@@ -45,13 +32,11 @@ import {
   Extension as IntegrationsIcon,
   Speed as PerformanceIcon,
   Computer as SystemIcon,
-  ExpandMore as ExpandMoreIcon,
   Save as SaveIcon,
-  Refresh as RefreshIcon,
-  Code as CodeIcon,
-  Description as YamlIcon
+  Refresh as RefreshIcon
 } from '@mui/icons-material';
 import SettingsFormRenderer from './components/settings/SettingsFormRenderer';
+import './styles/settings-theme.css';
 
 interface SettingsCategory {
   id: string;
@@ -178,7 +163,7 @@ function SettingsApp() {
         window.location.href = '/multi-agent.html';
         break;
       case 2:
-        window.location.href = '/?tab=2';
+        window.location.href = '/workflow.html';
         break;
       case 3:
         // Already on settings page
@@ -233,7 +218,7 @@ function SettingsApp() {
         }
       } else if (category === 'collection_registry') {
         // Collection registry might use a different endpoint
-        response = await fetch('/api/v1/collections');
+        response = await fetch('/api/v1/collections/');
         if (response.ok) {
           data = await response.json();
         } else {
@@ -317,98 +302,71 @@ function SettingsApp() {
   const renderSettingsForm = (category: string) => {
     const data = settingsData[category];
     const isLoading = loading[category];
-    const isSaving = saving[category];
     const errorMsg = error[category];
     const successMsg = success[category];
 
     if (isLoading) {
       return (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
-          <CircularProgress />
-          <Typography sx={{ ml: 2 }}>Loading {category} settings...</Typography>
-        </Box>
+        <div className="jarvis-loading">
+          <div className="jarvis-spinner"></div>
+          <Typography>Loading {category} settings...</Typography>
+        </div>
       );
     }
 
     if (errorMsg) {
       return (
-        <Alert severity="error" sx={{ mb: 2 }}>
+        <div className="jarvis-alert jarvis-alert-error">
           {errorMsg}
-          <Button 
-            size="small" 
+          <button 
+            className="jarvis-btn jarvis-btn-secondary"
             onClick={() => loadSettings(category)}
-            sx={{ ml: 1 }}
+            style={{ marginLeft: '12px', padding: '6px 12px', fontSize: '12px' }}
           >
             Retry
-          </Button>
-        </Alert>
+          </button>
+        </div>
       );
     }
 
     if (!data) {
       return (
-        <Alert severity="info">
-          Click "Load Settings" to view and edit {category} configuration
-        </Alert>
+        <div className="jarvis-alert jarvis-alert-info">
+          Click "Reload" in the header to load and edit {category} configuration
+        </div>
       );
     }
 
     return (
-      <Box>
+      <div>
         {successMsg && (
-          <Alert severity="success" sx={{ mb: 2 }}>
+          <div className="jarvis-alert jarvis-alert-success">
             Settings saved successfully!
-          </Alert>
+          </div>
         )}
         
-        <Card>
-          <CardHeader 
-            title={`${settingsCategories.find(cat => cat.id === category)?.name} Configuration`}
-            action={
-              <Box>
-                <Button
-                  startIcon={<RefreshIcon />}
-                  onClick={() => {
-                    setSettingsData(prev => {
-                      const updated = { ...prev };
-                      delete updated[category];
-                      return updated;
-                    });
-                    loadSettings(category, true);
-                  }}
-                  sx={{ mr: 1 }}
-                >
-                  Reload
-                </Button>
-                <Button
-                  variant="contained"
-                  startIcon={<SaveIcon />}
-                  onClick={() => saveSettings(category, data)}
-                  disabled={isSaving}
-                >
-                  {isSaving ? 'Saving...' : 'Save Settings'}
-                </Button>
-              </Box>
-            }
-          />
-          <CardContent>
-            <SettingsFormRenderer
-              category={category}
-              data={data}
-              onChange={(field, value) => handleFieldChange(category, field, value)}
-              onRefresh={() => {
-                setSettingsData(prev => {
-                  const updated = { ...prev };
-                  delete updated[category];
-                  return updated;
-                });
-                loadSettings(category, true);
-              }}
-              isYamlBased={category === 'self_reflection' || category === 'query_patterns'}
-            />
-          </CardContent>
-        </Card>
-      </Box>
+        <div className="settings-section-header">
+          <div className="settings-section-title">Configuration Details</div>
+          <div className="settings-section-subtitle">
+            Configure your {settingsCategories.find(cat => cat.id === category)?.name.toLowerCase()} settings below
+          </div>
+        </div>
+        
+        <SettingsFormRenderer
+          category={category}
+          data={data}
+          onChange={(field, value) => handleFieldChange(category, field, value)}
+          onRefresh={() => {
+            setSettingsData(prev => {
+              const updated = { ...prev };
+              delete updated[category];
+              return updated;
+            });
+            loadSettings(category, true);
+          }}
+          isYamlBased={category === 'self_reflection' || category === 'query_patterns'}
+        />
+      </div>
     );
   };
 
@@ -417,6 +375,11 @@ function SettingsApp() {
   useEffect(() => {
     loadSettings(selectedCategory);
   }, []);
+
+  // Set theme data attribute for CSS
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
 
   return (
     <ThemeProvider theme={theme}>
@@ -470,12 +433,12 @@ function SettingsApp() {
           </Tabs>
         </Box>
 
-        {/* Main Content */}
+        {/* Main Content with Left Nav + Modern Design */}
         <Container maxWidth={false} sx={{ flex: 1, py: 2, overflow: 'hidden' }}>
           <Grid container spacing={2} sx={{ height: '100%' }}>
             {/* Settings Categories Sidebar */}
-            <Grid item xs={12} md={3}>
-              <Paper sx={{ height: '100%', overflow: 'auto' }}>
+            <Grid item xs={12} md={3} sx={{ height: '100%' }}>
+              <Paper sx={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
                 <List>
                   <ListItem>
                     <Typography variant="h6" color="primary">
@@ -486,8 +449,12 @@ function SettingsApp() {
                   {settingsCategories.map((category) => (
                     <ListItem
                       key={category.id}
-                      button
-                      selected={selectedCategory === category.id}
+                      component="div"
+                      sx={{ 
+                        cursor: 'pointer',
+                        bgcolor: selectedCategory === category.id ? 'action.selected' : 'transparent',
+                        '&:hover': { bgcolor: 'action.hover' }
+                      }}
                       onClick={() => handleCategorySelect(category.id)}
                     >
                       <ListItemIcon>
@@ -504,9 +471,43 @@ function SettingsApp() {
             </Grid>
 
             {/* Settings Content */}
-            <Grid item xs={12} md={9}>
-              <Paper sx={{ height: '100%', overflow: 'auto', p: 2 }}>
-                <Box sx={{ height: '100%', overflow: 'auto' }}>
+            <Grid item xs={12} md={9} sx={{ height: '100%' }}>
+              <Paper sx={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', p: 2 }}>
+                {/* Modern Header */}
+                <div className="settings-header">
+                  <div className="settings-header-content">
+                    <h1>{settingsCategories.find(cat => cat.id === selectedCategory)?.name || 'Settings'}</h1>
+                    <p>{settingsCategories.find(cat => cat.id === selectedCategory)?.description || 'Configure your settings'}</p>
+                  </div>
+                  <div className="settings-header-actions">
+                    <button 
+                      className="jarvis-btn jarvis-btn-secondary"
+                      onClick={() => {
+                        setSettingsData(prev => {
+                          const updated = { ...prev };
+                          delete updated[selectedCategory];
+                          return updated;
+                        });
+                        loadSettings(selectedCategory, true);
+                      }}
+                      disabled={loading[selectedCategory]}
+                    >
+                      <RefreshIcon sx={{ fontSize: 16 }} />
+                      Reload
+                    </button>
+                    <button 
+                      className="jarvis-btn jarvis-btn-primary"
+                      onClick={() => saveSettings(selectedCategory, settingsData[selectedCategory])}
+                      disabled={saving[selectedCategory] || !settingsData[selectedCategory]}
+                    >
+                      <SaveIcon sx={{ fontSize: 16 }} />
+                      {saving[selectedCategory] ? 'Saving...' : 'Save Settings'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Settings Content */}
+                <Box sx={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
                   {renderSettingsForm(selectedCategory)}
                 </Box>
               </Paper>

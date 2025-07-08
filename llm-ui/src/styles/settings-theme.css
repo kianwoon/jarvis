@@ -1,0 +1,604 @@
+/* Settings Page Modern Theme - Matching Sample Design */
+
+/* Main Settings Container */
+.settings-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: var(--jarvis-spacing-lg);
+  height: 100%;
+  background-color: var(--jarvis-bg-primary);
+}
+
+/* Header Section */
+.settings-header {
+  background: var(--jarvis-surface);
+  border-radius: var(--jarvis-radius-md);
+  padding: var(--jarvis-spacing-lg);
+  margin-bottom: var(--jarvis-spacing-lg);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: var(--jarvis-shadow-md);
+  transition: all 0.3s ease;
+}
+
+.settings-header-content h1 {
+  font-size: 24px;
+  font-weight: 500;
+  color: var(--jarvis-text-primary);
+  margin: 0 0 4px 0;
+  line-height: 1.2;
+}
+
+.settings-header-content p {
+  color: var(--jarvis-text-secondary);
+  font-size: 14px;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.settings-header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+/* Modern Buttons */
+.jarvis-btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: var(--jarvis-radius-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  overflow: hidden;
+  font-family: inherit;
+}
+
+.jarvis-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.jarvis-btn-secondary {
+  background: transparent;
+  color: var(--jarvis-accent);
+  border: 1px solid var(--jarvis-accent);
+}
+
+.jarvis-btn-secondary:hover:not(:disabled) {
+  background: var(--jarvis-accent-light);
+  transform: translateY(-1px);
+}
+
+.jarvis-btn-primary {
+  background: var(--jarvis-accent);
+  color: white;
+}
+
+.jarvis-btn-primary:hover:not(:disabled) {
+  background: var(--jarvis-accent-hover);
+  box-shadow: 0 2px 8px var(--jarvis-accent-focus);
+  transform: translateY(-1px);
+}
+
+/* Ripple effect for buttons */
+.jarvis-btn::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  transition: width 0.3s, height 0.3s, top 0.3s, left 0.3s;
+  transform: translate(-50%, -50%);
+}
+
+.jarvis-btn:active::before {
+  width: 300px;
+  height: 300px;
+}
+
+/* Main Content Grid */
+.settings-main-content {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--jarvis-spacing-lg);
+  margin-bottom: var(--jarvis-spacing-lg);
+}
+
+/* Form Grid Layout for Multi-Column */
+.jarvis-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--jarvis-spacing-md) var(--jarvis-spacing-lg);
+  align-items: start;
+  padding-bottom: var(--jarvis-spacing-lg);
+}
+
+.jarvis-form-grid .jarvis-form-group {
+  margin-bottom: var(--jarvis-spacing-md);
+}
+
+.jarvis-form-grid .jarvis-form-group.full-width {
+  grid-column: 1 / -1;
+}
+
+.jarvis-form-grid .jarvis-form-group.complex {
+  grid-column: 1 / -1;
+}
+
+/* Settings Sections */
+.settings-section {
+  background: var(--jarvis-surface);
+  border-radius: var(--jarvis-radius-md);
+  padding: var(--jarvis-spacing-lg);
+  box-shadow: var(--jarvis-shadow-sm);
+  transition: all 0.3s ease;
+}
+
+.settings-section:hover {
+  box-shadow: var(--jarvis-shadow-md);
+}
+
+.settings-section.full-width {
+  grid-column: 1 / -1;
+}
+
+.settings-section-header {
+  margin-bottom: var(--jarvis-spacing-lg);
+  padding-bottom: var(--jarvis-spacing-md);
+  border-bottom: 1px solid var(--jarvis-divider);
+}
+
+.settings-section-title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--jarvis-text-primary);
+  margin: 0 0 4px 0;
+  line-height: 1.3;
+}
+
+.settings-section-subtitle {
+  font-size: 14px;
+  color: var(--jarvis-text-secondary);
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Form Controls */
+.jarvis-form-group {
+  margin-bottom: var(--jarvis-spacing-lg);
+}
+
+.jarvis-input-container {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.jarvis-form-label {
+  display: block;
+  font-weight: 500;
+  color: var(--jarvis-text-primary);
+  margin-bottom: var(--jarvis-spacing-sm);
+  font-size: 14px;
+}
+
+.jarvis-form-input,
+.jarvis-form-select,
+.jarvis-form-textarea {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--jarvis-border);
+  border-radius: var(--jarvis-radius-sm);
+  font-size: 14px;
+  transition: all 0.2s ease;
+  background: var(--jarvis-surface-variant);
+  color: var(--jarvis-text-primary);
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.jarvis-form-input:focus,
+.jarvis-form-select:focus,
+.jarvis-form-textarea:focus {
+  outline: none;
+  border-color: var(--jarvis-accent);
+  box-shadow: 0 0 0 2px var(--jarvis-accent-focus);
+  background: var(--jarvis-surface);
+}
+
+.jarvis-form-textarea {
+  resize: vertical;
+  min-height: 120px;
+  font-family: 'Roboto Mono', monospace;
+  line-height: 1.4;
+}
+
+.jarvis-form-select {
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3e%3c/svg%3e");
+  background-position: right 12px center;
+  background-repeat: no-repeat;
+  background-size: 16px;
+  padding-right: 40px;
+  appearance: none;
+}
+
+/* Custom Sliders */
+.jarvis-slider-container {
+  margin-top: 12px;
+}
+
+.jarvis-slider-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--jarvis-spacing-sm);
+}
+
+.jarvis-slider-value {
+  background: var(--jarvis-bg-tertiary);
+  padding: 4px 8px;
+  border-radius: var(--jarvis-radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--jarvis-accent);
+  min-width: 40px;
+  text-align: center;
+  border: 1px solid var(--jarvis-border-light);
+}
+
+.jarvis-slider {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--jarvis-border);
+  outline: none;
+  -webkit-appearance: none;
+  margin: var(--jarvis-spacing-sm) 0;
+  cursor: pointer;
+}
+
+.jarvis-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--jarvis-accent);
+  cursor: pointer;
+  box-shadow: var(--jarvis-shadow-sm);
+  transition: all 0.2s ease;
+}
+
+.jarvis-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+  box-shadow: var(--jarvis-shadow-md);
+}
+
+.jarvis-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--jarvis-accent);
+  cursor: pointer;
+  border: none;
+  box-shadow: var(--jarvis-shadow-sm);
+  transition: all 0.2s ease;
+}
+
+.jarvis-slider::-moz-range-thumb:hover {
+  transform: scale(1.1);
+  box-shadow: var(--jarvis-shadow-md);
+}
+
+.jarvis-slider-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--jarvis-text-secondary);
+  margin-top: 4px;
+}
+
+/* Help Text */
+.jarvis-help-text {
+  font-size: 12px;
+  color: var(--jarvis-text-secondary);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* Status Indicators */
+.jarvis-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jarvis-spacing-sm);
+  padding: 6px 12px;
+  border-radius: var(--jarvis-radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: var(--jarvis-spacing-sm);
+}
+
+.jarvis-status-connected {
+  background: rgba(76, 175, 80, 0.1);
+  border: 1px solid rgba(76, 175, 80, 0.3);
+  color: var(--jarvis-success);
+}
+
+.jarvis-status-disconnected {
+  background: rgba(244, 67, 54, 0.1);
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  color: var(--jarvis-error);
+}
+
+.jarvis-connection-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+/* Settings Tabs */
+.jarvis-tabs {
+  margin-bottom: var(--jarvis-spacing-lg);
+}
+
+.jarvis-tab-list {
+  display: flex;
+  border-bottom: 1px solid var(--jarvis-border);
+  margin-bottom: var(--jarvis-spacing-lg);
+  overflow-x: auto;
+}
+
+.jarvis-tab-button {
+  background: none;
+  border: none;
+  padding: var(--jarvis-spacing-md) var(--jarvis-spacing-lg);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--jarvis-text-secondary);
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.jarvis-tab-button:hover {
+  color: var(--jarvis-text-primary);
+  background: var(--jarvis-accent-light);
+}
+
+.jarvis-tab-button.active {
+  color: var(--jarvis-accent);
+  border-bottom-color: var(--jarvis-accent);
+  background: var(--jarvis-accent-light);
+}
+
+.jarvis-tab-content {
+  display: none;
+}
+
+.jarvis-tab-content.active {
+  display: block;
+}
+
+.jarvis-tab-panel {
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Collapsible Sections */
+.jarvis-collapsible {
+  margin-top: var(--jarvis-spacing-lg);
+}
+
+.jarvis-collapsible-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: var(--jarvis-spacing-md);
+  background: var(--jarvis-surface-variant);
+  border-radius: var(--jarvis-radius-sm);
+  transition: all 0.2s ease;
+  user-select: none;
+  border: 1px solid var(--jarvis-border-light);
+}
+
+.jarvis-collapsible-header:hover {
+  background: var(--jarvis-bg-tertiary);
+  border-color: var(--jarvis-border);
+}
+
+.jarvis-collapsible-title {
+  font-weight: 500;
+  color: var(--jarvis-text-primary);
+  font-size: 16px;
+}
+
+.jarvis-chevron {
+  transition: transform 0.3s ease;
+  color: var(--jarvis-text-secondary);
+  font-size: 18px;
+}
+
+.jarvis-chevron.rotated {
+  transform: rotate(180deg);
+}
+
+.jarvis-collapsible-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease;
+}
+
+.jarvis-collapsible-content.expanded {
+  max-height: 2000px;
+}
+
+.jarvis-collapsible-inner {
+  padding: var(--jarvis-spacing-lg) var(--jarvis-spacing-md) var(--jarvis-spacing-md);
+  background: var(--jarvis-surface);
+  border-radius: 0 0 var(--jarvis-radius-sm) var(--jarvis-radius-sm);
+  border: 1px solid var(--jarvis-border-light);
+  border-top: none;
+}
+
+.jarvis-advanced-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--jarvis-spacing-lg);
+}
+
+/* Loading States */
+.jarvis-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--jarvis-text-secondary);
+}
+
+.jarvis-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--jarvis-border);
+  border-top: 2px solid var(--jarvis-accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-right: var(--jarvis-spacing-sm);
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Alerts */
+.jarvis-alert {
+  padding: var(--jarvis-spacing-md);
+  border-radius: var(--jarvis-radius-sm);
+  margin-bottom: var(--jarvis-spacing-md);
+  border-left: 4px solid;
+}
+
+.jarvis-alert-success {
+  background: rgba(76, 175, 80, 0.1);
+  border-color: var(--jarvis-success);
+  color: var(--jarvis-success);
+}
+
+.jarvis-alert-error {
+  background: rgba(244, 67, 54, 0.1);
+  border-color: var(--jarvis-error);
+  color: var(--jarvis-error);
+}
+
+.jarvis-alert-info {
+  background: var(--jarvis-accent-light);
+  border-color: var(--jarvis-accent);
+  color: var(--jarvis-accent);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .settings-container {
+    padding: var(--jarvis-spacing-md);
+  }
+  
+  .settings-main-content {
+    grid-template-columns: 1fr;
+  }
+  
+  .settings-header {
+    flex-direction: column;
+    gap: var(--jarvis-spacing-md);
+    text-align: center;
+  }
+  
+  .settings-header-actions {
+    justify-content: center;
+  }
+  
+  .jarvis-advanced-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  /* Mobile: Single column form layout */
+  .jarvis-form-grid {
+    grid-template-columns: 1fr;
+    gap: var(--jarvis-spacing-md);
+  }
+  
+  .jarvis-form-input,
+  .jarvis-form-select,
+  .jarvis-form-textarea {
+    font-size: 16px; /* Prevent zoom on iOS */
+  }
+}
+
+@media (max-width: 480px) {
+  .settings-container {
+    padding: var(--jarvis-spacing-sm);
+  }
+  
+  .settings-section {
+    padding: var(--jarvis-spacing-md);
+  }
+  
+  .jarvis-btn {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+}
+
+/* Dark mode specific adjustments */
+[data-theme="dark"] .jarvis-form-select {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%9ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3e%3c/svg%3e");
+}
+
+/* Focus visible for accessibility */
+.jarvis-btn:focus-visible,
+.jarvis-form-input:focus-visible,
+.jarvis-form-select:focus-visible,
+.jarvis-form-textarea:focus-visible {
+  outline: 2px solid var(--jarvis-accent);
+  outline-offset: 2px;
+}
+
+/* Print styles */
+@media print {
+  .settings-header-actions,
+  .jarvis-btn {
+    display: none;
+  }
+  
+  .settings-section {
+    box-shadow: none;
+    border: 1px solid var(--jarvis-border);
+  }
+}
