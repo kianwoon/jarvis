@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Box,
   TextField,
@@ -14,15 +14,21 @@ import {
   ListItemSecondaryAction,
   Paper,
   Divider,
-  Alert
+  Alert,
+  Grid,
+  Tabs,
+  Tab
 } from '@mui/material';
 import {
   Add as AddIcon,
   Delete as DeleteIcon,
-  Edit as EditIcon
+  Edit as EditIcon,
+  Refresh as RefreshIcon
 } from '@mui/icons-material';
 import YamlEditor from './YamlEditor';
 import DatabaseTableManager from './DatabaseTableManager';
+import MCPServerManager from './MCPServerManager';
+import MCPToolManager from './MCPToolManager';
 
 interface SettingsFormRendererProps {
   category: string;
@@ -41,7 +47,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
 }) => {
 
   // Special handling for YAML-based configurations
-  if (isYamlBased || category === 'self_reflection' || category === 'agent_behaviors') {
+  if (isYamlBased || category === 'self_reflection' || category === 'query_patterns') {
     const yamlValue = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
     
     return (
@@ -67,14 +73,33 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
     return renderEnvironmentEditor(data, onChange);
   }
 
+  // Special handling for MCP configuration
+  if (category === 'mcp') {
+    const mcpData = data || { servers: [], tools: [] };
+    return renderMCPConfiguration(mcpData, onChange, onRefresh);
+  }
+
   // Special handling for database-backed settings
-  if (category === 'collection_registry' || category === 'langgraph_agents') {
-    const records = Array.isArray(data) ? data : data?.collections || data?.agents || [];
+  if (category === 'collection_registry') {
+    const records = Array.isArray(data) ? data : data?.collections || [];
     return (
       <DatabaseTableManager
         category={category as 'collection_registry' | 'langgraph_agents'}
         data={records}
         onChange={(newData) => onChange('records', newData)}
+        onRefresh={onRefresh || (() => {})}
+      />
+    );
+  }
+
+  // Special handling for LangGraph agents
+  if (category === 'langgraph_agents') {
+    const records = Array.isArray(data) ? data : data?.agents || [];
+    return (
+      <DatabaseTableManager
+        category={category as 'collection_registry' | 'langgraph_agents'}
+        data={records}
+        onChange={(newData) => onChange('agents', newData)}
         onRefresh={onRefresh || (() => {})}
       />
     );
@@ -158,6 +183,122 @@ const renderEnvironmentEditor = (data: any, onChange: (field: string, value: any
           </List>
         )}
       </Paper>
+    </Box>
+  );
+};
+
+const renderMCPConfiguration = (data: any, onChange: (field: string, value: any) => void, onRefresh?: () => void) => {
+  const [mcpTab, setMcpTab] = useState(0);
+
+  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
+    setMcpTab(newValue);
+  };
+
+  const loadMCPData = async (type: 'servers' | 'tools') => {
+    try {
+      const endpoint = type === 'servers' ? '/api/v1/mcp/servers/' : '/api/v1/mcp/tools/';
+      const response = await fetch(endpoint);
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`Loaded MCP ${type}:`, result.length, 'items');
+        onChange(type, Array.isArray(result) ? result : result.data || []);
+      } else {
+        console.error(`Failed to load MCP ${type}: ${response.status} ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error(`Error loading MCP ${type}:`, error);
+    }
+  };
+
+  return (
+    <Box>
+      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
+        <Tabs value={mcpTab} onChange={handleTabChange} aria-label="mcp tabs">
+          <Tab label="MCP Servers" />
+          <Tab label="MCP Tools" />
+          <Tab label="Cache Management" />
+        </Tabs>
+      </Box>
+
+      {mcpTab === 0 && (
+        <MCPServerManager
+          data={data.servers || []}
+          onChange={(servers) => onChange('servers', servers)}
+          onRefresh={() => {
+            loadMCPData('servers');
+            if (onRefresh) onRefresh();
+          }}
+        />
+      )}
+
+      {mcpTab === 1 && (
+        <MCPToolManager
+          data={data.tools || []}
+          onChange={(tools) => onChange('tools', tools)}
+          onRefresh={() => {
+            loadMCPData('tools');
+            if (onRefresh) onRefresh();
+          }}
+        />
+      )}
+
+      {mcpTab === 2 && (
+        <Box>
+          <Typography variant="h6" gutterBottom>Cache Management</Typography>
+          <Paper sx={{ p: 2 }}>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={4}>
+                <Button
+                  fullWidth
+                  variant="outlined"
+                  startIcon={<RefreshIcon />}
+                  onClick={async () => {
+                    try {
+                      await fetch('/api/v1/mcp/tools/cache/reload', { method: 'POST' });
+                      alert('MCP tools cache reloaded');
+                    } catch (error) {
+                      alert('Failed to reload cache');
+                    }
+                  }}
+                >
+                  Reload Tools Cache
+                </Button>
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Button
+                  fullWidth
+                  variant="outlined"
+                  startIcon={<RefreshIcon />}
+                  onClick={async () => {
+                    try {
+                      await fetch('/api/v1/mcp/servers/cache/reload', { method: 'POST' });
+                      alert('MCP servers cache reloaded');
+                    } catch (error) {
+                      alert('Failed to reload cache');
+                    }
+                  }}
+                >
+                  Reload Servers Cache
+                </Button>
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Button
+                  fullWidth
+                  variant="outlined"
+                  startIcon={<RefreshIcon />}
+                  onClick={() => {
+                    loadMCPData('servers');
+                    loadMCPData('tools');
+                    alert('MCP data refreshed');
+                  }}
+                >
+                  Refresh All Data
+                </Button>
+              </Grid>
+            </Grid>
+          </Paper>
+        </Box>
+      )}
     </Box>
   );
 };

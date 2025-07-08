@@ -21,7 +21,9 @@ import {
   FormControl,
   InputLabel,
   Select,
-  MenuItem
+  MenuItem,
+  Switch,
+  FormControlLabel
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -206,7 +208,7 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
       case 'collection_registry':
         return '/api/v1/collections';
       case 'langgraph_agents':
-        return '/api/v1/agents';
+        return '/api/v1/langgraph/agents';
       default:
         return '/api/v1/data';
     }
@@ -385,6 +387,80 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
             />
           </Box>
         );
+      case 'langgraph_agents':
+        return (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <TextField
+              label="Agent Name"
+              value={editingRecord.name}
+              onChange={(e) => setEditingRecord({...editingRecord, name: e.target.value})}
+              fullWidth
+              required
+            />
+            <TextField
+              label="Role"
+              value={editingRecord.role}
+              onChange={(e) => setEditingRecord({...editingRecord, role: e.target.value})}
+              fullWidth
+              required
+            />
+            <TextField
+              label="Description"
+              value={editingRecord.description}
+              onChange={(e) => setEditingRecord({...editingRecord, description: e.target.value})}
+              fullWidth
+              multiline
+              rows={2}
+            />
+            <TextField
+              label="System Prompt"
+              value={editingRecord.system_prompt}
+              onChange={(e) => setEditingRecord({...editingRecord, system_prompt: e.target.value})}
+              fullWidth
+              multiline
+              rows={8}
+              required
+              sx={{ fontFamily: 'monospace' }}
+            />
+            <TextField
+              label="Tools (JSON Array)"
+              value={JSON.stringify(editingRecord.tools || [])}
+              onChange={(e) => {
+                try {
+                  const tools = JSON.parse(e.target.value);
+                  setEditingRecord({...editingRecord, tools});
+                } catch {}
+              }}
+              fullWidth
+              multiline
+              rows={3}
+              sx={{ fontFamily: 'monospace' }}
+            />
+            <TextField
+              label="Configuration (JSON)"
+              value={JSON.stringify(editingRecord.config || {}, null, 2)}
+              onChange={(e) => {
+                try {
+                  const config = JSON.parse(e.target.value);
+                  setEditingRecord({...editingRecord, config});
+                } catch {}
+              }}
+              fullWidth
+              multiline
+              rows={4}
+              sx={{ fontFamily: 'monospace' }}
+            />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={editingRecord.is_active}
+                  onChange={(e) => setEditingRecord({...editingRecord, is_active: e.target.checked})}
+                />
+              }
+              label="Active"
+            />
+          </Box>
+        );
       // Add similar forms for other categories
       default:
         return (
@@ -425,8 +501,8 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
       {data.length === 0 ? (
         <Alert severity="info">No records found</Alert>
       ) : (
-        <TableContainer component={Paper}>
-          <Table>
+        <TableContainer component={Paper} sx={{ maxHeight: '60vh', overflow: 'auto' }}>
+          <Table stickyHeader>
             <TableHead>
               <TableRow>
                 {getTableHeaders().map((header) => (
@@ -435,7 +511,7 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
               </TableRow>
             </TableHead>
             <TableBody>
-              {data.map((record, index) => renderTableRow(record, index))}
+              {data.sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((record, index) => renderTableRow(record, index))}
             </TableBody>
           </Table>
         </TableContainer>

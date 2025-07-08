@@ -108,10 +108,10 @@ const settingsCategories: SettingsCategory[] = [
     description: 'Self-reflection modes, quality evaluation, and refinement strategies'
   },
   {
-    id: 'agent_behaviors',
-    name: 'Agent Behaviors',
+    id: 'langgraph_agents',
+    name: 'LangGraph Agents',
     icon: <GroupIcon />,
-    description: 'Agent behavior definitions, capabilities, and communication patterns'
+    description: 'Agent definitions, roles, system prompts, tools, and configurations'
   },
   {
     id: 'query_patterns',
@@ -186,8 +186,8 @@ function SettingsApp() {
     }
   };
 
-  const loadSettings = async (category: string) => {
-    if (settingsData[category]) return; // Already loaded
+  const loadSettings = async (category: string, force: boolean = false) => {
+    if (settingsData[category] && !force) return; // Already loaded
 
     setLoading(prev => ({ ...prev, [category]: true }));
     setError(prev => ({ ...prev, [category]: '' }));
@@ -197,7 +197,41 @@ function SettingsApp() {
       let data;
 
       // Handle different endpoint patterns based on category
-      if (category === 'collection_registry') {
+      if (category === 'mcp') {
+        // MCP uses multiple endpoints for servers and tools
+        const [serversResponse, toolsResponse] = await Promise.all([
+          fetch('/api/v1/mcp/servers/'),
+          fetch('/api/v1/mcp/tools/')
+        ]);
+        
+        let servers = [];
+        let tools = [];
+        
+        if (serversResponse.ok) {
+          servers = await serversResponse.json();
+        } else {
+          console.error(`Failed to load MCP servers: ${serversResponse.status} ${serversResponse.statusText}`);
+        }
+        
+        if (toolsResponse.ok) {
+          tools = await toolsResponse.json();
+        } else {
+          console.error(`Failed to load MCP tools: ${toolsResponse.status} ${toolsResponse.statusText}`);
+        }
+        
+        data = {
+          servers: Array.isArray(servers) ? servers : servers.data || [],
+          tools: Array.isArray(tools) ? tools : tools.data || []
+        };
+      } else if (category === 'langgraph_agents') {
+        // LangGraph agents use a specific endpoint
+        response = await fetch('/api/v1/langgraph/agents');
+        if (response.ok) {
+          data = await response.json();
+        } else {
+          data = { agents: [] };
+        }
+      } else if (category === 'collection_registry') {
         // Collection registry might use a different endpoint
         response = await fetch('/api/v1/collections');
         if (response.ok) {
@@ -340,7 +374,7 @@ function SettingsApp() {
                       delete updated[category];
                       return updated;
                     });
-                    loadSettings(category);
+                    loadSettings(category, true);
                   }}
                   sx={{ mr: 1 }}
                 >
@@ -362,7 +396,15 @@ function SettingsApp() {
               category={category}
               data={data}
               onChange={(field, value) => handleFieldChange(category, field, value)}
-              isYamlBased={category === 'self_reflection' || category === 'agent_behaviors' || category === 'query_patterns'}
+              onRefresh={() => {
+                setSettingsData(prev => {
+                  const updated = { ...prev };
+                  delete updated[category];
+                  return updated;
+                });
+                loadSettings(category, true);
+              }}
+              isYamlBased={category === 'self_reflection' || category === 'query_patterns'}
             />
           </CardContent>
         </Card>

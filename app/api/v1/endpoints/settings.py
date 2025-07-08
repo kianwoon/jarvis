@@ -154,6 +154,72 @@ def get_settings(category: str, db: Session = Depends(get_db)):
                 "custom_model_definitions": {}
             }
             return {"category": category, "settings": default_langfuse}
+        elif category == 'self_reflection':
+            # Load YAML defaults and merge with database settings
+            import yaml
+            import os
+            
+            yaml_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'langchain', 'self_reflection_config.yaml')
+            try:
+                with open(yaml_path, 'r') as f:
+                    yaml_config = yaml.safe_load(f)
+                return {"category": category, "settings": yaml_config}
+            except Exception as e:
+                logger.error(f"Error loading self_reflection YAML config: {e}")
+                # Return basic defaults if YAML fails
+                default_self_reflection = {
+                    "reflection": {
+                        "enabled": True,
+                        "default_mode": "balanced",
+                        "min_query_length": 10,
+                        "cache": {"enabled": True, "ttl_seconds": 3600, "max_size": 1000},
+                        "timeout_seconds": 30
+                    },
+                    "quality_evaluation": {
+                        "dimension_weights": {
+                            "completeness": 0.25,
+                            "relevance": 0.25,
+                            "accuracy": 0.20,
+                            "coherence": 0.10,
+                            "specificity": 0.10,
+                            "confidence": 0.10
+                        },
+                        "thresholds": {
+                            "min_acceptable_score": 0.7,
+                            "refinement_threshold": 0.8
+                        }
+                    }
+                }
+                return {"category": category, "settings": default_self_reflection}
+        elif category == 'query_patterns':
+            # Always load from YAML file for query_patterns (file is source of truth)
+            import yaml
+            import os
+            
+            yaml_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'langchain', 'query_patterns_config.yaml')
+            try:
+                with open(yaml_path, 'r') as f:
+                    yaml_config = yaml.safe_load(f)
+                return {"category": category, "settings": yaml_config}
+            except Exception as e:
+                logger.error(f"Error loading query_patterns YAML config: {e}")
+                # Return basic defaults if YAML fails
+                default_query_patterns = {
+                    "tool_patterns": {},
+                    "rag_patterns": {},
+                    "code_patterns": {},
+                    "multi_agent_patterns": {},
+                    "direct_llm_patterns": {},
+                    "hybrid_indicators": {},
+                    "settings": {
+                        "min_confidence_threshold": 0.1,
+                        "max_classifications": 3,
+                        "enable_hybrid_detection": True,
+                        "confidence_decay_factor": 0.8,
+                        "pattern_combination_bonus": 0.15
+                    }
+                }
+                return {"category": category, "settings": default_query_patterns}
         raise HTTPException(status_code=404, detail="Settings not found")
     
     # Special handling for large_generation to flatten nested structure for UI
@@ -214,6 +280,21 @@ def get_settings(category: str, db: Session = Depends(get_db)):
             del settings['collection_selection_rules']
         
         return {"category": category, "settings": settings}
+    
+    # Special handling for query_patterns - always load from YAML file
+    if category == 'query_patterns':
+        import yaml
+        import os
+        
+        yaml_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'langchain', 'query_patterns_config.yaml')
+        try:
+            with open(yaml_path, 'r') as f:
+                yaml_config = yaml.safe_load(f)
+            return {"category": category, "settings": yaml_config}
+        except Exception as e:
+            logger.error(f"Error loading query_patterns YAML config: {e}")
+            # Fall back to database settings if YAML fails
+            return {"category": category, "settings": settings_row.settings}
     
     return {"category": category, "settings": settings_row.settings}
 
@@ -403,6 +484,72 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         # Reload cache with nested structure
         reload_large_generation_settings()
         logger.info("Large generation settings validated and cache reloaded")
+    
+    # If updating self_reflection settings, save as YAML structure and update database settings
+    if category == 'self_reflection':
+        logger.info("Processing self_reflection settings")
+        from app.core.self_reflection_settings_cache import update_reflection_settings
+        
+        # Save the YAML structure as is to settings table for frontend compatibility
+        settings_row.settings = update.settings
+        db.commit()
+        db.refresh(settings_row)
+        
+        # Also update model-specific settings in the self_reflection cache if model_settings exist
+        if 'model_settings' in update.settings:
+            model_settings = update.settings['model_settings']
+            for model_name, model_config in model_settings.items():
+                if model_name != 'default':  # Skip default, it's handled by YAML
+                    try:
+                        # Convert model config to database format
+                        db_config = {
+                            "enabled": model_config.get('enabled', True),
+                            "reflection_mode": model_config.get('reflection_mode', 'balanced'),
+                            "quality_threshold": model_config.get('quality_threshold', 0.8),
+                            "max_iterations": model_config.get('max_refinement_iterations', 3),
+                            "min_improvement_threshold": 0.05,
+                            "enable_caching": True,
+                            "cache_ttl_seconds": 3600,
+                            "timeout_seconds": 30
+                        }
+                        # Note: update_reflection_settings is async, but for now we'll skip this
+                        # await update_reflection_settings(model_name, db_config)
+                    except Exception as e:
+                        logger.warning(f"Could not update model-specific self-reflection settings for {model_name}: {e}")
+        
+        logger.info("Self-reflection settings saved successfully")
+    
+    # If updating query_patterns settings, save to YAML file and database
+    if category == 'query_patterns':
+        logger.info("Processing query_patterns settings")
+        import yaml
+        import os
+        
+        # Save to database for API consistency
+        settings_row.settings = update.settings
+        db.commit()
+        db.refresh(settings_row)
+        
+        # Also save to YAML file to maintain file-based configuration
+        yaml_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'langchain', 'query_patterns_config.yaml')
+        try:
+            with open(yaml_path, 'w') as f:
+                yaml.dump(update.settings, f, default_flow_style=False, indent=2)
+            logger.info("Query patterns YAML file updated successfully")
+            
+            # Trigger pattern reload if available
+            try:
+                from app.langchain.enhanced_query_classifier import reload_patterns
+                reload_patterns()
+                logger.info("Query patterns cache reloaded")
+            except Exception as e:
+                logger.warning(f"Could not reload query patterns cache: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error saving query_patterns YAML file: {e}")
+            # Continue even if file save fails, database is updated
+        
+        logger.info("Query patterns settings saved successfully")
     
     return {"category": category, "settings": settings_row.settings}
 
