@@ -150,12 +150,15 @@ class EnhancedQueryClassifier:
                 collection_type = collection.get('collection_type', '')
                 stats = collection.get('statistics', {})
                 
+                # Get document count from statistics
+                doc_count = stats.get('document_count', 0) if stats else 0
+                
                 # Extract keywords from collection names and descriptions
                 collection_info = {
                     'name': name,
                     'description': description,
                     'type': collection_type,
-                    'document_count': stats.get('document_count', 0),
+                    'document_count': doc_count,
                     'keywords': self._extract_collection_keywords(name, description)
                 }
                 
@@ -584,49 +587,39 @@ Example: tool|0.85"""
             
             query_type = type_mapping.get(query_type_str, QueryType.LLM)
             
-            if confidence >= min_confidence:
-                # If LLM classified as TOOL, use LLM to suggest specific tools
-                suggested_tools = []
-                if query_type == QueryType.TOOL:
-                    suggested_tools = await self._llm_suggest_tools(query)
-                
-                result = ClassificationResult(
-                    query_type=query_type,
-                    confidence=confidence,
-                    metadata={
-                        "available_tools": self._build_tools_info(),
-                        "available_collections": self._build_collections_info(),
-                        "llm_response": response_text
-                    },
-                    suggested_tools=suggested_tools
-                )
-                
-                logger.info(f"LLM classification: {query_type.value} (confidence: {confidence:.2f})")
-                
-                # End classification span with success
-                if classification_span and tracer:
-                    try:
-                        tracer.end_span_with_result(classification_span, {
-                            "classification_type": query_type.value,
-                            "confidence": confidence,
-                            "suggested_tools": suggested_tools
-                        }, True)
-                    except Exception as e:
-                        logger.warning(f"Failed to end classification span: {e}")
-                
-                return [result]
+            # Always accept valid classifications, even with low confidence
+            # The confidence value is still useful for routing decisions
+            # If LLM classified as TOOL, use LLM to suggest specific tools
+            suggested_tools = []
+            if query_type == QueryType.TOOL:
+                suggested_tools = await self._llm_suggest_tools(query)
             
-            # Fallback if parsing fails
-            logger.error(f"Failed to parse LLM classification response: {response_text}")
+            result = ClassificationResult(
+                query_type=query_type,
+                confidence=confidence,
+                metadata={
+                    "available_tools": self._build_tools_info(),
+                    "available_collections": self._build_collections_info(),
+                    "llm_response": response_text,
+                    "low_confidence": confidence < min_confidence
+                },
+                suggested_tools=suggested_tools
+            )
             
-            # End classification span with error
+            logger.info(f"LLM classification: {query_type.value} (confidence: {confidence:.2f})")
+            
+            # End classification span with success
             if classification_span and tracer:
                 try:
-                    tracer.end_span_with_result(classification_span, {"error": "parse_failed"}, False, "Failed to parse LLM response")
+                    tracer.end_span_with_result(classification_span, {
+                        "classification_type": query_type.value,
+                        "confidence": confidence,
+                        "suggested_tools": suggested_tools
+                    }, True)
                 except Exception as e:
                     logger.warning(f"Failed to end classification span: {e}")
             
-            return await self._retry_llm_classification(query, "parse_failed")
+            return [result]
             
         except Exception as e:
             logger.error(f"LLM classification failed: {e}", exc_info=True)

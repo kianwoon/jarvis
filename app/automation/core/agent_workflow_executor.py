@@ -103,14 +103,14 @@ class AgentWorkflowExecutor:
             # Convert visual workflow to agent execution plan with enhanced 4-way connectivity
             agent_plan = self._convert_workflow_to_agent_plan(workflow_config, input_data, message)
             
+            # Transfer execution sequence if provided (regardless of connectivity type)
+            if 'execution_sequence' in workflow_config:
+                agent_plan['execution_sequence'] = workflow_config['execution_sequence']
+                logger.info(f"[AGENT WORKFLOW] Using predefined execution sequence: {len(agent_plan['execution_sequence'])} steps")
+            
             # Process enhanced workflow metadata if available
             if workflow_config.get('connectivity_type') == '4-way':
                 logger.info(f"[AGENT WORKFLOW] Processing 4-way connectivity workflow v{workflow_config.get('version', '1.0')}")
-                
-                # Use execution sequence if provided
-                if 'execution_sequence' in workflow_config:
-                    agent_plan['execution_sequence'] = workflow_config['execution_sequence']
-                    logger.info(f"[AGENT WORKFLOW] Using predefined execution sequence: {len(agent_plan['execution_sequence'])} steps")
                 
                 # Process node relationships for enhanced execution
                 if 'node_relationships' in workflow_config:
@@ -1112,24 +1112,34 @@ class AgentWorkflowExecutor:
                     logger.warning(f"Failed to end agent execution span: {e}")
     
     def _reorder_agents_by_sequence(self, agents: List[Dict[str, Any]], execution_sequence: List[str]) -> List[Dict[str, Any]]:
-        """Reorder agents based on predefined execution sequence from 4-way connectivity workflow"""
+        """Reorder agents based on predefined execution sequence - CRITICAL: Must follow exact order"""
         if not execution_sequence:
+            logger.warning("[CRITICAL] No execution sequence provided - using original order")
             return agents
             
         # Create mapping from node_id to agent
         agent_map = {agent['node_id']: agent for agent in agents}
         reordered_agents = []
         
-        # Add agents in sequence order if they exist
-        for node_id in execution_sequence:
-            if node_id in agent_map:
-                reordered_agents.append(agent_map[node_id])
-                del agent_map[node_id]  # Remove from map to avoid duplicates
+        # Filter execution sequence to only include agent nodes
+        agent_sequence = [node_id for node_id in execution_sequence if node_id in agent_map]
+        non_agent_nodes = [node_id for node_id in execution_sequence if node_id not in agent_map]
         
-        # Add any remaining agents not in sequence at the end
-        reordered_agents.extend(agent_map.values())
+        logger.info(f"[SEQUENCE FILTER] Agent nodes in sequence: {agent_sequence}")
+        logger.info(f"[SEQUENCE FILTER] Non-agent nodes (filtered out): {non_agent_nodes}")
         
-        logger.info(f"[AGENT WORKFLOW] Reordered {len(reordered_agents)} agents based on execution sequence")
+        # CRITICAL: Add agents in EXACT sequence order (filtered)
+        for node_id in agent_sequence:
+            reordered_agents.append(agent_map[node_id])
+            del agent_map[node_id]  # Remove from map to avoid duplicates
+        
+        # CRITICAL: Fail if there are extra agents not in sequence
+        if agent_map:
+            extra_nodes = list(agent_map.keys())
+            logger.error(f"[CRITICAL ERROR] Found agents not in execution sequence: {extra_nodes}")
+            raise ValueError(f"Agents exist that are not in execution sequence: {extra_nodes}")
+        
+        logger.info(f"[CRITICAL SUCCESS] Reordered {len(reordered_agents)} agents following EXACT execution sequence: {[a['node_id'] for a in reordered_agents]}")
         return reordered_agents
     
     async def _execute_agents_sequential(
@@ -1150,11 +1160,27 @@ class AgentWorkflowExecutor:
         """Execute agents sequentially using state-based workflow execution with 4-way connectivity support"""
         
         # Check if workflow has predefined execution sequence from 4-way connectivity
+        logger.info(f"[DEBUG] agent_plan exists: {agent_plan is not None}")
+        if agent_plan:
+            logger.info(f"[DEBUG] agent_plan keys: {list(agent_plan.keys())}")
+            logger.info(f"[DEBUG] execution_sequence in agent_plan: {'execution_sequence' in agent_plan}")
+            if 'execution_sequence' in agent_plan:
+                logger.info(f"[DEBUG] execution_sequence value: {agent_plan.get('execution_sequence')}")
+        
         if agent_plan and agent_plan.get('execution_sequence'):
             execution_sequence = agent_plan.get('execution_sequence', [])
             logger.info(f"[AGENT WORKFLOW] Using predefined execution sequence: {execution_sequence}")
+            
+            # Debug: Log agents before reordering
+            logger.info(f"[DEBUG] Agents before reordering: {[agent.get('node_id') for agent in agents]}")
+            
             # Reorder agents based on execution sequence
             agents = self._reorder_agents_by_sequence(agents, execution_sequence)
+            
+            # Debug: Log agents after reordering  
+            logger.info(f"[DEBUG] Agents after reordering: {[agent.get('node_id') for agent in agents]}")
+        else:
+            logger.info(f"[DEBUG] No execution sequence found in agent_plan, using original order")
         
         # STATE-BASED EXECUTION: Each agent receives clean workflow state + previous outputs
         # No context accumulation - agents get structured state objects instead

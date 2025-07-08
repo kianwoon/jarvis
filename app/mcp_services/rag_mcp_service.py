@@ -334,6 +334,7 @@ class RAGMCPService:
         """Make LLM call for collection selection"""
         import httpx
         import json
+        import os
         
         # Get timeout from performance settings
         from app.core.rag_settings_cache import get_performance_settings
@@ -345,7 +346,18 @@ class RAGMCPService:
         llm_settings = get_llm_settings()
         model_name = llm_settings.get("model", "qwen3:30b-a3b")
         
-        llm_api_url = "http://localhost:11434/api/generate"
+        # Determine Ollama URL based on environment
+        # Check if we're running inside Docker
+        in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+        
+        # Use environment variable if set, otherwise use appropriate default
+        if os.environ.get("OLLAMA_BASE_URL"):
+            ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
+        else:
+            # Use appropriate default based on environment
+            ollama_base_url = "http://ollama:11434" if in_docker else "http://localhost:11434"
+        
+        llm_api_url = f"{ollama_base_url}/api/generate"
         
         # Use low temperature for more deterministic selection
         payload = {
@@ -362,7 +374,7 @@ class RAGMCPService:
         
         response_text = ""
         try:
-            logger.info(f"RAG MCP: Making async LLM selection call to {llm_api_url} with timeout {timeout_seconds}s")
+            logger.info(f"RAG MCP: Making async LLM selection call to {llm_api_url} (base: {ollama_base_url}, docker: {in_docker}) with timeout {timeout_seconds}s")
             logger.debug(f"RAG MCP: Payload: {json.dumps(payload, indent=2)}")
             
             # Use async httpx client
@@ -414,6 +426,7 @@ class RAGMCPService:
         """Make synchronous LLM call for collection selection"""
         import httpx
         import json
+        import os
         
         # Get timeout from performance settings
         from app.core.rag_settings_cache import get_performance_settings
@@ -425,7 +438,18 @@ class RAGMCPService:
         llm_settings = get_llm_settings()
         model_name = llm_settings.get("model", "qwen3:30b-a3b")
         
-        llm_api_url = "http://localhost:11434/api/generate"
+        # Determine Ollama URL based on environment
+        # Check if we're running inside Docker
+        in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+        
+        # Use environment variable if set, otherwise use appropriate default
+        if os.environ.get("OLLAMA_BASE_URL"):
+            ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
+        else:
+            # Use appropriate default based on environment
+            ollama_base_url = "http://ollama:11434" if in_docker else "http://localhost:11434"
+        
+        llm_api_url = f"{ollama_base_url}/api/generate"
         
         # Use low temperature for more deterministic selection
         payload = {
@@ -442,7 +466,7 @@ class RAGMCPService:
         
         response_text = ""
         try:
-            logger.info(f"RAG MCP: Making sync LLM selection call to {llm_api_url} with timeout {timeout_seconds}s")
+            logger.info(f"RAG MCP: Making sync LLM selection call to {llm_api_url} (base: {ollama_base_url}, docker: {in_docker}) with timeout {timeout_seconds}s")
             logger.debug(f"RAG MCP: Payload: {json.dumps(payload, indent=2)}")
             # Use synchronous call like standard chat
             with httpx.Client(timeout=float(timeout_seconds)) as client:
@@ -622,8 +646,12 @@ async def execute_rag_search(query: str, collections: List[str] = None, max_docu
     return await rag_service.search_documents(request)
 
 def execute_rag_search_sync(query: str, collections: List[str] = None, max_documents: int = 8, include_content: bool = True) -> Dict[str, Any]:
-    """Synchronous entry point for MCP tool execution - for use in sync contexts"""
-    import asyncio
+    """Synchronous entry point for MCP tool execution - truly synchronous implementation"""
+    import time
+    
+    # Create a new service instance that will use sync methods
+    sync_service = RAGMCPService()
+    sync_service._use_sync_mode = True  # Flag to force sync operations
     
     request = RAGSearchRequest(
         query=query,
@@ -632,11 +660,211 @@ def execute_rag_search_sync(query: str, collections: List[str] = None, max_docum
         include_content=include_content
     )
     
-    # Create a new event loop for this sync call
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # Call a synchronous version of search
+    start_time = time.time()
+    
     try:
-        result = loop.run_until_complete(rag_service.search_documents(request))
-        return result
-    finally:
-        loop.close()
+        logger.info(f"RAG MCP Sync: Processing query: {request.query[:100]}...")
+        
+        # Manually execute the search logic synchronously
+        # This bypasses all async operations
+        
+        # Get performance settings for caching
+        from app.core.rag_settings_cache import get_performance_settings
+        perf_settings = get_performance_settings()
+        cache_enabled = perf_settings.get('enable_caching', True)
+        cache_ttl_hours = perf_settings.get('cache_ttl_hours', 2)
+        
+        # Check cache if enabled
+        cache_hit = False
+        if cache_enabled:
+            # Get max documents for cache key
+            from app.core.rag_settings_cache import get_document_retrieval_settings
+            doc_settings = get_document_retrieval_settings()
+            max_docs = request.max_documents or doc_settings.get('max_documents_mcp', 8)
+            
+            # Generate cache key
+            temp_collections = request.collections or []
+            cache_key = sync_service._generate_cache_key(request.query, temp_collections, max_docs)
+            
+            # Check cache
+            cached_result = sync_service._get_cached_result(cache_key)
+            if cached_result:
+                cache_hit = True
+                cached_result['search_metadata']['cache_hit'] = True
+                cached_result['search_metadata']['execution_time_ms'] = int((time.time() - start_time) * 1000)
+                return sync_service._format_jsonrpc_response(cached_result, None)
+        
+        # Get collections to search - use sync version
+        collections_to_search = _determine_collections_sync(
+            request.query, 
+            request.collections,
+            sync_service
+        )
+        
+        # Execute RAG search using existing infrastructure
+        from app.langchain.service import handle_rag_query
+        context, sources = handle_rag_query(
+            question=request.query,
+            thinking=False,  # Agents don't need thinking mode
+            collections=collections_to_search,
+            collection_strategy="specific" if request.collections else "auto"
+        )
+        
+        # Get max documents from settings if not provided
+        from app.core.rag_settings_cache import get_document_retrieval_settings
+        doc_settings = get_document_retrieval_settings()
+        max_docs = request.max_documents or doc_settings.get('max_documents_mcp', 8)
+        
+        # Process and format results
+        documents = sync_service._format_documents(
+            sources, 
+            max_docs,
+            request.include_content
+        )
+        
+        execution_time = int((time.time() - start_time) * 1000)
+        
+        # Build search metadata
+        from app.core.rag_settings_cache import get_search_strategy_settings, get_performance_settings
+        search_settings = get_search_strategy_settings()
+        perf_settings = get_performance_settings()
+        
+        search_metadata = {
+            "vector_search_results": len(sources) if sources else 0,
+            "keyword_search_results": len(sources) if sources else 0,
+            "hybrid_fusion_applied": search_settings.get('search_strategy', 'auto') in ['auto', 'hybrid'],
+            "collections_auto_detected": not bool(request.collections),
+            "cache_hit": cache_hit,
+            "similarity_threshold_used": sync_service._get_similarity_threshold(),
+            "search_strategy": search_settings.get('search_strategy', 'auto'),
+            "semantic_weight": search_settings.get('semantic_weight', 0.7),
+            "keyword_weight": search_settings.get('keyword_weight', 0.3),
+            "caching_enabled": perf_settings.get('enable_caching', True),
+            "execution_time_ms": execution_time
+        }
+        
+        response = {
+            "success": True,
+            "query": request.query,
+            "collections_searched": collections_to_search,
+            "total_documents_found": len(sources) if sources else 0,
+            "documents_returned": len(documents),
+            "execution_time_ms": execution_time,
+            "documents": documents,
+            "search_metadata": search_metadata
+        }
+        
+        logger.info(f"RAG MCP Sync: Found {len(documents)} documents in {execution_time}ms")
+        
+        # Cache the result if caching is enabled
+        if cache_enabled and not cache_hit:
+            # Regenerate cache key with actual collections searched
+            final_cache_key = sync_service._generate_cache_key(request.query, collections_to_search, max_docs)
+            sync_service._cache_result(final_cache_key, response, cache_ttl_hours)
+        
+        return sync_service._format_jsonrpc_response(response, None)
+        
+    except Exception as e:
+        execution_time = int((time.time() - start_time) * 1000)
+        logger.error(f"RAG MCP Sync: Search failed: {str(e)}")
+        
+        error_response = {
+            "success": False,
+            "query": request.query,
+            "collections_searched": [],
+            "total_documents_found": 0,
+            "documents_returned": 0,
+            "execution_time_ms": execution_time,
+            "documents": [],
+            "search_metadata": {},
+            "error": str(e)
+        }
+        
+        return sync_service._format_jsonrpc_response(None, str(e))
+
+
+def _determine_collections_sync(query: str, specified_collections: Optional[List[str]], service: RAGMCPService) -> List[str]:
+    """Synchronous version of collection determination"""
+    
+    if specified_collections:
+        # Validate specified collections exist
+        from app.core.collection_registry_cache import get_all_collections
+        available_collections = get_all_collections()
+        available_names = [c.get('collection_name', '') for c in available_collections] if available_collections else []
+        
+        validated = []
+        for collection in specified_collections:
+            if collection in available_names:
+                validated.append(collection)
+            else:
+                logger.warning(f"RAG MCP: Collection '{collection}' not found")
+        
+        return validated if validated else ["default_knowledge"]
+    
+    # Auto-detect collections based on query content
+    # Get collection selection settings
+    from app.core.rag_settings_cache import get_collection_selection_settings
+    selection_settings = get_collection_selection_settings()
+    
+    # Check if LLM selection is enabled
+    if not selection_settings.get('enable_llm_selection', True):
+        # Fallback to simple selection based on description overlap
+        return service._simple_collection_selection(query)
+    
+    # Try LLM selection using sync method
+    try:
+        # Get available collections
+        from app.core.collection_registry_cache import get_all_collections
+        collections = get_all_collections()
+        if not collections:
+            return selection_settings.get('fallback_collections', ["default_knowledge"])
+        
+        # Check cache first if enabled
+        if selection_settings.get('cache_selections', True):
+            cache_key = f"{service.cache_prefix}collection_sel:{hashlib.md5(query.lower().encode()).hexdigest()}"
+            client = service._get_cache_client()
+            if client:
+                cached = client.get(cache_key)
+                if cached:
+                    logger.info(f"RAG MCP Sync: Using cached collection selection for query")
+                    return json_module.loads(cached)
+        
+        # Format collections for prompt
+        collections_info = []
+        for coll in collections:
+            name = coll.get('collection_name', '')
+            desc = coll.get('description', 'No description')
+            doc_count = coll.get('document_count', 0)
+            collections_info.append(f"- {name}: {desc} ({doc_count} documents)")
+        
+        collections_text = "\n".join(collections_info)
+        
+        # Build prompt from template
+        prompt_template = selection_settings.get('selection_prompt_template', 
+            "Given the following query and available collections, determine which collections are most relevant to search:\n\nQuery: {query}\n\nAvailable Collections:\n{collections}\n\nReturn only the collection names that are relevant, separated by commas.")
+        
+        prompt = prompt_template.format(query=query, collections=collections_text)
+        logger.debug(f"RAG MCP Sync: LLM selection prompt length: {len(prompt)} chars")
+        
+        # Make LLM call using sync method
+        logger.info("RAG MCP Sync: Using sync LLM call for collection selection")
+        response = service._call_llm_for_selection_sync(prompt)
+        
+        # Parse response
+        selected = service._parse_llm_collection_response(response, collections)
+        
+        # Limit to max collections
+        max_collections = selection_settings.get('max_collections', 3)
+        selected = selected[:max_collections]
+        
+        # Cache the result if enabled
+        if selection_settings.get('cache_selections', True) and client and selected:
+            client.setex(cache_key, 3600, json_module.dumps(selected))  # Cache for 1 hour
+        
+        return selected if selected else selection_settings.get('fallback_collections', ["default_knowledge"])
+        
+    except Exception as e:
+        error_msg = str(e) if str(e) else f"Unknown error of type {type(e).__name__}"
+        logger.error(f"RAG MCP Sync: LLM collection selection failed: {error_msg}")
+        return selection_settings.get('fallback_collections', ["default_knowledge"])

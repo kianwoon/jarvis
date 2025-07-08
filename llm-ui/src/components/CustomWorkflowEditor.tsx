@@ -3368,22 +3368,42 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
       return true;
     }
     
-    // If it's a new workflow (no workflowId), we need to save first
+    // If it's a new workflow (no workflowId), allow execution without saving
+    // but use a temporary name for the workflow
     if (!workflowId) {
-      setExecutionError('Please save the workflow first before executing');
-      return false;
+      // For execution, we can proceed without saving to database
+      // The workflow will run with current nodes/edges in memory
+      return true;
     }
     
     setIsAutoSaving(true);
     
     try {
-      // Call the existing save function
-      await handleSave();
-      
-      // Reset unsaved changes flag after successful save
-      setHasUnsavedChanges(false);
-      
-      return true;
+      // For existing workflows, auto-save before execution
+      // Only validate name for manual saves, not auto-saves before execution
+      if (!currentWorkflowName || currentWorkflowName.trim() === '' || currentWorkflowName === 'New Workflow') {
+        // For execution auto-save, use a temporary name if none provided
+        const tempName = `Workflow_${Date.now()}`;
+        console.log('Using temporary name for execution auto-save:', tempName);
+        
+        // Temporarily set the workflow name for auto-save
+        const originalName = currentWorkflowName;
+        setCurrentWorkflowName(tempName);
+        
+        try {
+          await performSave();
+          setHasUnsavedChanges(false);
+          return true;
+        } finally {
+          // Restore original name after save
+          setCurrentWorkflowName(originalName);
+        }
+      } else {
+        // Normal save with existing name
+        await performSave();
+        setHasUnsavedChanges(false);
+        return true;
+      }
     } catch (error) {
       console.error('Auto-save failed:', error);
       setExecutionError('Failed to auto-save workflow. Please save manually before executing.');

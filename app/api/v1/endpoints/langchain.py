@@ -1178,13 +1178,25 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                         "message": "Generating response from tool results..."
                     }) + "\n"
                     
-                    # Build context from tool results
+                    # Build context from tool results and extract documents
                     tool_context = ""
+                    extracted_documents = []
+                    
                     for tr in tool_results:
                         if tr.get('success'):
                             tool_context += f"\n{tr['tool']}: {tr['result']}\n"
+                            
+                            # Extract documents from RAG search results
+                            if tr['tool'] == 'knowledge_search' and isinstance(tr.get('result'), dict):
+                                # Parse JSON-RPC response
+                                result_data = tr['result']
+                                if 'result' in result_data and isinstance(result_data['result'], dict):
+                                    rag_result = result_data['result']
+                                    if 'documents' in rag_result:
+                                        extracted_documents.extend(rag_result['documents'])
                     
                     logger.info(f"[DIRECT HANDLER] Tool context built: {tool_context[:200]}...")
+                    logger.info(f"[DIRECT HANDLER] Extracted {len(extracted_documents)} documents from tool results")
                     
                     # Create synthesis prompt
                     synthesis_prompt = f"""Based on the tool results below, provide a comprehensive answer to the user's question.
@@ -1272,8 +1284,8 @@ Please provide a clear, direct answer based on the tool results."""
                         except Exception as e:
                             logger.warning(f"Failed to end synthesis generation span: {e}")
                     
-                    # Send final answer 
-                    yield json_module.dumps({
+                    # Send final answer with documents
+                    response_data = {
                         "answer": final_response,
                         "source": "DIRECT_TOOL_EXECUTION", 
                         "context": tool_context,
@@ -1283,7 +1295,14 @@ Please provide a clear, direct answer based on the tool results."""
                             "direct_execution": True,
                             "optimization": "eliminated_redundant_classification"
                         }
-                    }) + "\n"
+                    }
+                    
+                    # Add documents if any were extracted
+                    if extracted_documents:
+                        response_data["documents"] = extracted_documents
+                        response_data["metadata"]["documents_found"] = len(extracted_documents)
+                    
+                    yield json_module.dumps(response_data) + "\n"
                     
                     logger.info(f"[DIRECT HANDLER] Final answer sent to frontend")
                     

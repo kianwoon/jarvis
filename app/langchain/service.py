@@ -132,9 +132,42 @@ def build_enhanced_system_prompt(base_prompt: str = None) -> str:
         enhanced_prompt += "\nWhen you need to use a tool, format your tool call as:"
         enhanced_prompt += "\n<tool>tool_name(parameters)</tool>"
         enhanced_prompt += "\n\nExamples:"
-        enhanced_prompt += "\n- <tool>get_datetime()</tool>"
-        enhanced_prompt += '\n- <tool>google_search({"query": "latest AI news", "num_results": 5})</tool>'
-        enhanced_prompt += "\n\nIMPORTANT: Actually include these tool calls in your response when needed, don't just describe what you would do."
+        
+        # Build dynamic examples based on actual available tools
+        try:
+            mcp_tools = get_enabled_mcp_tools()
+            example_tools = []
+            
+            # Add knowledge_search example if available
+            if 'knowledge_search' in mcp_tools:
+                example_tools.append('- <tool>knowledge_search({"query": "partnership information"})</tool>')
+            
+            # Add datetime tool example if available
+            datetime_tools = [name for name in mcp_tools.keys() if 'datetime' in name.lower() or 'time' in name.lower()]
+            if datetime_tools:
+                example_tools.append(f'- <tool>{datetime_tools[0]}()</tool>')
+            
+            # Add search tool example if available (but not knowledge_search)
+            search_tools = [name for name in mcp_tools.keys() if 'search' in name.lower() and name != 'knowledge_search']
+            if search_tools:
+                example_tools.append(f'- <tool>{search_tools[0]}({{"query": "latest news"}})</tool>')
+            
+            # If no specific tools found, use generic examples
+            if not example_tools:
+                example_tools = [
+                    '- <tool>knowledge_search({"query": "search query"})</tool>',
+                    '- <tool>get_datetime()</tool>'
+                ]
+            
+            for example in example_tools:
+                enhanced_prompt += f"\n{example}"
+                
+        except Exception as e:
+            # Fallback to safe examples if tool loading fails
+            enhanced_prompt += '\n- <tool>knowledge_search({"query": "search query"})</tool>'
+            enhanced_prompt += "\n- <tool>get_datetime()</tool>"
+        
+        enhanced_prompt += "\n\nIMPORTANT: Use ONLY the exact tool names listed above. Actually include these tool calls in your response when needed, don't just describe what you would do."
     
     return enhanced_prompt
 
@@ -2165,10 +2198,12 @@ Documents to score:
     # Sort by final score
     filtered_and_ranked.sort(key=lambda x: x[4], reverse=True)
     
-    # Get settings before using them
-    llm_settings = get_llm_settings()
-    rag_config = llm_settings.get('rag_settings', {})
-    max_final_docs = rag_config.get('max_final_docs', 8)
+    # Get settings from proper RAG settings cache
+    from app.core.rag_settings_cache import get_document_retrieval_settings
+    doc_retrieval_settings = get_document_retrieval_settings()
+    # For standard chat, use the max_documents_mcp setting which is designed for agent/chat responses
+    # This is different from num_docs_retrieve which is for initial retrieval
+    max_final_docs = doc_retrieval_settings.get('max_documents_mcp', 10)
     
     # Take top documents after reranking, but ensure diversity
     filtered_docs = []
@@ -2192,8 +2227,8 @@ Documents to score:
     context = "\n\n".join([doc.page_content for doc in filtered_docs])
     
     # Extract sources with collection information and content
-    # Get content limits from settings (already loaded above)
-    content_preview_limit = rag_config.get('content_preview_limit', 500)
+    # Use default content preview limit - this setting wasn't in the RAG config
+    content_preview_limit = 500
     
     sources = []
     for doc in filtered_docs:
@@ -2232,14 +2267,17 @@ Documents to score:
         print(f"[RAG DEBUG] Overlapping words: {clean_query_keywords.intersection(clean_context_words)}")
         
         # If relevance is very low, return no context (will trigger LLM fallback)
-        # Get relevance thresholds from settings to avoid hardcoding
-        llm_settings = get_llm_settings()
-        rag_config = llm_settings.get('rag_settings', {})
+        # Get relevance thresholds from proper RAG settings
+        from app.core.rag_settings_cache import get_agent_settings
+        agent_settings = get_agent_settings()
         
         # Dynamic threshold based on query complexity
-        min_relevance_complex = rag_config.get('min_relevance_complex_query', 0.15)
-        min_relevance_simple = rag_config.get('min_relevance_simple_query', 0.25)
-        query_complexity_threshold = rag_config.get('query_complexity_threshold', 2)
+        # Using complex_query_threshold from agent_settings as minimum relevance for complex queries
+        min_relevance_complex = agent_settings.get('complex_query_threshold', 0.15)
+        # Using min_relevance_score for simple queries
+        min_relevance_simple = agent_settings.get('min_relevance_score', 0.25)
+        # Consider query complex if it has more than 2 significant words
+        query_complexity_threshold = 2
         
         min_relevance = min_relevance_complex if len(query_keywords) > query_complexity_threshold else min_relevance_simple
         if relevance_score < min_relevance:
@@ -2493,6 +2531,9 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
     if missing:
         raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
     
+    # Initialize rag_sources at the top level to ensure it's always available
+    rag_sources = []
+    
     # STEP 1: Use pre-computed query_type if provided, otherwise classify
     print(f"[DEBUG] rag_answer: RECEIVED query_type parameter = '{query_type}'")
     if query_type:
@@ -2526,7 +2567,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
         # Initialize tool variables for potential fallback use
         tool_calls = []
         tool_context = ""
-        rag_sources = []  # Initialize sources list for documents transparency
+        # rag_sources already initialized at top level
         
         # STEP 2a: Enhanced hybrid approach - always consider both RAG and TOOLS
         if query_type == "TOOLS":
@@ -2590,6 +2631,27 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                     print(f"[DEBUG] rag_answer: TOOLS execution successful, will synthesize with LLM")
                     tool_calls = search_results
                     tool_context = search_context
+                    
+                    # Extract documents from knowledge_search tool results
+                    for result in search_results:
+                        if result.get('tool') == 'knowledge_search' and result.get('success'):
+                            tool_result = result.get('result', {})
+                            # Handle JSON-RPC response format
+                            if isinstance(tool_result, dict) and 'result' in tool_result:
+                                rag_result = tool_result['result']
+                                if isinstance(rag_result, dict) and 'documents' in rag_result:
+                                    # Extract documents and convert to rag_sources format
+                                    for doc in rag_result['documents']:
+                                        if isinstance(doc, dict):
+                                            source_info = {
+                                                "content": doc.get('content', ''),
+                                                "file": doc.get('source', 'Unknown'),
+                                                "page": doc.get('metadata', {}).get('page', 0),
+                                                "collection": doc.get('collection', 'default_knowledge')
+                                            }
+                                            rag_sources.append(source_info)
+                                    print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from knowledge_search results")
+                    
                     # Keep query_type as TOOLS but ensure synthesis happens
                 else:
                     print(f"[DEBUG] rag_answer: TOOLS execution returned no results, falling back to LLM")
@@ -2987,6 +3049,25 @@ Please generate the requested items incorporating relevant information from the 
                             "execution_time": 0.5
                         }]
                         tool_context = f"\n{tool_name}: {json.dumps(direct_result, indent=2) if isinstance(direct_result, dict) else direct_result}\n"
+                        
+                        # Extract documents from direct tool call results
+                        if tool_name == 'knowledge_search':
+                            # Handle JSON-RPC response format
+                            if isinstance(direct_result, dict) and 'result' in direct_result:
+                                rag_result = direct_result['result']
+                                if isinstance(rag_result, dict) and 'documents' in rag_result:
+                                    # Extract documents and convert to rag_sources format
+                                    for doc in rag_result['documents']:
+                                        if isinstance(doc, dict):
+                                            source_info = {
+                                                "content": doc.get('content', ''),
+                                                "file": doc.get('source', 'Unknown'),
+                                                "page": doc.get('metadata', {}).get('page', 0),
+                                                "collection": doc.get('collection', 'default_knowledge')
+                                            }
+                                            rag_sources.append(source_info)
+                                    print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from direct tool execution")
+                        
                         print(f"[DEBUG] rag_answer: DIRECT EXECUTION SUCCESS - bypassing intelligent executor")
                     else:
                         print(f"[DEBUG] rag_answer: Direct execution failed, falling back to intelligent executor")
@@ -3051,6 +3132,26 @@ Please generate the requested items incorporating relevant information from the 
                     print(f"  - tool_context length: {len(tool_context)}")
                     print(f"  - execution_events: {len(execution_events)} events")
                     
+                    # Extract documents from knowledge_search tool results
+                    for tc in tool_calls:
+                        if tc.get('tool') == 'knowledge_search' and tc.get('success'):
+                            tool_result = tc.get('result', {})
+                            # Handle JSON-RPC response format
+                            if isinstance(tool_result, dict) and 'result' in tool_result:
+                                rag_result = tool_result['result']
+                                if isinstance(rag_result, dict) and 'documents' in rag_result:
+                                    # Extract documents and convert to rag_sources format
+                                    for doc in rag_result['documents']:
+                                        if isinstance(doc, dict):
+                                            source_info = {
+                                                "content": doc.get('content', ''),
+                                                "file": doc.get('source', 'Unknown'),
+                                                "page": doc.get('metadata', {}).get('page', 0),
+                                                "collection": doc.get('collection', 'default_knowledge')
+                                            }
+                                            rag_sources.append(source_info)
+                                    print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from intelligent executor results")
+                    
                     # End chat span with results
                     if chat_span:
                         try:
@@ -3082,6 +3183,25 @@ Please generate the requested items incorporating relevant information from the 
                         if tool_calls:
                             for tc in tool_calls:
                                 print(f"  - Tool: {tc.get('tool', 'unknown')} - Success: {tc.get('success', False)}")
+                                
+                                # Extract documents from simple tool executor results
+                                if tc.get('tool') == 'knowledge_search' and tc.get('success'):
+                                    tool_result = tc.get('result', {})
+                                    # Handle JSON-RPC response format
+                                    if isinstance(tool_result, dict) and 'result' in tool_result:
+                                        rag_result = tool_result['result']
+                                        if isinstance(rag_result, dict) and 'documents' in rag_result:
+                                            # Extract documents and convert to rag_sources format
+                                            for doc in rag_result['documents']:
+                                                if isinstance(doc, dict):
+                                                    source_info = {
+                                                        "content": doc.get('content', ''),
+                                                        "file": doc.get('source', 'Unknown'),
+                                                        "page": doc.get('metadata', {}).get('page', 0),
+                                                        "collection": doc.get('collection', 'default_knowledge')
+                                                    }
+                                                    rag_sources.append(source_info)
+                                            print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from simple tool executor results")
                     except Exception as e2:
                         print(f"[DEBUG] rag_answer: Simple tool executor also failed: {e2}, trying original method")
                         # Fallback to original method
@@ -3089,6 +3209,27 @@ Please generate the requested items incorporating relevant information from the 
                         print(f"[DEBUG] rag_answer: execute_tools_first returned:")
                         print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
                         print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")
+                        
+                        # Extract documents from fallback results
+                        if tool_calls:
+                            for tc in tool_calls:
+                                if tc.get('tool') == 'knowledge_search' and tc.get('success'):
+                                    tool_result = tc.get('result', {})
+                                    # Handle JSON-RPC response format
+                                    if isinstance(tool_result, dict) and 'result' in tool_result:
+                                        rag_result = tool_result['result']
+                                        if isinstance(rag_result, dict) and 'documents' in rag_result:
+                                            # Extract documents and convert to rag_sources format
+                                            for doc in rag_result['documents']:
+                                                if isinstance(doc, dict):
+                                                    source_info = {
+                                                        "content": doc.get('content', ''),
+                                                        "file": doc.get('source', 'Unknown'),
+                                                        "page": doc.get('metadata', {}).get('page', 0),
+                                                        "collection": doc.get('collection', 'default_knowledge')
+                                                    }
+                                                    rag_sources.append(source_info)
+                                            print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from fallback results")
             
         if not tool_calls:
             print(f"[DEBUG] rag_answer: No tools actually executed despite TOOLS classification")
@@ -3247,6 +3388,26 @@ Please generate the requested items incorporating relevant information from the 
             
             if tool_results:
                 print(f"[DEBUG] Executed {len(tool_results)} tools from LLM response")
+                
+                # Extract documents from tool results
+                for tr in tool_results:
+                    if tr.get('tool') == 'knowledge_search' and tr.get('success'):
+                        tool_result = tr.get('result', {})
+                        # Handle JSON-RPC response format
+                        if isinstance(tool_result, dict) and 'result' in tool_result:
+                            rag_result = tool_result['result']
+                            if isinstance(rag_result, dict) and 'documents' in rag_result:
+                                # Extract documents and convert to rag_sources format
+                                for doc in rag_result['documents']:
+                                    if isinstance(doc, dict):
+                                        source_info = {
+                                            "content": doc.get('content', ''),
+                                            "file": doc.get('source', 'Unknown'),
+                                            "page": doc.get('metadata', {}).get('page', 0),
+                                            "collection": doc.get('collection', 'default_knowledge')
+                                        }
+                                        rag_sources.append(source_info)
+                                print(f"[DEBUG] rag_answer: Extracted {len(rag_result['documents'])} documents from LLM tool call results")
                 
                 # Stream tool execution results
                 for result in tool_results:
@@ -3684,8 +3845,40 @@ def _map_tool_parameters_service(tool_name: str, params: dict) -> tuple[str, dic
     logger = logging.getLogger(__name__)
     
     mapped_params = params.copy()
+    original_tool_name = tool_name
     
-    # No tool mapping - intelligent planner uses exact tool names and parameters from MCP cache
+    # Tool name correction mapping - fix common LLM mistakes
+    tool_name_mapping = {
+        # Common search tool mistakes
+        'search_internal_knowledge': 'knowledge_search',
+        'internal_knowledge_search': 'knowledge_search',
+        'search_knowledge_base': 'knowledge_search',
+        'knowledge_base_search': 'knowledge_search',
+        'search_documents': 'knowledge_search',
+        'document_search': 'knowledge_search',
+        'rag_search': 'knowledge_search',
+        'internal_search': 'knowledge_search',
+        
+        # Gmail/email tool variations
+        'search_email': 'find_email',
+        'email_search': 'find_email',
+        'gmail_search': 'find_email',
+        
+        # Common datetime tool mistakes
+        'get_time': 'get_datetime',
+        'current_time': 'get_datetime',
+        'datetime': 'get_datetime',
+        
+        # Jira tool variations
+        'jira_search': 'jira_list_issues',
+        'search_jira': 'jira_list_issues',
+    }
+    
+    # Apply tool name correction if needed
+    if tool_name in tool_name_mapping:
+        corrected_name = tool_name_mapping[tool_name]
+        logger.info(f"[TOOL CORRECTION] Mapped '{original_tool_name}' -> '{corrected_name}'")
+        tool_name = corrected_name
     
     return tool_name, mapped_params
 
@@ -3709,7 +3902,7 @@ def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> 
             # Execute RAG search
             try:
                 # Try to get the running loop
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 logger.info("RAG search: Running in async context, using sync version")
                 # If we're in an async context, use the sync version directly
                 # This avoids the thread/event loop issues

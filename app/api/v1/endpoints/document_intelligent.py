@@ -803,6 +803,19 @@ async def intelligent_upload_with_progress(
                 
                 yield f"data: {json.dumps({'current_step': 8, 'total_steps': 8, 'progress_percent': 98, 'step_name': 'Finalizing storage', 'details': {'message': 'Flushing data to persistent storage'}})}\n\n"
                 
+                # Update collection statistics
+                try:
+                    from app.core.collection_statistics import update_collection_statistics
+                    stats_result = update_collection_statistics(
+                        collection_name=collection_name,
+                        chunks_added=len(chunks),
+                        uri=uri,
+                        token=token
+                    )
+                    logger.info(f"Updated collection statistics: {stats_result}")
+                except Exception as stats_error:
+                    logger.error(f"Failed to update collection statistics: {stats_error}")
+                
                 # Step 8: Final storage complete
                 yield f"data: {json.dumps({'current_step': 8, 'total_steps': 8, 'progress_percent': 100, 'step_name': 'Upload complete', 'details': {'message': f'Successfully stored {len(chunks)} chunks in {collection_name}'}})}\n\n"
                 

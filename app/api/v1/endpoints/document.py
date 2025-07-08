@@ -384,6 +384,20 @@ async def upload_pdf(
             insert_result = collection_obj.insert(data)
             collection_obj.flush()  # Ensure data is written
             print(f"✅ Successfully inserted {len(unique_chunks)} chunks")
+            
+            # Update collection statistics
+            try:
+                from app.core.collection_statistics import update_collection_statistics
+                stats_result = update_collection_statistics(
+                    collection_name=collection,
+                    chunks_added=len(unique_chunks),
+                    uri=uri,
+                    token=token
+                )
+                print(f"📊 Updated collection statistics: {stats_result}")
+            except Exception as stats_error:
+                print(f"⚠️  Failed to update collection statistics: {stats_error}")
+                
         except Exception as e:
             print(f"❌ Error inserting into Milvus: {e}")
             # Cleanup temp file
