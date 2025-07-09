@@ -103,6 +103,21 @@ class AgentWorkflowExecutor:
             # Convert visual workflow to agent execution plan with enhanced 4-way connectivity
             agent_plan = self._convert_workflow_to_agent_plan(workflow_config, input_data, message)
             
+            # Register APINode MCP tools for this workflow
+            from app.automation.integrations.apinode_mcp_bridge import apinode_mcp_bridge
+            try:
+                registered_tools = apinode_mcp_bridge.register_workflow_tools(
+                    workflow_id=str(workflow_id),
+                    workflow_config=workflow_config
+                )
+                if registered_tools > 0:
+                    logger.info(f"[AGENT WORKFLOW] Registered {registered_tools} APINode MCP tools for workflow {workflow_id}")
+                    
+                    # Add workflow tools info to agent plan
+                    agent_plan['apinode_tools'] = apinode_mcp_bridge.get_workflow_tools(str(workflow_id))
+            except Exception as e:
+                logger.error(f"[AGENT WORKFLOW] Failed to register APINode MCP tools: {str(e)}")
+            
             # Transfer execution sequence if provided (regardless of connectivity type)
             if 'execution_sequence' in workflow_config:
                 agent_plan['execution_sequence'] = workflow_config['execution_sequence']
@@ -402,7 +417,7 @@ class AgentWorkflowExecutor:
         nodes = workflow_config.get("nodes", [])
         edges = workflow_config.get("edges", [])
         
-        # Extract agent nodes, state nodes, router nodes, parallel nodes, aggregator nodes, condition nodes, cache nodes, transform nodes, trigger nodes, and output nodes from workflow
+        # Extract agent nodes, state nodes, router nodes, parallel nodes, aggregator nodes, condition nodes, cache nodes, transform nodes, trigger nodes, api nodes, and output nodes from workflow
         agent_nodes = []
         state_nodes = []
         router_nodes = []
@@ -412,6 +427,7 @@ class AgentWorkflowExecutor:
         cache_nodes = []
         transform_nodes = []
         trigger_nodes = []
+        api_nodes = []
         output_node = None
         
         for node in nodes:
@@ -420,15 +436,24 @@ class AgentWorkflowExecutor:
             
             # Check for state nodes
             if node_type == "StateNode" or node.get("type") == "statenode":
+                state_config = node_data.get("node", {}) or node_data
                 state_nodes.append({
                     "node_id": node.get("id"),
+                    "label": state_config.get("label", "State"),
                     "node_data": node_data,
                     "position": node.get("position", {}),
-                    "state_operation": node_data.get("stateOperation", "merge"),
-                    "state_keys": node_data.get("stateKeys", []),
-                    "state_values": node_data.get("stateValues", {}),
-                    "persistence": node_data.get("persistence", True),
-                    "checkpoint_name": node_data.get("checkpointName", "")
+                    # Map frontend fields to backend expectations
+                    "state_operation": state_config.get("operation", "merge"),
+                    "state_key": state_config.get("stateKey", ""),
+                    "default_value": state_config.get("defaultValue", {}),
+                    "merge_strategy": state_config.get("mergeStrategy", "deep"),
+                    "ttl": state_config.get("ttl", 0),
+                    "scope": state_config.get("scope", "workflow"),
+                    "persistence": state_config.get("persistState", True),
+                    "checkpoint_name": state_config.get("checkpointName", ""),
+                    # Legacy fields for backward compatibility
+                    "state_keys": state_config.get("stateKeys", [state_config.get("stateKey", "")]),
+                    "state_values": state_config.get("stateValues", {})
                 })
                 logger.debug(f"[WORKFLOW CONVERSION] Found StateNode: {node.get('id')}")
             
@@ -620,6 +645,34 @@ class AgentWorkflowExecutor:
                 }
                 logger.debug(f"[WORKFLOW CONVERSION] Found OutputNode: {node.get('id')} with format: {output_node['output_format']}, auto_display: {output_node['auto_display']}, auto_save: {output_node['auto_save']}")
             
+            # Check for API nodes
+            elif node_type == "APINode" or node.get("type") == "apinode":
+                api_config = node_data.get("node", {}) or node_data
+                api_nodes.append({
+                    "node_id": node.get("id"),
+                    "label": api_config.get("label", "APINode"),
+                    "base_url": api_config.get("base_url", ""),
+                    "endpoint_path": api_config.get("endpoint_path", ""),
+                    "http_method": api_config.get("http_method", "GET"),
+                    "authentication_type": api_config.get("authentication_type", "none"),
+                    "auth_header_name": api_config.get("auth_header_name", "X-API-Key"),
+                    "auth_token": api_config.get("auth_token", ""),
+                    "basic_auth_username": api_config.get("basic_auth_username", ""),
+                    "basic_auth_password": api_config.get("basic_auth_password", ""),
+                    "request_schema": api_config.get("request_schema", {}),
+                    "response_schema": api_config.get("response_schema", {}),
+                    "timeout": api_config.get("timeout", 30),
+                    "retry_count": api_config.get("retry_count", 3),
+                    "rate_limit": api_config.get("rate_limit", 60),
+                    "custom_headers": api_config.get("custom_headers", {}),
+                    "response_transformation": api_config.get("response_transformation", ""),
+                    "error_handling": api_config.get("error_handling", "throw"),
+                    "enable_mcp_tool": api_config.get("enable_mcp_tool", True),
+                    "tool_description": api_config.get("tool_description", ""),
+                    "position": node.get("position", {})
+                })
+                logger.debug(f"[WORKFLOW CONVERSION] Found APINode: {node.get('id')}")
+            
             # Check for both legacy and agent-based node types
             elif node_type == "AgentNode" or node.get("type") == "agentnode":
                 # Try multiple ways to extract agent configuration
@@ -804,6 +857,7 @@ class AgentWorkflowExecutor:
             "cache_nodes": cache_nodes,
             "transform_nodes": transform_nodes,
             "trigger_nodes": trigger_nodes,
+            "api_nodes": api_nodes,
             "output_node": output_node,
             "pattern": execution_pattern,
             "query": query,
@@ -962,6 +1016,7 @@ class AgentWorkflowExecutor:
         condition_nodes = agent_plan.get("condition_nodes", [])
         cache_nodes = agent_plan.get("cache_nodes", [])
         transform_nodes = agent_plan.get("transform_nodes", [])
+        api_nodes = agent_plan.get("api_nodes", [])
         pattern = agent_plan["pattern"]
         query = agent_plan["query"]
         workflow_edges = agent_plan.get("edges", [])
@@ -1107,7 +1162,7 @@ class AgentWorkflowExecutor:
                 # Pass agent_plan to sequential execution for enhanced features
                 async for result in self._execute_agents_sequential(
                     selected_agents, query, workflow_id, execution_id, execution_trace, 
-                    workflow_state, workflow_edges, agent_plan, cache_nodes, transform_nodes, parallel_nodes, condition_nodes
+                    workflow_state, workflow_edges, agent_plan, cache_nodes, transform_nodes, parallel_nodes, condition_nodes, state_nodes, api_nodes
                 ):
                     yield result
         except Exception as e:
@@ -1119,6 +1174,15 @@ class AgentWorkflowExecutor:
                 "execution_id": execution_id
             }
         finally:
+            # Cleanup APINode MCP tools for this workflow
+            from app.automation.integrations.apinode_mcp_bridge import apinode_mcp_bridge
+            try:
+                unregistered_tools = apinode_mcp_bridge.unregister_workflow_tools(str(workflow_id))
+                if unregistered_tools > 0:
+                    logger.info(f"[AGENT WORKFLOW] Unregistered {unregistered_tools} APINode MCP tools for workflow {workflow_id}")
+            except Exception as e:
+                logger.error(f"[AGENT WORKFLOW] Failed to unregister APINode MCP tools: {str(e)}")
+            
             # End agent execution span
             if agent_execution_span:
                 try:
@@ -1176,7 +1240,9 @@ class AgentWorkflowExecutor:
         cache_nodes: List[Dict[str, Any]] = None,
         transform_nodes: List[Dict[str, Any]] = None,
         parallel_nodes: List[Dict[str, Any]] = None,
-        condition_nodes: List[Dict[str, Any]] = None
+        condition_nodes: List[Dict[str, Any]] = None,
+        state_nodes: List[Dict[str, Any]] = None,
+        api_nodes: List[Dict[str, Any]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute agents sequentially using state-based workflow execution with 4-way connectivity support"""
         
@@ -1208,6 +1274,9 @@ class AgentWorkflowExecutor:
         agent_outputs = {}
         workflow_edges = workflow_edges or []
         
+        # Track condition results for conditional execution
+        condition_results = {}
+        
         # Get router nodes for filtering
         router_nodes = agent_plan.get("router_nodes", []) if agent_plan else []
         aggregator_nodes = agent_plan.get("aggregator_nodes", []) if agent_plan else []
@@ -1215,6 +1284,7 @@ class AgentWorkflowExecutor:
         transform_nodes = transform_nodes or []
         parallel_nodes = parallel_nodes or []
         condition_nodes = condition_nodes or []
+        state_nodes = state_nodes or []
         active_target_nodes = set()
         
         # Process RouterNodes that are connected from StartNode or InputNode
@@ -1291,6 +1361,22 @@ class AgentWorkflowExecutor:
                         "timestamp": datetime.utcnow().isoformat()
                     }
                     continue
+            
+            # CONDITION CHECK: Check if this agent should execute based on condition results
+            if condition_results and not self._should_execute_node_with_conditions(agent_node_id, condition_results, workflow_edges):
+                logger.info(f"[CONDITION FILTERING] Skipping agent {agent_name} (node: {agent_node_id}) - blocked by condition")
+                yield {
+                    "type": "agent_execution_skipped",
+                    "agent_name": agent_name,
+                    "node_id": agent_node_id,
+                    "reason": "Blocked by condition",
+                    "workflow_id": workflow_id,
+                    "execution_id": execution_id,
+                    "agent_index": i,
+                    "total_agents": len(agents),
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                continue
             
             # CACHE CHECK: Check if there's a cache node connected to this agent
             cache_result = None
@@ -1787,6 +1873,9 @@ class AgentWorkflowExecutor:
                                     )
                                     
                                     if condition_result:
+                                        # Store condition result for execution control
+                                        condition_results[condition["node_id"]] = condition_result
+                                        
                                         # Yield condition result
                                         yield {
                                             "type": "condition_evaluation_complete",
@@ -1804,6 +1893,128 @@ class AgentWorkflowExecutor:
                                         self._handle_condition_branching(
                                             condition_result, condition, workflow_edges, agents
                                         )
+                
+                # STATE NODE PROCESSING: Process state nodes connected to this agent
+                if state_nodes and current_node_id:
+                    for edge in workflow_edges:
+                        if edge.get("source") == current_node_id:
+                            target_id = edge.get("target")
+                            # Check if target is a state node
+                            for state_node in state_nodes:
+                                if state_node["node_id"] == target_id:
+                                    # Process the state node with agent output
+                                    yield {
+                                        "type": "state_node_execution_start",
+                                        "state_node_id": state_node["node_id"],
+                                        "state_operation": state_node.get("state_operation", "merge"),
+                                        "state_key": state_node.get("state_key", ""),
+                                        "workflow_id": workflow_id,
+                                        "execution_id": execution_id,
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    }
+                                    
+                                    # Execute state node operation with agent output
+                                    await self._process_state_node(
+                                        state_node, agent_output, workflow_state, workflow_id, execution_id
+                                    )
+                                    
+                                    yield {
+                                        "type": "state_node_execution_complete",
+                                        "state_node_id": state_node["node_id"],
+                                        "state_operation": state_node.get("state_operation", "merge"),
+                                        "state_key": state_node.get("state_key", ""),
+                                        "workflow_id": workflow_id,
+                                        "execution_id": execution_id,
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    }
+                
+                # Process API nodes after agent execution
+                if api_nodes and current_node_id:
+                    # Check if this agent connects to any API node
+                    for edge in workflow_edges:
+                        if edge.get("source") == current_node_id:
+                            target_id = edge.get("target")
+                            # Check if target is an API node
+                            for api_node in api_nodes:
+                                if api_node["node_id"] == target_id:
+                                    # Process API call with agent output
+                                    yield {
+                                        "type": "api_execution_start",
+                                        "api_node_id": api_node["node_id"],
+                                        "api_label": api_node["label"],
+                                        "api_endpoint": f"{api_node['base_url']}{api_node['endpoint_path']}",
+                                        "http_method": api_node["http_method"],
+                                        "workflow_id": workflow_id,
+                                        "execution_id": execution_id,
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    }
+                                    
+                                    try:
+                                        # Import APIExecutor
+                                        from app.automation.core.api_executor import get_api_executor
+                                        
+                                        # Get executor instance
+                                        executor = await get_api_executor()
+                                        
+                                        # Prepare parameters from agent output
+                                        # Try to parse agent output as JSON for API parameters
+                                        try:
+                                            import json
+                                            if isinstance(agent_output, str):
+                                                # Try to extract JSON from agent output
+                                                import re
+                                                json_match = re.search(r'\{.*\}', agent_output, re.DOTALL)
+                                                if json_match:
+                                                    api_parameters = json.loads(json_match.group())
+                                                else:
+                                                    # Use agent output as query parameter
+                                                    api_parameters = {"query": agent_output}
+                                            else:
+                                                api_parameters = agent_output if isinstance(agent_output, dict) else {"query": str(agent_output)}
+                                        except Exception as e:
+                                            logger.warning(f"[API NODE] Failed to parse agent output for API parameters: {e}")
+                                            api_parameters = {"query": str(agent_output)}
+                                        
+                                        # Execute API call
+                                        api_result = await executor.execute_api_call(
+                                            node_config=api_node,
+                                            parameters=api_parameters,
+                                            workflow_id=workflow_id,
+                                            execution_id=execution_id,
+                                            node_id=api_node["node_id"]
+                                        )
+                                        
+                                        # Store API result in workflow state
+                                        if workflow_state:
+                                            api_output_key = f"api_output_{api_node['node_id']}"
+                                            workflow_state.set_state(api_output_key, api_result)
+                                            logger.info(f"[API NODE] Stored API result for node {api_node['node_id']}")
+                                        
+                                        # Yield API execution success
+                                        yield {
+                                            "type": "api_execution_success",
+                                            "api_node_id": api_node["node_id"],
+                                            "api_label": api_node["label"],
+                                            "api_result": api_result,
+                                            "api_parameters": api_parameters,
+                                            "workflow_id": workflow_id,
+                                            "execution_id": execution_id,
+                                            "timestamp": datetime.utcnow().isoformat()
+                                        }
+                                        
+                                    except Exception as e:
+                                        logger.error(f"[API NODE] API execution failed for node {api_node['node_id']}: {e}")
+                                        
+                                        # Yield API execution error
+                                        yield {
+                                            "type": "api_execution_error",
+                                            "api_node_id": api_node["node_id"],
+                                            "api_label": api_node["label"],
+                                            "error": str(e),
+                                            "workflow_id": workflow_id,
+                                            "execution_id": execution_id,
+                                            "timestamp": datetime.utcnow().isoformat()
+                                        }
                 
                 # Store agent output for potential aggregator nodes (input collection)
                 if aggregator_nodes and current_node_id:
@@ -2614,34 +2825,98 @@ Please process this request independently and provide your analysis."""
             
             for state_node in state_nodes:
                 operation = state_node.get("state_operation", "merge")
+                state_key = state_node.get("state_key", "")
                 state_keys = state_node.get("state_keys", [])
                 state_values = state_node.get("state_values", {})
+                default_value = state_node.get("default_value", {})
+                merge_strategy = state_node.get("merge_strategy", "deep")
+                ttl = state_node.get("ttl", 0)
+                scope = state_node.get("scope", "workflow")
                 checkpoint_name = state_node.get("checkpoint_name", "")
                 node_id = state_node.get("node_id", "")
                 
-                logger.info(f"[STATE OPERATION] Processing {operation} for node {node_id}")
+                logger.info(f"[STATE OPERATION] Processing {operation} for node {node_id}, key: {state_key}")
                 
-                if operation == "merge":
-                    for key in state_keys:
-                        if key in state_values:
-                            workflow_state.merge_state(key, state_values[key], checkpoint_name)
+                # Handle single state key operations (new format)
+                if state_key:
+                    if operation == "write" or operation == "set":
+                        # Write operation with default value
+                        value_to_write = default_value if default_value else {}
+                        workflow_state.set_state(state_key, value_to_write, checkpoint_name)
+                        logger.info(f"[STATE WRITE] {state_key}: {value_to_write}")
+                    
+                    elif operation == "read" or operation == "get":
+                        # Read operation - get current value or default
+                        current_value = workflow_state.get_state(state_key)
+                        if current_value is None and default_value is not None:
+                            # Set default value if key doesn't exist
+                            workflow_state.set_state(state_key, default_value, checkpoint_name)
+                            current_value = default_value
+                        logger.info(f"[STATE READ] {state_key}: {current_value}")
+                    
+                    elif operation == "update":
+                        # Update operation - merge with existing value
+                        current_value = workflow_state.get_state(state_key)
+                        if current_value is None:
+                            current_value = default_value if default_value else {}
+                        
+                        # Apply merge strategy
+                        if merge_strategy == "deep":
+                            if isinstance(current_value, dict) and isinstance(default_value, dict):
+                                merged_value = {**current_value, **default_value}
+                            else:
+                                merged_value = default_value
+                        elif merge_strategy == "shallow":
+                            if isinstance(current_value, dict) and isinstance(default_value, dict):
+                                merged_value = current_value.copy()
+                                merged_value.update(default_value)
+                            else:
+                                merged_value = default_value
+                        elif merge_strategy == "append":
+                            if isinstance(current_value, list) and isinstance(default_value, list):
+                                merged_value = current_value + default_value
+                            else:
+                                merged_value = default_value
+                        else:  # replace
+                            merged_value = default_value
+                        
+                        workflow_state.set_state(state_key, merged_value, checkpoint_name)
+                        logger.info(f"[STATE UPDATE] {state_key}: {merged_value}")
+                    
+                    elif operation == "delete":
+                        # Delete operation
+                        workflow_state.clear_state([state_key], checkpoint_name)
+                        logger.info(f"[STATE DELETE] {state_key}")
+                    
+                    elif operation == "merge":
+                        # Legacy merge operation
+                        if default_value:
+                            workflow_state.merge_state(state_key, default_value, checkpoint_name)
+                            logger.info(f"[STATE MERGE] {state_key}: {default_value}")
                 
-                elif operation == "set":
-                    for key in state_keys:
-                        if key in state_values:
-                            workflow_state.set_state(key, state_values[key], checkpoint_name)
-                
-                elif operation == "get":
-                    # Get operation doesn't modify state, just logs current values
-                    for key in state_keys:
-                        current_value = workflow_state.get_state(key)
-                        logger.info(f"[STATE GET] {key}: {current_value}")
-                
-                elif operation == "clear":
-                    if state_keys:
-                        workflow_state.clear_state(state_keys, checkpoint_name)
-                    else:
-                        workflow_state.clear_state(None, checkpoint_name)
+                # Handle legacy multi-key operations (backward compatibility)
+                elif state_keys:
+                    if operation == "merge":
+                        for key in state_keys:
+                            if key in state_values:
+                                workflow_state.merge_state(key, state_values[key], checkpoint_name)
+                    
+                    elif operation == "set":
+                        for key in state_keys:
+                            if key in state_values:
+                                workflow_state.set_state(key, state_values[key], checkpoint_name)
+                    
+                    elif operation == "get":
+                        # Get operation doesn't modify state, just logs current values
+                        for key in state_keys:
+                            current_value = workflow_state.get_state(key)
+                            logger.info(f"[STATE GET] {key}: {current_value}")
+                    
+                    elif operation == "clear":
+                        if state_keys:
+                            workflow_state.clear_state(state_keys, checkpoint_name)
+                        else:
+                            workflow_state.clear_state(None, checkpoint_name)
                 
                 # Create checkpoint if specified
                 if checkpoint_name:
@@ -2649,6 +2924,126 @@ Please process this request independently and provide your analysis."""
                     
         except Exception as e:
             logger.error(f"[STATE OPERATION] Error processing state operations: {e}")
+    
+    async def _process_state_node(
+        self,
+        state_node: Dict[str, Any],
+        agent_output: str,
+        workflow_state: WorkflowState,
+        workflow_id: int,
+        execution_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Process a single state node with agent output"""
+        try:
+            operation = state_node.get("state_operation", "merge")
+            state_key = state_node.get("state_key", "")
+            default_value = state_node.get("default_value", {})
+            merge_strategy = state_node.get("merge_strategy", "deep")
+            ttl = state_node.get("ttl", 0)
+            scope = state_node.get("scope", "workflow")
+            checkpoint_name = state_node.get("checkpoint_name", "")
+            node_id = state_node.get("node_id", "")
+            
+            logger.info(f"[STATE NODE] Processing {operation} for node {node_id}, key: {state_key}")
+            
+            # Use agent output as the value to store/process
+            value_to_process = agent_output
+            
+            # Apply different operations based on configuration
+            if operation == "write" or operation == "set":
+                # Write operation - store agent output
+                workflow_state.set_state(state_key, value_to_process, checkpoint_name)
+                logger.info(f"[STATE NODE WRITE] {state_key}: {value_to_process}")
+            
+            elif operation == "read" or operation == "get":
+                # Read operation - get current value, optionally set default
+                current_value = workflow_state.get_state(state_key)
+                if current_value is None and default_value is not None:
+                    workflow_state.set_state(state_key, default_value, checkpoint_name)
+                    current_value = default_value
+                logger.info(f"[STATE NODE READ] {state_key}: {current_value}")
+                return {"result": current_value, "operation": "read"}
+            
+            elif operation == "update":
+                # Update operation - merge agent output with existing value
+                current_value = workflow_state.get_state(state_key)
+                if current_value is None:
+                    current_value = default_value if default_value else {}
+                
+                # Apply merge strategy
+                if merge_strategy == "deep":
+                    if isinstance(current_value, dict) and isinstance(value_to_process, str):
+                        # Try to parse agent output as JSON
+                        try:
+                            import json
+                            parsed_output = json.loads(value_to_process)
+                            if isinstance(parsed_output, dict):
+                                merged_value = {**current_value, **parsed_output}
+                            else:
+                                merged_value = parsed_output
+                        except:
+                            merged_value = value_to_process
+                    else:
+                        merged_value = value_to_process
+                elif merge_strategy == "shallow":
+                    if isinstance(current_value, dict) and isinstance(value_to_process, str):
+                        try:
+                            import json
+                            parsed_output = json.loads(value_to_process)
+                            if isinstance(parsed_output, dict):
+                                merged_value = current_value.copy()
+                                merged_value.update(parsed_output)
+                            else:
+                                merged_value = parsed_output
+                        except:
+                            merged_value = value_to_process
+                    else:
+                        merged_value = value_to_process
+                elif merge_strategy == "append":
+                    if isinstance(current_value, list):
+                        if isinstance(value_to_process, list):
+                            merged_value = current_value + value_to_process
+                        else:
+                            merged_value = current_value + [value_to_process]
+                    else:
+                        merged_value = [current_value, value_to_process]
+                else:  # replace
+                    merged_value = value_to_process
+                
+                workflow_state.set_state(state_key, merged_value, checkpoint_name)
+                logger.info(f"[STATE NODE UPDATE] {state_key}: {merged_value}")
+            
+            elif operation == "delete":
+                # Delete operation
+                workflow_state.clear_state([state_key], checkpoint_name)
+                logger.info(f"[STATE NODE DELETE] {state_key}")
+            
+            elif operation == "merge":
+                # Legacy merge operation
+                workflow_state.merge_state(state_key, value_to_process, checkpoint_name)
+                logger.info(f"[STATE NODE MERGE] {state_key}: {value_to_process}")
+            
+            # Create checkpoint if specified
+            if checkpoint_name:
+                workflow_state.create_checkpoint(checkpoint_name)
+            
+            return {
+                "node_id": node_id,
+                "operation": operation,
+                "state_key": state_key,
+                "result": "success",
+                "value": value_to_process
+            }
+            
+        except Exception as e:
+            logger.error(f"[STATE NODE] Error processing state node {node_id}: {e}")
+            return {
+                "node_id": node_id,
+                "operation": operation,
+                "state_key": state_key,
+                "result": "error",
+                "error": str(e)
+            }
     
     async def get_workflow_execution_status(
         self, 

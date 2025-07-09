@@ -69,7 +69,7 @@ const AgentSelector: React.FC<AgentSelectorProps> = ({
       });
       setPerformanceMetrics(mockMetrics);
     } catch (error) {
-      console.error('Error loading performance metrics:', error);
+      //console.error('Error loading performance metrics:', error);
     } finally {
       setLoadingMetrics(false);
     }

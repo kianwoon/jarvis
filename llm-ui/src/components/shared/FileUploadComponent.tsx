@@ -146,17 +146,17 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
   useEffect(() => {
     const loadCollections = async () => {
       try {
-        console.log('🔄 Loading collections...');
+        //console.log('🔄 Loading collections...');
         const response = await fetch('/api/v1/collections/');
         if (response.ok) {
           const data = await response.json();
-          console.log('✅ Collections loaded:', data.length, 'collections');
+          //console.log('✅ Collections loaded:', data.length, 'collections');
           setCollections(data);
         } else {
-          console.log('❌ Failed to load collections:', response.status);
+          //console.log('❌ Failed to load collections:', response.status);
         }
       } catch (error) {
-        console.error('❌ Error loading collections:', error);
+        //console.error('❌ Error loading collections:', error);
       }
     };
     loadCollections();
@@ -165,7 +165,7 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
   // Get suggested collection for file using backend classification
   const getSuggestedCollection = async (file: File): Promise<string> => {
     try {
-      console.log('🤖 Getting AI-powered collection suggestion from backend...');
+      //console.log('🤖 Getting AI-powered collection suggestion from backend...');
       
       // Create a small sample of the file for classification
       const formData = new FormData();
@@ -180,13 +180,13 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
       
       if (response.ok) {
         const result = await response.json();
-        console.log('✅ Backend classification result:', result);
+        //console.log('✅ Backend classification result:', result);
         
         // Backend returns 'collection' field with suggested collection name
         if (result.collection) {
-          console.log('🎯 Backend suggested collection:', result.collection);
-          console.log('📊 Confidence:', result.confidence);
-          console.log('💡 Reason:', result.reason);
+          //console.log('🎯 Backend suggested collection:', result.collection);
+          //console.log('📊 Confidence:', result.confidence);
+          //console.log('💡 Reason:', result.reason);
           
           // Store full classification result for UI display
           setClassificationResult(result);
@@ -212,7 +212,7 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
           return typeToCollection[result.collection_type] || 'default_knowledge';
         }
       } else {
-        console.log('⚠️ Backend classification failed, using filename fallback');
+        //console.log('⚠️ Backend classification failed, using filename fallback');
       }
       
       // Fallback to simple filename analysis if backend fails
@@ -237,7 +237,7 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
       
       return 'default_knowledge';
     } catch (error) {
-      console.error('❌ Error getting collection suggestion:', error);
+      //console.error('❌ Error getting collection suggestion:', error);
       return 'default_knowledge';
     }
   };
@@ -253,7 +253,7 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
   };
 
   const uploadFile = async (file: File, targetCollection?: string) => {
-    console.log('🚀 uploadFile called with:', file.name, 'collection:', targetCollection);
+    //console.log('🚀 uploadFile called with:', file.name, 'collection:', targetCollection);
     setUploadState({
       file,
       progress: 0,
@@ -266,10 +266,10 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
     onUploadStart?.(file);
 
     if (useProgressTracking) {
-      console.log('📊 Using progress tracking upload');
+      //console.log('📊 Using progress tracking upload');
       await uploadWithProgress(file, targetCollection);
     } else {
-      console.log('📤 Using simple upload');
+      //console.log('📤 Using simple upload');
       await uploadSimple(file, targetCollection);
     }
   };
@@ -376,21 +376,21 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
         ? '/api/v1/documents/upload_pdf_progress' 
         : '/api/v1/documents/upload-multi-progress';
 
-      console.log('📡 Making request to:', endpoint);
-      console.log('📦 FormData collection:', finalCollection);
-      console.log('📄 File type:', fileExt);
+      //console.log('📡 Making request to:', endpoint);
+      //console.log('📦 FormData collection:', finalCollection);
+      //console.log('📄 File type:', fileExt);
       
       const response = await fetch(endpoint, {
         method: 'POST',
         body: formData
       });
 
-      console.log('📡 Response status:', response.status);
-      console.log('📡 Response headers:', Array.from(response.headers.entries()));
+      //console.log('📡 Response status:', response.status);
+      //console.log('📡 Response headers:', Array.from(response.headers.entries()));
 
       if (!response.ok) {
         const errorData = await response.json();
-        console.log('❌ Error response:', errorData);
+        //console.log('❌ Error response:', errorData);
         throw new Error(errorData.detail || `Upload failed: ${response.statusText}`);
       }
 
@@ -402,36 +402,36 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
         throw new Error('No response body reader available');
       }
 
-      console.log('📡 Starting to read SSE stream...');
+      //console.log('📡 Starting to read SSE stream...');
       let chunkCount = 0;
       
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
-          console.log('📡 SSE stream finished, total chunks:', chunkCount);
+          //console.log('📡 SSE stream finished, total chunks:', chunkCount);
           break;
         }
 
         chunkCount++;
-        console.log('📡 Received chunk', chunkCount, 'size:', value.length);
+        //console.log('📡 Received chunk', chunkCount, 'size:', value.length);
         
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        console.log('📡 Processing', lines.length, 'lines from chunk', chunkCount);
+        //console.log('📡 Processing', lines.length, 'lines from chunk', chunkCount);
         
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.substring(6));
               
-              console.log('📊 Progress update received:', data);
-              console.log('📈 Current step:', data.current_step, 'of', data.total_steps);
-              console.log('🔄 Step name:', data.step_name);
-              console.log('📊 Progress:', data.progress_percent + '%');
-              console.log('🔍 Details:', data.details);
-              console.log('⏰ Timestamp:', new Date().toLocaleTimeString());
+              //console.log('📊 Progress update received:', data);
+              //console.log('📈 Current step:', data.current_step, 'of', data.total_steps);
+              //console.log('🔄 Step name:', data.step_name);
+              //console.log('📊 Progress:', data.progress_percent + '%');
+              //console.log('🔍 Details:', data.details);
+              //console.log('⏰ Timestamp:', new Date().toLocaleTimeString());
               
               if (data.error) {
                 throw new Error(data.error);
@@ -482,7 +482,7 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
                 return;
               }
             } catch (parseError) {
-              console.warn('Failed to parse progress data:', parseError);
+              //console.warn('Failed to parse progress data:', parseError);
             }
           }
         }
@@ -501,18 +501,18 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
   };
 
   const handleFileSelect = async (files: FileList | null) => {
-    console.log('🔍 handleFileSelect called with files:', files);
+    //console.log('🔍 handleFileSelect called with files:', files);
     if (!files || files.length === 0) {
-      console.log('❌ No files selected');
+      //console.log('❌ No files selected');
       return;
     }
     
     const file = files[0];
-    console.log('📁 Selected file:', file.name, file.type, file.size);
+    //console.log('📁 Selected file:', file.name, file.type, file.size);
     
     const validationError = validateFile(file);
     if (validationError) {
-      console.log('❌ Validation error:', validationError);
+      //console.log('❌ Validation error:', validationError);
       setUploadState({
         file: null,
         progress: 0,
@@ -523,34 +523,34 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
       return;
     }
 
-    console.log('✅ File validation passed');
+    //console.log('✅ File validation passed');
 
     // If collection is pre-selected, upload directly
     if (collection) {
-      console.log('🎯 Using pre-selected collection:', collection);
+      //console.log('🎯 Using pre-selected collection:', collection);
       uploadFile(file, collection);
       return;
     }
 
     // Show collection selection dialog
-    console.log('🔄 Getting suggested collection...');
+    //console.log('🔄 Getting suggested collection...');
     setPendingFile(file);
     const suggested = await getSuggestedCollection(file);
-    console.log('💡 Suggested collection:', suggested);
+    //console.log('💡 Suggested collection:', suggested);
     setSelectedCollection(suggested);
     setShowCollectionDialog(true);
-    console.log('📋 Collection dialog should now be open');
+    //console.log('📋 Collection dialog should now be open');
   };
 
   const handleCollectionConfirm = () => {
-    console.log('✅ Collection confirmed:', selectedCollection);
+    //console.log('✅ Collection confirmed:', selectedCollection);
     if (pendingFile && selectedCollection) {
-      console.log('🚀 Starting upload with collection:', selectedCollection);
+      //console.log('🚀 Starting upload with collection:', selectedCollection);
       setShowCollectionDialog(false);
       uploadFile(pendingFile, selectedCollection);
       setPendingFile(null);
     } else {
-      console.log('❌ Missing pendingFile or selectedCollection:', { pendingFile, selectedCollection });
+      //console.log('❌ Missing pendingFile or selectedCollection:', { pendingFile, selectedCollection });
     }
   };
 
@@ -562,8 +562,8 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
 
 
   const handleButtonClick = () => {
-    console.log('🖱️ Upload button clicked');
-    console.log('📂 File input ref:', fileInputRef.current);
+    //console.log('🖱️ Upload button clicked');
+    //console.log('📂 File input ref:', fileInputRef.current);
     
     // Clear the file input value to allow re-selecting the same file
     if (fileInputRef.current) {
@@ -571,7 +571,7 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
     }
     
     fileInputRef.current?.click();
-    console.log('📤 File input click triggered');
+    //console.log('📤 File input click triggered');
   };
 
 

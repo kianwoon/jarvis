@@ -48,7 +48,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
   const [input, setInput] = useState('');
   
   // Debug: Log messages received by component
-  console.log('MultiAgentChat received messages:', messages.length, messages);
+  //console.log('MultiAgentChat received messages:', messages.length, messages);
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
@@ -135,19 +135,19 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         for (const line of lines) {
           if (!line.trim()) continue;
 
-          console.log('Multi-agent stream line:', line);
+          //console.log('Multi-agent stream line:', line);
 
           try {
             const data = JSON.parse(line);
             await handleStreamEvent(data, assistantMessage);
           } catch (e) {
-            console.warn('Failed to parse multi-agent stream line:', line);
+            //console.warn('Failed to parse multi-agent stream line:', line);
           }
         }
       }
 
     } catch (error) {
-      console.error('Multi-agent error:', error);
+      //console.error('Multi-agent error:', error);
       
       // Mark user message as error
       setMessages(prev => 
@@ -185,7 +185,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
   const handleStreamEvent = async (data: any, assistantMessage: MultiAgentMessage) => {
     switch (data.type) {
       case 'agent_selection':
-        console.log('Agent selection:', data);
+        //console.log('Agent selection:', data);
         if (data.selected_agents) {
           // Create agent objects for the selected agents
           const newAgents: Agent[] = data.selected_agents.map((agentName: string) => ({
@@ -210,7 +210,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'agent_start':
-        console.log('Agent start:', data);
+        //console.log('Agent start:', data);
         setAgentStatuses(prev => ({
           ...prev,
           [data.agent]: {
@@ -229,7 +229,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'agent_thinking_start':
-        console.log('Agent thinking start:', data);
+        //console.log('Agent thinking start:', data);
         setAgentStatuses(prev => ({
           ...prev,
           [data.agent]: {
@@ -242,7 +242,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'agent_thinking_complete':
-        console.log('Agent thinking complete:', data);
+        //console.log('Agent thinking complete:', data);
         setAgentStatuses(prev => ({
           ...prev,
           [data.agent]: {
@@ -256,7 +256,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
 
       case 'agent_token':
         // Handle streaming tokens from agents - route to individual agent windows
-        console.log('Agent token:', data.agent, data.token);
+        //console.log('Agent token:', data.agent, data.token);
         setAgentStreamingContent(prev => ({
           ...prev,
           [data.agent]: (prev[data.agent] || '') + data.token
@@ -264,7 +264,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'agent_tool_start':
-        console.log('Agent tool start:', data);
+        //console.log('Agent tool start:', data);
         setAgentStatuses(prev => ({
           ...prev,
           [data.agent]: {
@@ -278,7 +278,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'agent_tool_complete':
-        console.log('Agent tool complete:', data);
+        //console.log('Agent tool complete:', data);
         setAgentStatuses(prev => ({
           ...prev,
           [data.agent]: {
@@ -290,7 +290,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'agent_complete':
-        console.log('Agent complete:', data);
+        //console.log('Agent complete:', data);
         setAgentStatuses(prev => ({
           ...prev,
           [data.agent]: {
@@ -320,12 +320,12 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'agent_communication':
-        console.log('Agent communication:', data);
+        //console.log('Agent communication:', data);
         // Handle inter-agent communication
         break;
 
       case 'synthesis_start':
-        console.log('Synthesis start:', data);
+        //console.log('Synthesis start:', data);
         
         // Add Synthesizer agent to active agents
         const synthesizerAgent: Agent = {
@@ -367,7 +367,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'synthesis_progress':
-        console.log('Synthesis progress:', data);
+        //console.log('Synthesis progress:', data);
         if (data.progress) {
           setCollaborationPhase(prev => ({
             ...prev,
@@ -377,7 +377,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'final_response':
-        console.log('Final response:', data);
+        //console.log('Final response:', data);
         
         // Update synthesizer status to complete
         setAgentStatuses(prev => ({
@@ -426,7 +426,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       case 'error':
-        console.error('Multi-agent error:', data);
+        //console.error('Multi-agent error:', data);
         setAgentStatuses(prev => {
           const newStatuses = { ...prev };
           if (data.agent) {
@@ -441,7 +441,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         break;
 
       default:
-        console.log('Unknown multi-agent event:', data.type, data);
+        //console.log('Unknown multi-agent event:', data.type, data);
     }
   };
 

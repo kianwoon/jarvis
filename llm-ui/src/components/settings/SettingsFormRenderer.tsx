@@ -202,13 +202,13 @@ const renderMCPConfiguration = (data: any, onChange: (field: string, value: any)
       const response = await fetch(endpoint);
       if (response.ok) {
         const result = await response.json();
-        console.log(`Loaded MCP ${type}:`, result.length, 'items');
+        //console.log(`Loaded MCP ${type}:`, result.length, 'items');
         onChange(type, Array.isArray(result) ? result : result.data || []);
       } else {
-        console.error(`Failed to load MCP ${type}: ${response.status} ${response.statusText}`);
+        //console.error(`Failed to load MCP ${type}: ${response.status} ${response.statusText}`);
       }
     } catch (error) {
-      console.error(`Error loading MCP ${type}:`, error);
+      //console.error(`Error loading MCP ${type}:`, error);
     }
   };
 

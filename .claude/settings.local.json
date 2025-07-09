@@ -74,7 +74,8 @@
       "WebFetch(domain:reactflow.dev)",
       "Bash(echo:*)",
       "Bash(git restore:*)",
-      "Bash(perl:*)"
+      "Bash(perl:*)",
+      "Bash(npm ls:*)"
     ],
     "deny": []
   },

@@ -64,7 +64,7 @@ class LargeGenerationConfig:
     estimated_seconds_per_chunk: int = 45  # For time estimation
     
     # Memory management
-    redis_conversation_ttl: int = 7 * 24 * 3600  # 7 days
+    redis_conversation_ttl: int = 3600  # 1 hour
     max_redis_messages: int = 50        # Messages to keep in Redis
     max_memory_messages: int = 20       # Messages to keep in memory
     conversation_history_display: int = 10  # Messages to show in history

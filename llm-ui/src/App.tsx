@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -129,10 +129,90 @@ function parseContentWithThinking(content: string): ContentPart[] {
   return parts;
 }
 
+// Ultra-fast input component with ZERO React re-renders during typing
+const ChatInput = React.memo(({ 
+  onSend, 
+  onKeyDown, 
+  loading, 
+  title, 
+  showFileUpload,
+  onUploadStart,
+  onUploadSuccess,
+  onUploadError,
+  inputRef
+}: {
+  onSend: () => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+  loading: boolean;
+  title: string;
+  showFileUpload: boolean;
+  onUploadStart: (file: File) => void;
+  onUploadSuccess: (result: any) => void;
+  onUploadError: (error: string) => void;
+  inputRef: React.RefObject<HTMLTextAreaElement>;
+}) => {
+  return (
+    <div style={{ padding: '16px', backgroundColor: 'inherit' }}>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <textarea
+          ref={inputRef}
+          style={{
+            width: '100%',
+            minHeight: '60px',
+            maxHeight: '200px',
+            padding: '12px',
+            borderRadius: '8px',
+            border: '1px solid #ccc',
+            fontFamily: 'inherit',
+            fontSize: '14px',
+            resize: 'vertical',
+            outline: 'none',
+            backgroundColor: 'inherit',
+            color: 'inherit',
+            lineHeight: '1.5'
+          }}
+          onKeyDown={onKeyDown}
+          placeholder={`Ask ${title}...`}
+          disabled={loading}
+        />
+        {showFileUpload && (
+          <div style={{ position: 'relative' }}>
+            <FileUploadComponent
+              onUploadStart={onUploadStart}
+              onUploadSuccess={onUploadSuccess}
+              onUploadError={onUploadError}
+              disabled={loading}
+              autoClassify={true}
+            />
+          </div>
+        )}
+        <button
+          onClick={onSend}
+          disabled={loading}
+          style={{
+            minWidth: '60px',
+            height: '40px',
+            borderRadius: '8px',
+            border: 'none',
+            backgroundColor: loading ? '#ccc' : '#1976d2',
+            color: 'white',
+            cursor: loading ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+        >
+          {loading ? '...' : '→'}
+        </button>
+      </div>
+    </div>
+  );
+}, () => true); // Never re-render this component
+
 // Component to render message content with markdown and thinking sections
-function MessageContent({ content }: { content: string }) {
+const MessageContent = React.memo(({ content }: { content: string }) => {
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
-  const parts = parseContentWithThinking(content);
+  const parts = useMemo(() => parseContentWithThinking(content), [content]);
   
   const toggleThinking = (index: number) => {
     const newExpanded = new Set(expandedThinking);
@@ -314,7 +394,7 @@ function MessageContent({ content }: { content: string }) {
       })}
     </Box>
   );
-}
+});
 
 // Chat Component
 function ChatInterface({ endpoint, title }: { endpoint: string, title: string }) {
@@ -323,11 +403,12 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
   const [loading, setLoading] = useState(false);
   const [thinking, setThinking] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [sessionId] = useState(() => `session-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`);
   const storageKey = `jarvis-chat-${title.toLowerCase().replace(/\s+/g, '-')}`;
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   };
 
   // Load conversation from localStorage on component mount
@@ -346,10 +427,18 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
     }
   }, [storageKey]);
 
-  // Save conversation to localStorage whenever messages change
+  // Save conversation to localStorage only when messages are complete (not during streaming)
   useEffect(() => {
     if (messages.length > 0) {
-      localStorage.setItem(storageKey, JSON.stringify(messages));
+      // Only save if the last message is complete (not streaming)
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.status === 'complete' || lastMessage.status === 'sent' || lastMessage.status === 'error') {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(messages));
+        } catch (e) {
+          console.error('Failed to save messages to localStorage:', e);
+        }
+      }
     }
   }, [messages, storageKey]);
 
@@ -358,19 +447,24 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
   }, [messages]);
 
   const sendMessage = async () => {
-    if (!input.trim() || loading) return;
+    const currentInput = inputRef.current?.value?.trim();
+    if (!currentInput || loading) return;
 
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
-      content: input,
+      content: currentInput,
       timestamp: new Date(),
       status: 'sending'
     };
 
     setMessages(prev => [...prev, userMessage]);
-    setInput('');
+    if (inputRef.current) {
+      inputRef.current.value = '';
+    }
     setLoading(true);
+    
+    // localStorage saving is now handled by useEffect hook
 
     try {
       const response = await fetch(endpoint, {
@@ -379,7 +473,7 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          question: input,
+          question: currentInput,
           thinking: thinking,
           conversation_id: sessionId
         })
@@ -425,11 +519,11 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
         for (const line of lines) {
           if (!line.trim()) continue;
           
-          console.log('Raw line received:', line);
+          //console.log('Raw line received:', line);
           
           // Handle direct tool execution responses differently
           if (line.includes('direct_tool_execution')) {
-            console.log('Direct tool execution:', line);
+            //console.log('Direct tool execution:', line);
             // Don't skip - try to parse this as it might contain the actual response
           }
           
@@ -437,10 +531,10 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
           let data: any = null;
           try {
             data = JSON.parse(line);
-            console.log('Parsed JSON data:', data);
+            //console.log('Parsed JSON data:', data);
           } catch (e) {
             // If it's not valid JSON, treat it as text content
-            console.log('Non-JSON line, treating as text:', line);
+            //console.log('Non-JSON line, treating as text:', line);
             assistantMessage.content += line;
             setMessages(prev => 
               prev.map(msg => 
@@ -470,17 +564,18 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
                   msg.id === assistantMessage.id ? assistantMessage : msg
                 )
               );
+              // localStorage saving is now handled by useEffect hook
               break;
             } else if (data.type === 'status') {
               // Handle status updates (tool usage, processing steps, etc.)
-              console.log('Status update:', data.message);
+              //console.log('Status update:', data.message);
             } else if (data.type === 'error') {
               throw new Error(data.message || 'Backend error');
             }
             // Handle JSON-RPC responses (MCP tools)
             else if (data.jsonrpc && data.result) {
               // This is a tool execution result - log it but don't display as chat
-              console.log('Tool execution result:', data.result);
+              //console.log('Tool execution result:', data.result);
               // Extract any relevant context for display
               if (data.result.documents && data.result.documents.length > 0) {
                 assistantMessage.context = data.result.documents.map((doc: any) => ({
@@ -492,14 +587,14 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
             }
             // Handle tool execution result objects (like datetime responses)
             else if (data.content && Array.isArray(data.content)) {
-              console.log('Processing tool response content:', data.content);
+              //console.log('Processing tool response content:', data.content);
               // Extract text from tool response content
               const textContent = data.content
                 .filter((item: any) => item.type === 'text')
                 .map((item: any) => item.text)
                 .join(' ');
               
-              console.log('Extracted text content:', textContent);
+              //console.log('Extracted text content:', textContent);
               
               if (textContent) {
                 // This looks like a datetime response, format it nicely
@@ -516,10 +611,10 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
                     timeZoneName: 'short'
                   });
                   assistantMessage.content = `The current date and time is: ${formatted}`;
-                  console.log('Formatted datetime response:', assistantMessage.content);
+                  //console.log('Formatted datetime response:', assistantMessage.content);
                 } else {
                   assistantMessage.content = textContent;
-                  console.log('Set text content:', assistantMessage.content);
+                  //console.log('Set text content:', assistantMessage.content);
                 }
                 assistantMessage.status = 'complete';
                 setMessages(prev => 
@@ -527,15 +622,16 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
                     msg.id === assistantMessage.id ? assistantMessage : msg
                   )
                 );
-                console.log('Updated messages with tool response');
+                // localStorage saving is now handled by useEffect hook
+                //console.log('Updated messages with tool response');
                 break;
               } else {
-                console.log('No text content found in tool response');
+                //console.log('No text content found in tool response');
               }
             }
             // Handle direct tool execution responses
             else if (typeof data === 'string' && data.includes('direct_tool_execution')) {
-              console.log('Direct tool execution:', data);
+              //console.log('Direct tool execution:', data);
               // Skip displaying raw tool execution strings
             }
             // Handle streaming tokens (from intelligent-chat)
@@ -549,13 +645,13 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
             } 
             // Handle final answer (from intelligent-chat)
             else if (data.answer) {
-              console.log('Processing answer field:', data.answer);
+              //console.log('Processing answer field:', data.answer);
               
               // Check if answer is a JSON string that needs parsing
               let answerContent = data.answer;
               try {
                 const parsedAnswer = JSON.parse(data.answer);
-                console.log('Parsed answer JSON:', parsedAnswer);
+                //console.log('Parsed answer JSON:', parsedAnswer);
                 
                 // Handle the parsed answer content (like tool responses)
                 if (parsedAnswer.content && Array.isArray(parsedAnswer.content)) {
@@ -564,7 +660,7 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
                     .map((item: any) => item.text)
                     .join(' ');
                   
-                  console.log('Extracted text from parsed answer:', textContent);
+                  //console.log('Extracted text from parsed answer:', textContent);
                   
                   if (textContent) {
                     // Format datetime responses
@@ -587,12 +683,14 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
                 }
               } catch (e) {
                 // If not JSON, use the answer as-is
-                console.log('Answer is not JSON, using as-is');
+                //console.log('Answer is not JSON, using as-is');
               }
               
               assistantMessage.content = answerContent;
               assistantMessage.source = data.source;
               assistantMessage.status = 'complete';
+              
+              // localStorage saving is now handled by useEffect hook
               
               // Handle documents from intelligent-chat response
               if (data.documents && data.documents.length > 0) {
@@ -617,11 +715,11 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
                 case 'tools_start':
                 case 'rag_start':
                 case 'synthesis_start':
-                  console.log(`${data.event}:`, data.data);
+                  //console.log(`${data.event}:`, data.data);
                   break;
                 case 'tool_result':
                 case 'rag_result':
-                  console.log(`${data.event}:`, data.data);
+                  //console.log(`${data.event}:`, data.data);
                   // Extract context from tool/rag results
                   if (data.data && data.data.documents) {
                     assistantMessage.context = data.data.documents.map((doc: any) => ({
@@ -632,15 +730,15 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
                   }
                   break;
                 default:
-                  console.log('Unknown event:', data.event, data.data);
+                  //console.log('Unknown event:', data.event, data.data);
               }
             }
             // Catch-all for unhandled response formats
             else {
-              console.log('Unhandled response format:', data);
+              //console.log('Unhandled response format:', data);
               // If we don't know what this is but it might be a complete response, use it
               if (data && typeof data === 'object' && !data.type && !data.event && !data.jsonrpc) {
-                console.log('Treating as unknown complete response');
+                //console.log('Treating as unknown complete response');
                 assistantMessage.content = JSON.stringify(data, null, 2);
                 assistantMessage.status = 'complete';
                 setMessages(prev => 
@@ -648,6 +746,7 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
                     msg.id === assistantMessage.id ? assistantMessage : msg
                   )
                 );
+                // localStorage saving is now handled by useEffect hook
                 break;
               }
             }
@@ -686,9 +785,29 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
     }
   };
 
-  const clearChat = () => {
+  const clearChat = async () => {
+    // Clear frontend state and localStorage
     setMessages([]);
     localStorage.removeItem(storageKey);
+    
+    // Clear backend conversation history
+    try {
+      // Clear conversation from Redis using cache endpoint
+      const response = await fetch(`/api/v1/automation/cache/clear/conversation:${sessionId}`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) {
+        //console.warn('Failed to clear backend conversation history:', response.statusText);
+      }
+    } catch (error) {
+      //console.warn('Error clearing backend conversation history:', error);
+    }
+    
+    // Clear input field if it exists
+    if (inputRef.current) {
+      inputRef.current.value = '';
+    }
   };
 
   // File upload handlers
@@ -719,6 +838,7 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
       source: result.collection
     };
     setMessages(prev => [...prev, successMessage]);
+    // localStorage saving is now handled by useEffect hook
   };
 
   const handleFileUploadError = (error: string) => {
@@ -943,41 +1063,17 @@ function ChatInterface({ endpoint, title }: { endpoint: string, title: string })
       </Box>
 
       {/* Input Area */}
-      <Box sx={{ p: 2, backgroundColor: 'background.paper' }}>
-        <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
-          <TextField
-            fullWidth
-            multiline
-            minRows={2}
-            maxRows={4}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={`Ask ${title}...`}
-            disabled={loading}
-            variant="outlined"
-          />
-          {title === 'Standard Chat' && (
-            <Box sx={{ position: 'relative' }}>
-              <FileUploadComponent
-                onUploadStart={handleFileUploadStart}
-                onUploadSuccess={handleFileUploadSuccess}
-                onUploadError={handleFileUploadError}
-                disabled={loading}
-                autoClassify={true}
-              />
-            </Box>
-          )}
-          <Button
-            variant="contained"
-            onClick={sendMessage}
-            disabled={loading || !input.trim()}
-            sx={{ minWidth: 60, height: 40 }}
-          >
-            {loading ? <CircularProgress size={24} color="inherit" /> : <SendIcon />}
-          </Button>
-        </Box>
-      </Box>
+      <ChatInput
+        onSend={sendMessage}
+        onKeyDown={handleKeyDown}
+        loading={loading}
+        title={title}
+        showFileUpload={title === 'Standard Chat'}
+        onUploadStart={handleFileUploadStart}
+        onUploadSuccess={handleFileUploadSuccess}
+        onUploadError={handleFileUploadError}
+        inputRef={inputRef}
+      />
     </Box>
   );
 }

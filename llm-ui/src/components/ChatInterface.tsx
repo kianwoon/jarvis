@@ -33,16 +33,48 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   endpoint = '/api/v1/langchain/rag',
   title = 'Jarvis Chat'
 }) => {
+  console.log('🚀 ChatInterface component loaded with title:', title);
+  
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [conversationId] = useState(() => `chat-${Date.now()}`);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const storageKey = `jarvis-chat-${title.toLowerCase().replace(/\s+/g, '-')}`;
+
+  console.log('📝 Storage key generated:', storageKey);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
+
+  // Load conversation from localStorage on component mount
+  useEffect(() => {
+    console.log('🔍 Loading conversation from localStorage with key:', storageKey);
+    const savedMessages = localStorage.getItem(storageKey);
+    console.log('📦 Saved messages found:', savedMessages ? 'Yes' : 'No');
+    if (savedMessages) {
+      try {
+        const parsed = JSON.parse(savedMessages);
+        console.log('✅ Parsed messages:', parsed.length, 'messages');
+        setMessages(parsed.map((msg: any) => ({
+          ...msg,
+          timestamp: new Date(msg.timestamp)
+        })));
+      } catch (e) {
+        console.warn('Failed to load saved conversation:', e);
+      }
+    }
+  }, [storageKey]);
+
+  // Save conversation to localStorage when messages change
+  useEffect(() => {
+    if (messages.length > 0) {
+      console.log('💾 Saving', messages.length, 'messages to localStorage with key:', storageKey);
+      localStorage.setItem(storageKey, JSON.stringify(messages));
+    }
+  }, [messages, storageKey]);
 
   useEffect(() => {
     scrollToBottom();
@@ -51,10 +83,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
 
+    const currentInput = input.trim();
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
-      content: input,
+      content: currentInput,
       timestamp: new Date()
     };
 
@@ -63,17 +96,21 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setLoading(true);
 
     try {
+      const requestBody = {
+        question: currentInput,
+        thinking,
+        conversation_id: conversationId,
+        use_langgraph: false
+      };
+      
+      console.log('🚀 SENDING REQUEST:', requestBody);
+      
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          question: input,
-          thinking,
-          conversation_id: conversationId,
-          use_langgraph: false
-        })
+        body: JSON.stringify(requestBody)
       });
 
       if (!response.ok) {
@@ -143,6 +180,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const clearChat = () => {
     setMessages([]);
+    localStorage.removeItem(storageKey);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {

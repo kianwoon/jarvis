@@ -4034,6 +4034,51 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
                 logger.info(f"[INTERNAL] Calling internal service: {tool_name}")
                 return call_internal_service(tool_name, clean_parameters, tool_info)
             
+            # Check for APINode workflow tools
+            if tool_info.get('workflow_context') and tool_name.startswith('workflow_api_'):
+                logger.info(f"[APINODE] Calling APINode workflow tool: {tool_name}")
+                from app.automation.integrations.apinode_mcp_bridge import apinode_mcp_bridge
+                import asyncio
+                
+                # Get workflow context
+                workflow_context = tool_info.get('workflow_context', {})
+                workflow_id = workflow_context.get('workflow_id', 'unknown')
+                
+                # Create a dummy execution_id for this tool call
+                import time
+                execution_id = f"tool_call_{int(time.time() * 1000)}"
+                
+                try:
+                    # Execute APINode tool
+                    result = asyncio.run(apinode_mcp_bridge.execute_apinode_tool(
+                        tool_name=tool_name,
+                        parameters=clean_parameters,
+                        workflow_id=workflow_id,
+                        execution_id=execution_id
+                    ))
+                    
+                    # End tool span with success
+                    if tool_span and tracer:
+                        try:
+                            tracer.end_span_with_result(tool_span, result, True)
+                        except Exception as e:
+                            logger.warning(f"Failed to end tool span for {tool_name}: {e}")
+                    
+                    return result
+                    
+                except Exception as e:
+                    logger.error(f"[APINODE] APINode tool execution failed: {str(e)}")
+                    error_result = {"error": f"APINode tool execution failed: {str(e)}"}
+                    
+                    # End tool span with error
+                    if tool_span and tracer:
+                        try:
+                            tracer.end_span_with_result(tool_span, error_result, False, str(e))
+                        except Exception as span_e:
+                            logger.warning(f"Failed to end tool span for {tool_name}: {span_e}")
+                    
+                    return error_result
+            
             logger.info(f"[UNIFIED] Calling {tool_name} via unified MCP service")
             
             # Import unified service

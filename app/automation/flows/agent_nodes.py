@@ -1243,6 +1243,237 @@ def get_aggregator_node_schema() -> Dict[str, Any]:
         }
     }
 
+def get_api_node_schema() -> Dict[str, Any]:
+    """Get schema for API Node - Universal REST API adapter"""
+    return {
+        "type": "APINode",
+        "name": "APINode",
+        "description": "Universal REST API adapter that bridges LLM reasoning with any standard REST API",
+        "category": "Integration",
+        "icon": "🌐",
+        "color": "#10B981",
+        "inputs": [
+            {
+                "name": "parameters",
+                "type": "object",
+                "label": "API Parameters",
+                "description": "Parameters from LLM or previous nodes to pass to the API"
+            },
+            {
+                "name": "context",
+                "type": "any",
+                "label": "Context",
+                "description": "Additional context data for the API call"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "response",
+                "type": "object",
+                "label": "API Response",
+                "description": "Clean JSON response from the API"
+            },
+            {
+                "name": "status",
+                "type": "number",
+                "label": "Status Code",
+                "description": "HTTP status code of the response"
+            },
+            {
+                "name": "headers",
+                "type": "object",
+                "label": "Response Headers",
+                "description": "HTTP response headers"
+            },
+            {
+                "name": "metadata",
+                "type": "object",
+                "label": "Request Metadata",
+                "description": "Metadata about the API request execution"
+            }
+        ],
+        "properties": {
+            "label": {
+                "type": "string",
+                "label": "API Name",
+                "description": "Descriptive name for this API endpoint",
+                "required": True,
+                "placeholder": "Weather API",
+                "default": "API Adapter"
+            },
+            "base_url": {
+                "type": "string",
+                "label": "Base URL",
+                "description": "Root URL of the API service",
+                "required": True,
+                "placeholder": "https://api.weather.com"
+            },
+            "endpoint_path": {
+                "type": "string",
+                "label": "Endpoint Path",
+                "description": "Specific API endpoint path",
+                "required": True,
+                "placeholder": "/v1/current"
+            },
+            "http_method": {
+                "type": "select",
+                "label": "HTTP Method",
+                "description": "HTTP method for the API call",
+                "required": True,
+                "options": [
+                    {"value": "GET", "label": "GET"},
+                    {"value": "POST", "label": "POST"},
+                    {"value": "PUT", "label": "PUT"},
+                    {"value": "DELETE", "label": "DELETE"},
+                    {"value": "PATCH", "label": "PATCH"}
+                ],
+                "default": "GET"
+            },
+            "authentication_type": {
+                "type": "select",
+                "label": "Authentication Type",
+                "description": "Authentication method for the API",
+                "required": True,
+                "options": [
+                    {"value": "none", "label": "No Authentication"},
+                    {"value": "api_key", "label": "API Key (Header)"},
+                    {"value": "bearer_token", "label": "Bearer Token"},
+                    {"value": "basic_auth", "label": "Basic Authentication"},
+                    {"value": "custom_header", "label": "Custom Header"}
+                ],
+                "default": "none"
+            },
+            "auth_header_name": {
+                "type": "string",
+                "label": "Auth Header Name",
+                "description": "Name of the authentication header",
+                "required": False,
+                "default": "X-API-Key",
+                "show_when": {"authentication_type": ["api_key", "custom_header"]}
+            },
+            "auth_token": {
+                "type": "string",
+                "label": "API Key/Token",
+                "description": "Authentication token or API key",
+                "required": False,
+                "show_when": {"authentication_type": ["api_key", "bearer_token", "custom_header"]}
+            },
+            "basic_auth_username": {
+                "type": "string",
+                "label": "Username",
+                "description": "Username for basic authentication",
+                "required": False,
+                "show_when": {"authentication_type": "basic_auth"}
+            },
+            "basic_auth_password": {
+                "type": "string",
+                "label": "Password",
+                "description": "Password for basic authentication",
+                "required": False,
+                "show_when": {"authentication_type": "basic_auth"}
+            },
+            "request_schema": {
+                "type": "json",
+                "label": "Request Schema",
+                "description": "JSON schema defining the parameters this API accepts",
+                "required": True,
+                "default": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query parameter"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            "response_schema": {
+                "type": "json",
+                "label": "Response Schema",
+                "description": "JSON schema defining the expected API response structure",
+                "required": False,
+                "default": {
+                    "type": "object",
+                    "properties": {
+                        "data": {
+                            "type": "object",
+                            "description": "Response data"
+                        }
+                    }
+                }
+            },
+            "timeout": {
+                "type": "number",
+                "label": "Timeout (seconds)",
+                "description": "Request timeout in seconds",
+                "required": False,
+                "default": 30,
+                "min": 1,
+                "max": 300
+            },
+            "retry_count": {
+                "type": "number",
+                "label": "Retry Count",
+                "description": "Number of retry attempts on failure",
+                "required": False,
+                "default": 3,
+                "min": 0,
+                "max": 10
+            },
+            "rate_limit": {
+                "type": "number",
+                "label": "Rate Limit (requests/minute)",
+                "description": "Maximum requests per minute (0 = unlimited)",
+                "required": False,
+                "default": 60,
+                "min": 0,
+                "max": 1000
+            },
+            "custom_headers": {
+                "type": "json",
+                "label": "Custom Headers",
+                "description": "Additional HTTP headers to include in requests",
+                "required": False,
+                "default": {}
+            },
+            "response_transformation": {
+                "type": "textarea",
+                "label": "Response Transformation",
+                "description": "JavaScript code to transform the API response (optional)",
+                "required": False,
+                "placeholder": "// Transform the response\n// return response.data.items;"
+            },
+            "error_handling": {
+                "type": "select",
+                "label": "Error Handling",
+                "description": "How to handle API errors",
+                "required": True,
+                "options": [
+                    {"value": "throw", "label": "Throw Error"},
+                    {"value": "return_null", "label": "Return Null"},
+                    {"value": "return_error", "label": "Return Error Object"},
+                    {"value": "retry", "label": "Retry with Backoff"}
+                ],
+                "default": "throw"
+            },
+            "enable_mcp_tool": {
+                "type": "boolean",
+                "label": "Enable as MCP Tool",
+                "description": "Make this API available as a tool for connected Agent nodes",
+                "default": True
+            },
+            "tool_description": {
+                "type": "textarea",
+                "label": "Tool Description",
+                "description": "Description of this API tool for LLM agents",
+                "required": False,
+                "placeholder": "This tool allows you to search for current weather information by location.",
+                "show_when": {"enable_mcp_tool": True}
+            }
+        }
+    }
+
 def get_all_node_schemas() -> List[Dict[str, Any]]:
     """Get all available node schemas for the visual editor"""
     return [
@@ -1256,7 +1487,8 @@ def get_all_node_schemas() -> List[Dict[str, Any]]:
         get_state_node_schema(),
         get_router_node_schema(),
         get_transform_node_schema(),
-        get_cache_node_schema()
+        get_cache_node_schema(),
+        get_api_node_schema()
     ]
 
 def get_node_categories() -> List[Dict[str, Any]]:

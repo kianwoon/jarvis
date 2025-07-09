@@ -233,6 +233,58 @@ const StateNode: React.FC<StateNodeProps> = ({ data, id, updateNodeData, showIO 
           />
         </Box>
 
+        {/* Default Value - Main Interface */}
+        {operation !== 'delete' && (
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="body2" gutterBottom fontWeight={500}>
+              Default Value (if key doesn't exist):
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+              <TextField
+                size="small"
+                placeholder="Enter JSON or simple value"
+                fullWidth
+                multiline
+                rows={3}
+                value={typeof defaultValue === 'string' ? defaultValue : JSON.stringify(defaultValue, null, 2)}
+                onChange={(e) => {
+                  try {
+                    // Try to parse as JSON first
+                    const parsed = JSON.parse(e.target.value);
+                    setDefaultValue(parsed);
+                  } catch {
+                    // If not valid JSON, treat as string
+                    setDefaultValue(e.target.value);
+                  }
+                }}
+                helperText="Enter JSON object/array or simple text value"
+              />
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => setDefaultValue({})}
+                sx={{ minWidth: 'auto', px: 1 }}
+              >
+                Clear
+              </Button>
+            </Box>
+            <Paper variant="outlined" sx={{ p: 1, maxHeight: 120, overflow: 'auto' }}>
+              <ReactJson
+                src={defaultValue}
+                theme={localStorage.getItem('theme') === 'dark' ? 'monokai' : 'rjv-default'}
+                onEdit={handleDefaultValueEdit}
+                onAdd={handleDefaultValueEdit}
+                onDelete={handleDefaultValueEdit}
+                displayDataTypes={false}
+                displayObjectSize={false}
+                enableClipboard={true}
+                collapsed={1}
+                style={{ fontSize: '0.75rem' }}
+              />
+            </Paper>
+          </Box>
+        )}
+
         {/* Configuration */}
         <Accordion 
           expanded={configExpanded} 
@@ -295,27 +347,6 @@ const StateNode: React.FC<StateNodeProps> = ({ data, id, updateNodeData, showIO 
                 fullWidth
               />
 
-              {/* Default Value */}
-              {operation !== 'delete' && (
-                <Box>
-                  <Typography variant="body2" gutterBottom>
-                    Default Value (if key doesn't exist):
-                  </Typography>
-                  <Paper variant="outlined" sx={{ p: 1, maxHeight: 200, overflow: 'auto' }}>
-                    <ReactJson
-                      src={defaultValue}
-                      theme={localStorage.getItem('theme') === 'dark' ? 'monokai' : 'rjv-default'}
-                      onEdit={handleDefaultValueEdit}
-                      onAdd={handleDefaultValueEdit}
-                      onDelete={handleDefaultValueEdit}
-                      displayDataTypes={false}
-                      displayObjectSize={false}
-                      enableClipboard={true}
-                      style={{ fontSize: '0.85rem' }}
-                    />
-                  </Paper>
-                </Box>
-              )}
             </Box>
           </AccordionDetails>
         </Accordion>

@@ -195,13 +195,13 @@ function SettingsApp() {
         if (serversResponse.ok) {
           servers = await serversResponse.json();
         } else {
-          console.error(`Failed to load MCP servers: ${serversResponse.status} ${serversResponse.statusText}`);
+          //console.error(`Failed to load MCP servers: ${serversResponse.status} ${serversResponse.statusText}`);
         }
         
         if (toolsResponse.ok) {
           tools = await toolsResponse.json();
         } else {
-          console.error(`Failed to load MCP tools: ${toolsResponse.status} ${toolsResponse.statusText}`);
+          //console.error(`Failed to load MCP tools: ${toolsResponse.status} ${toolsResponse.statusText}`);
         }
         
         data = {

@@ -20,7 +20,13 @@ import {
   FormLabel,
   FormGroup,
   Paper,
-  Button
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Tab,
+  Tabs
 } from '@mui/material';
 import { 
   Link as TriggerIcon,
@@ -30,7 +36,10 @@ import {
   ContentCopy as CopyIcon,
   Refresh as RefreshIcon,
   Info as InfoIcon,
-  Code as CodeIcon
+  Code as CodeIcon,
+  Help as HelpIcon,
+  PlayArrow as PlayIcon,
+  DataObject as DataIcon
 } from '@mui/icons-material';
 import PortalSelect from './PortalSelect';
 
@@ -65,6 +74,8 @@ const TriggerNode: React.FC<TriggerNodeProps> = ({ data, id, updateNodeData, sho
   const [httpExpanded, setHttpExpanded] = useState(false);
   const [authExpanded, setAuthExpanded] = useState(false);
   const [schemaExpanded, setSchemaExpanded] = useState(false);
+  const [helpModalOpen, setHelpModalOpen] = useState(false);
+  const [helpTabValue, setHelpTabValue] = useState(0);
   
   const [label, setLabel] = useState(data.label || 'External Trigger');
   const [triggerName, setTriggerName] = useState(data.trigger_name || '');
@@ -117,6 +128,77 @@ const TriggerNode: React.FC<TriggerNodeProps> = ({ data, id, updateNodeData, sho
     }
   };
 
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  const getEndpointUrl = () => {
+    // Use backend server URL, not frontend
+    const backendUrl = window.location.origin.replace(':5173', ':8000');
+    return `${backendUrl}/api/v1/automation/external/trigger/${triggerName || 'your-trigger-name'}`;
+  };
+
+  const getCurlExample = () => {
+    const url = getEndpointUrl();
+    const authHeader = authenticationType !== 'none' ? `\n  -H "${authHeaderName || 'X-API-Key'}: ${authToken || 'your-token'}" \\` : '';
+    
+    return `curl -X POST \\
+  ${url} \\${authHeader}
+  -H "Content-Type: application/json" \\
+  -d '{
+    "message": "Process this data",
+    "data": {
+      "user_id": "12345",
+      "action": "process_order"
+    }
+  }'`;
+  };
+
+  const getJavaScriptExample = () => {
+    const url = getEndpointUrl();
+    const authHeaders = authenticationType !== 'none' ? `\n    '${authHeaderName || 'X-API-Key'}': '${authToken || 'your-token'}',` : '';
+    
+    return `const response = await fetch('${url}', {
+  method: 'POST',
+  headers: {${authHeaders}
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    message: 'Process this data',
+    data: {
+      user_id: '12345',
+      action: 'process_order'
+    }
+  })
+});
+
+const result = await response.json();
+console.log(result);`;
+  };
+
+  const getPythonExample = () => {
+    const url = getEndpointUrl();
+    const authHeaders = authenticationType !== 'none' ? `\n    '${authHeaderName || 'X-API-Key'}': '${authToken || 'your-token'}',` : '';
+    
+    return `import requests
+
+url = '${url}'
+headers = {${authHeaders}
+    'Content-Type': 'application/json'
+}
+data = {
+    'message': 'Process this data',
+    'data': {
+        'user_id': '12345',
+        'action': 'process_order'
+    }
+}
+
+response = requests.post(url, headers=headers, json=data)
+result = response.json()
+print(result)`;
+  };
+
   const hasExecutionData = data.executionData && data.executionData.trigger_url;
 
   const methodColors: Record<string, string> = {
@@ -158,8 +240,10 @@ const TriggerNode: React.FC<TriggerNodeProps> = ({ data, id, updateNodeData, sho
               }
             }}
           />
-          <Tooltip title="External API endpoint to trigger this workflow">
-            <InfoIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+          <Tooltip title="API Documentation & Examples">
+            <IconButton size="small" onClick={() => setHelpModalOpen(true)}>
+              <HelpIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+            </IconButton>
           </Tooltip>
         </Box>
 
@@ -389,23 +473,18 @@ const TriggerNode: React.FC<TriggerNodeProps> = ({ data, id, updateNodeData, sho
           </AccordionDetails>
         </Accordion>
 
-        {/* Request/Response Schema - Simplified for now */}
-        <Accordion 
-          expanded={schemaExpanded} 
-          onChange={(_, isExpanded) => setSchemaExpanded(isExpanded)}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box display="flex" alignItems="center" gap={1} width="100%">
-              <CodeIcon sx={{ fontSize: 20 }} />
-              <Typography variant="body2" fontWeight={500}>Request Schema</Typography>
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Typography variant="caption" color="text.secondary">
-              Configure request body and query parameter schemas for validation
-            </Typography>
-          </AccordionDetails>
-        </Accordion>
+
+        {/* API Help Button */}
+        <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center' }}>
+          <Button
+            variant="outlined"
+            startIcon={<HelpIcon />}
+            onClick={() => setHelpModalOpen(true)}
+            size="small"
+          >
+            API Documentation & Examples
+          </Button>
+        </Box>
 
         {/* Output Info */}
         {showIO && (
@@ -434,6 +513,150 @@ const TriggerNode: React.FC<TriggerNodeProps> = ({ data, id, updateNodeData, sho
           bottom: -6
         }} 
       />
+
+      {/* Help Modal */}
+      <Dialog
+        open={helpModalOpen}
+        onClose={() => setHelpModalOpen(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: { maxHeight: '80vh' }
+        }}
+      >
+        <DialogTitle>
+          <Box display="flex" alignItems="center" gap={1}>
+            <TriggerIcon />
+            API Documentation & Examples
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Tabs value={helpTabValue} onChange={(_, newValue) => setHelpTabValue(newValue)}>
+            <Tab label="Overview" />
+            <Tab label="cURL" />
+            <Tab label="JavaScript" />
+            <Tab label="Python" />
+            <Tab label="Outputs" />
+          </Tabs>
+
+          {/* Overview Tab */}
+          {helpTabValue === 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="h6" gutterBottom>How to Use This Trigger</Typography>
+              <Typography variant="body2" color="text.secondary" paragraph>
+                This node creates an external API endpoint that can be called by other systems to trigger workflow execution.
+              </Typography>
+              <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+                <Typography variant="subtitle2" gutterBottom>Endpoint Configuration:</Typography>
+                <Typography variant="body2"><strong>URL:</strong> <code>{getEndpointUrl()}</code></Typography>
+                <Typography variant="body2"><strong>Methods:</strong> {httpMethods.join(', ')}</Typography>
+                <Typography variant="body2"><strong>Auth:</strong> {authenticationType === 'none' ? 'None' : authenticationType.replace('_', ' ')}</Typography>
+              </Paper>
+            </Box>
+          )}
+
+          {/* cURL Tab */}
+          {helpTabValue === 1 && (
+            <Box sx={{ mt: 2 }}>
+              <Box display="flex" alignItems="center" justifyContent="space-between" mb={1}>
+                <Typography variant="h6">cURL Example</Typography>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<CopyIcon />}
+                  onClick={() => copyToClipboard(getCurlExample())}
+                >
+                  Copy
+                </Button>
+              </Box>
+              <Paper variant="outlined" sx={{ p: 2, bgcolor: theme => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.50' }}>
+                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: theme => theme.palette.mode === 'dark' ? 'grey.100' : 'grey.800' }}>
+                  {getCurlExample()}
+                </Typography>
+              </Paper>
+            </Box>
+          )}
+
+          {/* JavaScript Tab */}
+          {helpTabValue === 2 && (
+            <Box sx={{ mt: 2 }}>
+              <Box display="flex" alignItems="center" justifyContent="space-between" mb={1}>
+                <Typography variant="h6">JavaScript Example</Typography>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<CopyIcon />}
+                  onClick={() => copyToClipboard(getJavaScriptExample())}
+                >
+                  Copy
+                </Button>
+              </Box>
+              <Paper variant="outlined" sx={{ p: 2, bgcolor: theme => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.50' }}>
+                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: theme => theme.palette.mode === 'dark' ? 'grey.100' : 'grey.800' }}>
+                  {getJavaScriptExample()}
+                </Typography>
+              </Paper>
+            </Box>
+          )}
+
+          {/* Python Tab */}
+          {helpTabValue === 3 && (
+            <Box sx={{ mt: 2 }}>
+              <Box display="flex" alignItems="center" justifyContent="space-between" mb={1}>
+                <Typography variant="h6">Python Example</Typography>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<CopyIcon />}
+                  onClick={() => copyToClipboard(getPythonExample())}
+                >
+                  Copy
+                </Button>
+              </Box>
+              <Paper variant="outlined" sx={{ p: 2, bgcolor: theme => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.50' }}>
+                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: theme => theme.palette.mode === 'dark' ? 'grey.100' : 'grey.800' }}>
+                  {getPythonExample()}
+                </Typography>
+              </Paper>
+            </Box>
+          )}
+
+          {/* Outputs Tab */}
+          {helpTabValue === 4 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="h6" gutterBottom>Available Output Data</Typography>
+              <Typography variant="body2" color="text.secondary" paragraph>
+                This node provides the following outputs that can be used by connected nodes:
+              </Typography>
+              <Box display="flex" flexDirection="column" gap={2}>
+                <Paper variant="outlined" sx={{ p: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom color="primary">trigger_data</Typography>
+                  <Typography variant="body2" color="text.secondary">Complete request body data sent to the trigger endpoint</Typography>
+                </Paper>
+                <Paper variant="outlined" sx={{ p: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom color="primary">query_params</Typography>
+                  <Typography variant="body2" color="text.secondary">URL query parameters (e.g., ?user_id=123&action=process)</Typography>
+                </Paper>
+                <Paper variant="outlined" sx={{ p: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom color="primary">headers</Typography>
+                  <Typography variant="body2" color="text.secondary">HTTP request headers (excluding authentication headers)</Typography>
+                </Paper>
+                <Paper variant="outlined" sx={{ p: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom color="primary">message</Typography>
+                  <Typography variant="body2" color="text.secondary">Extracted user message/instruction from request data</Typography>
+                </Paper>
+                <Paper variant="outlined" sx={{ p: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom color="primary">formatted_query</Typography>
+                  <Typography variant="body2" color="text.secondary">Agent-ready query constructed from request data</Typography>
+                </Paper>
+              </Box>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setHelpModalOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
     </Card>
   );
 };

@@ -83,21 +83,21 @@ function MultiAgentApp() {
   // Save conversations to localStorage
   useEffect(() => {
     if (messages.length > 0) {
-      console.log('Saving messages to localStorage:', messages.length, 'messages');
+      //console.log('Saving messages to localStorage:', messages.length, 'messages');
       localStorage.setItem(storageKey, JSON.stringify(messages));
-      console.log('Messages saved to key:', storageKey);
+      //console.log('Messages saved to key:', storageKey);
     }
   }, [messages, storageKey]);
 
 
   const loadConversationHistory = () => {
     try {
-      console.log('Loading conversation history with key:', storageKey);
+      //console.log('Loading conversation history with key:', storageKey);
       const savedMessages = localStorage.getItem(storageKey);
-      console.log('Saved messages from localStorage:', savedMessages);
+      //console.log('Saved messages from localStorage:', savedMessages);
       if (savedMessages) {
         const parsed = JSON.parse(savedMessages);
-        console.log('Parsed messages:', parsed);
+        //console.log('Parsed messages:', parsed);
         const restoredMessages = parsed.map((msg: any) => ({
           ...msg,
           timestamp: new Date(msg.timestamp)
@@ -121,7 +121,7 @@ function MultiAgentApp() {
               config: {}
             }));
           
-          console.log('Restoring active agents:', uniqueAgents);
+          //console.log('Restoring active agents:', uniqueAgents);
           setActiveAgents(uniqueAgents);
           
           // Set collaboration phase to complete
@@ -134,12 +134,12 @@ function MultiAgentApp() {
           });
         }
         
-        console.log('Messages and agents loaded successfully');
+        //console.log('Messages and agents loaded successfully');
       } else {
-        console.log('No saved messages found');
+        //console.log('No saved messages found');
       }
     } catch (error) {
-      console.error('Error loading conversation history:', error);
+      //console.error('Error loading conversation history:', error);
     }
   };
 

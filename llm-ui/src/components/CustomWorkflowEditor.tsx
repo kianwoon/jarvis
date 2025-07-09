@@ -122,6 +122,7 @@ import TransformNode from './workflow-nodes/TransformNode';
 import CacheNode from './workflow-nodes/CacheNode';
 import TriggerNode from './workflow-nodes/TriggerNode';
 import AggregatorNode from './workflow-nodes/AggregatorNode';
+import APINode from './workflow-nodes/APINode';
 
 // Custom Edge Components
 import DirectionalEdge from './workflow-edges/DirectionalEdge';
@@ -474,6 +475,8 @@ const createNodeTypes = (updateNodeData: any, showIOGetter: () => boolean, handl
   cachenode: (props: any) => <CacheNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
   triggernode: (props: any) => <TriggerNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
   aggregatornode: (props: any) => <AggregatorNode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
+  apinode: (props: any) => <APINode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
+  api: (props: any) => <APINode {...props} updateNodeData={updateNodeData} showIO={props.data.showIO ?? showIOGetter()} />,
 });
 
 // Function to migrate legacy handle IDs to the correct directional handle IDs
@@ -2618,6 +2621,37 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           };
           return transformedTriggerNode;
           
+        case 'APINode':
+          // Extract data from nested node structure
+          const apiNodeData = nodeData.node || nodeData;
+          return {
+            ...node,
+            type: 'apinode',
+            data: {
+              label: apiNodeData.label || nodeData.label || 'APINode',
+              base_url: apiNodeData.base_url || '',
+              endpoint_path: apiNodeData.endpoint_path || '',
+              http_method: apiNodeData.http_method || 'GET',
+              authentication_type: apiNodeData.authentication_type || 'none',
+              auth_header_name: apiNodeData.auth_header_name || 'X-API-Key',
+              auth_token: apiNodeData.auth_token || '',
+              basic_auth_username: apiNodeData.basic_auth_username || '',
+              basic_auth_password: apiNodeData.basic_auth_password || '',
+              request_schema: apiNodeData.request_schema || {},
+              response_schema: apiNodeData.response_schema || {},
+              timeout: apiNodeData.timeout || 30,
+              retry_count: apiNodeData.retry_count || 3,
+              rate_limit: apiNodeData.rate_limit || 60,
+              custom_headers: apiNodeData.custom_headers || {},
+              response_transformation: apiNodeData.response_transformation || '',
+              error_handling: apiNodeData.error_handling || 'throw',
+              enable_mcp_tool: apiNodeData.enable_mcp_tool !== false,
+              tool_description: apiNodeData.tool_description || '',
+              // Preserve execution data if present
+              executionData: nodeData.executionData
+            }
+          };
+          
         default:
           // Keep original format for unknown types
           return node;
@@ -3145,6 +3179,41 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             }
           };
           return backendTriggerNode;
+
+        case 'apinode':
+        case 'api':
+          // Transform APINode to backend format (match the nested structure like other nodes)
+          const backendApiNode = {
+            id: node.id,
+            type: 'APINode',
+            position: node.position,
+            data: {
+              type: 'APINode',
+              label: node.data.label || 'APINode',
+              node: {
+                label: node.data.label || 'APINode',
+                base_url: node.data.base_url || '',
+                endpoint_path: node.data.endpoint_path || '',
+                http_method: node.data.http_method || 'GET',
+                authentication_type: node.data.authentication_type || 'none',
+                auth_header_name: node.data.auth_header_name || 'X-API-Key',
+                auth_token: node.data.auth_token || '',
+                basic_auth_username: node.data.basic_auth_username || '',
+                basic_auth_password: node.data.basic_auth_password || '',
+                request_schema: node.data.request_schema || {},
+                response_schema: node.data.response_schema || {},
+                timeout: node.data.timeout || 30,
+                retry_count: node.data.retry_count || 3,
+                rate_limit: node.data.rate_limit || 60,
+                custom_headers: node.data.custom_headers || {},
+                response_transformation: node.data.response_transformation || '',
+                error_handling: node.data.error_handling || 'throw',
+                enable_mcp_tool: node.data.enable_mcp_tool !== false,
+                tool_description: node.data.tool_description || ''
+              }
+            }
+          };
+          return backendApiNode;
 
         default:
           // Keep original format for unknown types

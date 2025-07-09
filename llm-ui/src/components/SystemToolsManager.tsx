@@ -113,7 +113,7 @@ const SystemToolsManager: React.FC<SystemToolsManagerProps> = ({ onRefresh }) =>
       
       setSystemTools(systemToolsData);
     } catch (error) {
-      console.error('Failed to fetch system tools:', error);
+      //console.error('Failed to fetch system tools:', error);
       showSnackbar('Failed to load system tools', 'error');
     } finally {
       setLoading(false);
@@ -136,7 +136,7 @@ const SystemToolsManager: React.FC<SystemToolsManagerProps> = ({ onRefresh }) =>
         showSnackbar('Failed to refresh MCP tools cache', 'error');
       }
     } catch (error) {
-      console.error('Failed to refresh MCP tools cache:', error);
+      //console.error('Failed to refresh MCP tools cache:', error);
       showSnackbar('Failed to refresh MCP tools cache', 'error');
     } finally {
       setLoading(false);
@@ -162,7 +162,7 @@ const SystemToolsManager: React.FC<SystemToolsManagerProps> = ({ onRefresh }) =>
         showSnackbar('Failed to update tool status', 'error');
       }
     } catch (error) {
-      console.error('Failed to toggle tool status:', error);
+      //console.error('Failed to toggle tool status:', error);
       showSnackbar('Failed to update tool status', 'error');
     }
   };
@@ -182,7 +182,7 @@ const SystemToolsManager: React.FC<SystemToolsManagerProps> = ({ onRefresh }) =>
         showSnackbar('Failed to reinstall system tools', 'error');
       }
     } catch (error) {
-      console.error('Failed to reinstall system tools:', error);
+      //console.error('Failed to reinstall system tools:', error);
       showSnackbar('Failed to reinstall system tools', 'error');
     } finally {
       setLoading(false);

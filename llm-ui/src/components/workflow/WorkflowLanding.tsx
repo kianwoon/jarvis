@@ -172,7 +172,7 @@ const WorkflowLanding: React.FC<WorkflowLandingProps> = ({
       
       return { nodeCount, edgeCount, nodeTypes, hasCache };
     } catch (error) {
-      console.error('Error in getWorkflowStats:', error);
+      //console.error('Error in getWorkflowStats:', error);
       return { nodeCount: 0, edgeCount: 0, nodeTypes: [], hasCache: false };
     }
   };

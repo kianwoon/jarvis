@@ -94,7 +94,7 @@ const CacheNode: React.FC<CacheNodeProps> = ({ data, id, updateNodeData, showIO 
   useEffect(() => {
     if (updateNodeData) {
       updateNodeData(id, {
-        ...data,
+        type: 'CacheNode',
         label,
         cacheKey,
         cacheBackend,
@@ -103,11 +103,19 @@ const CacheNode: React.FC<CacheNodeProps> = ({ data, id, updateNodeData, showIO 
         invalidateOn,
         enableWarming,
         warmingSchedule,
-        compressionEnabled
+        compressionEnabled,
+        // Only preserve serializable execution data
+        executionData: data.executionData ? {
+          status: data.executionData.status,
+          cacheHit: data.executionData.cacheHit,
+          cacheSize: data.executionData.cacheSize,
+          hitRate: data.executionData.hitRate,
+          lastAccessed: data.executionData.lastAccessed
+        } : undefined
       });
     }
   }, [label, cacheKey, cacheBackend, ttl, maxCacheSize, invalidateOn, 
-      enableWarming, warmingSchedule, compressionEnabled]);
+      enableWarming, warmingSchedule, compressionEnabled, data.executionData]);
 
   const getStatusColor = () => {
     switch (data.executionData?.status) {
@@ -144,16 +152,16 @@ const CacheNode: React.FC<CacheNodeProps> = ({ data, id, updateNodeData, showIO 
       
       if (response.ok) {
         const data = await response.json();
-        console.log('Cache inspection data:', data);
+        //console.log('Cache inspection data:', data);
         setCacheInspectionData(data);
         setInspectDialogOpen(true);
       } else {
-        console.error('Failed to inspect cache:', response.status);
+        //console.error('Failed to inspect cache:', response.status);
         const errorText = await response.text();
-        console.error('Error response:', errorText);
+        //console.error('Error response:', errorText);
       }
     } catch (error) {
-      console.error('Error inspecting cache:', error);
+      //console.error('Error inspecting cache:', error);
     } finally {
       setInspectLoading(false);
     }
@@ -177,11 +185,11 @@ const CacheNode: React.FC<CacheNodeProps> = ({ data, id, updateNodeData, showIO 
         setInspectDialogOpen(false);
         setCacheInspectionData(null);
       } else {
-        console.error('Failed to delete cache');
+        //console.error('Failed to delete cache');
         alert('Failed to clear cache');
       }
     } catch (error) {
-      console.error('Error deleting cache:', error);
+      //console.error('Error deleting cache:', error);
       alert('Error clearing cache');
     } finally {
       setDeleteLoading(false);
@@ -314,25 +322,17 @@ const CacheNode: React.FC<CacheNodeProps> = ({ data, id, updateNodeData, showIO 
                 fullWidth
               />
 
-              {/* TTL Slider */}
-              <Box>
-                <Typography variant="body2" gutterBottom>
-                  Time to Live (TTL): {formatTTL(ttl)}
-                </Typography>
-                <Slider
-                  value={ttl}
-                  onChange={(_, value) => setTtl(value as number)}
-                  min={60}
-                  max={86400}
-                  step={60}
-                  marks={[
-                    { value: 60, label: '1m' },
-                    { value: 3600, label: '1h' },
-                    { value: 21600, label: '6h' },
-                    { value: 86400, label: '1d' }
-                  ]}
-                />
-              </Box>
+              {/* TTL Input */}
+              <TextField
+                size="small"
+                type="number"
+                label="Time to Live (TTL in seconds)"
+                value={ttl}
+                onChange={(e) => setTtl(parseInt(e.target.value) || 3600)}
+                fullWidth
+                helperText={`Current: ${formatTTL(ttl)} (60s = 1min, 3600s = 1hour, 86400s = 1day)`}
+                inputProps={{ min: 60, max: 86400, step: 60 }}
+              />
 
               {/* Max Cache Size */}
               <TextField
