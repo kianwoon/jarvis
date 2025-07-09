@@ -239,13 +239,14 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
             batch_embeddings = embeddings.embed_documents(batch_texts)
             all_embeddings.extend(batch_embeddings)
             
+            # Update embedding progress while staying on step 6
             progress.details["embedding_progress"] = len(all_embeddings)
             yield f"data: {json.dumps(progress.to_dict())}\n\n"
             
             # Small delay to prevent overwhelming the client
             await asyncio.sleep(0.1)
         
-        # Step 7: Insert into Milvus
+        # ONLY NOW advance to step 7 after ALL embeddings are complete
         progress.update(7, "Inserting into vector database", {"insertion": "in_progress"})
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         

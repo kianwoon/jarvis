@@ -111,7 +111,7 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
             return
         
         # Extract file metadata
-        file_metadata = MetadataExtractor.extract_metadata(file_path, filename)
+        file_metadata = MetadataExtractor.extract_metadata(file_path, file_name)
         
         # Add metadata to all chunks
         for chunk in chunks:
@@ -199,7 +199,7 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
         
         # Step 5: Generate embeddings
         current_step += 1
-        yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Generating embeddings', 'progress_percent': int(current_step / total_steps * 100), 'details': {'embedding_progress': 0, 'total_embeddings': len(unique_chunks), 'unique_chunks': len(unique_chunks), 'duplicates': duplicate_count}})}\n\n"
+        yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Generating embeddings', 'progress_percent': int((current_step - 1) / total_steps * 100), 'details': {'embedding_progress': 0, 'total_embeddings': len(unique_chunks), 'unique_chunks': len(unique_chunks), 'duplicates': duplicate_count}})}\n\n"
         await asyncio.sleep(0.1)
         
         # Generate embeddings in batches for progress updates
@@ -216,15 +216,16 @@ async def progress_generator(file_path: str, file_name: str, file_ext: str, opti
             batch_embeddings = embeddings.embed_documents(batch_texts)
             all_embeddings.extend(batch_embeddings)
             
-            # Update embedding progress
-            yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Generating embeddings', 'progress_percent': int(current_step / total_steps * 100), 'details': {'embedding_progress': len(all_embeddings), 'total_embeddings': len(unique_chunks), 'unique_chunks': len(unique_chunks), 'duplicates': duplicate_count}})}\n\n"
+            # Update embedding progress while staying on step 5 (processing)
+            embedding_progress_percent = int((current_step - 1) / total_steps * 100) + int((len(all_embeddings) / len(unique_chunks)) * (100 / total_steps))
+            yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Generating embeddings', 'progress_percent': embedding_progress_percent, 'details': {'embedding_progress': len(all_embeddings), 'total_embeddings': len(unique_chunks), 'unique_chunks': len(unique_chunks), 'duplicates': duplicate_count}})}\n\n"
             
             # Small delay to prevent overwhelming the client
             await asyncio.sleep(0.1)
         
         embeddings_list = all_embeddings
         
-        # Step 5 final step: Insert into vector database
+        # ONLY NOW advance to step 6 after ALL embeddings are complete
         current_step += 1
         yield f"data: {json.dumps({'current_step': current_step, 'total_steps': total_steps, 'step_name': 'Inserting into vector database', 'progress_percent': int(current_step / total_steps * 100), 'details': {'insertion': 'in_progress', 'unique_chunks': len(unique_chunks), 'duplicates': duplicate_count}})}\n\n"
         await asyncio.sleep(0.1)
