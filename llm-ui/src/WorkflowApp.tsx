@@ -176,27 +176,36 @@ function WorkflowApp() {
             onChange={handleTabChange} 
             aria-label="jarvis modes"
             centered
+            sx={{
+              '& .MuiTab-root': {
+                fontSize: '1rem',
+                fontWeight: 600,
+                textTransform: 'none',
+                minWidth: 120,
+                padding: '12px 24px',
+                '&.Mui-selected': {
+                  color: 'primary.main',
+                  fontWeight: 700
+                }
+              }
+            }}
           >
             <Tab 
-              icon={<ChatIcon />} 
               label="Standard Chat" 
               id="tab-0"
               aria-controls="tabpanel-0"
             />
             <Tab 
-              icon={<GroupIcon />} 
               label="Multi-Agent" 
               id="tab-1"
               aria-controls="tabpanel-1"
             />
             <Tab 
-              icon={<WorkflowIcon />} 
               label="Workflow" 
               id="tab-2"
               aria-controls="tabpanel-2"
             />
             <Tab 
-              icon={<SettingsIcon />} 
               label="Settings" 
               id="tab-3"
               aria-controls="tabpanel-3"
