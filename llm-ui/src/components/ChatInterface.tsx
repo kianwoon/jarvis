@@ -190,8 +190,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               assistantMessage.content = data.answer;
               assistantMessage.source = data.source;
               assistantMessage.metadata = data.metadata;
-              if (data.context_documents || data.retrieved_docs) {
-                assistantMessage.context = (data.context_documents || data.retrieved_docs).map((doc: any) => ({
+              if (data.context_documents || data.retrieved_docs || data.documents) {
+                assistantMessage.context = (data.context_documents || data.retrieved_docs || data.documents).map((doc: any) => ({
                   content: doc.content || doc.text || '',
                   source: doc.source || doc.metadata?.source || 'Unknown',
                   score: doc.relevance_score || doc.score

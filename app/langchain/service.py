@@ -456,7 +456,8 @@ def unified_llm_synthesis(
     rag_context: str = "",
     tool_context: str = "",
     conversation_history: str = "",
-    thinking: bool = False
+    thinking: bool = False,
+    rag_sources: list = None
 ) -> tuple[str, str, str]:
     """
     Unified LLM synthesis function that generates responses regardless of query classification.
@@ -469,6 +470,7 @@ def unified_llm_synthesis(
         tool_context: Tool execution results (if any)
         conversation_history: Previous conversation context
         thinking: Whether to enable extended thinking
+        rag_sources: List of RAG source documents (if any)
     
     Returns:
         tuple: (prompt, source_label, context_for_metadata)
@@ -478,8 +480,24 @@ def unified_llm_synthesis(
     
     # Determine source label for metadata
     sources = []
-    if rag_context:
-        sources.append("RAG")
+    # Check if we have RAG context or sources (including from hybrid_context)
+    if rag_context or rag_sources:
+        # Check if any sources are from temporary documents
+        has_temp_docs = False
+        if rag_sources:
+            for source in rag_sources:
+                # Check various ways temporary documents might be marked
+                if (source.get("file", "").startswith("[TEMP]") or 
+                    source.get("is_temporary", False) or
+                    source.get("collection", "").lower() == "temp_documents" or
+                    "temp" in source.get("collection", "").lower()):
+                    has_temp_docs = True
+                    break
+        
+        if has_temp_docs:
+            sources.append("RAG_TEMP")
+        elif rag_context or rag_sources:  # Only add RAG if we actually have content/sources
+            sources.append("RAG")
     if tool_context or query_type in ["TOOLS", "HYBRID_LLM_TOOLS"]:
         sources.append("TOOLS")
     sources.append("LLM")  # LLM synthesis is always involved
@@ -2224,16 +2242,21 @@ Documents to score:
     
     # Take top documents after reranking, but ensure diversity
     filtered_docs = []
+    filtered_docs_with_scores = []  # Keep track of scores
     seen_content_hashes = set()
     
     for item in filtered_and_ranked:
         doc = item[0]
+        # Use similarity score (item[2]) which is already normalized 0-1
+        # or combined score (item[4]) which incorporates keyword relevance
+        score = item[2]  # Using similarity score for consistency
         # Create a simple hash of the first 200 chars to avoid duplicate content
         content_hash = hash(doc.page_content[:200])
         
         if content_hash not in seen_content_hashes:
             seen_content_hashes.add(content_hash)
             filtered_docs.append(doc)
+            filtered_docs_with_scores.append((doc, score))
             
         if len(filtered_docs) >= max_final_docs:  # Take up to configurable number of diverse documents
             break
@@ -2248,14 +2271,22 @@ Documents to score:
     content_preview_limit = 500
     
     sources = []
-    for doc in filtered_docs:
+    for i, doc in enumerate(filtered_docs):
+        # Get the score from filtered_docs_with_scores
+        score = filtered_docs_with_scores[i][1] if i < len(filtered_docs_with_scores) else 0.8
         source_info = {
             "content": doc.page_content[:content_preview_limit] + "..." if len(doc.page_content) > content_preview_limit else doc.page_content,
             "file": doc.metadata.get("source", "Unknown"),
             "page": doc.metadata.get("page", 0),
+            "score": score,  # Include the actual similarity score
             "collection": doc.metadata.get("source_collection", "default_knowledge")
         }
         sources.append(source_info)
+    
+    # Debug: Check if scores are in sources
+    print(f"[DEBUG] handle_rag_query: Sources with scores:")
+    for i, src in enumerate(sources[:3]):  # Show first 3
+        print(f"  - Source {i}: file={src.get('file', 'Unknown')}, score={src.get('score', 'None')}")
     
     # Enhanced relevance detection
     if context.strip():
@@ -2559,6 +2590,23 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
     # Initialize rag_sources at the top level to ensure it's always available
     rag_sources = []
     
+    # If hybrid_context is provided, extract sources from it
+    if hybrid_context and 'sources' in hybrid_context:
+        print(f"[DEBUG] rag_answer: Extracting sources from hybrid_context")
+        for source in hybrid_context.get('sources', []):
+            # Mark sources from hybrid context as temporary documents
+            source_info = {
+                "content": source.get('content', ''),
+                "file": source.get('filename', source.get('source', 'Unknown')),
+                "page": source.get('page', 0),
+                "score": source.get('score', 0.8),  # Preserve the actual score
+                "collection": "temp_documents",  # Mark as temp documents
+                "is_temporary": True,  # Explicit flag
+                "metadata": source.get('metadata', {})
+            }
+            rag_sources.append(source_info)
+        print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} sources from hybrid_context")
+    
     # STEP 1: Use pre-computed query_type if provided, otherwise classify
     print(f"[DEBUG] rag_answer: RECEIVED query_type parameter = '{query_type}'")
     if query_type:
@@ -2672,6 +2720,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                                                 "content": doc.get('content', ''),
                                                 "file": doc.get('source', 'Unknown'),
                                                 "page": doc.get('metadata', {}).get('page', 0),
+                                                "score": doc.get('relevance_score', doc.get('score', 0.8)),  # Add score from tool results
                                                 "collection": doc.get('collection', 'default_knowledge')
                                             }
                                             rag_sources.append(source_info)
@@ -2708,14 +2757,20 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                 except Exception as e:
                     print(f"[DEBUG] rag_answer: Tool enhancement failed for LLM query: {e}")
         elif query_type == "RAG":
-            # Only RAG queries need internal knowledge retrieval
-            print(f"[DEBUG] rag_answer: RAG query detected - performing knowledge retrieval")
-            import time
-            rag_start_time = time.time()
-            rag_context, rag_sources = handle_rag_query(question, thinking, collections, collection_strategy, trace=trace)
-            rag_end_time = time.time()
-            print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
-            print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
+            # Check if we already have sources from hybrid_context
+            if hybrid_context and rag_sources:
+                print(f"[DEBUG] rag_answer: RAG query with hybrid_context - skipping duplicate RAG retrieval")
+                print(f"[DEBUG] rag_answer: Using {len(rag_sources)} sources from hybrid_context")
+                rag_context = ""  # Context is already in the enhanced question
+            else:
+                # Only RAG queries need internal knowledge retrieval
+                print(f"[DEBUG] rag_answer: RAG query detected - performing knowledge retrieval")
+                import time
+                rag_start_time = time.time()
+                rag_context, rag_sources = handle_rag_query(question, thinking, collections, collection_strategy, trace=trace)
+                rag_end_time = time.time()
+                print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
+                print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
         else:
             # Unknown query type, default to RAG for safety
             print(f"[DEBUG] rag_answer: Unknown query_type '{query_type}' - defaulting to RAG retrieval")
@@ -3092,6 +3147,7 @@ Please generate the requested items incorporating relevant information from the 
                                                 "content": doc.get('content', ''),
                                                 "file": doc.get('source', 'Unknown'),
                                                 "page": doc.get('metadata', {}).get('page', 0),
+                                                "score": doc.get('relevance_score', doc.get('score', 0.8)),  # Add score from tool results
                                                 "collection": doc.get('collection', 'default_knowledge')
                                             }
                                             rag_sources.append(source_info)
@@ -3176,6 +3232,7 @@ Please generate the requested items incorporating relevant information from the 
                                                 "content": doc.get('content', ''),
                                                 "file": doc.get('source', 'Unknown'),
                                                 "page": doc.get('metadata', {}).get('page', 0),
+                                                "score": doc.get('relevance_score', doc.get('score', 0.8)),  # Add score from tool results
                                                 "collection": doc.get('collection', 'default_knowledge')
                                             }
                                             rag_sources.append(source_info)
@@ -3297,7 +3354,8 @@ Please generate the requested items incorporating relevant information from the 
         rag_context=rag_context,
         tool_context=tool_context,
         conversation_history=conversation_history,
-        thinking=thinking
+        thinking=thinking,
+        rag_sources=rag_sources
     )
     
     
@@ -3520,12 +3578,15 @@ Based on these search results, provide a comprehensive answer to the user's ques
             # Convert rag_sources to frontend format
             documents = []
             if rag_sources:
+                print(f"[DEBUG] rag_answer: Converting {len(rag_sources)} rag_sources to documents")
+                for i, source_info in enumerate(rag_sources[:3]):  # Debug first 3
+                    print(f"  - Source {i}: has score={source_info.get('score', 'None')}")
                 for i, source_info in enumerate(rag_sources):
                     # Create document entry matching frontend interface
                     doc_entry = {
                         "content": source_info.get("content", f"Document {i+1} content"),
                         "source": source_info.get("file", "Unknown"),
-                        "relevance_score": 0.8,  # Default relevance score
+                        "relevance_score": source_info.get("score", source_info.get("relevance_score", 0.8)),  # Use actual score if available
                         "metadata": {
                             "page": source_info.get("page"),
                             "doc_id": f"doc_{i+1}",
@@ -3666,7 +3727,7 @@ Please provide a complete answer using the tool results above."""
                 doc_entry = {
                     "content": source_info.get("content", f"Document {i+1} content"),
                     "source": source_info.get("file", "Unknown"),
-                    "relevance_score": 0.8,
+                    "relevance_score": source_info.get("score", source_info.get("relevance_score", 0.8)),  # Use actual score if available
                     "metadata": {
                         "page": source_info.get("page"),
                         "doc_id": f"doc_{i+1}",

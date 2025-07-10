@@ -558,7 +558,7 @@ function LegacyChatInterface({ endpoint, title }: { endpoint: string, title: str
               assistantMessage.content = data.response;
               assistantMessage.source = data.source || data.context;
               assistantMessage.status = 'complete';
-              assistantMessage.context = data.context_documents || data.retrieved_docs;
+              assistantMessage.context = data.context_documents || data.retrieved_docs || data.documents;
               assistantMessage.toolsUsed = data.tools_used || data.mcp_tools;
               setMessages(prev => 
                 prev.map(msg => 

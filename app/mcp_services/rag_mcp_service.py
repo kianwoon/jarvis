@@ -568,9 +568,20 @@ class RAGMCPService:
         total_docs = min(len(sources), max_docs)
         
         for i, source in enumerate(sources[:max_docs]):
-            # Calculate relevance score based on position (top documents are most relevant)
-            # Use exponential decay: 1.0 for first doc, decreasing for subsequent docs
-            position_score = 1.0 * (0.9 ** i)
+            # Use actual score from source if available, otherwise fall back to position-based score
+            # Check for score in multiple possible locations
+            actual_score = source.get('score', source.get('relevance_score', None))
+            
+            # Debug logging to trace score availability
+            if i < 3:  # Log first 3 documents
+                logger.info(f"[RAG MCP DEBUG] Doc {i}: file={source.get('file', 'Unknown')[:50]}, score={actual_score}")
+            
+            if actual_score is not None:
+                position_score = float(actual_score)
+            else:
+                # Fall back to position-based score if no actual score available
+                # Use exponential decay: 1.0 for first doc, decreasing for subsequent docs
+                position_score = 1.0 * (0.9 ** i)
             
             # Extract metadata from source
             file_path = source.get("file", "Unknown")
