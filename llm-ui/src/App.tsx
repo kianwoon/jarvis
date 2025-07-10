@@ -30,6 +30,7 @@ import {
 } from '@mui/material';
 import DatabaseTableManager from './components/settings/DatabaseTableManager';
 import FileUploadComponent from './components/shared/FileUploadComponent';
+import ChatInterface from './components/ChatInterface';
 import {
   Send as SendIcon,
   Clear as ClearIcon,
@@ -396,8 +397,8 @@ const MessageContent = React.memo(({ content }: { content: string }) => {
   );
 });
 
-// Chat Component
-function ChatInterface({ endpoint, title }: { endpoint: string, title: string }) {
+// Legacy Chat Component (keeping for reference but not used)
+function LegacyChatInterface({ endpoint, title }: { endpoint: string, title: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1310,12 +1311,14 @@ function App() {
             <ChatInterface 
               endpoint="/api/v1/langchain/rag" 
               title="Standard Chat"
+              enableTemporaryDocuments={true}
             />
           </TabPanel>
           <TabPanel value={tabValue} index={1}>
             <ChatInterface 
               endpoint="/api/v1/langchain/multi-agent" 
               title="Multi-Agent"
+              enableTemporaryDocuments={false}
             />
           </TabPanel>
           <TabPanel value={tabValue} index={2}>

@@ -15,6 +15,7 @@ from app.api.v1.endpoints import oauth_flow
 from app.api.v1.endpoints import agent_templates
 from app.api.v1.endpoints import agent_recommendations
 from app.api.v1.endpoints import automation
+from app.api.v1.endpoints import temp_documents
 import logging
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,12 @@ api_router.include_router(
     automation.router,
     prefix="",
     tags=["automation"]
+)
+
+api_router.include_router(
+    temp_documents.router,
+    prefix="/temp-documents",
+    tags=["temp-documents"]
 )
 
  

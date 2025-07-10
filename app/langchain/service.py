@@ -2474,7 +2474,7 @@ def get_llm_response_direct(question: str, thinking: bool = False, stream: bool 
         
         return response
 
-async def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True, collections: List[str] = None, collection_strategy: str = "auto", query_type: str = None, trace=None):
+async def rag_answer(question: str, thinking: bool = False, stream: bool = False, conversation_id: str = None, use_langgraph: bool = True, collections: List[str] = None, collection_strategy: str = "auto", query_type: str = None, trace=None, hybrid_context=None):
     """Main function with hybrid RAG+LLM approach prioritizing answer quality
     
     Args:
@@ -2486,10 +2486,18 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
         collections: List of collection names to search (None = auto-detect)
         collection_strategy: "auto", "specific", or "all"
         query_type: Pre-computed query type (RAG/TOOLS/LLM) to skip classification
+        hybrid_context: Hybrid RAG context from orchestrator (includes strategy and results)
     """
     print(f"[DEBUG] rag_answer: incoming question = {question}")
     print(f"[DEBUG] rag_answer: conversation_id = {conversation_id}")
     print(f"[DEBUG] rag_answer: collections = {collections}, strategy = {collection_strategy}")
+    
+    # Log hybrid context if available
+    if hybrid_context:
+        print(f"[DEBUG] rag_answer: hybrid_context present with strategy = {hybrid_context.get('strategy', 'unknown')}")
+        print(f"[DEBUG] rag_answer: hybrid sources = {hybrid_context.get('sources', [])}")
+    else:
+        print(f"[DEBUG] rag_answer: no hybrid_context provided")
     
     # Store the user's question in conversation history
     if conversation_id:

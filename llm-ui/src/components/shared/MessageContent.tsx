@@ -55,7 +55,7 @@ function parseContentWithThinking(content: string): ContentPart[] {
 }
 
 // Component to render message content with markdown and thinking sections
-export function MessageContent({ content }: { content: string }) {
+export const MessageContent = React.memo(({ content }: { content: string }) => {
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
   const parts = parseContentWithThinking(content);
   
@@ -239,4 +239,4 @@ export function MessageContent({ content }: { content: string }) {
       })}
     </Box>
   );
-}
+});

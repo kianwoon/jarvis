@@ -10,10 +10,21 @@ import {
   Switch,
   FormControlLabel,
   Chip,
-  Alert
+  Alert,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemText
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import ClearIcon from '@mui/icons-material/Clear';
+import { ExpandMore as ExpandMoreIcon, Description as DocumentIcon } from '@mui/icons-material';
+import TempDocumentPanel from './temp-documents/TempDocumentPanel';
+import FileUploadComponent from './shared/FileUploadComponent';
+import { MessageContent } from './shared/MessageContent';
 
 interface Message {
   id: string;
@@ -22,16 +33,23 @@ interface Message {
   timestamp: Date;
   source?: string;
   metadata?: any;
+  context?: Array<{
+    content: string;
+    source: string;
+    score?: number;
+  }>;
 }
 
 interface ChatInterfaceProps {
   endpoint?: string;
   title?: string;
+  enableTemporaryDocuments?: boolean;
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
   endpoint = '/api/v1/langchain/rag',
-  title = 'Jarvis Chat'
+  title = 'Jarvis Chat',
+  enableTemporaryDocuments = true
 }) => {
   console.log('🚀 ChatInterface component loaded with title:', title);
   
@@ -39,7 +57,17 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [thinking, setThinking] = useState(false);
-  const [conversationId] = useState(() => `chat-${Date.now()}`);
+  const [conversationId] = useState(() => {
+    const storageKey = `jarvis-conversation-id-${title.toLowerCase().replace(/\s+/g, '-')}`;
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      return saved;
+    }
+    const newId = `chat-${title.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+    localStorage.setItem(storageKey, newId);
+    return newId;
+  });
+  const [documentCount, setDocumentCount] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const storageKey = `jarvis-chat-${title.toLowerCase().replace(/\s+/g, '-')}`;
 
@@ -100,7 +128,14 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         question: currentInput,
         thinking,
         conversation_id: conversationId,
-        use_langgraph: false
+        use_langgraph: false,
+        // Include temporary document preferences if enabled
+        ...(enableTemporaryDocuments && {
+          use_hybrid_rag: documentCount > 0,
+          hybrid_strategy: "temp_priority",
+          fallback_to_persistent: true,
+          temp_results_weight: 0.7
+        })
       };
       
       console.log('🚀 SENDING REQUEST:', requestBody);
@@ -144,15 +179,24 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             
             if (data.token) {
               assistantMessage.content += data.token;
+              if (data.source) assistantMessage.source = data.source;
+              if (data.metadata) assistantMessage.metadata = data.metadata;
               setMessages(prev => 
                 prev.map(msg => 
-                  msg.id === assistantMessage.id ? { ...msg, content: assistantMessage.content } : msg
+                  msg.id === assistantMessage.id ? assistantMessage : msg
                 )
               );
             } else if (data.answer) {
               assistantMessage.content = data.answer;
               assistantMessage.source = data.source;
               assistantMessage.metadata = data.metadata;
+              if (data.context_documents || data.retrieved_docs) {
+                assistantMessage.context = (data.context_documents || data.retrieved_docs).map((doc: any) => ({
+                  content: doc.content || doc.text || '',
+                  source: doc.source || doc.metadata?.source || 'Unknown',
+                  score: doc.relevance_score || doc.score
+                }));
+              }
               setMessages(prev => 
                 prev.map(msg => 
                   msg.id === assistantMessage.id ? assistantMessage : msg
@@ -191,7 +235,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   };
 
   return (
-    <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', p: 2 }}>
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 2 }}>
       {/* Header */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
         <Typography variant="h5">{title}</Typography>
@@ -210,6 +254,19 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           </IconButton>
         </Box>
       </Box>
+
+      {/* Temporary Documents Panel */}
+      {enableTemporaryDocuments && (
+        <TempDocumentPanel
+          conversationId={conversationId}
+          disabled={loading}
+          variant="compact"
+          defaultExpanded={false}
+          onDocumentChange={(activeCount) => {
+            setDocumentCount(activeCount);
+          }}
+        />
+      )}
 
       {/* Messages */}
       <Paper sx={{ flex: 1, p: 2, overflow: 'auto', mb: 2 }}>
@@ -231,16 +288,14 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           >
             <Box
               sx={{
-                maxWidth: '80%',
+                maxWidth: message.role === 'user' ? '80%' : '95%',
                 p: 2,
                 borderRadius: 2,
-                backgroundColor: message.role === 'user' ? 'primary.light' : 'grey.100',
+                backgroundColor: message.role === 'user' ? 'primary.light' : 'background.paper',
                 color: message.role === 'user' ? 'white' : 'text.primary'
               }}
             >
-              <Typography variant="body1" style={{ whiteSpace: 'pre-wrap' }}>
-                {message.content}
-              </Typography>
+              <MessageContent content={message.content} />
               
               {message.source && (
                 <Box sx={{ mt: 1 }}>
@@ -252,6 +307,55 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
               {message.timestamp.toLocaleTimeString()}
             </Typography>
+            
+            {/* Context documents */}
+            {message.context && message.context.length > 0 && (
+              <Box sx={{ mt: 1, maxWidth: '95%', alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                <Accordion sx={{ backgroundColor: 'background.default' }}>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <DocumentIcon fontSize="small" />
+                      <Typography variant="body2">
+                        {message.context.length} source document{message.context.length > 1 ? 's' : ''}
+                      </Typography>
+                    </Box>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <List dense>
+                      {message.context.map((doc: any, index: number) => (
+                        <ListItem key={index} sx={{ px: 0 }}>
+                          <ListItemIcon>
+                            <DocumentIcon fontSize="small" />
+                          </ListItemIcon>
+                          <ListItemText
+                            primary={doc.source || `Document ${index + 1}`}
+                            secondary={
+                              <Typography variant="caption" sx={{ 
+                                display: '-webkit-box',
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: 'vertical',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis'
+                              }}>
+                                {doc.content}
+                              </Typography>
+                            }
+                          />
+                          {doc.score && (
+                            <Chip 
+                              label={`${(doc.score * 100).toFixed(1)}%`}
+                              size="small"
+                              variant="outlined"
+                              sx={{ ml: 1 }}
+                            />
+                          )}
+                        </ListItem>
+                      ))}
+                    </List>
+                  </AccordionDetails>
+                </Accordion>
+              </Box>
+            )}
           </Box>
         ))}
         
@@ -279,6 +383,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           placeholder="Ask Jarvis anything..."
           disabled={loading}
           variant="outlined"
+        />
+        <FileUploadComponent
+          onUploadSuccess={(result) => {
+            console.log('Upload success:', result);
+          }}
+          disabled={loading}
+          autoClassify={true}
         />
         <Button
           variant="contained"

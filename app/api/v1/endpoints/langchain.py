@@ -5,6 +5,7 @@ from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier, Que
 from app.core.langfuse_integration import get_tracer
 from app.core.query_classifier_settings_cache import get_query_classifier_settings
 from app.core.temp_document_manager import TempDocumentManager
+from app.langchain.hybrid_rag_orchestrator import HybridRAGOrchestrator
 from fastapi.responses import StreamingResponse
 import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any
@@ -21,6 +22,9 @@ query_classifier = EnhancedQueryClassifier()
 # Initialize temp document manager
 temp_doc_manager = TempDocumentManager()
 
+# Initialize hybrid RAG orchestrator
+hybrid_rag_orchestrator = HybridRAGOrchestrator()
+
 class RAGRequest(BaseModel):
     question: str
     thinking: bool = False
@@ -32,6 +36,11 @@ class RAGRequest(BaseModel):
     skip_classification: bool = False  # Allow bypassing classification if needed
     include_temp_docs: Optional[bool] = None  # Include temporary documents in search
     active_temp_doc_ids: Optional[List[str]] = None  # Specific temp doc IDs to include
+    # Hybrid RAG mode parameters
+    use_hybrid_rag: bool = False  # Enable hybrid RAG mode
+    hybrid_strategy: str = "temp_priority"  # "temp_priority", "parallel_fusion", "persistent_only"
+    fallback_to_persistent: bool = True  # Fallback to persistent RAG if no temp results
+    temp_results_weight: float = 0.7  # Weight for temp results in fusion (0.0-1.0)
 
 class RAGResponse(BaseModel):
     answer: str
@@ -177,9 +186,38 @@ async def rag_endpoint(request: RAGRequest):
                 print(f"[DEBUG] API endpoint - Mapped '{enhanced_type}' to '{simple_query_type}'")
                 print(f"[DEBUG] API endpoint - About to pass query_type='{simple_query_type}' to rag_answer")
             
-            # Get temporary document context if available and modify question
+            # Handle hybrid RAG mode or traditional temp document integration
             enhanced_question = request.question
-            if conversation_id and (request.include_temp_docs is not False):
+            hybrid_context = None
+            
+            if conversation_id and request.use_hybrid_rag:
+                try:
+                    logger.info(f"[HYBRID RAG] Using hybrid mode with strategy: {request.hybrid_strategy}")
+                    
+                    # Use hybrid orchestrator for intelligent result fusion
+                    hybrid_result = await hybrid_rag_orchestrator.query(
+                        query=request.question,
+                        conversation_id=conversation_id,
+                        strategy=request.hybrid_strategy,
+                        fallback_to_persistent=request.fallback_to_persistent,
+                        temp_results_weight=request.temp_results_weight,
+                        top_k=5
+                    )
+                    
+                    if hybrid_result.get('enhanced_context'):
+                        enhanced_question = hybrid_result['enhanced_context']
+                        hybrid_context = hybrid_result
+                        logger.info(f"[HYBRID RAG] Enhanced question with hybrid context")
+                    else:
+                        logger.info(f"[HYBRID RAG] No hybrid context generated")
+                        
+                except Exception as e:
+                    logger.warning(f"Hybrid RAG failed, falling back to traditional mode: {e}")
+                    import traceback
+                    logger.warning(f"Full traceback: {traceback.format_exc()}")
+            
+            elif conversation_id and (request.include_temp_docs is not False):
+                # Traditional temp document integration (backward compatibility)
                 try:
                     logger.info(f"[TEMP DOC DEBUG] Searching for temp docs with conversation_id: {conversation_id}")
                     
@@ -238,7 +276,8 @@ Please answer the user's question using the information from the uploaded docume
                 collections=request.collections,
                 collection_strategy=request.collection_strategy,
                 query_type=simple_query_type,
-                trace=rag_span or trace
+                trace=rag_span or trace,
+                hybrid_context=hybrid_context  # Pass hybrid context if available
             )
             print(f"[DEBUG] API endpoint - Got rag_stream: {type(rag_stream)}")
             
