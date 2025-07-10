@@ -204,14 +204,16 @@ const TempDocumentPanel: React.FC<TempDocumentPanelProps> = ({
               )}
 
               {!hasDocuments && !loading && (
-                <Alert severity="info" sx={{ textAlign: 'center' }}>
-                  <Typography variant="body2" sx={{ fontWeight: 'bold', mb: 1 }}>
-                    No documents uploaded yet
-                  </Typography>
-                  <Typography variant="body2">
-                    Upload documents above to enable fast in-memory search that prioritizes your content over the knowledge base.
-                  </Typography>
-                </Alert>
+                <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                  <Alert severity="info" sx={{ textAlign: 'center', maxWidth: '600px' }}>
+                    <Typography variant="body2" sx={{ fontWeight: 'bold', mb: 1 }}>
+                      No documents uploaded yet
+                    </Typography>
+                    <Typography variant="body2">
+                      Upload documents above to enable fast in-memory search that prioritizes your content over the knowledge base.
+                    </Typography>
+                  </Alert>
+                </Box>
               )}
 
               {documents.map((doc) => (
@@ -388,14 +390,16 @@ const TempDocumentPanel: React.FC<TempDocumentPanelProps> = ({
             )}
 
             {!hasDocuments && !loading && (
-              <Alert severity="info" sx={{ textAlign: 'center' }}>
-                <Typography variant="body1" sx={{ mb: 1 }}>
-                  No documents uploaded yet
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Upload documents to enable fast in-memory search that prioritizes your content
-                </Typography>
-              </Alert>
+              <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                <Alert severity="info" sx={{ textAlign: 'center', maxWidth: '600px' }}>
+                  <Typography variant="body1" sx={{ mb: 1 }}>
+                    No documents uploaded yet
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Upload documents to enable fast in-memory search that prioritizes your content
+                  </Typography>
+                </Alert>
+              </Box>
             )}
 
             {/* Document Cards */}

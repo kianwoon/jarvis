@@ -987,7 +987,16 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 source += "+TOOLS"
                 tool_calls_made = tool_results
             if rag_results:
-                source += "+RAG"
+                # Check if any RAG result included temporary documents
+                has_temp_docs = any(
+                    rag_result.get("temp_docs_included", False) 
+                    for rag_result in rag_results 
+                    if rag_result.get("success", False)
+                )
+                if has_temp_docs:
+                    source += "+RAG_TEMP"
+                else:
+                    source += "+RAG"
                 rag_searches_made = rag_results
             
             # Extract documents from RAG results for transparency

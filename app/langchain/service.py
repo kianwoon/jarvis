@@ -218,11 +218,28 @@ def get_conversation_history(conversation_id: str) -> str:
         print(f"[ERROR] Failed to get conversation history: {e}")
         return ""
 
-def get_limited_conversation_history(conversation_id: str, max_messages: int = 2) -> str:
+def get_limited_conversation_history(conversation_id: str, max_messages: int = 2, current_query: str = None) -> str:
     """Get limited conversation history for simple factual queries"""
     if not conversation_id:
         return ""
     
+    # Use smart conversation history if enabled and query is provided
+    if current_query:
+        try:
+            from app.core.large_generation_utils import get_config_accessor
+            config = get_config_accessor()
+            
+            if config.enable_smart_context_filtering:
+                from app.langchain.conversation_context_manager import get_smart_conversation_history
+                return get_smart_conversation_history(
+                    conversation_id=conversation_id,
+                    current_query=current_query,
+                    max_messages=config.smart_context_max_messages or max_messages
+                )
+        except Exception as e:
+            print(f"[DEBUG] Smart conversation history failed, falling back: {e}")
+    
+    # Original implementation as fallback
     try:
         # Try Redis first
         redis_client = get_redis_conversation_client()
@@ -2811,7 +2828,11 @@ Please generate the requested items incorporating relevant information from the 
         max_history_messages = conversation_config.get('max_history_messages', 3)
         
         # Get LIMITED conversation history for context to prevent bleeding
-        conversation_history_text = get_limited_conversation_history(conversation_id, max_messages=max_history_messages) if conversation_id else ""
+        conversation_history_text = get_limited_conversation_history(
+            conversation_id, 
+            max_messages=max_history_messages,
+            current_query=question
+        ) if conversation_id else ""
         conversation_history_list = get_full_conversation_history(conversation_id) if conversation_id else []
         # Also limit the list version to prevent bleeding (2 messages per interaction = user + assistant)
         max_list_messages = max_history_messages * 2
@@ -3257,7 +3278,11 @@ Please generate the requested items incorporating relevant information from the 
         max_history_messages = conversation_config.get('max_history_messages', 3)
         
         # Use configurable conversation history to prevent context bleeding
-        conversation_history = get_limited_conversation_history(conversation_id, max_messages=max_history_messages)
+        conversation_history = get_limited_conversation_history(
+            conversation_id, 
+            max_messages=max_history_messages,
+            current_query=question
+        )
         
         if conversation_history:
             history_prompt = f"Previous conversation:\n{conversation_history}\n\n"

@@ -398,7 +398,63 @@ class TempDocumentManager:
             file_ext = Path(filename).suffix.lower()
             
             if file_ext == '.pdf':
-                # Use LlamaIndex's built-in PDF reader
+                # Try PyMuPDF first as it handles complex PDFs better
+                try:
+                    import pymupdf  # PyMuPDF - handles compressed/encrypted PDFs better
+                    logger.info(f"[PDF DEBUG] Using PyMuPDF for {filename}")
+                    
+                    chunks = []
+                    doc = pymupdf.open(file_path)
+                    total_pages = len(doc)
+                    logger.info(f"[PDF DEBUG] PyMuPDF found {total_pages} pages")
+                    
+                    for page_num, page in enumerate(doc):
+                        try:
+                            # Get text with better layout preservation
+                            text = page.get_text("text")
+                            
+                            if text and text.strip():
+                                # Clean up the text
+                                text = text.strip()
+                                
+                                # Check if page contains mostly readable content
+                                printable_chars = sum(1 for c in text if c.isprintable() or c.isspace())
+                                total_chars = len(text)
+                                
+                                if total_chars > 0 and printable_chars / total_chars >= 0.8:
+                                    chunk = ExtractedChunk(
+                                        content=text,
+                                        metadata={
+                                            'source': filename,
+                                            'page': page_num + 1,
+                                            'total_pages': total_pages,
+                                            'chunk_index': page_num,
+                                            'extraction_method': 'PyMuPDF'
+                                        },
+                                        quality_score=0.95
+                                    )
+                                    chunks.append(chunk)
+                                    logger.info(f"[PDF DEBUG] Page {page_num}: extracted {len(text)} characters")
+                                else:
+                                    logger.warning(f"[PDF DEBUG] Page {page_num} has low readable content ratio: {printable_chars/total_chars:.2%}")
+                                    
+                        except Exception as page_error:
+                            logger.warning(f"[PDF DEBUG] Failed to extract page {page_num}: {str(page_error)}")
+                    
+                    doc.close()
+                    
+                    if chunks:
+                        logger.info(f"[PDF DEBUG] PyMuPDF successfully extracted {len(chunks)} pages")
+                        return chunks
+                    else:
+                        logger.warning(f"[PDF DEBUG] PyMuPDF extracted no readable content")
+                        
+                except ImportError:
+                    logger.warning("PyMuPDF not available, trying LlamaIndex PDFReader")
+                except Exception as pymupdf_error:
+                    logger.warning(f"PyMuPDF failed: {str(pymupdf_error)}, trying LlamaIndex PDFReader")
+                
+                # Try LlamaIndex's built-in PDF reader as second option
                 try:
                     from llama_index.readers.file import PDFReader
                     
@@ -462,8 +518,109 @@ class TempDocumentManager:
                     
                 except Exception as e:
                     logger.error(f"LlamaIndex PDF extraction failed: {str(e)}")
+                    
+                    # Try pdfplumber as next fallback
+                    try:
+                        import pdfplumber
+                        logger.info(f"[PDF DEBUG] Trying pdfplumber fallback for {filename}")
+                        
+                        chunks = []
+                        with pdfplumber.open(file_path) as pdf:
+                            total_pages = len(pdf.pages)
+                            logger.info(f"[PDF DEBUG] pdfplumber found {total_pages} pages")
+                            
+                            for page_num, page in enumerate(pdf.pages):
+                                try:
+                                    text = page.extract_text()
+                                    if text and text.strip():
+                                        # Clean up the text
+                                        text = text.strip()
+                                        # Check readable content ratio
+                                        printable_chars = sum(1 for c in text if c.isprintable() or c.isspace())
+                                        total_chars = len(text)
+                                        
+                                        if total_chars > 0 and printable_chars / total_chars >= 0.8:
+                                            chunk = ExtractedChunk(
+                                                content=text,
+                                                metadata={
+                                                    'source': filename,
+                                                    'page': page_num + 1,
+                                                    'total_pages': total_pages,
+                                                    'chunk_index': page_num,
+                                                    'extraction_method': 'pdfplumber'
+                                                },
+                                                quality_score=0.85
+                                            )
+                                            chunks.append(chunk)
+                                            logger.info(f"[PDF DEBUG] Page {page_num}: extracted {len(text)} characters")
+                                        else:
+                                            logger.warning(f"[PDF DEBUG] Page {page_num} has low readable content ratio")
+                                except Exception as page_error:
+                                    logger.warning(f"[PDF DEBUG] Failed to extract page {page_num}: {str(page_error)}")
+                        
+                        if chunks:
+                            logger.info(f"[PDF DEBUG] pdfplumber successfully extracted {len(chunks)} pages")
+                            return chunks
+                        else:
+                            logger.warning(f"[PDF DEBUG] pdfplumber extracted no readable content")
+                            
+                    except ImportError:
+                        logger.warning("pdfplumber not installed, trying pypdf")
+                    except Exception as pdfplumber_error:
+                        logger.warning(f"pdfplumber extraction failed: {str(pdfplumber_error)}, trying pypdf")
+                    
+                    # Try pypdf as final fallback
+                    try:
+                        import pypdf
+                        logger.info(f"[PDF DEBUG] Trying pypdf fallback for {filename}")
+                        
+                        chunks = []
+                        with open(file_path, 'rb') as pdf_file:
+                            pdf_reader = pypdf.PdfReader(pdf_file)
+                            total_pages = len(pdf_reader.pages)
+                            logger.info(f"[PDF DEBUG] pypdf found {total_pages} pages")
+                            
+                            for page_num, page in enumerate(pdf_reader.pages):
+                                try:
+                                    text = page.extract_text()
+                                    if text and text.strip():
+                                        # Clean up the text
+                                        text = text.strip()
+                                        # Skip pages that appear to be mostly binary data
+                                        if len([c for c in text if c.isprintable()]) / len(text) < 0.8:
+                                            logger.warning(f"[PDF DEBUG] Page {page_num} appears to contain binary data, skipping")
+                                            continue
+                                            
+                                        chunk = ExtractedChunk(
+                                            content=text,
+                                            metadata={
+                                                'source': filename,
+                                                'page': page_num + 1,
+                                                'total_pages': total_pages,
+                                                'chunk_index': page_num,
+                                                'extraction_method': 'pypdf'
+                                            },
+                                            quality_score=0.7
+                                        )
+                                        chunks.append(chunk)
+                                        logger.info(f"[PDF DEBUG] Page {page_num}: extracted {len(text)} characters")
+                                except Exception as page_error:
+                                    logger.warning(f"[PDF DEBUG] Failed to extract page {page_num}: {str(page_error)}")
+                        
+                        if chunks:
+                            logger.info(f"[PDF DEBUG] pypdf successfully extracted {len(chunks)} pages")
+                            return chunks
+                        else:
+                            logger.error(f"[PDF DEBUG] pypdf extracted no readable content")
+                            
+                    except ImportError:
+                        logger.error("pypdf not installed, cannot use fallback PDF extraction")
+                    except Exception as pypdf_error:
+                        logger.error(f"pypdf extraction failed: {str(pypdf_error)}")
+                    
+                    # If all methods fail, return error chunk
                     return [ExtractedChunk(
-                        content=f"Failed to extract PDF content using LlamaIndex: {str(e)}",
+                        content=f"Failed to extract PDF content. The PDF may be corrupted, encrypted, or contain only images without text.",
                         metadata={'source': filename, 'extraction_method': 'error'},
                         quality_score=0.1
                     )]

@@ -68,6 +68,10 @@ class LargeGenerationConfig:
     max_redis_messages: int = 50        # Messages to keep in Redis
     max_memory_messages: int = 20       # Messages to keep in memory
     conversation_history_display: int = 10  # Messages to show in history
+    
+    # Smart context filtering
+    enable_smart_context_filtering: bool = True  # Enable intelligent conversation history filtering
+    smart_context_max_messages: int = 4  # Max messages for smart context filtering
 
 def get_large_generation_config() -> LargeGenerationConfig:
     """Get large generation configuration with environment variable overrides"""
@@ -94,7 +98,9 @@ def get_large_generation_config() -> LargeGenerationConfig:
         'REDIS_CONVERSATION_TTL': 'redis_conversation_ttl',
         'REDIS_MAX_MESSAGES': 'max_redis_messages',
         'MEMORY_MAX_MESSAGES': 'max_memory_messages',
-        'CONVERSATION_HISTORY_DISPLAY': 'conversation_history_display'
+        'CONVERSATION_HISTORY_DISPLAY': 'conversation_history_display',
+        'ENABLE_SMART_CONTEXT_FILTERING': 'enable_smart_context_filtering',
+        'SMART_CONTEXT_MAX_MESSAGES': 'smart_context_max_messages'
     }
     
     for env_var, attr_name in env_overrides.items():

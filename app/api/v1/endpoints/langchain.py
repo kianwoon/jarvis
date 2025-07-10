@@ -114,6 +114,12 @@ async def rag_endpoint(request: RAGRequest):
     # Use session_id as conversation_id if conversation_id is not provided
     conversation_id = request.conversation_id or request.session_id
     
+    # Check if we should bypass classification for hybrid RAG mode
+    if request.use_hybrid_rag and conversation_id:
+        logger.info(f"[HYBRID RAG] Bypassing classification for hybrid RAG mode")
+        # Skip classification and go directly to RAG handling
+        request.skip_classification = True
+    
     # Classify the query unless explicitly skipped
     routing = None
     if not request.skip_classification:
@@ -169,7 +175,12 @@ async def rag_endpoint(request: RAGRequest):
             
             # Map enhanced classifier types to simple optimization types
             simple_query_type = None
-            if routing:
+            
+            # Force RAG type when using hybrid RAG mode
+            if request.use_hybrid_rag:
+                simple_query_type = "RAG"
+                print(f"[DEBUG] API endpoint - Forcing query_type='RAG' for hybrid RAG mode")
+            elif routing:
                 enhanced_type = routing['primary_type']
                 type_mapping = {
                     "rag": "RAG",
@@ -204,12 +215,33 @@ async def rag_endpoint(request: RAGRequest):
                         top_k=5
                     )
                     
-                    if hybrid_result.get('enhanced_context'):
-                        enhanced_question = hybrid_result['enhanced_context']
-                        hybrid_context = hybrid_result
-                        logger.info(f"[HYBRID RAG] Enhanced question with hybrid context")
+                    if hybrid_result and hybrid_result.final_sources:
+                        # Build enhanced context from hybrid results
+                        context_parts = []
+                        for source in hybrid_result.final_sources[:5]:  # Top 5 results
+                            content = source.get('content', '')
+                            filename = source.get('filename', 'Unknown document')
+                            context_parts.append(f"From {filename}:\n{content}")
+                        
+                        temp_doc_context = "\n\n=== TEMPORARY DOCUMENTS ===\n" + "\n\n".join(context_parts) + "\n=== END TEMPORARY DOCUMENTS ===\n\n"
+                        
+                        # Enhance the question with hybrid context
+                        enhanced_question = f"""Context from uploaded documents:
+{temp_doc_context}
+
+User question: {request.question}
+
+Please answer the user's question using the information from the uploaded documents above, along with any other relevant knowledge."""
+                        
+                        hybrid_context = {
+                            'sources': hybrid_result.final_sources,
+                            'strategy_used': hybrid_result.strategy_used,
+                            'sources_queried': hybrid_result.sources_queried,
+                            'fusion_metadata': hybrid_result.fusion_metadata
+                        }
+                        logger.info(f"[HYBRID RAG] Enhanced question with {len(hybrid_result.final_sources)} hybrid sources")
                     else:
-                        logger.info(f"[HYBRID RAG] No hybrid context generated")
+                        logger.info(f"[HYBRID RAG] No hybrid results found")
                         
                 except Exception as e:
                     logger.warning(f"Hybrid RAG failed, falling back to traditional mode: {e}")
