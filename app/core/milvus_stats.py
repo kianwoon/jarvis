@@ -18,10 +18,24 @@ class MilvusStats:
     def get_connection_params() -> tuple:
         """Get Milvus connection parameters"""
         vector_db_settings = get_vector_db_settings()
-        milvus_config = vector_db_settings.get('milvus', {})
-        uri = milvus_config.get('MILVUS_URI')
-        token = milvus_config.get('MILVUS_TOKEN', '')
-        return uri, token
+        
+        # Handle new format with databases array
+        if 'databases' in vector_db_settings:
+            # Find Milvus configuration
+            for db in vector_db_settings.get('databases', []):
+                if db.get('id') == 'milvus' and db.get('enabled', False):
+                    config = db.get('config', {})
+                    uri = config.get('MILVUS_URI')
+                    token = config.get('MILVUS_TOKEN', '')
+                    return uri, token
+        else:
+            # Legacy format support
+            milvus_config = vector_db_settings.get('milvus', {})
+            uri = milvus_config.get('MILVUS_URI')
+            token = milvus_config.get('MILVUS_TOKEN', '')
+            return uri, token
+        
+        return None, None
     
     @staticmethod
     def get_collection_stats(collection_name: str) -> Dict[str, Any]:
@@ -113,6 +127,8 @@ class MilvusStats:
             uri, token = MilvusStats.get_connection_params()
             if not uri:
                 logger.warning("Milvus URI not configured")
+                # Log current settings for debugging
+                logger.info(f"Current vector DB settings: {get_vector_db_settings()}")
                 return []
             
             # Connect to Milvus

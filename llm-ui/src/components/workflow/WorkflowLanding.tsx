@@ -153,10 +153,6 @@ const WorkflowLanding: React.FC<WorkflowLandingProps> = ({
     }
   };
 
-  const handleExecuteWorkflow = async (workflowId: string) => {
-    // This could open a dialog or navigate to an execution view
-    alert(`Execute workflow ${workflowId} - Implementation pending`);
-  };
 
   const filteredWorkflows = workflows.filter(workflow =>
     workflow.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -284,7 +280,6 @@ const WorkflowLanding: React.FC<WorkflowLandingProps> = ({
                   onDelete={() => handleDeleteWorkflow(workflow.id)}
                   onDuplicate={() => handleDuplicateWorkflow(workflow)}
                   onToggleActive={() => handleToggleActive(workflow)}
-                  onExecute={() => handleExecuteWorkflow(workflow.id)}
                 />
               </Grid>
             );
@@ -297,7 +292,6 @@ const WorkflowLanding: React.FC<WorkflowLandingProps> = ({
           onDelete={handleDeleteWorkflow}
           onDuplicate={handleDuplicateWorkflow}
           onToggleActive={handleToggleActive}
-          onExecute={handleExecuteWorkflow}
         />
       )}
     </Container>

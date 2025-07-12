@@ -30,7 +30,9 @@ import {
   Edit as EditIcon,
   Delete as DeleteIcon,
   PlayArrow as RunIcon,
-  Pause as PauseIcon
+  Pause as PauseIcon,
+  Refresh as RefreshIcon,
+  Visibility as ViewIcon
 } from '@mui/icons-material';
 
 interface DatabaseTableManagerProps {
@@ -56,9 +58,19 @@ interface CollectionRecord {
   collection_name: string;
   description?: string;
   collection_type: string;
-  access_level: 'public' | 'private' | 'restricted';
+  access_config?: {
+    restricted: boolean;
+    allowed_users: string[];
+  };
   metadata: any;
   created_at?: string;
+  // Statistics fields
+  statistics?: {
+    document_count?: number;
+    total_chunks?: number;
+    storage_size_mb?: number;
+    last_updated?: string;
+  };
 }
 
 interface AgentRecord {
@@ -80,13 +92,22 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
 }) => {
   const [editDialog, setEditDialog] = useState(false);
   const [editingRecord, setEditingRecord] = useState<any>(null);
+  const [refreshingStats, setRefreshingStats] = useState(false);
+  const [viewDialog, setViewDialog] = useState(false);
+  const [viewingRecord, setViewingRecord] = useState<any>(null);
+  const [localData, setLocalData] = useState(data);
+
+  // Update local data when props change
+  React.useEffect(() => {
+    setLocalData(data);
+  }, [data]);
 
   const getTableHeaders = () => {
     switch (category) {
       case 'automation':
         return ['Name', 'Type', 'Status', 'Description', 'Last Updated', 'Actions'];
       case 'collection_registry':
-        return ['Name', 'Type', 'Access Level', 'Description', 'Created', 'Actions'];
+        return ['Name', 'Type', 'Access Level', 'Documents', 'Chunks', 'Size (MB)', 'Description', 'Actions'];
       case 'langgraph_agents':
         return ['Name', 'Role', 'Active', 'Tools', 'Description', 'Actions'];
       default:
@@ -109,7 +130,10 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
           collection_name: '',
           description: '',
           collection_type: 'vector',
-          access_level: 'public',
+          access_config: {
+            restricted: false,
+            allowed_users: []
+          },
           metadata: {}
         } as CollectionRecord;
       case 'langgraph_agents':
@@ -215,6 +239,46 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
     return `${getSaveEndpoint()}/${id}`;
   };
 
+  const handleRefreshStatistics = async () => {
+    if (category !== 'collection_registry') return;
+    
+    setRefreshingStats(true);
+    try {
+      const response = await fetch('/api/v1/collections/refresh-statistics', {
+        method: 'POST'
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        
+        // Update statistics in local data immediately
+        const updatedData = localData.map((record: any) => {
+          if (result.statistics && result.statistics[record.collection_name]) {
+            const stats = result.statistics[record.collection_name];
+            return {
+              ...record,
+              statistics: {
+                document_count: stats.document_count || 0,
+                total_chunks: stats.total_chunks || 0,
+                storage_size_mb: stats.storage_size_mb || 0,
+                last_updated: stats.last_updated
+              }
+            };
+          }
+          return record;
+        });
+        setLocalData(updatedData);
+      } else {
+        const error = await response.text();
+        console.error(`Failed to refresh statistics: ${error}`);
+      }
+    } catch (error) {
+      console.error('Error refreshing statistics:', error);
+    } finally {
+      setRefreshingStats(false);
+    }
+  };
+
   const renderTableRow = (record: any, index: number) => {
     switch (category) {
       case 'automation':
@@ -234,7 +298,7 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
             <TableCell>{record.description || 'No description'}</TableCell>
             <TableCell>{record.updated_at ? new Date(record.updated_at).toLocaleDateString() : 'N/A'}</TableCell>
             <TableCell>
-              <IconButton size="small" onClick={() => setViewingRecord(record) || setViewDialog(true)}>
+              <IconButton size="small" onClick={() => { setViewingRecord(record); setViewDialog(true); }}>
                 <ViewIcon />
               </IconButton>
               <IconButton size="small" onClick={() => handleEdit(record)}>
@@ -258,13 +322,21 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
             </TableCell>
             <TableCell>
               <Chip 
-                label={record.access_level} 
-                color={record.access_level === 'public' ? 'success' : record.access_level === 'private' ? 'warning' : 'error'}
+                label={record.access_config?.restricted ? 'Restricted' : 'Public'} 
+                color={record.access_config?.restricted ? 'warning' : 'success'}
                 size="small" 
               />
+              {record.access_config?.restricted && record.access_config?.allowed_users?.length > 0 && (
+                <Typography variant="caption" display="block" color="text.secondary">
+                  {record.access_config.allowed_users.slice(0, 3).join(', ')}
+                  {record.access_config.allowed_users.length > 3 && ` +${record.access_config.allowed_users.length - 3} more`}
+                </Typography>
+              )}
             </TableCell>
+            <TableCell align="center">{record.statistics?.document_count || 0}</TableCell>
+            <TableCell align="center">{record.statistics?.total_chunks || 0}</TableCell>
+            <TableCell align="center">{record.statistics?.storage_size_mb || 0}</TableCell>
             <TableCell>{record.description || 'No description'}</TableCell>
-            <TableCell>{record.created_at ? new Date(record.created_at).toLocaleDateString() : 'N/A'}</TableCell>
             <TableCell>
               <IconButton size="small" onClick={() => handleEdit(record)}>
                 <EditIcon />
@@ -620,16 +692,25 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
           {category.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())} Management
         </Typography>
         <Box>
-          <Button onClick={onRefresh} sx={{ mr: 1 }}>
-            Refresh
-          </Button>
+          {category === 'collection_registry' && (
+            <Button 
+              startIcon={<RefreshIcon />} 
+              onClick={handleRefreshStatistics}
+              disabled={refreshingStats}
+              sx={{ mr: 1 }}
+              variant="contained"
+              color="secondary"
+            >
+              {refreshingStats ? 'Updating...' : 'Update Statistics'}
+            </Button>
+          )}
           <Button startIcon={<AddIcon />} variant="contained" onClick={handleAdd}>
             Add New
           </Button>
         </Box>
       </Box>
 
-      {data.length === 0 ? (
+      {localData.length === 0 ? (
         <Alert severity="info">No records found</Alert>
       ) : (
         <TableContainer component={Paper} sx={{ maxHeight: '60vh', overflow: 'auto' }}>
@@ -642,7 +723,7 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
               </TableRow>
             </TableHead>
             <TableBody>
-              {data.sort((a, b) => {
+              {localData.sort((a, b) => {
                 const nameA = category === 'collection_registry' ? (a.collection_name || '') : (a.name || '');
                 const nameB = category === 'collection_registry' ? (b.collection_name || '') : (b.name || '');
                 return nameA.localeCompare(nameB);
@@ -675,6 +756,28 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
         <DialogActions>
           <Button onClick={() => setEditDialog(false)}>Cancel</Button>
           <Button onClick={handleSave} variant="contained">Save</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* View Dialog */}
+      <Dialog 
+        open={viewDialog} 
+        onClose={() => setViewDialog(false)} 
+        maxWidth="lg" 
+        fullWidth
+      >
+        <DialogTitle>
+          View Record Details
+        </DialogTitle>
+        <DialogContent>
+          {viewingRecord && (
+            <Box sx={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+              {JSON.stringify(viewingRecord, null, 2)}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setViewDialog(false)}>Close</Button>
         </DialogActions>
       </Dialog>
 

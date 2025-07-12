@@ -23,6 +23,9 @@ import {
   Select,
   MenuItem,
   Switch,
+  Menu,
+  MenuItem as MuiMenuItem,
+  Snackbar,
   FormControlLabel,
   Grid,
   Card,
@@ -32,7 +35,8 @@ import {
   ListItem,
   ListItemText,
   ListItemSecondaryAction,
-  Checkbox
+  Checkbox,
+  Divider
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -45,7 +49,8 @@ import {
   Settings as SettingsIcon,
   Cached as CacheIcon,
   FileUpload as ImportIcon,
-  FileDownload as ExportIcon
+  FileDownload as ExportIcon,
+  MoreVert as MoreVertIcon
 } from '@mui/icons-material';
 
 interface MCPTool {
@@ -63,14 +68,21 @@ interface MCPTool {
   manifest_id?: number;
 }
 
+interface MCPServer {
+  id: number;
+  name: string;
+}
+
 interface MCPToolManagerProps {
   data: MCPTool[];
+  servers?: MCPServer[];
   onChange: (data: MCPTool[]) => void;
   onRefresh: () => void;
 }
 
 const MCPToolManager: React.FC<MCPToolManagerProps> = ({
   data,
+  servers,
   onChange,
   onRefresh
 }) => {
@@ -80,6 +92,19 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
   const [viewingTool, setViewingTool] = useState<MCPTool | null>(null);
   const [bulkDialog, setBulkDialog] = useState(false);
   const [selectedTools, setSelectedTools] = useState<number[]>([]);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [serverFilter, setServerFilter] = useState<'all' | number>('all');
+  const [actionMenuAnchor, setActionMenuAnchor] = useState<null | HTMLElement>(null);
+  const [actionMenuTool, setActionMenuTool] = useState<MCPTool | null>(null);
+  const [snackbar, setSnackbar] = useState<{open: boolean, message: string, severity: 'success' | 'error' | 'info'}>({
+    open: false,
+    message: '',
+    severity: 'info'
+  });
+
+  const showNotification = (message: string, severity: 'success' | 'error' | 'info' = 'info') => {
+    setSnackbar({ open: true, message, severity });
+  };
 
   const getNewToolTemplate = (): MCPTool => ({
     name: '',
@@ -108,12 +133,13 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
     try {
       const response = await fetch(`/api/v1/mcp/tools/${id}/`, { method: 'DELETE' });
       if (response.ok) {
+        showNotification('Tool deleted successfully', 'success');
         onRefresh();
       } else {
-        alert('Failed to delete tool');
+        showNotification('Failed to delete tool', 'error');
       }
     } catch (error) {
-      alert('Error deleting tool: ' + error);
+      showNotification('Error deleting tool: ' + error, 'error');
     }
   };
 
@@ -134,12 +160,13 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
       if (response.ok) {
         setEditDialog(false);
         setEditingTool(null);
+        showNotification('Tool saved successfully', 'success');
         onRefresh();
       } else {
-        alert('Failed to save tool');
+        showNotification('Failed to save tool', 'error');
       }
     } catch (error) {
-      alert('Error saving tool: ' + error);
+      showNotification('Error saving tool: ' + error, 'error');
     }
   };
 
@@ -158,31 +185,16 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
       if (response.ok) {
         setBulkDialog(false);
         setSelectedTools([]);
+        showNotification('Tools updated successfully', 'success');
         onRefresh();
       } else {
-        alert('Failed to update tools');
+        showNotification('Failed to update tools', 'error');
       }
     } catch (error) {
-      alert('Error updating tools: ' + error);
+      showNotification('Error updating tools: ' + error, 'error');
     }
   };
 
-  const handleCacheReload = async () => {
-    try {
-      const response = await fetch('/api/v1/mcp/tools/cache/reload/', {
-        method: 'POST'
-      });
-      
-      if (response.ok) {
-        alert('MCP tools cache reloaded successfully');
-        onRefresh();
-      } else {
-        alert('Failed to reload cache');
-      }
-    } catch (error) {
-      alert('Error reloading cache: ' + error);
-    }
-  };
 
   const handleExportTools = () => {
     const exportData = data.map(tool => ({
@@ -206,34 +218,116 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  // Filter tools based on status and server
+  const filteredTools = data.filter(tool => {
+    // Apply status filter
+    if (statusFilter !== 'all') {
+      if (statusFilter === 'active' && !tool.is_active) return false;
+      if (statusFilter === 'inactive' && tool.is_active) return false;
+    }
+    
+    // Apply server filter
+    if (serverFilter !== 'all') {
+      if (serverFilter === 0) {
+        // For manual tools, check if is_manual is true AND not internal AND server_id is null or undefined
+        if (!tool.is_manual || tool.endpoint.startsWith('internal://') || (tool.server_id !== null && tool.server_id !== undefined)) return false;
+      } else if (serverFilter === -1) {
+        // For internal tools, check if endpoint starts with internal://
+        if (!tool.endpoint.startsWith('internal://')) return false;
+      } else {
+        // For specific server, check server_id matches
+        if (tool.server_id !== serverFilter) return false;
+      }
+    }
+    
+    return true;
+  });
+  
+  // Get unique servers from tools data
+  const uniqueServers = React.useMemo(() => {
+    const serverMap = new Map<number, string>();
+    data.forEach(tool => {
+      if (tool.server_id && tool.server_name) {
+        serverMap.set(tool.server_id, tool.server_name);
+      }
+    });
+    return Array.from(serverMap.entries()).map(([id, name]) => ({ id, name }));
+  }, [data]);
+  
+  // Check if there are internal tools
+  const hasInternalTools = React.useMemo(() => {
+    return data.some(tool => tool.endpoint.startsWith('internal://'));
+  }, [data]);
+  
+  // Check if there are manual tools (non-internal)
+  const hasManualTools = React.useMemo(() => {
+    return data.some(tool => tool.is_manual && !tool.endpoint.startsWith('internal://') && (tool.server_id === null || tool.server_id === undefined));
+  }, [data]);
+
+  const handleCloseActionMenu = () => {
+    setActionMenuAnchor(null);
+    setActionMenuTool(null);
+  };
+
+  const handleMenuAction = async (action: string) => {
+    if (!actionMenuTool) return;
+    
+    if (action === 'view') {
+      setViewingTool(actionMenuTool);
+      setViewDialog(true);
+    } else if (action === 'delete') {
+      await handleDelete(actionMenuTool.id!);
+    } else if (action === 'toggle') {
+      // Toggle the active status directly via API
+      try {
+        const response = await fetch(`/api/v1/mcp/tools/${actionMenuTool.id}/`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...actionMenuTool, is_active: !actionMenuTool.is_active })
+        });
+        
+        if (response.ok) {
+          showNotification(`Tool ${actionMenuTool.is_active ? 'disabled' : 'enabled'} successfully`, 'success');
+          onRefresh();
+        } else {
+          showNotification('Failed to toggle tool status', 'error');
+        }
+      } catch (error) {
+        showNotification('Error toggling tool: ' + error, 'error');
+      }
+    }
+    
+    handleCloseActionMenu();
+  };
+
   const renderToolTable = () => (
     <TableContainer component={Paper}>
-      <Table>
+      <Table sx={{ tableLayout: 'fixed' }}>
         <TableHead>
           <TableRow>
-            <TableCell padding="checkbox">
+            <TableCell padding="checkbox" sx={{ width: '50px' }}>
               <Checkbox
-                indeterminate={selectedTools.length > 0 && selectedTools.length < data.length}
-                checked={data.length > 0 && selectedTools.length === data.length}
+                indeterminate={selectedTools.length > 0 && selectedTools.length < filteredTools.length}
+                checked={filteredTools.length > 0 && selectedTools.length === filteredTools.length}
                 onChange={(e) => {
                   if (e.target.checked) {
-                    setSelectedTools(data.map(tool => tool.id!));
+                    setSelectedTools(filteredTools.map(tool => tool.id!));
                   } else {
                     setSelectedTools([]);
                   }
                 }}
               />
             </TableCell>
-            <TableCell>Name</TableCell>
-            <TableCell>Method</TableCell>
-            <TableCell>Endpoint</TableCell>
-            <TableCell>Source</TableCell>
-            <TableCell>Status</TableCell>
-            <TableCell>Actions</TableCell>
+            <TableCell sx={{ width: '20%', maxWidth: '200px' }}>Name</TableCell>
+            <TableCell sx={{ width: '80px' }}>Method</TableCell>
+            <TableCell sx={{ width: '35%' }}>Endpoint</TableCell>
+            <TableCell sx={{ width: '120px' }}>Source</TableCell>
+            <TableCell sx={{ width: '90px' }}>Status</TableCell>
+            <TableCell sx={{ width: '100px' }}>Actions</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
-          {data.map((tool, index) => (
+          {filteredTools.map((tool, index) => (
             <TableRow key={tool.id || index}>
               <TableCell padding="checkbox">
                 <Checkbox
@@ -248,14 +342,33 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
                 />
               </TableCell>
               <TableCell>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <ToolIcon fontSize="small" />
-                  <Box>
-                    <Typography variant="body2" fontWeight="bold">
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, overflow: 'hidden' }}>
+                  <ToolIcon fontSize="small" sx={{ flexShrink: 0 }} />
+                  <Box sx={{ overflow: 'hidden' }}>
+                    <Typography 
+                      variant="body2" 
+                      fontWeight="bold"
+                      title={tool.name}
+                      sx={{ 
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
                       {tool.name}
                     </Typography>
                     {tool.description && (
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography 
+                        variant="caption" 
+                        color="text.secondary"
+                        title={tool.description}
+                        sx={{ 
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          display: 'block'
+                        }}
+                      >
                         {tool.description}
                       </Typography>
                     )}
@@ -276,7 +389,9 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
               </TableCell>
               <TableCell>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  {tool.is_manual ? (
+                  {tool.endpoint.startsWith('internal://') ? (
+                    <Chip label="Internal" size="small" color="primary" />
+                  ) : tool.is_manual ? (
                     <Chip label="Manual" size="small" color="warning" />
                   ) : (
                     <Chip 
@@ -295,18 +410,17 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
                 />
               </TableCell>
               <TableCell>
-                <IconButton size="small" onClick={() => setViewingTool(tool) || setViewDialog(true)}>
-                  <ViewIcon />
-                </IconButton>
                 <IconButton size="small" onClick={() => handleEdit(tool)}>
                   <EditIcon />
                 </IconButton>
                 <IconButton 
                   size="small" 
-                  onClick={() => handleDelete(tool.id!)}
-                  color="error"
+                  onClick={(e) => {
+                    setActionMenuAnchor(e.currentTarget);
+                    setActionMenuTool(tool);
+                  }}
                 >
-                  <DeleteIcon />
+                  <MoreVertIcon />
                 </IconButton>
               </TableCell>
             </TableRow>
@@ -435,13 +549,6 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
         <Typography variant="h6">MCP Tool Management</Typography>
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Button 
-            onClick={handleCacheReload} 
-            startIcon={<CacheIcon />}
-            variant="outlined"
-          >
-            Reload Cache
-          </Button>
-          <Button 
             onClick={handleExportTools} 
             startIcon={<ExportIcon />}
             variant="outlined"
@@ -449,7 +556,7 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
             Export Tools
           </Button>
           <Button onClick={onRefresh} startIcon={<RefreshIcon />}>
-            Refresh
+            Refresh Data
           </Button>
           <Button 
             onClick={handleAdd} 
@@ -461,26 +568,73 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
         </Box>
       </Box>
 
-      {selectedTools.length > 0 && (
-        <Alert 
-          severity="info" 
-          sx={{ mb: 2 }}
-          action={
-            <Button 
-              color="inherit" 
-              size="small" 
-              onClick={() => setBulkDialog(true)}
+      {/* Filters */}
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <InputLabel>Status Filter</InputLabel>
+            <Select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as 'all' | 'active' | 'inactive')}
+              label="Status Filter"
             >
-              Bulk Actions
-            </Button>
-          }
-        >
-          {selectedTools.length} tool(s) selected
-        </Alert>
-      )}
+              <MenuItem value="all">All Status</MenuItem>
+              <MenuItem value="active">Active ({data.filter(t => t.is_active).length})</MenuItem>
+              <MenuItem value="inactive">Inactive ({data.filter(t => !t.is_active).length})</MenuItem>
+            </Select>
+          </FormControl>
+          
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel>Server Filter</InputLabel>
+            <Select
+              value={serverFilter}
+              onChange={(e) => setServerFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+              label="Server Filter"
+            >
+              <MenuItem value="all">All Servers</MenuItem>
+              {hasInternalTools && (
+                <MenuItem value={-1} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Chip label="Internal" size="small" color="primary" sx={{ height: 20 }} />
+                  <span>({data.filter(t => t.endpoint.startsWith('internal://')).length})</span>
+                </MenuItem>
+              )}
+              {hasManualTools && (
+                <MenuItem value={0} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Chip label="Manual" size="small" color="warning" sx={{ height: 20 }} />
+                  <span>({data.filter(t => t.is_manual && !t.endpoint.startsWith('internal://') && (t.server_id === null || t.server_id === undefined)).length})</span>
+                </MenuItem>
+              )}
+              {uniqueServers.map(server => (
+                <MenuItem key={server.id} value={server.id}>
+                  {server.name} ({data.filter(t => t.server_id === server.id).length})
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          
+          {(statusFilter !== 'all' || serverFilter !== 'all') && (
+            <Typography variant="body2" color="text.secondary">
+              Showing {filteredTools.length} of {data.length} tools
+            </Typography>
+          )}
+        </Box>
+
+        {selectedTools.length > 0 && (
+          <Button 
+            color="primary" 
+            size="small" 
+            onClick={() => setBulkDialog(true)}
+            variant="outlined"
+          >
+            Bulk Actions ({selectedTools.length})
+          </Button>
+        )}
+      </Box>
 
       {data.length === 0 ? (
         <Alert severity="info">No MCP tools found. Add servers to discover tools automatically.</Alert>
+      ) : filteredTools.length === 0 ? (
+        <Alert severity="info">No tools match the selected filter. Try changing the status filter.</Alert>
       ) : (
         renderToolTable()
       )}
@@ -520,7 +674,7 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
             Selected {selectedTools.length} tool(s). Choose an action:
           </Typography>
           <List>
-            <ListItem button onClick={handleBulkToggle}>
+            <ListItem onClick={handleBulkToggle} sx={{ cursor: 'pointer' }}>
               <ListItemText 
                 primary="Toggle Active Status" 
                 secondary="Enable inactive tools, disable active tools"
@@ -532,6 +686,43 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
           <Button onClick={() => setBulkDialog(false)}>Cancel</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Action Menu */}
+      <Menu
+        anchorEl={actionMenuAnchor}
+        open={Boolean(actionMenuAnchor)}
+        onClose={handleCloseActionMenu}
+      >
+        <MuiMenuItem onClick={() => handleMenuAction('view')}>
+          <ViewIcon sx={{ mr: 1 }} fontSize="small" />
+          View Details
+        </MuiMenuItem>
+        <MuiMenuItem onClick={() => handleMenuAction('toggle')}>
+          <SettingsIcon sx={{ mr: 1 }} fontSize="small" />
+          {actionMenuTool?.is_active ? 'Disable Tool' : 'Enable Tool'}
+        </MuiMenuItem>
+        <Divider />
+        <MuiMenuItem onClick={() => handleMenuAction('delete')}>
+          <DeleteIcon sx={{ mr: 1 }} fontSize="small" color="error" />
+          <Typography color="error">Delete Tool</Typography>
+        </MuiMenuItem>
+      </Menu>
+
+      {/* Notification Snackbar */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        <Alert 
+          onClose={() => setSnackbar({ ...snackbar, open: false })} 
+          severity={snackbar.severity}
+          sx={{ width: '100%' }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

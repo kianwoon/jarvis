@@ -106,4 +106,49 @@ def reload_enabled_mcp_tools():
     except Exception as e:
         logger.error(f"Failed to reload MCP tools from database: {e}")
         # Return empty dict on error to prevent crashes
-        return {} 
+        return {}
+
+def get_mcp_tool_config():
+    """Get MCP tool configuration settings"""
+    try:
+        from app.core.db import SessionLocal, Settings as SettingsModel
+        
+        db = SessionLocal()
+        try:
+            # Get MCP settings from database
+            settings_row = db.query(SettingsModel).filter(SettingsModel.category == 'mcp').first()
+            
+            # Default configuration
+            default_config = {
+                "max_tool_calls": 3,
+                "tool_timeout_seconds": 30,
+                "enable_tool_retries": True,
+                "max_tool_retries": 2
+            }
+            
+            if settings_row and settings_row.settings:
+                # Merge database settings with defaults
+                config = {**default_config, **settings_row.settings}
+                logger.debug(f"[MCP CONFIG] Loaded tool configuration: max_tool_calls={config.get('max_tool_calls', 3)}")
+                return config
+            else:
+                logger.debug("[MCP CONFIG] No tool configuration found, using defaults")
+                return default_config
+                
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"[MCP CONFIG] Failed to get tool configuration: {e}")
+        # Return defaults on error
+        return {
+            "max_tool_calls": 3,
+            "tool_timeout_seconds": 30,
+            "enable_tool_retries": True,
+            "max_tool_retries": 2
+        }
+
+def get_max_tool_calls():
+    """Get the maximum number of tool calls allowed per request"""
+    config = get_mcp_tool_config()
+    return config.get("max_tool_calls", 3) 

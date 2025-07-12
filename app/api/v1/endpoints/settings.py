@@ -22,6 +22,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+@router.post("/llm/cache/reload")
+def reload_llm_cache():
+    """Force reload LLM settings cache from database"""
+    try:
+        settings = reload_llm_settings()
+        return {
+            "success": True, 
+            "message": "LLM cache reloaded successfully",
+            "model": settings.get("model", "unknown"),
+            "cache_size": len(str(settings))
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload LLM cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload LLM cache: {str(e)}")
+
 # Dependency to get DB session
 def get_db():
     db = SessionLocal()
@@ -302,6 +317,11 @@ def get_settings(category: str, db: Session = Depends(get_db)):
 def update_settings(category: str, update: SettingsUpdate, db: Session = Depends(get_db)):
     logger.info(f"Updating settings for category: {category}")
     logger.info(f"Update payload: persist_to_db={update.persist_to_db}, reload_cache={update.reload_cache}")
+    
+    # Debug log all settings data for MCP
+    if category == 'mcp':
+        logger.info(f"MCP settings received - keys: {list(update.settings.keys())}")
+        logger.info(f"MCP settings content: {update.settings}")
     
     # Debug log for API key
     if category == 'mcp' and 'api_key' in update.settings:
@@ -591,8 +611,27 @@ def handle_mcp_settings_update(update: SettingsUpdate, db: Session):
     
     logger.info(f"MCP settings: manifest_url={manifest_url}, api_key={'[REDACTED]' if api_key else 'None'}, hostname={hostname}, endpoint_prefix={endpoint_prefix}")
     
-    if not manifest_url:
+    # Check if this is a tool configuration update (no manifest_url required)
+    tool_config_fields = ['max_tool_calls', 'tool_timeout_seconds', 'enable_tool_retries', 'max_tool_retries']
+    # Check both the top-level settings and nested settings.settings
+    is_tool_config_update = any(field in settings for field in tool_config_fields)
+    if not is_tool_config_update and 'settings' in settings:
+        # Also check nested settings object for tool configuration fields
+        nested_settings = settings['settings']
+        if isinstance(nested_settings, dict):
+            is_tool_config_update = any(field in nested_settings for field in tool_config_fields)
+    
+    logger.info(f"MCP settings update check - is_tool_config_update: {is_tool_config_update}, settings keys: {list(settings.keys())}")
+    
+    if not manifest_url and not is_tool_config_update:
         logger.warning("No manifest URL provided for MCP settings update")
+        return
+    
+    # If this is only a tool configuration update, no need for manifest processing
+    if is_tool_config_update and not manifest_url:
+        logger.info("Processing tool configuration update (no manifest URL required)")
+        # Just save the tool configuration settings - they're already handled in the main settings update
+        reload_enabled_mcp_tools()
         return
     
     # Flag to track if we should attempt to reload the cache

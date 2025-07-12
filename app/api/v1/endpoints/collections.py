@@ -187,13 +187,25 @@ async def list_collections(db=Depends(get_db), include_stats: bool = False):
             return []
             
         # Get collections from database
-        query = """
-            SELECT id, collection_name, collection_type, description, 
-                   metadata_schema, search_config, access_config, 
-                   created_at, updated_at
-            FROM collection_registry 
-            ORDER BY created_at DESC
-        """
+        if include_stats:
+            # Join with statistics table
+            query = """
+                SELECT cr.id, cr.collection_name, cr.collection_type, cr.description, 
+                       cr.metadata_schema, cr.search_config, cr.access_config, 
+                       cr.created_at, cr.updated_at,
+                       cs.document_count, cs.total_chunks, cs.storage_size_mb, cs.last_updated
+                FROM collection_registry cr
+                LEFT JOIN collection_statistics cs ON cr.collection_name = cs.collection_name
+                ORDER BY cr.created_at DESC
+            """
+        else:
+            query = """
+                SELECT id, collection_name, collection_type, description, 
+                       metadata_schema, search_config, access_config, 
+                       created_at, updated_at
+                FROM collection_registry 
+                ORDER BY created_at DESC
+            """
         result = db.execute(text(query)).fetchall()
         
         collections = []
@@ -223,18 +235,28 @@ async def list_collections(db=Depends(get_db), include_stats: bool = False):
             
             # Add statistics only if requested
             if include_stats:
-                stats = milvus_stats.get(collection_name, {
-                    "document_count": 0,
-                    "total_chunks": 0,
-                    "storage_size_mb": 0.0,
-                    "status": "not_fetched"
-                })
-                collection_data["statistics"] = {
-                    "document_count": stats.get('document_count', 0),
-                    "total_chunks": stats.get('total_chunks', 0),
-                    "storage_size_mb": stats.get('storage_size_mb', 0.0),
-                    "status": stats.get('status', 'unknown')
-                }
+                # Use database stats if available
+                if len(row) > 9 and row[9] is not None:
+                    collection_data["statistics"] = {
+                        "document_count": row[9] or 0,
+                        "total_chunks": row[10] or 0,
+                        "storage_size_mb": float(row[11] or 0),
+                        "last_updated": row[12].isoformat() if row[12] else None
+                    }
+                else:
+                    # Fallback to Milvus stats if not in database
+                    stats = milvus_stats.get(collection_name, {
+                        "document_count": 0,
+                        "total_chunks": 0,
+                        "storage_size_mb": 0.0,
+                        "status": "not_fetched"
+                    })
+                    collection_data["statistics"] = {
+                        "document_count": stats.get('document_count', 0),
+                        "total_chunks": stats.get('total_chunks', 0),
+                        "storage_size_mb": stats.get('storage_size_mb', 0.0),
+                        "status": stats.get('status', 'unknown')
+                    }
             else:
                 # Return placeholder stats when not fetching
                 collection_data["statistics"] = {
@@ -703,22 +725,49 @@ async def analyze_collection(collection_name: str):
         raise HTTPException(status_code=500, detail="Failed to analyze collection")
 
 @router.post("/refresh-statistics")
-async def refresh_statistics():
-    """Get real-time statistics for all collections from Milvus"""
+async def refresh_statistics(db=Depends(get_db)):
+    """Get real-time statistics for all collections from Milvus and update database"""
     try:
         # Get stats directly from Milvus
         stats_list = MilvusStats.get_all_collections_stats()
+        
+        # Update statistics in database
+        from app.core.db import CollectionStatistics
+        from datetime import datetime
+        
+        for stat in stats_list:
+            collection_name = stat['collection_name']
+            
+            # Get or create statistics record
+            stats_record = db.query(CollectionStatistics).filter(
+                CollectionStatistics.collection_name == collection_name
+            ).first()
+            
+            if not stats_record:
+                stats_record = CollectionStatistics(
+                    collection_name=collection_name
+                )
+                db.add(stats_record)
+            
+            # Update statistics
+            stats_record.document_count = stat.get('document_count', 0)
+            stats_record.total_chunks = stat.get('total_chunks', 0)
+            stats_record.storage_size_mb = stat.get('storage_size_mb', 0.0)
+            stats_record.last_updated = datetime.utcnow()
+        
+        db.commit()
         
         # Convert list to dict for response
         stats_dict = {stat['collection_name']: stat for stat in stats_list}
         
         return {
-            "message": "Statistics retrieved successfully",
+            "message": "Statistics retrieved and updated successfully",
             "collections_found": len(stats_list),
             "statistics": stats_dict
         }
     except Exception as e:
         logger.error(f"Failed to get statistics: {e}")
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to get statistics: {str(e)}")
 
 @router.get("/{collection_name}/statistics")

@@ -16,7 +16,6 @@ import {
   Edit as EditIcon,
   Delete as DeleteIcon,
   MoreVert as MoreIcon,
-  PlayArrow as PlayIcon,
   ContentCopy as CopyIcon,
   PowerSettingsNew as PowerIcon,
   AccountTree as NodeIcon,
@@ -44,7 +43,6 @@ interface WorkflowCardProps {
   onDelete: () => void;
   onDuplicate: () => void;
   onToggleActive: () => void;
-  onExecute: () => void;
 }
 
 const WorkflowCard: React.FC<WorkflowCardProps> = ({
@@ -53,8 +51,7 @@ const WorkflowCard: React.FC<WorkflowCardProps> = ({
   onEdit,
   onDelete,
   onDuplicate,
-  onToggleActive,
-  onExecute
+  onToggleActive
 }) => {
   const [anchorEl, setAnchorEl] = React.useState<null | HTMLElement>(null);
 
@@ -174,22 +171,15 @@ const WorkflowCard: React.FC<WorkflowCardProps> = ({
         </Typography>
       </CardContent>
 
-      <CardActions sx={{ justifyContent: 'space-between', px: 2, pb: 2 }}>
+      <CardActions sx={{ px: 2, pb: 2 }}>
         <Button
           startIcon={<EditIcon />}
           onClick={onEdit}
           size="small"
+          fullWidth
+          variant="outlined"
         >
-          Edit
-        </Button>
-        <Button
-          startIcon={<PlayIcon />}
-          onClick={onExecute}
-          size="small"
-          color="primary"
-          variant="contained"
-        >
-          Execute
+          Edit Workflow
         </Button>
       </CardActions>
 

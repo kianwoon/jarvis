@@ -1,14 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Box,
-  TextField,
   Button,
   Paper,
   Typography,
   IconButton,
   CircularProgress,
-  Switch,
-  FormControlLabel,
   Chip,
   Alert,
   Accordion,
@@ -54,9 +51,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   console.log('🚀 ChatInterface component loaded with title:', title);
   
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [loading, setLoading] = useState(false);
-  const [thinking, setThinking] = useState(false);
   const [conversationId] = useState(() => {
     const storageKey = `jarvis-conversation-id-${title.toLowerCase().replace(/\s+/g, '-')}`;
     const saved = localStorage.getItem(storageKey);
@@ -109,9 +105,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   }, [messages]);
 
   const sendMessage = async () => {
-    if (!input.trim() || loading) return;
-
-    const currentInput = input.trim();
+    const currentInput = inputRef.current?.value.trim() || '';
+    if (!currentInput || loading) return;
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -120,13 +115,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     };
 
     setMessages(prev => [...prev, userMessage]);
-    setInput('');
+    if (inputRef.current) inputRef.current.value = '';
     setLoading(true);
 
     try {
       const requestBody = {
         question: currentInput,
-        thinking,
         conversation_id: conversationId,
         use_langgraph: false,
         // Include temporary document preferences if enabled
@@ -240,15 +234,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
         <Typography variant="h5">{title}</Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={thinking}
-                onChange={(e) => setThinking(e.target.checked)}
-              />
-            }
-            label="Thinking Mode"
-          />
           <IconButton onClick={clearChat} disabled={loading}>
             <ClearIcon />
           </IconButton>
@@ -373,16 +358,34 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       {/* Input */}
       <Box sx={{ display: 'flex', gap: 1 }}>
-        <TextField
-          fullWidth
-          multiline
-          maxRows={4}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyPress={handleKeyPress}
+        <Box
+          component="textarea"
+          ref={inputRef}
+          onKeyDown={handleKeyPress}
           placeholder="Ask Jarvis anything..."
           disabled={loading}
-          variant="outlined"
+          sx={{
+            flex: 1,
+            minHeight: '56px',
+            maxHeight: '120px',
+            padding: '16px',
+            border: 1,
+            borderColor: 'divider',
+            borderRadius: 1,
+            fontSize: '16px',
+            fontFamily: 'inherit',
+            resize: 'vertical',
+            outline: 'none',
+            backgroundColor: 'background.paper',
+            color: 'text.primary',
+            '&:focus': {
+              borderColor: 'primary.main'
+            },
+            '&:disabled': {
+              backgroundColor: 'action.disabled',
+              color: 'text.disabled'
+            }
+          }}
         />
         <FileUploadComponent
           onUploadSuccess={(result) => {
@@ -394,7 +397,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <Button
           variant="contained"
           onClick={sendMessage}
-          disabled={loading || !input.trim()}
+          disabled={loading}
           sx={{ minWidth: 60 }}
         >
           {loading ? <CircularProgress size={24} /> : <SendIcon />}

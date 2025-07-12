@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Settings Duplicate Debug Helper</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        .section { margin: 20px 0; padding: 10px; border: 1px solid #ccc; }
+        .duplicate { background-color: #ffcccc; }
+        pre { background: #f5f5f5; padding: 10px; overflow: auto; }
+    </style>
+</head>
+<body>
+    <h1>Settings Duplicate Debug Helper</h1>
+    
+    <div class="section">
+        <h2>Instructions:</h2>
+        <ol>
+            <li>Open browser console (F12)</li>
+            <li>Navigate to LLM or RAG settings page</li>
+            <li>Look for console logs starting with "[SettingsFormRenderer]"</li>
+            <li>Copy the logged data here to analyze</li>
+        </ol>
+    </div>
+    
+    <div class="section">
+        <h2>Debug Output Analysis:</h2>
+        <p>The debug logs will show:</p>
+        <ul>
+            <li><strong>Original data:</strong> What the backend sent</li>
+            <li><strong>Flattened data:</strong> After flattening process</li>
+            <li><strong>DUPLICATES FOUND:</strong> List of duplicate fields</li>
+            <li><strong>Final categories:</strong> How fields are categorized</li>
+        </ul>
+    </div>
+    
+    <div class="section">
+        <h2>Common Duplicate Patterns:</h2>
+        <pre>
+Example 1: Nested object duplicates
+- query_classifier (object)
+- query_classifier.min_confidence_threshold
+
+Example 2: Prefix duplicates  
+- api_key
+- settings.api_key
+
+Example 3: Category overlaps
+- max_tokens (in 'context' category)
+- max_tokens (in 'general' category)
+        </pre>
+    </div>
+    
+    <div class="section">
+        <h2>Paste Console Output Here:</h2>
+        <textarea id="debugOutput" rows="20" cols="100" placeholder="Paste [SettingsFormRenderer] logs here..."></textarea>
+        <button onclick="analyzeOutput()">Analyze</button>
+        <div id="analysis"></div>
+    </div>
+    
+    <script>
+    function analyzeOutput() {
+        const output = document.getElementById('debugOutput').value;
+        const analysis = document.getElementById('analysis');
+        
+        // Parse for duplicate patterns
+        const duplicateRegex = /Base key: (\w+)\s*\n\s*- ([^\n]+)\n\s*- ([^\n]+)/g;
+        const matches = [...output.matchAll(duplicateRegex)];
+        
+        if (matches.length > 0) {
+            let html = '<h3>Duplicate Analysis:</h3><ul>';
+            matches.forEach(match => {
+                html += `<li class="duplicate">
+                    <strong>${match[1]}</strong>: 
+                    <br>&nbsp;&nbsp;• ${match[2]}
+                    <br>&nbsp;&nbsp;• ${match[3]}
+                </li>`;
+            });
+            html += '</ul>';
+            html += '<p><strong>Recommendation:</strong> These fields are appearing multiple times. Check backend response structure.</p>';
+            analysis.innerHTML = html;
+        } else {
+            analysis.innerHTML = '<p>No duplicate patterns found in the output.</p>';
+        }
+    }
+    </script>
+</body>
+</html>

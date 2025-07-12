@@ -1640,6 +1640,14 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
         collections: List of collection names to search (None = auto-detect)
         collection_strategy: "auto", "specific", or "all"
     """
+    # Handle case where question might be passed as dict (from recent tool calling changes)
+    if isinstance(question, dict):
+        question = question.get('query', '')
+    
+    # Ensure question is a string
+    if not isinstance(question, str):
+        question = str(question) if question else ''
+    
     print(f"[DEBUG] handle_rag_query: question = {question}, thinking = {thinking}, collections = {collections}, strategy = {collection_strategy}")
     
     # Create RAG span for tracing
@@ -1711,9 +1719,25 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
         print(f"[DEBUG] handle_rag_query: Using HuggingFace embeddings with model: {model_name}")
     
     # Determine which collections to search
-    milvus_cfg = vector_db_cfg["milvus"]
-    uri = milvus_cfg.get("MILVUS_URI")
-    token = milvus_cfg.get("MILVUS_TOKEN")
+    # Handle both old and new vector database configuration formats
+    if "milvus" in vector_db_cfg:
+        # Legacy format
+        milvus_cfg = vector_db_cfg["milvus"]
+        uri = milvus_cfg.get("MILVUS_URI")
+        token = milvus_cfg.get("MILVUS_TOKEN")
+    else:
+        # New format - find milvus database in databases array
+        milvus_cfg = None
+        for db in vector_db_cfg.get("databases", []):
+            if db.get("id") == "milvus" and db.get("enabled", False):
+                milvus_cfg = db.get("config", {})
+                break
+        
+        if not milvus_cfg:
+            milvus_cfg = {}
+        
+        uri = milvus_cfg.get("MILVUS_URI")
+        token = milvus_cfg.get("MILVUS_TOKEN")
     
     # Get collections to search based on strategy
     collections_to_search = []
@@ -2713,7 +2737,8 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                             if isinstance(tool_result, dict) and 'result' in tool_result:
                                 rag_result = tool_result['result']
                                 if isinstance(rag_result, dict) and 'documents' in rag_result:
-                                    # Extract documents and convert to rag_sources format
+                                    # Replace existing rag_sources with tool results (don't append to avoid stacking)
+                                    tool_rag_sources = []
                                     for doc in rag_result['documents']:
                                         if isinstance(doc, dict):
                                             source_info = {
@@ -2723,8 +2748,11 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                                                 "score": doc.get('relevance_score', doc.get('score', 0.8)),  # Add score from tool results
                                                 "collection": doc.get('collection', 'default_knowledge')
                                             }
-                                            rag_sources.append(source_info)
-                                    print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from knowledge_search results")
+                                            tool_rag_sources.append(source_info)
+                                    
+                                    # Replace instead of append to prevent document stacking
+                                    rag_sources = tool_rag_sources
+                                    print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from knowledge_search results")
                     
                     # Keep query_type as TOOLS but ensure synthesis happens
                 else:
@@ -3140,7 +3168,8 @@ Please generate the requested items incorporating relevant information from the 
                             if isinstance(direct_result, dict) and 'result' in direct_result:
                                 rag_result = direct_result['result']
                                 if isinstance(rag_result, dict) and 'documents' in rag_result:
-                                    # Extract documents and convert to rag_sources format
+                                    # Replace existing rag_sources with tool results (don't append to avoid stacking)
+                                    tool_rag_sources = []
                                     for doc in rag_result['documents']:
                                         if isinstance(doc, dict):
                                             source_info = {
@@ -3150,8 +3179,11 @@ Please generate the requested items incorporating relevant information from the 
                                                 "score": doc.get('relevance_score', doc.get('score', 0.8)),  # Add score from tool results
                                                 "collection": doc.get('collection', 'default_knowledge')
                                             }
-                                            rag_sources.append(source_info)
-                                    print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from direct tool execution")
+                                            tool_rag_sources.append(source_info)
+                                    
+                                    # Replace instead of append to prevent document stacking
+                                    rag_sources = tool_rag_sources
+                                    print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from direct tool execution")
                         
                         print(f"[DEBUG] rag_answer: DIRECT EXECUTION SUCCESS - bypassing intelligent executor")
                     else:
@@ -3225,7 +3257,8 @@ Please generate the requested items incorporating relevant information from the 
                             if isinstance(tool_result, dict) and 'result' in tool_result:
                                 rag_result = tool_result['result']
                                 if isinstance(rag_result, dict) and 'documents' in rag_result:
-                                    # Extract documents and convert to rag_sources format
+                                    # Replace existing rag_sources with tool results (don't append to avoid stacking)
+                                    tool_rag_sources = []
                                     for doc in rag_result['documents']:
                                         if isinstance(doc, dict):
                                             source_info = {
@@ -3235,8 +3268,11 @@ Please generate the requested items incorporating relevant information from the 
                                                 "score": doc.get('relevance_score', doc.get('score', 0.8)),  # Add score from tool results
                                                 "collection": doc.get('collection', 'default_knowledge')
                                             }
-                                            rag_sources.append(source_info)
-                                    print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from intelligent executor results")
+                                            tool_rag_sources.append(source_info)
+                                    
+                                    # Replace instead of append to prevent document stacking
+                                    rag_sources = tool_rag_sources
+                                    print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from intelligent executor results")
                     
                     # End chat span with results
                     if chat_span:
@@ -3277,7 +3313,8 @@ Please generate the requested items incorporating relevant information from the 
                                     if isinstance(tool_result, dict) and 'result' in tool_result:
                                         rag_result = tool_result['result']
                                         if isinstance(rag_result, dict) and 'documents' in rag_result:
-                                            # Extract documents and convert to rag_sources format
+                                            # Replace existing rag_sources with tool results (don't append to avoid stacking)
+                                            tool_rag_sources = []
                                             for doc in rag_result['documents']:
                                                 if isinstance(doc, dict):
                                                     source_info = {
@@ -3286,8 +3323,11 @@ Please generate the requested items incorporating relevant information from the 
                                                         "page": doc.get('metadata', {}).get('page', 0),
                                                         "collection": doc.get('collection', 'default_knowledge')
                                                     }
-                                                    rag_sources.append(source_info)
-                                            print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from simple tool executor results")
+                                                    tool_rag_sources.append(source_info)
+                                            
+                                            # Replace instead of append to prevent document stacking
+                                            rag_sources = tool_rag_sources
+                                            print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from simple tool executor results")
                     except Exception as e2:
                         print(f"[DEBUG] rag_answer: Simple tool executor also failed: {e2}, trying original method")
                         # Fallback to original method
@@ -3305,7 +3345,8 @@ Please generate the requested items incorporating relevant information from the 
                                     if isinstance(tool_result, dict) and 'result' in tool_result:
                                         rag_result = tool_result['result']
                                         if isinstance(rag_result, dict) and 'documents' in rag_result:
-                                            # Extract documents and convert to rag_sources format
+                                            # Replace existing rag_sources with tool results (don't append to avoid stacking)
+                                            tool_rag_sources = []
                                             for doc in rag_result['documents']:
                                                 if isinstance(doc, dict):
                                                     source_info = {
@@ -3314,8 +3355,11 @@ Please generate the requested items incorporating relevant information from the 
                                                         "page": doc.get('metadata', {}).get('page', 0),
                                                         "collection": doc.get('collection', 'default_knowledge')
                                                     }
-                                                    rag_sources.append(source_info)
-                                            print(f"[DEBUG] rag_answer: Extracted {len(rag_sources)} documents from fallback results")
+                                                    tool_rag_sources.append(source_info)
+                                            
+                                            # Replace instead of append to prevent document stacking
+                                            rag_sources = tool_rag_sources
+                                            print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from fallback results")
             
         if not tool_calls:
             print(f"[DEBUG] rag_answer: No tools actually executed despite TOOLS classification")
@@ -3387,12 +3431,19 @@ Please generate the requested items incorporating relevant information from the 
         try:
             max_tokens = int(max_tokens_raw)
             # Sanity check - if someone set max_tokens to context window size, fix it
-            if max_tokens > 32768:
-                print(f"[WARNING] max_tokens {max_tokens} is too high (likely set to context window). Using 16384 for output.")
-                max_tokens = 16384
+            # Make this configurable based on model capabilities
+            context_length = llm_cfg.get("context_length", 40960)
+            max_output_ratio = 0.4  # Use max 40% of context for output
+            max_safe_tokens = int(context_length * max_output_ratio)
+            if max_tokens > max_safe_tokens:
+                print(f"[WARNING] max_tokens {max_tokens} is too high (likely set to context window). Using {max_safe_tokens} for output (40% of {context_length} context).")
+                max_tokens = max_safe_tokens
         except (ValueError, TypeError):
-            print(f"[WARNING] Invalid max_tokens value: {max_tokens_raw}, using 16384")
-            max_tokens = 16384
+            # Use fallback based on context length instead of hardcoded value
+            context_length = llm_cfg.get("context_length", 40960)
+            fallback_tokens = int(context_length * 0.3)  # Conservative 30% for fallback
+            print(f"[WARNING] Invalid max_tokens value: {max_tokens_raw}, using {fallback_tokens} (30% of {context_length} context)")
+            max_tokens = fallback_tokens
     
     print(f"[DEBUG] rag_answer: Final max_tokens being sent: {max_tokens}")
     print(f"[DEBUG] rag_answer: Model: {llm_cfg.get('model', 'unknown')}")
@@ -3412,6 +3463,9 @@ Please generate the requested items incorporating relevant information from the 
             from app.llm.ollama import OllamaLLM
             from app.llm.base import LLMConfig
             import os
+            
+            # Ensure rag_sources is available in this nested function scope
+            nonlocal rag_sources
             
             # Create LLM config exactly like multi-agent
             llm_config = LLMConfig(
@@ -3475,7 +3529,15 @@ Please generate the requested items incorporating relevant information from the 
                     logger.warning(f"Failed to end LLM generation span: {e}")
             
             # Parse and execute tool calls using enhanced error handling
-            tool_results = extract_and_execute_tool_calls(response_text, trace=trace, use_enhanced_error_handling=True)
+            # Skip redundant knowledge_search if RAG was already performed for this query type
+            skip_knowledge_search = (query_type == "RAG" and rag_context)
+            tool_results = extract_and_execute_tool_calls(
+                response_text, 
+                trace=trace, 
+                use_enhanced_error_handling=True,
+                skip_knowledge_search=skip_knowledge_search,
+                original_query=question
+            )
             
             if tool_results:
                 print(f"[DEBUG] Executed {len(tool_results)} tools from LLM response")
@@ -3488,7 +3550,8 @@ Please generate the requested items incorporating relevant information from the 
                         if isinstance(tool_result, dict) and 'result' in tool_result:
                             rag_result = tool_result['result']
                             if isinstance(rag_result, dict) and 'documents' in rag_result:
-                                # Extract documents and convert to rag_sources format
+                                # Replace existing rag_sources with tool results (don't append to avoid stacking)
+                                tool_rag_sources = []
                                 for doc in rag_result['documents']:
                                     if isinstance(doc, dict):
                                         source_info = {
@@ -3497,8 +3560,11 @@ Please generate the requested items incorporating relevant information from the 
                                             "page": doc.get('metadata', {}).get('page', 0),
                                             "collection": doc.get('collection', 'default_knowledge')
                                         }
-                                        rag_sources.append(source_info)
-                                print(f"[DEBUG] rag_answer: Extracted {len(rag_result['documents'])} documents from LLM tool call results")
+                                        tool_rag_sources.append(source_info)
+                                
+                                # Replace instead of append to prevent document stacking
+                                rag_sources = tool_rag_sources
+                                print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_result['documents'])} documents from LLM tool call results")
                 
                 # Stream tool execution results
                 for result in tool_results:
@@ -3510,11 +3576,12 @@ Please generate the requested items incorporating relevant information from the 
                         }
                     }) + "\n"
                 
-                # If tools were executed, we need to synthesize the response with tool results
-                if any(r.get('success') for r in tool_results):
-                    # Build enhanced response with tool results
+                # If tools were executed successfully (excluding skipped ones), we need to synthesize the response with tool results
+                successful_tool_results = [r for r in tool_results if r.get('success') and not r.get('skipped')]
+                if successful_tool_results:
+                    # Build enhanced response with tool results (excluding skipped tools)
                     tool_context = "\n\nTool Results:\n"
-                    for tr in tool_results:
+                    for tr in successful_tool_results:
                         # Handle tool result structure properly
                         if 'result' in tr and tr.get('success', False):
                             tool_context += f"\n{tr['tool']}: {json.dumps(tr['result'], indent=2)}\n"
@@ -3523,12 +3590,12 @@ Please generate the requested items incorporating relevant information from the 
                         else:
                             tool_context += f"\n{tr['tool']}: No result available\n"
                     
-                    # Create a follow-up prompt to synthesize with tool results
+                    # Create a follow-up prompt to synthesize with tool results using the actual user question
                     synthesis_prompt = f"""You need to provide a final answer based on the tool results below.
 
 {tool_context}
 
-Based on these search results, provide a comprehensive answer to the user's question about latest AI news. Format the information clearly and include the most relevant findings."""
+Based on these search results, provide a comprehensive answer to the user's question: "{question}". Format the information clearly and include the most relevant findings."""
                     
                     # Create LLM generation span for synthesis
                     synthesis_generation_span = None
@@ -3664,14 +3731,23 @@ Based on these search results, provide a comprehensive answer to the user's ques
                 logger.warning(f"Failed to end LLM generation span: {e}")
         
         # Parse and execute tool calls using enhanced error handling
-        tool_results = extract_and_execute_tool_calls(response_text, trace=trace, use_enhanced_error_handling=True)
+        # Skip redundant knowledge_search if RAG was already performed for this query type
+        skip_knowledge_search = (query_type == "RAG" and rag_context)
+        tool_results = extract_and_execute_tool_calls(
+            response_text, 
+            trace=trace, 
+            use_enhanced_error_handling=True,
+            skip_knowledge_search=skip_knowledge_search,
+            original_query=question
+        )
         
-        if tool_results and any(r.get('success') for r in tool_results):
-            # Build enhanced response with tool results
+        # Filter out skipped tool results from synthesis
+        successful_tool_results = [r for r in tool_results if r.get('success') and not r.get('skipped')]
+        if successful_tool_results:
+            # Build enhanced response with tool results (excluding skipped tools)
             tool_context = "\n\nTool Results:\n"
-            for tr in tool_results:
-                if tr.get('success'):
-                    tool_context += f"\n{tr['tool']}: {json.dumps(tr['result'], indent=2)}\n"
+            for tr in successful_tool_results:
+                tool_context += f"\n{tr['tool']}: {json.dumps(tr['result'], indent=2)}\n"
             
             # Create a follow-up prompt to synthesize with tool results
             synthesis_prompt = f"""{response_text}
@@ -4294,7 +4370,7 @@ def call_mcp_tool_with_generic_endpoint(tool_name, parameters, tool_info):
         print(f"[ERROR] {error_msg}")
         return {"error": error_msg}
 
-async def extract_and_execute_tool_calls_async(text, stream_callback=None, trace=None, use_enhanced_error_handling=True):
+async def extract_and_execute_tool_calls_async(text, stream_callback=None, trace=None, use_enhanced_error_handling=True, skip_knowledge_search=False, original_query=None):
     """
     Async version of extract_and_execute_tool_calls with enhanced error handling
     """
@@ -4304,10 +4380,11 @@ async def extract_and_execute_tool_calls_async(text, stream_callback=None, trace
         print("[DEBUG] Tool extraction: LLM indicated no tools needed")
         return []
         
-    # Enhanced pattern to catch more tool call variations
+    # Enhanced pattern to catch more tool call variations + handle malformed calls
     tool_calls_patterns = [
-        r'<tool>(.*?)\((.*?)\)</tool>',  # Standard format
-        r'<tool>(.*?):\s*(.*?)</tool>',  # Alternative format with colon
+        r'<tool>(.*?)\((.*?)\)</tool>',  # Standard format: <tool>name(params)</tool>
+        r'<tool>(.*?):\s*(.*?)</tool>',  # Alternative format: <tool>name: params</tool>
+        r'<tool>(\w+)(?:\s+.*?)?</tool>', # Malformed: <tool>name with extra text</tool> - extract just the tool name
         r'Tool:\s*(.*?)\((.*?)\)',       # Plain format
     ]
     
@@ -4316,7 +4393,21 @@ async def extract_and_execute_tool_calls_async(text, stream_callback=None, trace
         matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
         if matches:
             print(f"[DEBUG] Tool extraction: Found {len(matches)} tool calls with pattern: {pattern}")
-            tool_calls.extend(matches)
+            # Handle both tuple (tool_name, params) and single tool_name matches
+            normalized_matches = []
+            for match in matches:
+                if isinstance(match, tuple) and len(match) == 2:
+                    # Standard format: (tool_name, params)
+                    normalized_matches.append(match)
+                elif isinstance(match, str):
+                    # Malformed format: just tool_name, add empty params
+                    print(f"[DEBUG] Tool extraction: Fixed malformed tool call: {match}")
+                    normalized_matches.append((match, "{}"))
+                else:
+                    # Fallback for unexpected formats
+                    print(f"[WARNING] Tool extraction: Unexpected match format: {match}")
+                    continue
+            tool_calls.extend(normalized_matches)
             break  # Use first matching pattern only
     
     # If no tool calls found, return empty list
@@ -4337,6 +4428,14 @@ async def extract_and_execute_tool_calls_async(text, stream_callback=None, trace
             print(f"[DEBUG] Tool extraction: Skipping duplicate call to {tool_name}")
     
     tool_calls = unique_tools
+    
+    # Limit tool calls to prevent infinite loops (configurable via MCP settings)
+    from app.core.mcp_tools_cache import get_max_tool_calls
+    MAX_TOOL_CALLS = get_max_tool_calls()
+    if len(tool_calls) > MAX_TOOL_CALLS:
+        print(f"[WARNING] Tool extraction: Limited tool calls from {len(tool_calls)} to {MAX_TOOL_CALLS} to prevent infinite loops")
+        tool_calls = tool_calls[:MAX_TOOL_CALLS]
+    
     print(f"[DEBUG] Tool extraction: {len(tool_calls)} unique tools to execute")
     
     results = []
@@ -4349,6 +4448,21 @@ async def extract_and_execute_tool_calls_async(text, stream_callback=None, trace
                 stream_callback(f"🔧 Executing tool: {tool_name}")
             
             print(f"[DEBUG] Tool execution [{i+1}/{len(tool_calls)}]: {tool_name}")
+            
+            # Skip knowledge_search tools if skip_knowledge_search is enabled (prevents redundant RAG operations)
+            # Handle both exact matches and malformed tool names containing "knowledge_search"
+            if skip_knowledge_search and ("knowledge_search" in tool_name.lower()):
+                print(f"[DEBUG] Skipping knowledge_search tool call to prevent redundant RAG operation (tool_name: {tool_name})")
+                if stream_callback:
+                    stream_callback(f"⏭️ Skipping knowledge_search (RAG already performed)")
+                results.append({
+                    "tool": tool_name,
+                    "parameters": params_str,
+                    "success": True,
+                    "result": {"message": "Skipped to prevent redundant RAG operation"},
+                    "skipped": True
+                })
+                continue
             
             # Parse parameters with enhanced error handling
             if params_str == "{}" or params_str == "" or params_str.lower() == "none":
@@ -4476,7 +4590,7 @@ async def extract_and_execute_tool_calls_async(text, stream_callback=None, trace
     print(f"[DEBUG] Tool execution complete: {len(results)} results")
     return results
 
-def extract_and_execute_tool_calls(text, stream_callback=None, trace=None, use_enhanced_error_handling=False):
+def extract_and_execute_tool_calls(text, stream_callback=None, trace=None, use_enhanced_error_handling=False, skip_knowledge_search=False, original_query=None):
     """
     Synchronous wrapper for extract_and_execute_tool_calls_async
     
@@ -4485,6 +4599,8 @@ def extract_and_execute_tool_calls(text, stream_callback=None, trace=None, use_e
         stream_callback: Optional callback to stream tool execution updates
         trace: Optional Langfuse trace for span creation
         use_enhanced_error_handling: Whether to use enhanced error handling (default: False for compatibility)
+        skip_knowledge_search: Whether to skip redundant knowledge_search calls (default: False)
+        original_query: The original query for redundancy checking (default: None)
     
     Returns:
         List of tool execution results
@@ -4500,13 +4616,13 @@ def extract_and_execute_tool_calls(text, stream_callback=None, trace=None, use_e
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(
-                    lambda: asyncio.run(extract_and_execute_tool_calls_async(text, stream_callback, trace, use_enhanced_error_handling))
+                    lambda: asyncio.run(extract_and_execute_tool_calls_async(text, stream_callback, trace, use_enhanced_error_handling, skip_knowledge_search, original_query))
                 )
                 return future.result()
         except RuntimeError:
             # No running loop, we can use asyncio.run
             try:
-                return asyncio.run(extract_and_execute_tool_calls_async(text, stream_callback, trace, use_enhanced_error_handling))
+                return asyncio.run(extract_and_execute_tool_calls_async(text, stream_callback, trace, use_enhanced_error_handling, skip_knowledge_search, original_query))
             except Exception as e:
                 print(f"[ERROR] Async execution failed: {e}")
                 # Fall back to sync implementation
@@ -4519,10 +4635,11 @@ def extract_and_execute_tool_calls(text, stream_callback=None, trace=None, use_e
         print("[DEBUG] Tool extraction: LLM indicated no tools needed")
         return []
         
-    # Enhanced pattern to catch more tool call variations
+    # Enhanced pattern to catch more tool call variations + handle malformed calls
     tool_calls_patterns = [
-        r'<tool>(.*?)\((.*?)\)</tool>',  # Standard format
-        r'<tool>(.*?):\s*(.*?)</tool>',  # Alternative format with colon
+        r'<tool>(.*?)\((.*?)\)</tool>',  # Standard format: <tool>name(params)</tool>
+        r'<tool>(.*?):\s*(.*?)</tool>',  # Alternative format: <tool>name: params</tool>
+        r'<tool>(\w+)(?:\s+.*?)?</tool>', # Malformed: <tool>name with extra text</tool> - extract just the tool name
         r'Tool:\s*(.*?)\((.*?)\)',       # Plain format
     ]
     
@@ -4531,7 +4648,21 @@ def extract_and_execute_tool_calls(text, stream_callback=None, trace=None, use_e
         matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
         if matches:
             print(f"[DEBUG] Tool extraction: Found {len(matches)} tool calls with pattern: {pattern}")
-            tool_calls.extend(matches)
+            # Handle both tuple (tool_name, params) and single tool_name matches
+            normalized_matches = []
+            for match in matches:
+                if isinstance(match, tuple) and len(match) == 2:
+                    # Standard format: (tool_name, params)
+                    normalized_matches.append(match)
+                elif isinstance(match, str):
+                    # Malformed format: just tool_name, add empty params
+                    print(f"[DEBUG] Tool extraction: Fixed malformed tool call: {match}")
+                    normalized_matches.append((match, "{}"))
+                else:
+                    # Fallback for unexpected formats
+                    print(f"[WARNING] Tool extraction: Unexpected match format: {match}")
+                    continue
+            tool_calls.extend(normalized_matches)
             break  # Use first matching pattern only
     
     # If no tool calls found, return empty list
@@ -4552,6 +4683,14 @@ def extract_and_execute_tool_calls(text, stream_callback=None, trace=None, use_e
             print(f"[DEBUG] Tool extraction: Skipping duplicate call to {tool_name}")
     
     tool_calls = unique_tools
+    
+    # Limit tool calls to prevent infinite loops (configurable via MCP settings)
+    from app.core.mcp_tools_cache import get_max_tool_calls
+    MAX_TOOL_CALLS = get_max_tool_calls()
+    if len(tool_calls) > MAX_TOOL_CALLS:
+        print(f"[WARNING] Tool extraction: Limited tool calls from {len(tool_calls)} to {MAX_TOOL_CALLS} to prevent infinite loops")
+        tool_calls = tool_calls[:MAX_TOOL_CALLS]
+    
     print(f"[DEBUG] Tool extraction: {len(tool_calls)} unique tools to execute")
     
     results = []

@@ -33,7 +33,10 @@ import {
   CardContent,
   CardHeader,
   Tabs,
-  Tab
+  Tab,
+  Menu,
+  MenuItem as MuiMenuItem,
+  Snackbar
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -50,7 +53,8 @@ import {
   Web as RemoteIcon,
   Description as ManifestIcon,
   Security as SecurityIcon,
-  Cached as CacheIcon
+  Cached as CacheIcon,
+  MoreVert as MoreVertIcon
 } from '@mui/icons-material';
 
 interface MCPServer {
@@ -123,14 +127,24 @@ interface MCPServer {
   last_health_check?: string;
 }
 
+interface MCPTool {
+  id: number;
+  name: string;
+  endpoint: string;
+  is_active: boolean;
+  server_id?: number;
+}
+
 interface MCPServerManagerProps {
   data: MCPServer[];
+  tools?: MCPTool[];
   onChange: (data: MCPServer[]) => void;
   onRefresh: () => void;
 }
 
 const MCPServerManager: React.FC<MCPServerManagerProps> = ({
   data,
+  tools,
   onChange,
   onRefresh
 }) => {
@@ -139,6 +153,13 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
   const [editingServer, setEditingServer] = useState<MCPServer | null>(null);
   const [viewDialog, setViewDialog] = useState(false);
   const [viewingServer, setViewingServer] = useState<MCPServer | null>(null);
+  const [actionMenuAnchor, setActionMenuAnchor] = useState<null | HTMLElement>(null);
+  const [actionMenuServer, setActionMenuServer] = useState<MCPServer | null>(null);
+  const [snackbar, setSnackbar] = useState<{open: boolean, message: string, severity: 'success' | 'error' | 'info'}>({
+    open: false,
+    message: '',
+    severity: 'info'
+  });
 
   const getServerTypeIcon = (type: string) => {
     switch (type) {
@@ -162,6 +183,10 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
       default:
         return 'default';
     }
+  };
+
+  const showNotification = (message: string, severity: 'success' | 'error' | 'info' = 'info') => {
+    setSnackbar({ open: true, message, severity });
   };
 
   const getNewServerTemplate = (type: 'manifest' | 'command' | 'remote_http'): MCPServer => {
@@ -240,12 +265,13 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
     try {
       const response = await fetch(`/api/v1/mcp/servers/${id}/`, { method: 'DELETE' });
       if (response.ok) {
+        showNotification('Server deleted successfully', 'success');
         onRefresh();
       } else {
-        alert('Failed to delete server');
+        showNotification('Failed to delete server', 'error');
       }
     } catch (error) {
-      alert('Error deleting server: ' + error);
+      showNotification('Error deleting server: ' + error, 'error');
     }
   };
 
@@ -266,12 +292,13 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
       if (response.ok) {
         setEditDialog(false);
         setEditingServer(null);
+        showNotification('Server saved successfully', 'success');
         onRefresh();
       } else {
-        alert('Failed to save server');
+        showNotification('Failed to save server', 'error');
       }
     } catch (error) {
-      alert('Error saving server: ' + error);
+      showNotification('Error saving server: ' + error, 'error');
     }
   };
 
@@ -283,13 +310,15 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
       
       if (response.ok) {
         const result = await response.json();
-        alert(result.message || `${action} completed successfully`);
-        onRefresh();
+        showNotification(result.message || `${action} completed successfully`, 'success');
+        if (action !== 'health') { // Don't refresh for health checks
+          onRefresh();
+        }
       } else {
-        alert(`Failed to ${action} server`);
+        showNotification(`Failed to ${action} server`, 'error');
       }
     } catch (error) {
-      alert(`Error during ${action}: ` + error);
+      showNotification(`Error during ${action}: ` + error, 'error');
     }
   };
 
@@ -333,56 +362,20 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
                 />
               </TableCell>
               <TableCell>
-                <Button 
-                  size="small" 
-                  onClick={() => handleServerAction(server.id!, 'discover-tools')}
-                >
-                  Discover
-                </Button>
+                {tools?.filter(t => t.server_id === server.id).length || 0} tools
               </TableCell>
               <TableCell>
-                <IconButton size="small" onClick={() => setViewingServer(server) || setViewDialog(true)}>
-                  <SettingsIcon />
-                </IconButton>
                 <IconButton size="small" onClick={() => handleEdit(server)}>
                   <EditIcon />
                 </IconButton>
-                {server.config_type === 'command' && (
-                  <>
-                    <IconButton 
-                      size="small" 
-                      onClick={() => handleServerAction(server.id!, 'start')}
-                      color="primary"
-                    >
-                      <StartIcon />
-                    </IconButton>
-                    <IconButton 
-                      size="small" 
-                      onClick={() => handleServerAction(server.id!, 'stop')}
-                      color="error"
-                    >
-                      <StopIcon />
-                    </IconButton>
-                  </>
-                )}
                 <IconButton 
                   size="small" 
-                  onClick={() => handleServerAction(server.id!, 'health')}
+                  onClick={(e) => {
+                    setActionMenuAnchor(e.currentTarget);
+                    setActionMenuServer(server);
+                  }}
                 >
-                  <HealthIcon />
-                </IconButton>
-                <IconButton 
-                  size="small" 
-                  onClick={() => handleServerAction(server.id!, 'refresh')}
-                >
-                  <RefreshIcon />
-                </IconButton>
-                <IconButton 
-                  size="small" 
-                  onClick={() => handleDelete(server.id!)}
-                  color="error"
-                >
-                  <DeleteIcon />
+                  <MoreVertIcon />
                 </IconButton>
               </TableCell>
             </TableRow>
@@ -391,6 +384,26 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
       </Table>
     </TableContainer>
   );
+
+  const handleCloseActionMenu = () => {
+    setActionMenuAnchor(null);
+    setActionMenuServer(null);
+  };
+
+  const handleMenuAction = async (action: string) => {
+    if (!actionMenuServer) return;
+    
+    if (action === 'view') {
+      setViewingServer(actionMenuServer);
+      setViewDialog(true);
+    } else if (action === 'delete') {
+      await handleDelete(actionMenuServer.id!);
+    } else {
+      await handleServerAction(actionMenuServer.id!, action as any);
+    }
+    
+    handleCloseActionMenu();
+  };
 
   const renderEditForm = () => {
     if (!editingServer) return null;
@@ -714,7 +727,7 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
         <Typography variant="h6">MCP Server Management</Typography>
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Button onClick={onRefresh} startIcon={<RefreshIcon />}>
-            Refresh
+            Refresh Data
           </Button>
           <Button 
             onClick={() => handleAdd('manifest')} 
@@ -745,6 +758,64 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
       ) : (
         renderServerTable()
       )}
+      
+      {/* Internal MCP Tools Section */}
+      {tools && tools.filter(t => t.endpoint.startsWith('internal://')).length > 0 && (
+        <Box sx={{ mt: 4 }}>
+          <Typography variant="h6" sx={{ mb: 2 }}>Internal MCP Services</Typography>
+          <TableContainer component={Paper}>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Name</TableCell>
+                  <TableCell>Endpoint</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Type</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {tools
+                  .filter(tool => tool.endpoint.startsWith('internal://'))
+                  .map((tool) => (
+                    <TableRow key={tool.id}>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <ServerIcon fontSize="small" />
+                          <Typography variant="body2" fontWeight="bold">
+                            {tool.name}
+                          </Typography>
+                        </Box>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                          {tool.endpoint}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Chip 
+                          label={tool.is_active ? 'Active' : 'Inactive'} 
+                          color={tool.is_active ? 'success' : 'default'}
+                          size="small" 
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Chip 
+                          label="Internal Service" 
+                          color="primary"
+                          size="small" 
+                          icon={<SecurityIcon fontSize="small" />}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+          <Alert severity="info" sx={{ mt: 2 }}>
+            Internal MCP services are built-in system tools that cannot be modified or removed. They provide core functionality like RAG search.
+          </Alert>
+        </Box>
+      )}
 
       {/* Edit Dialog */}
       <Dialog open={editDialog} onClose={() => setEditDialog(false)} maxWidth="lg" fullWidth>
@@ -772,6 +843,61 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
           <Button onClick={() => setViewDialog(false)}>Close</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Action Menu */}
+      <Menu
+        anchorEl={actionMenuAnchor}
+        open={Boolean(actionMenuAnchor)}
+        onClose={handleCloseActionMenu}
+      >
+        <MuiMenuItem onClick={() => handleMenuAction('view')}>
+          <SettingsIcon sx={{ mr: 1 }} fontSize="small" />
+          View Details
+        </MuiMenuItem>
+        <MuiMenuItem onClick={() => handleMenuAction('health')}>
+          <HealthIcon sx={{ mr: 1 }} fontSize="small" />
+          Check Health
+        </MuiMenuItem>
+        <MuiMenuItem onClick={() => handleMenuAction('refresh')}>
+          <RefreshIcon sx={{ mr: 1 }} fontSize="small" />
+          Refresh
+        </MuiMenuItem>
+        {actionMenuServer?.config_type === 'command' && [
+          <MuiMenuItem key="start" onClick={() => handleMenuAction('start')}>
+            <StartIcon sx={{ mr: 1 }} fontSize="small" />
+            Start Server
+          </MuiMenuItem>,
+          <MuiMenuItem key="stop" onClick={() => handleMenuAction('stop')}>
+            <StopIcon sx={{ mr: 1 }} fontSize="small" />
+            Stop Server
+          </MuiMenuItem>
+        ]}
+        <MuiMenuItem onClick={() => handleMenuAction('discover-tools')}>
+          <CacheIcon sx={{ mr: 1 }} fontSize="small" />
+          Discover Tools
+        </MuiMenuItem>
+        <Divider />
+        <MuiMenuItem onClick={() => handleMenuAction('delete')}>
+          <DeleteIcon sx={{ mr: 1 }} fontSize="small" color="error" />
+          <Typography color="error">Delete Server</Typography>
+        </MuiMenuItem>
+      </Menu>
+
+      {/* Notification Snackbar */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        <Alert 
+          onClose={() => setSnackbar({ ...snackbar, open: false })} 
+          severity={snackbar.severity}
+          sx={{ width: '100%' }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

@@ -21,7 +21,9 @@ class LightweightKeywordExtractor:
         self.important_keywords = {
             'structure', 'organization', 'organisation', 'partnership', 'system',
             'platform', 'architecture', 'framework', 'model', 'process',
-            'hierarchy', 'department', 'division', 'team', 'management'
+            'hierarchy', 'department', 'division', 'team', 'management',
+            'collaboration', 'agreement', 'contract', 'alliance', 'joint',
+            'venture', 'cooperation', 'relationship', 'business', 'strategic'
         }
         
         # Extended stop words
@@ -68,8 +70,41 @@ class LightweightKeywordExtractor:
                 if len(term) > 2 and term not in self.stop_words:
                     key_terms['pattern_matches'].append(term)
         
-        # Extract potential entities (capitalized words not at sentence start)
+        # Extract potential entities (capitalized words + known company patterns)
         words = question.split()
+        
+        # Flexible company/entity patterns (case-insensitive) - works for any company
+        company_patterns = [
+            # Common company suffixes
+            r'\b([a-z]{3,})\s+(corp|inc|ltd|llc|company|systems|technologies|group|enterprise|solutions|services)\b',
+            r'\b([a-z]+soft|[a-z]+corp|[a-z]+inc|[a-z]+ltd|[a-z]+llc|[a-z]+tech)\b',
+            # Partnership/business relationship patterns
+            r'\b(partnership|collaboration|alliance)\s+(?:between|with)\s+([a-z]{3,})\s+and\s+([a-z]{3,})\b',
+            r'\b([a-z]{3,})\s+(?:partnership|collaboration|alliance)\s+with\s+([a-z]{3,})\b',
+            # Multi-word company names (e.g., "beyond soft", "ten cent")
+            r'\b([a-z]{3,})\s+([a-z]{3,})\s+(?:corp|inc|ltd|company|group|technologies)\b',
+            # Simple proper nouns that could be companies (3+ chars, not common words)
+            r'\b([a-z]{3,})\b(?=\s+(?:and|with|between|corp|inc|ltd|company|group|technologies))'
+        ]
+        
+        # Extract company names using patterns
+        question_lower = question.lower()
+        for pattern in company_patterns:
+            matches = re.finditer(pattern, question_lower)
+            for match in matches:
+                # Extract all capture groups (could be multiple companies)
+                for i in range(1, len(match.groups()) + 1):
+                    try:
+                        entity = match.group(i)
+                        if entity and len(entity) > 2 and entity not in self.stop_words:
+                            # Skip common words that aren't companies
+                            common_words = {'between', 'with', 'and', 'partnership', 'collaboration', 'alliance', 'company', 'corp', 'inc', 'ltd', 'llc', 'group', 'systems', 'technologies'}
+                            if entity.lower() not in common_words:
+                                key_terms['potential_entities'].append(entity.lower())
+                    except:
+                        continue
+        
+        # Original capitalized word detection
         for i, word in enumerate(words):
             # Skip first word (often capitalized as sentence start)
             if i == 0:
@@ -81,8 +116,25 @@ class LightweightKeywordExtractor:
                 if len(clean_word) > 2:
                     key_terms['potential_entities'].append(clean_word)
         
-        # Extract important phrases (2-3 word combinations)
+        # Extract important phrases (2-3 word combinations + partnership patterns)
         words_lower = [re.sub(r'[^\w]', '', w).lower() for w in words]
+        
+        # Look for "Company1 and Company2" or "partnership between Company1 and Company2" patterns
+        partnership_patterns = [
+            r'\b(partnership|collaboration|alliance)\s+between\s+(\w+)\s+and\s+(\w+)\b',
+            r'\b(\w+)\s+and\s+(\w+)\s+(partnership|collaboration|alliance)\b',
+            r'\b(\w+)\s+(partnership|collaboration|alliance)\s+with\s+(\w+)\b'
+        ]
+        
+        for pattern in partnership_patterns:
+            matches = re.finditer(pattern, question_lower)
+            for match in matches:
+                # Extract all non-stop words from the match
+                for group_text in match.groups():
+                    if group_text and len(group_text) > 2 and group_text not in self.stop_words:
+                        key_terms['important_phrases'].append(group_text)
+        
+        # Original phrase extraction
         for i in range(len(words_lower) - 1):
             # Two-word phrases
             if words_lower[i] not in self.stop_words:

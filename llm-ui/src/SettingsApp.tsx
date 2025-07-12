@@ -130,6 +130,7 @@ function SettingsApp() {
   const [saving, setSaving] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<Record<string, string>>({});
   const [success, setSuccess] = useState<Record<string, boolean>>({});
+  const [successMessage, setSuccessMessage] = useState<Record<string, string>>({});
 
   // Create theme
   const theme = createTheme({
@@ -183,14 +184,16 @@ function SettingsApp() {
 
       // Handle different endpoint patterns based on category
       if (category === 'mcp') {
-        // MCP uses multiple endpoints for servers and tools
-        const [serversResponse, toolsResponse] = await Promise.all([
+        // MCP uses multiple endpoints for servers, tools, and general settings
+        const [serversResponse, toolsResponse, settingsResponse] = await Promise.all([
           fetch('/api/v1/mcp/servers/'),
-          fetch('/api/v1/mcp/tools/')
+          fetch('/api/v1/mcp/tools/'),
+          fetch('/api/v1/settings/mcp')
         ]);
         
         let servers = [];
         let tools = [];
+        let settings = {};
         
         if (serversResponse.ok) {
           servers = await serversResponse.json();
@@ -204,9 +207,17 @@ function SettingsApp() {
           //console.error(`Failed to load MCP tools: ${toolsResponse.status} ${toolsResponse.statusText}`);
         }
         
+        if (settingsResponse.ok) {
+          const settingsData = await settingsResponse.json();
+          settings = settingsData.settings || {};
+        } else {
+          //console.error(`Failed to load MCP settings: ${settingsResponse.status} ${settingsResponse.statusText}`);
+        }
+        
         data = {
-          servers: Array.isArray(servers) ? servers : servers.data || [],
-          tools: Array.isArray(tools) ? tools : tools.data || []
+          servers: Array.isArray(servers) ? servers : (servers as any).data || [],
+          tools: Array.isArray(tools) ? tools : (tools as any).data || [],
+          settings: settings
         };
       } else if (category === 'langgraph_agents') {
         // LangGraph agents use a specific endpoint
@@ -218,7 +229,7 @@ function SettingsApp() {
         }
       } else if (category === 'collection_registry') {
         // Collection registry might use a different endpoint
-        response = await fetch('/api/v1/collections/');
+        response = await fetch('/api/v1/collections/?include_stats=true');
         if (response.ok) {
           data = await response.json();
         } else {
@@ -241,7 +252,61 @@ function SettingsApp() {
         data = await response.json();
       }
 
-      setSettingsData(prev => ({ ...prev, [category]: data }));
+      // Debug log for storage category
+      if (category === 'storage') {
+        console.log('[SettingsApp] Raw storage data from backend:', data);
+        console.log('[SettingsApp] Data keys:', Object.keys(data));
+        if (data.settings) {
+          console.log('[SettingsApp] Settings keys:', Object.keys(data.settings));
+        }
+      }
+
+      // Clean up any nested "settings.settings." prefixes in the data
+      const cleanNestedSettings = (obj: any): any => {
+        if (typeof obj !== 'object' || obj === null) return obj;
+        
+        const cleaned: any = Array.isArray(obj) ? [] : {};
+        const seenKeys = new Set<string>(); // Track keys we've already added
+        
+        for (const [key, value] of Object.entries(obj)) {
+          // Clean the key name
+          let cleanKey = key;
+          
+          // Remove multiple nested "settings." prefixes
+          while (cleanKey.startsWith('settings.settings.')) {
+            cleanKey = cleanKey.replace('settings.settings.', '');
+          }
+          
+          // Remove single "settings." prefix if not in settings category
+          if (cleanKey.startsWith('settings.') && category !== 'settings') {
+            cleanKey = cleanKey.replace('settings.', '');
+          }
+          
+          // Only add the field if we haven't seen this key before
+          if (!seenKeys.has(cleanKey)) {
+            seenKeys.add(cleanKey);
+            // Recursively clean nested objects
+            cleaned[cleanKey] = cleanNestedSettings(value);
+          }
+        }
+        
+        return cleaned;
+      };
+      
+      // Extract the actual settings data
+      const settingsData = data.settings || data;
+      const cleanedData = cleanNestedSettings(settingsData);
+      
+      // Debug log for storage category after cleaning
+      if (category === 'storage') {
+        console.log('[SettingsApp] Settings data to clean:', settingsData);
+        console.log('[SettingsApp] Cleaned storage data:', cleanedData);
+        if (cleanedData.vector_db) {
+          console.log('[SettingsApp] vector_db structure:', cleanedData.vector_db);
+        }
+      }
+      
+      setSettingsData(prev => ({ ...prev, [category]: cleanedData }));
     } catch (err) {
       setError(prev => ({ 
         ...prev, 
@@ -266,6 +331,21 @@ function SettingsApp() {
         return acc;
       }, {} as any);
 
+      // Special handling for MCP category to ensure settings object is preserved
+      if (category === 'mcp') {
+        console.log('[DEBUG] MCP save - data keys:', Object.keys(data));
+        console.log('[DEBUG] MCP save - data.settings:', data.settings);
+        console.log('[DEBUG] MCP save - full data structure:', data);
+        console.log('[DEBUG] MCP save - cleanData before settings:', cleanData);
+        if (data.settings) {
+          cleanData.settings = data.settings;
+          console.log('[DEBUG] MCP save - included settings in cleanData:', cleanData.settings);
+        } else {
+          console.log('[DEBUG] MCP save - no settings object found in data');
+        }
+        console.log('[DEBUG] MCP save - final cleanData:', cleanData);
+      }
+
       const response = await fetch(`/api/v1/settings/${category}`, {
         method: 'PUT',
         headers: {
@@ -283,6 +363,7 @@ function SettingsApp() {
       }
 
       setSuccess(prev => ({ ...prev, [category]: true }));
+      setSuccessMessage(prev => ({ ...prev, [category]: 'Settings saved successfully!' }));
       setTimeout(() => {
         setSuccess(prev => ({ ...prev, [category]: false }));
       }, 3000);
@@ -302,8 +383,10 @@ function SettingsApp() {
   };
 
   const handleFieldChange = (category: string, field: string, value: any) => {
+    console.log('[DEBUG] handleFieldChange called:', { category, field, value });
     setSettingsData(prev => {
       const categoryData = { ...prev[category] };
+      console.log('[DEBUG] handleFieldChange - before update, categoryData:', categoryData);
       
       if (field.includes('.')) {
         // Handle nested field updates (e.g., "document_retrieval.num_docs_retrieve")
@@ -327,10 +410,14 @@ function SettingsApp() {
         categoryData[field] = value;
       }
       
-      return {
+      console.log('[DEBUG] handleFieldChange - after update, categoryData:', categoryData);
+      
+      const newState = {
         ...prev,
         [category]: categoryData
       };
+      console.log('[DEBUG] handleFieldChange - new state for category:', category, newState[category]);
+      return newState;
     });
   };
 
@@ -339,15 +426,6 @@ function SettingsApp() {
     const isLoading = loading[category];
     const errorMsg = error[category];
     const successMsg = success[category];
-
-    if (isLoading) {
-      return (
-        <div className="jarvis-loading">
-          <div className="jarvis-spinner"></div>
-          <Typography>Loading {category} settings...</Typography>
-        </div>
-      );
-    }
 
     if (errorMsg) {
       return (
@@ -364,7 +442,7 @@ function SettingsApp() {
       );
     }
 
-    if (!data) {
+    if (!data && !isLoading) {
       return (
         <div className="jarvis-alert jarvis-alert-info">
           Click "Reload" in the header to load and edit {category} configuration
@@ -372,34 +450,81 @@ function SettingsApp() {
       );
     }
 
+    if (!data && isLoading) {
+      return (
+        <div className="jarvis-loading">
+          <div className="jarvis-spinner"></div>
+          <Typography>Loading {category} settings...</Typography>
+        </div>
+      );
+    }
+
     return (
-      <div>
+      <div style={{ position: 'relative' }}>
+        {isLoading && (
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: darkMode ? 'rgba(0, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.4)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 10,
+              borderRadius: 1,
+              backdropFilter: 'blur(2px)'
+            }}
+          >
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 2
+              }}
+            >
+              <Box
+                className="jarvis-spinner"
+                sx={{
+                  width: '60px !important',
+                  height: '60px !important',
+                  borderWidth: '4px !important'
+                }}
+              />
+              <Typography 
+                variant="h6" 
+                sx={{ 
+                  fontWeight: 600,
+                  color: darkMode ? 'rgba(255, 255, 255, 0.9)' : 'rgba(0, 0, 0, 0.8)'
+                }}
+              >
+                Reloading...
+              </Typography>
+            </Box>
+          </Box>
+        )}
         {successMsg && (
           <div className="jarvis-alert jarvis-alert-success">
-            Settings saved successfully!
+            {successMessage[category] || 'Settings saved successfully!'}
           </div>
         )}
-        
-        <div className="settings-section-header">
-          <div className="settings-section-title">Configuration Details</div>
-          <div className="settings-section-subtitle">
-            Configure your {settingsCategories.find(cat => cat.id === category)?.name.toLowerCase()} settings below
-          </div>
-        </div>
         
         <SettingsFormRenderer
           category={category}
           data={data}
           onChange={(field, value) => handleFieldChange(category, field, value)}
-          onRefresh={() => {
-            setSettingsData(prev => {
-              const updated = { ...prev };
-              delete updated[category];
-              return updated;
-            });
-            loadSettings(category, true);
-          }}
+          onRefresh={() => loadSettings(category, true)}
           isYamlBased={category === 'self_reflection' || category === 'query_patterns'}
+          onShowSuccess={(message = 'Cache reloaded successfully!') => {
+            setSuccess(prev => ({ ...prev, [category]: true }));
+            setSuccessMessage(prev => ({ ...prev, [category]: message }));
+            setTimeout(() => {
+              setSuccess(prev => ({ ...prev, [category]: false }));
+            }, 3000);
+          }}
         />
       </div>
     );
@@ -526,14 +651,7 @@ function SettingsApp() {
                   <div className="settings-header-actions">
                     <button 
                       className="jarvis-btn jarvis-btn-secondary"
-                      onClick={() => {
-                        setSettingsData(prev => {
-                          const updated = { ...prev };
-                          delete updated[selectedCategory];
-                          return updated;
-                        });
-                        loadSettings(selectedCategory, true);
-                      }}
+                      onClick={() => loadSettings(selectedCategory, true)}
                       disabled={loading[selectedCategory]}
                     >
                       <RefreshIcon sx={{ fontSize: 16 }} />

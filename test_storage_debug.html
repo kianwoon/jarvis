@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Storage Settings Debug</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+        }
+        .step {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 4px;
+        }
+        .code {
+            background: #272822;
+            color: #f8f8f2;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            overflow-x: auto;
+        }
+        .button {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .button:hover {
+            background: #1976D2;
+        }
+        #output {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .success {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        .error {
+            color: #f44336;
+            font-weight: bold;
+        }
+        .warning {
+            color: #ff9800;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Storage Settings Debug Tool</h1>
+        
+        <div class="step">
+            <h2>Step 1: Check Storage API Response</h2>
+            <p>Click the button below to fetch the storage settings from the API and see the raw response:</p>
+            <button class="button" onclick="checkStorageAPI()">Fetch Storage Settings</button>
+        </div>
+
+        <div class="step">
+            <h2>Step 2: Test Data Flattening</h2>
+            <p>This will show how the flattenObject function processes the data:</p>
+            <button class="button" onclick="testFlattening()">Test Flattening Logic</button>
+        </div>
+
+        <div class="step">
+            <h2>Step 3: Test Categorization</h2>
+            <p>This will show how fields are categorized into tabs:</p>
+            <button class="button" onclick="testCategorization()">Test Field Categorization</button>
+        </div>
+
+        <div id="output"></div>
+    </div>
+
+    <script>
+        const output = document.getElementById('output');
+
+        async function checkStorageAPI() {
+            output.innerHTML = 'Fetching storage settings...\n';
+            
+            try {
+                const response = await fetch('/api/v1/settings/storage');
+                const data = await response.json();
+                
+                output.innerHTML += '\n<span class="success">✓ API Response received</span>\n\n';
+                output.innerHTML += 'Raw Response:\n';
+                output.innerHTML += JSON.stringify(data, null, 2) + '\n\n';
+                
+                // Check for vector_db structure
+                if (data.vector_db) {
+                    output.innerHTML += '<span class="success">✓ vector_db found at top level</span>\n';
+                } else if (data.settings?.vector_db) {
+                    output.innerHTML += '<span class="warning">⚠ vector_db found under settings</span>\n';
+                } else {
+                    output.innerHTML += '<span class="error">✗ vector_db not found in response</span>\n';
+                }
+                
+                // Store for other tests
+                window.storageData = data;
+                
+            } catch (error) {
+                output.innerHTML += '<span class="error">✗ Error: ' + error.message + '</span>\n';
+            }
+        }
+
+        function testFlattening() {
+            if (!window.storageData) {
+                output.innerHTML = '<span class="error">Please fetch storage settings first!</span>\n';
+                return;
+            }
+
+            output.innerHTML = 'Testing flattening logic...\n\n';
+
+            const preserveNested = [
+                'query_classifier',
+                'thinking_mode',
+                'agent_config',
+                'conversation_memory',
+                'error_recovery',
+                'response_generation',
+                'vector_db',
+                'iceberg'
+            ];
+
+            const flattenObject = (obj, prefix = '') => {
+                const flattened = {};
+                const seenKeys = new Set();
+                
+                Object.entries(obj).forEach(([key, value]) => {
+                    if (key.startsWith('settings.')) {
+                        return;
+                    }
+                    
+                    const fullKey = prefix ? `${prefix}.${key}` : key;
+                    
+                    // If this is a known nested structure at the top level, keep it as-is
+                    if (!prefix && preserveNested.includes(key) && typeof value === 'object' && value !== null) {
+                        output.innerHTML += `<span class="success">✓ Preserving nested structure: ${key}</span>\n`;
+                        if (!seenKeys.has(key)) {
+                            seenKeys.add(key);
+                            flattened[key] = value;
+                        }
+                    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                        output.innerHTML += `<span class="warning">⚠ Flattening object: ${fullKey}</span>\n`;
+                        const nestedFlattened = flattenObject(value, fullKey);
+                        Object.entries(nestedFlattened).forEach(([nestedKey, nestedValue]) => {
+                            if (!seenKeys.has(nestedKey)) {
+                                seenKeys.add(nestedKey);
+                                flattened[nestedKey] = nestedValue;
+                            }
+                        });
+                    } else {
+                        if (!seenKeys.has(fullKey)) {
+                            seenKeys.add(fullKey);
+                            flattened[fullKey] = value;
+                        }
+                    }
+                });
+                
+                return flattened;
+            };
+
+            const testData = window.storageData.settings || window.storageData;
+            const flattened = flattenObject(testData);
+            
+            output.innerHTML += '\n\nFlattened Result:\n';
+            output.innerHTML += JSON.stringify(flattened, null, 2) + '\n';
+            
+            // Check if vector_db was preserved
+            if (flattened.vector_db && typeof flattened.vector_db === 'object') {
+                output.innerHTML += '\n<span class="success">✓ vector_db successfully preserved as nested object</span>\n';
+            } else {
+                output.innerHTML += '\n<span class="error">✗ vector_db was not preserved correctly</span>\n';
+            }
+        }
+
+        function testCategorization() {
+            if (!window.storageData) {
+                output.innerHTML = '<span class="error">Please fetch storage settings first!</span>\n';
+                return;
+            }
+
+            output.innerHTML = 'Testing field categorization...\n\n';
+
+            const categories = {
+                vector: { title: 'Vector Databases (Unstructured)', fields: {} },
+                structured: { title: 'Iceberg (Structured)', fields: {} }
+            };
+
+            const testData = window.storageData.settings || window.storageData;
+            
+            // Process each field
+            Object.entries(testData).forEach(([key, value]) => {
+                const lowerKey = key.toLowerCase();
+                
+                if (key === 'vector_db') {
+                    output.innerHTML += `<span class="success">✓ vector_db → vector category</span>\n`;
+                    categories.vector.fields[key] = value;
+                } else if (key === 'iceberg') {
+                    output.innerHTML += `<span class="success">✓ iceberg → structured category</span>\n`;
+                    categories.structured.fields[key] = value;
+                } else if (lowerKey.includes('embedding')) {
+                    output.innerHTML += `<span class="warning">⚠ ${key} → vector category (by keyword)</span>\n`;
+                    categories.vector.fields[key] = value;
+                } else {
+                    output.innerHTML += `  ${key} → vector category (default)\n`;
+                    categories.vector.fields[key] = value;
+                }
+            });
+
+            output.innerHTML += '\n\nCategorized Fields:\n';
+            output.innerHTML += JSON.stringify(categories, null, 2) + '\n';
+        }
+    </script>
+</body>
+</html>

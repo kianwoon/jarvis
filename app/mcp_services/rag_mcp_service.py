@@ -57,6 +57,14 @@ class RAGMCPService:
     
     def _generate_cache_key(self, query: str, collections: List[str], max_docs: int) -> str:
         """Generate cache key from query parameters"""
+        # Handle case where query might be passed as dict
+        if isinstance(query, dict):
+            query = query.get('query', '')
+        
+        # Ensure query is string
+        if not isinstance(query, str):
+            query = str(query) if query else ''
+            
         # Create a deterministic hash of the query parameters
         cache_data = {
             "query": query.lower().strip(),
@@ -273,7 +281,9 @@ class RAGMCPService:
         try:
             # Check cache first if enabled
             if selection_settings.get('cache_selections', True):
-                cache_key = f"{self.cache_prefix}collection_sel:{hashlib.md5(query.lower().encode()).hexdigest()}"
+                # Handle case where query might be passed as dict
+                query_str = query.get('query', '') if isinstance(query, dict) else str(query)
+                cache_key = f"{self.cache_prefix}collection_sel:{hashlib.md5(query_str.lower().encode()).hexdigest()}"
                 client = self._get_cache_client()
                 if client:
                     cached = client.get(cache_key)
@@ -543,7 +553,9 @@ class RAGMCPService:
         if not collections:
             return ["default_knowledge"]
         
-        query_lower = query.lower()
+        # Handle case where query might be passed as dict
+        query_str = query.get('query', '') if isinstance(query, dict) else str(query)
+        query_lower = query_str.lower()
         selected = []
         
         for collection in collections:
@@ -647,6 +659,14 @@ rag_service = RAGMCPService()
 async def execute_rag_search(query: str, collections: List[str] = None, max_documents: int = None, include_content: bool = True) -> Dict[str, Any]:
     """Main entry point for MCP tool execution"""
     
+    # Handle case where query is passed as dict (from recent tool calling changes)
+    if isinstance(query, dict):
+        query = query.get('query', '')
+    
+    # Ensure query is a string
+    if not isinstance(query, str):
+        query = str(query) if query else ''
+    
     request = RAGSearchRequest(
         query=query,
         collections=collections,
@@ -659,6 +679,14 @@ async def execute_rag_search(query: str, collections: List[str] = None, max_docu
 def execute_rag_search_sync(query: str, collections: List[str] = None, max_documents: int = None, include_content: bool = True) -> Dict[str, Any]:
     """Synchronous entry point for MCP tool execution - truly synchronous implementation"""
     import time
+    
+    # Handle case where query is passed as dict (from recent tool calling changes)
+    if isinstance(query, dict):
+        query = query.get('query', '')
+    
+    # Ensure query is a string
+    if not isinstance(query, str):
+        query = str(query) if query else ''
     
     # Create a new service instance that will use sync methods
     sync_service = RAGMCPService()
@@ -833,7 +861,9 @@ def _determine_collections_sync(query: str, specified_collections: Optional[List
         
         # Check cache first if enabled
         if selection_settings.get('cache_selections', True):
-            cache_key = f"{service.cache_prefix}collection_sel:{hashlib.md5(query.lower().encode()).hexdigest()}"
+            # Handle case where query might be passed as dict
+            query_str = query.get('query', '') if isinstance(query, dict) else str(query)
+            cache_key = f"{service.cache_prefix}collection_sel:{hashlib.md5(query_str.lower().encode()).hexdigest()}"
             client = service._get_cache_client()
             if client:
                 cached = client.get(cache_key)

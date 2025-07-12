@@ -9,8 +9,6 @@ import {
   Paper,
   TextField,
   Button,
-  Switch,
-  FormControlLabel,
   CircularProgress,
   Chip,
   ThemeProvider,
@@ -34,7 +32,6 @@ import ChatInterface from './components/ChatInterface';
 import {
   Send as SendIcon,
   Clear as ClearIcon,
-  Psychology as ThinkingIcon,
   LightMode as LightModeIcon,
   DarkMode as DarkModeIcon,
   Chat as ChatIcon,
@@ -402,7 +399,6 @@ function LegacyChatInterface({ endpoint, title }: { endpoint: string, title: str
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [thinking, setThinking] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [sessionId] = useState(() => `session-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`);
@@ -475,7 +471,6 @@ function LegacyChatInterface({ endpoint, title }: { endpoint: string, title: str
         },
         body: JSON.stringify({
           question: currentInput,
-          thinking: thinking,
           conversation_id: sessionId
         })
       });
@@ -860,25 +855,6 @@ function LegacyChatInterface({ endpoint, title }: { endpoint: string, title: str
       <Box sx={{ p: 2, backgroundColor: 'background.paper', borderBottom: 1, borderColor: 'divider' }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Typography variant="h6">{title}</Typography>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            {title !== 'Standard Chat' && (
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={thinking}
-                    onChange={(e) => setThinking(e.target.checked)}
-                    size="small"
-                  />
-                }
-                label={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                    <ThinkingIcon fontSize="small" />
-                    <Typography variant="body2">Thinking</Typography>
-                  </Box>
-                }
-              />
-            )}
-          </Box>
         </Box>
       </Box>
 

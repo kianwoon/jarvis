@@ -49,6 +49,10 @@ class MCPToolResponse(MCPToolBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    server_id: Optional[int] = None
+    server_name: Optional[str] = None
+    is_manual: bool = False
+    manifest_id: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -211,10 +215,35 @@ def create_mcp_tool(tool: MCPToolCreate, db: Session = Depends(get_db)):
     db.refresh(db_tool)
     return db_tool
 
-@router.get("/", response_model=List[MCPToolResponse])
+@router.get("/")
 def get_mcp_tools(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    tools = db.query(MCPTool).order_by(MCPTool.name).offset(skip).limit(limit).all()
-    return tools
+    from sqlalchemy.orm import joinedload
+    
+    # Query tools with their associated servers
+    tools = db.query(MCPTool).options(joinedload(MCPTool.server)).order_by(MCPTool.name).offset(skip).limit(limit).all()
+    
+    # Build response with server names
+    response = []
+    for tool in tools:
+        tool_dict = {
+            "id": tool.id,
+            "name": tool.name,
+            "description": tool.description,
+            "endpoint": tool.endpoint,
+            "method": tool.method,
+            "parameters": tool.parameters,
+            "headers": tool.headers,
+            "is_active": tool.is_active,
+            "is_manual": tool.is_manual,
+            "created_at": tool.created_at,
+            "updated_at": tool.updated_at,
+            "server_id": tool.server_id,
+            "manifest_id": tool.manifest_id,
+            "server_name": tool.server.name if tool.server else None
+        }
+        response.append(tool_dict)
+    
+    return response
 
 @router.put("/enabled")
 def update_enabled_tools(data: MCPEnabledToolsUpdate, db: Session = Depends(get_db)):
@@ -378,7 +407,7 @@ def update_mcp_tool(tool_id: str, tool: MCPToolUpdate, db: Session = Depends(get
         raise HTTPException(status_code=404, detail="Tool not found")
     
     # Update attributes that are provided
-    update_data = tool.dict(exclude_unset=True)
+    update_data = tool.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(db_tool, key, value)
     

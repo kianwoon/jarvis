@@ -35,14 +35,88 @@ def get_inference(thinking: bool = False):
 
 @router.get("/ollama/models")
 async def list_ollama_models():
-    """List available Ollama models from the Ollama server."""
+    """List available Ollama models from the Ollama server with detailed information."""
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{ollama_base_url}/api/tags")
             resp.raise_for_status()
             data = resp.json()
-            # The models are in data['models'], each with a 'name' field
-            models = [m['name'] for m in data.get('models', [])]
+            
+            # Extract detailed model information
+            models = []
+            for model in data.get('models', []):
+                model_name = model.get('name', '')
+                
+                # Convert size from bytes to human-readable format
+                size_bytes = model.get('size', 0)
+                if size_bytes > 1024**3:
+                    size = f"{size_bytes / (1024**3):.1f} GB"
+                elif size_bytes > 1024**2:
+                    size = f"{size_bytes / (1024**2):.0f} MB"
+                else:
+                    size = f"{size_bytes / 1024:.0f} KB"
+                
+                # Parse modified time
+                modified_at = model.get('modified_at', '')
+                if modified_at:
+                    try:
+                        from datetime import datetime
+                        import pytz
+                        dt = datetime.fromisoformat(modified_at.replace('Z', '+00:00'))
+                        now = datetime.now(pytz.UTC)
+                        diff = now - dt
+                        
+                        if diff.days == 0:
+                            if diff.seconds < 3600:
+                                modified = f"{diff.seconds // 60} minutes ago"
+                            else:
+                                modified = f"{diff.seconds // 3600} hours ago"
+                        elif diff.days == 1:
+                            modified = "Yesterday"
+                        elif diff.days < 7:
+                            modified = f"{diff.days} days ago"
+                        elif diff.days < 30:
+                            modified = f"{diff.days // 7} weeks ago"
+                        else:
+                            modified = f"{diff.days // 30} months ago"
+                    except:
+                        modified = modified_at
+                else:
+                    modified = "Unknown"
+                
+                # Fetch context length from model details
+                context_length = "Unknown"
+                try:
+                    show_resp = await client.post(
+                        f"{ollama_base_url}/api/show",
+                        json={"name": model_name}
+                    )
+                    if show_resp.status_code == 200:
+                        show_data = show_resp.json()
+                        model_info = show_data.get('model_info', {})
+                        
+                        # Look for context length in various possible fields
+                        for key, value in model_info.items():
+                            if 'context_length' in key.lower():
+                                context_length = f"{value:,}"
+                                break
+                        
+                        # If not found in model_info, check details
+                        if context_length == "Unknown":
+                            details = show_data.get('details', {})
+                            if 'context_length' in details:
+                                context_length = f"{details['context_length']:,}"
+                except Exception as e:
+                    print(f"Failed to fetch context length for {model_name}: {e}")
+                
+                models.append({
+                    "name": model_name,
+                    "id": model.get('digest', '')[:12],  # First 12 chars of digest as ID
+                    "size": size,
+                    "modified": modified,
+                    "context_length": context_length
+                })
+            
             return {"models": models}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch models from Ollama: {str(e)}")

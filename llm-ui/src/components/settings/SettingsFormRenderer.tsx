@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   TextField,
@@ -17,7 +17,16 @@ import {
   Alert,
   Grid,
   Tabs,
-  Tab
+  Tab,
+  Card,
+  CardContent,
+  CardHeader,
+  Select,
+  MenuItem,
+  InputLabel,
+  FormControl,
+  CircularProgress,
+  Tooltip
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -25,12 +34,15 @@ import {
   Edit as EditIcon,
   Refresh as RefreshIcon,
   Visibility as VisibilityIcon,
-  VisibilityOff as VisibilityOffIcon
+  VisibilityOff as VisibilityOffIcon,
+  Cached as CacheIcon,
+  CheckCircle as CheckCircleIcon
 } from '@mui/icons-material';
 import YamlEditor from './YamlEditor';
 import DatabaseTableManager from './DatabaseTableManager';
 import MCPServerManager from './MCPServerManager';
 import MCPToolManager from './MCPToolManager';
+import VectorDatabaseManager from './VectorDatabaseManager';
 
 interface SettingsFormRendererProps {
   category: string;
@@ -38,6 +50,7 @@ interface SettingsFormRendererProps {
   onChange: (field: string, value: any) => void;
   onRefresh?: () => void;
   isYamlBased?: boolean;
+  onShowSuccess?: (message?: string) => void;
 }
 
 const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
@@ -45,8 +58,26 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   data,
   onChange,
   onRefresh,
-  isYamlBased = false
+  isYamlBased = false,
+  onShowSuccess
 }) => {
+  console.log('[DEBUG] SettingsFormRenderer - category:', category, 'data:', data);
+  // Move all hooks to the top level - they must always be called in the same order
+  const [activeTab, setActiveTab] = React.useState(() => {
+    if (category === 'rag') return 'retrieval';
+    if (category === 'storage') return 'vector';
+    return 'settings';
+  });
+  const [passwordVisibility, setPasswordVisibility] = React.useState<Record<string, boolean>>({});
+  const [icebergPasswordVisibility, setIcebergPasswordVisibility] = React.useState<Record<string, boolean>>({});
+  const [mcpTab, setMcpTab] = React.useState(0);
+  
+  // Update activeTab when category changes
+  React.useEffect(() => {
+    if (category === 'rag') setActiveTab('retrieval');
+    else if (category === 'storage') setActiveTab('vector');
+    else setActiveTab('settings');
+  }, [category]);
 
   // Special handling for YAML-based configurations
   if (isYamlBased || category === 'self_reflection' || category === 'query_patterns') {
@@ -77,8 +108,8 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
 
   // Special handling for MCP configuration
   if (category === 'mcp') {
-    const mcpData = data || { servers: [], tools: [] };
-    return renderMCPConfiguration(mcpData, onChange, onRefresh);
+    const mcpData = data || { servers: [], tools: [], settings: {} };
+    return renderMCPConfiguration(mcpData, onChange, onRefresh, mcpTab, setMcpTab);
   }
 
   // Special handling for database-backed settings
@@ -108,7 +139,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   }
 
   // Default form rendering for regular settings
-  return renderStandardForm(data, onChange, category);
+  return renderStandardForm(data, onChange, category, activeTab, setActiveTab, passwordVisibility, setPasswordVisibility, icebergPasswordVisibility, setIcebergPasswordVisibility, onShowSuccess);
 };
 
 const renderEnvironmentEditor = (data: any, onChange: (field: string, value: any) => void) => {
@@ -189,8 +220,13 @@ const renderEnvironmentEditor = (data: any, onChange: (field: string, value: any
   );
 };
 
-const renderMCPConfiguration = (data: any, onChange: (field: string, value: any) => void, onRefresh?: () => void) => {
-  const [mcpTab, setMcpTab] = useState(0);
+const renderMCPConfiguration = (
+  data: any, 
+  onChange: (field: string, value: any) => void, 
+  onRefresh: (() => void) | undefined,
+  mcpTab: number,
+  setMcpTab: React.Dispatch<React.SetStateAction<number>>
+) => {
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setMcpTab(newValue);
@@ -218,6 +254,7 @@ const renderMCPConfiguration = (data: any, onChange: (field: string, value: any)
         <Tabs value={mcpTab} onChange={handleTabChange} aria-label="mcp tabs">
           <Tab label="MCP Servers" />
           <Tab label="MCP Tools" />
+          <Tab label="Tool Configuration" />
           <Tab label="Cache Management" />
         </Tabs>
       </Box>
@@ -225,9 +262,11 @@ const renderMCPConfiguration = (data: any, onChange: (field: string, value: any)
       {mcpTab === 0 && (
         <MCPServerManager
           data={data.servers || []}
+          tools={data.tools || []}
           onChange={(servers) => onChange('servers', servers)}
           onRefresh={() => {
             loadMCPData('servers');
+            loadMCPData('tools');
             if (onRefresh) onRefresh();
           }}
         />
@@ -236,6 +275,7 @@ const renderMCPConfiguration = (data: any, onChange: (field: string, value: any)
       {mcpTab === 1 && (
         <MCPToolManager
           data={data.tools || []}
+          servers={data.servers || []}
           onChange={(tools) => onChange('tools', tools)}
           onRefresh={() => {
             loadMCPData('tools');
@@ -246,59 +286,131 @@ const renderMCPConfiguration = (data: any, onChange: (field: string, value: any)
 
       {mcpTab === 2 && (
         <Box>
+          <Typography variant="h6" gutterBottom>Tool Execution Configuration</Typography>
+          
+          <Card>
+            <CardHeader 
+              title="Tool Call Limits" 
+              subheader="Configure limits to prevent excessive tool calls and infinite loops"
+            />
+            <CardContent>
+              <Grid container spacing={3}>
+                <Grid item xs={12} md={6}>
+                  <TextField
+                    label="Maximum Tool Calls per Request"
+                    type="number"
+                    value={data.settings?.max_tool_calls || 3}
+                    onChange={(e) => {
+                      const newSettings = { ...data.settings, max_tool_calls: parseInt(e.target.value) || 3 };
+                      onChange('settings', newSettings);
+                    }}
+                    helperText="Maximum number of tool calls allowed in a single request (prevents infinite loops)"
+                    fullWidth
+                    inputProps={{ min: 1, max: 10 }}
+                  />
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <TextField
+                    label="Tool Timeout (seconds)"
+                    type="number"
+                    value={data.settings?.tool_timeout_seconds || 30}
+                    onChange={(e) => {
+                      const newSettings = { ...data.settings, tool_timeout_seconds: parseInt(e.target.value) || 30 };
+                      onChange('settings', newSettings);
+                    }}
+                    helperText="Maximum time to wait for each tool execution"
+                    fullWidth
+                    inputProps={{ min: 5, max: 300 }}
+                  />
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={data.settings?.enable_tool_retries !== false}
+                        onChange={(e) => {
+                          const newSettings = { ...data.settings, enable_tool_retries: e.target.checked };
+                          onChange('settings', newSettings);
+                        }}
+                      />
+                    }
+                    label="Enable Tool Retries"
+                  />
+                  <Typography variant="caption" display="block" color="textSecondary">
+                    Allow automatic retries for failed tool calls
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <TextField
+                    label="Maximum Retries per Tool"
+                    type="number"
+                    value={data.settings?.max_tool_retries || 2}
+                    onChange={(e) => {
+                      const newSettings = { ...data.settings, max_tool_retries: parseInt(e.target.value) || 2 };
+                      onChange('settings', newSettings);
+                    }}
+                    helperText="Maximum number of retry attempts for each tool"
+                    fullWidth
+                    disabled={data.settings?.enable_tool_retries === false}
+                    inputProps={{ min: 0, max: 5 }}
+                  />
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        </Box>
+      )}
+
+      {mcpTab === 3 && (
+        <Box>
           <Typography variant="h6" gutterBottom>Cache Management</Typography>
-          <Paper sx={{ p: 2 }}>
-            <Grid container spacing={2}>
-              <Grid item xs={12} md={4}>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  startIcon={<RefreshIcon />}
-                  onClick={async () => {
-                    try {
-                      await fetch('/api/v1/mcp/tools/cache/reload', { method: 'POST' });
-                      alert('MCP tools cache reloaded');
-                    } catch (error) {
-                      alert('Failed to reload cache');
-                    }
-                  }}
-                >
-                  Reload Tools Cache
-                </Button>
+          
+          {/* Database to Cache Sync Section */}
+          <Card>
+            <CardHeader 
+              title="Redis Cache Synchronization" 
+              subheader="Manage the Redis cache used by MCP tools for improved runtime performance"
+            />
+            <CardContent>
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={6}>
+                  <Button
+                    fullWidth
+                    variant="outlined"
+                    startIcon={<CacheIcon />}
+                    onClick={async () => {
+                      try {
+                        const response = await fetch('/api/v1/mcp/tools/cache/reload', { method: 'POST' });
+                        const result = await response.json();
+                        alert(`Tools cache synced successfully! ${result.tools_count || 0} tools loaded to Redis.`);
+                      } catch (error) {
+                        alert('Failed to sync tools cache');
+                      }
+                    }}
+                  >
+                    Sync Tools to Cache
+                  </Button>
+                  <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                    Updates the Redis cache with all active MCP tools from the database for faster runtime access
+                  </Typography>
+                </Grid>
               </Grid>
-              <Grid item xs={12} md={4}>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  startIcon={<RefreshIcon />}
-                  onClick={async () => {
-                    try {
-                      await fetch('/api/v1/mcp/servers/cache/reload', { method: 'POST' });
-                      alert('MCP servers cache reloaded');
-                    } catch (error) {
-                      alert('Failed to reload cache');
-                    }
-                  }}
-                >
-                  Reload Servers Cache
-                </Button>
-              </Grid>
-              <Grid item xs={12} md={4}>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  startIcon={<RefreshIcon />}
-                  onClick={() => {
-                    loadMCPData('servers');
-                    loadMCPData('tools');
-                    alert('MCP data refreshed');
-                  }}
-                >
-                  Refresh All Data
-                </Button>
-              </Grid>
-            </Grid>
-          </Paper>
+            </CardContent>
+          </Card>
+
+          {/* Information Alert */}
+          <Alert severity="info" sx={{ mt: 3 }}>
+            <Typography variant="body2">
+              <strong>About Cache Synchronization:</strong>
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              The Redis cache stores MCP tool definitions for fast access during chat operations. 
+              Use this button after making changes to tools to ensure the cache is up-to-date.
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              To refresh the data shown in the UI, use the "Refresh Data" buttons on the respective Tools and Servers pages.
+            </Typography>
+          </Alert>
         </Box>
       )}
     </Box>
@@ -352,17 +464,267 @@ const renderDatabaseTableEditor = (category: string, data: any, onChange: (field
   );
 };
 
-const renderStandardForm = (data: any, onChange: (field: string, value: any) => void, category?: string) => {
-  const getDefaultTab = () => {
-    if (category === 'rag') return 'retrieval';
-    if (category === 'storage') return 'vector';
-    return 'settings';
+// Model Selector Component - proper React component to avoid hooks rule violations
+const ModelSelector: React.FC<{
+  fieldKey: string;
+  value: string;
+  onChangeHandler: (key: string, value: any) => void;
+  depth: number;
+  onShowSuccess?: (message?: string) => void;
+}> = ({ fieldKey, value, onChangeHandler, depth, onShowSuccess }) => {
+  const [models, setModels] = React.useState<Array<{name: string, id: string, size: string, modified: string, context_length: string}>>([]);
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    fetchAvailableModels();
+  }, []);
+
+  const fetchAvailableModels = async () => {
+    setLoading(true);
+    try {
+      // Call API to get available models
+      const response = await fetch('/api/v1/ollama/models');
+      if (response.ok) {
+        const data = await response.json();
+        setModels(data.models || []);
+      } else {
+        // Fallback to hardcoded models if API fails
+        setModels([
+          { name: 'qwen3:0.6b', id: '7df6b6e09427', size: '522 MB', modified: '2 minutes ago', context_length: 'Unknown' },
+          { name: 'deepseek-r1:8b', id: '6995872bfe4c', size: '5.2 GB', modified: '5 weeks ago', context_length: 'Unknown' },
+          { name: 'qwen3:30b-a3b', id: '2ee832bc15b5', size: '18 GB', modified: '7 weeks ago', context_length: 'Unknown' }
+        ]);
+      }
+    } catch (error) {
+      console.error('Failed to fetch models:', error);
+      // Use hardcoded models as fallback
+      setModels([
+        { name: 'qwen3:0.6b', id: '7df6b6e09427', size: '522 MB', modified: '2 minutes ago', context_length: 'Unknown' },
+        { name: 'deepseek-r1:8b', id: '6995872bfe4c', size: '5.2 GB', modified: '5 weeks ago', context_length: 'Unknown' },
+        { name: 'qwen3:30b-a3b', id: '2ee832bc15b5', size: '18 GB', modified: '7 weeks ago', context_length: 'Unknown' }
+      ]);
+    } finally {
+      setLoading(false);
+    }
   };
-  
-  const [activeTab, setActiveTab] = React.useState(getDefaultTab());
-  const [passwordVisibility, setPasswordVisibility] = React.useState<Record<string, boolean>>({});
+
+  const selectedModel = models.find(m => m.name === value);
+
+  return (
+    <div className="jarvis-form-group full-width" style={{ marginLeft: `${depth * 20}px`, gridColumn: '1 / -1' }}>
+      {/* Unified Model Configuration Section */}
+      <Card variant="outlined" sx={{ mb: 2 }}>
+        <CardHeader 
+          title="LLM Model Configuration"
+          subheader="Select and configure your language model"
+          action={
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button 
+                size="small" 
+                onClick={fetchAvailableModels}
+                startIcon={<RefreshIcon />}
+                disabled={loading}
+              >
+                Refresh
+              </Button>
+              <Tooltip title="Reload LLM cache with current settings">
+                <Button 
+                  size="small" 
+                  onClick={async () => {
+                    try {
+                      const response = await fetch('/api/v1/settings/llm/cache/reload', { method: 'POST' });
+                      if (response.ok) {
+                        const result = await response.json();
+                        console.log('LLM cache reloaded:', result);
+                        if (onShowSuccess) {
+                          onShowSuccess('Cache reloaded successfully!');
+                        }
+                      } else {
+                        console.error('Failed to reload cache');
+                        console.error('Failed to reload cache');
+                      }
+                    } catch (error) {
+                      console.error('Error reloading cache:', error);
+                      console.error('Error reloading cache:', error);
+                    }
+                  }}
+                  startIcon={<CacheIcon />}
+                  variant="outlined"
+                >
+                  Reload Cache
+                </Button>
+              </Tooltip>
+            </Box>
+          }
+        />
+        <CardContent>
+          {/* Model Selector */}
+          <FormControl fullWidth sx={{ mb: 3 }}>
+            <InputLabel id={`${fieldKey}-label`}>Select Model</InputLabel>
+            <Select
+              labelId={`${fieldKey}-label`}
+              value={value}
+              label="Select Model"
+              onChange={(e) => {
+                const newModelName = e.target.value;
+                const newSelectedModel = models.find(m => m.name === newModelName);
+                
+                // Update the model field
+                onChangeHandler(fieldKey, newModelName);
+                
+                // Also update related fields if we have model information
+                if (newSelectedModel && newSelectedModel.context_length !== 'Unknown') {
+                  // Parse context_length (e.g., "40,960" -> 40960)
+                  const contextLength = parseInt(newSelectedModel.context_length.replace(/,/g, ''));
+                  if (!isNaN(contextLength)) {
+                    // Update context_length field
+                    onChangeHandler('context_length', contextLength);
+                    
+                    // Set max_tokens to ~75% of context length as a reasonable default
+                    const suggestedMaxTokens = Math.floor(contextLength * 0.75);
+                    onChangeHandler('max_tokens', suggestedMaxTokens);
+                  }
+                }
+              }}
+              disabled={loading}
+              endAdornment={loading && <CircularProgress size={20} />}
+            >
+              {models.map((model) => (
+                <MenuItem key={model.id} value={model.name}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Typography>{model.name}</Typography>
+                      {value === model.name && (
+                        <Chip 
+                          label="Active" 
+                          size="small" 
+                          color="success" 
+                          icon={<CheckCircleIcon />}
+                        />
+                      )}
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                      <Typography variant="caption" color="text.secondary">
+                        {model.size}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Context: {model.context_length}
+                      </Typography>
+                    </Box>
+                  </Box>
+                </MenuItem>
+              ))}
+              <Divider />
+              <MenuItem value="custom">
+                <Typography color="primary">Enter custom model name...</Typography>
+              </MenuItem>
+            </Select>
+          </FormControl>
+
+          {/* Current Model Information Panel */}
+          {selectedModel && (
+            <Paper sx={{ p: 3, backgroundColor: 'action.hover', border: '1px solid', borderColor: 'primary.light' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                <CheckCircleIcon color="success" />
+                <Typography variant="h6" color="primary">
+                  Current Model: {selectedModel.name}
+                </Typography>
+              </Box>
+              
+              <Grid container spacing={3}>
+                <Grid item xs={12} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, backgroundColor: 'background.paper', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                      Model Size
+                    </Typography>
+                    <Typography variant="h6" color="primary">
+                      {selectedModel.size}
+                    </Typography>
+                  </Box>
+                </Grid>
+                
+                <Grid item xs={12} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, backgroundColor: 'background.paper', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                      Context Length
+                    </Typography>
+                    <Typography variant="h6" color="primary">
+                      {selectedModel.context_length}
+                    </Typography>
+                  </Box>
+                </Grid>
+                
+                <Grid item xs={12} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, backgroundColor: 'background.paper', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                      Last Modified
+                    </Typography>
+                    <Typography variant="body2" color="text.primary">
+                      {selectedModel.modified}
+                    </Typography>
+                  </Box>
+                </Grid>
+                
+                <Grid item xs={12} md={3}>
+                  <Box sx={{ textAlign: 'center', p: 2, backgroundColor: 'background.paper', borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                      Model ID
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                      {selectedModel.id}
+                    </Typography>
+                  </Box>
+                </Grid>
+              </Grid>
+              
+              {selectedModel.context_length !== 'Unknown' && (
+                <Alert severity="info" sx={{ mt: 2 }}>
+                  <Typography variant="body2">
+                    This model supports up to <strong>{selectedModel.context_length}</strong> tokens in context. 
+                    Larger contexts allow for more detailed conversations but may increase processing time and costs.
+                  </Typography>
+                </Alert>
+              )}
+            </Paper>
+          )}
+          
+          {!selectedModel && value && (
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              Model "{value}" not found in available models. Please refresh the model list or select a different model.
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+const renderStandardForm = (
+  data: any, 
+  onChange: (field: string, value: any) => void, 
+  category: string | undefined,
+  activeTab: string,
+  setActiveTab: (tab: string) => void,
+  passwordVisibility: Record<string, boolean>,
+  setPasswordVisibility: React.Dispatch<React.SetStateAction<Record<string, boolean>>>,
+  icebergPasswordVisibility: Record<string, boolean>,
+  setIcebergPasswordVisibility: React.Dispatch<React.SetStateAction<Record<string, boolean>>>,
+  onShowSuccess?: (message?: string) => void
+) => {
 
   // Flatten nested objects and categorize fields into domain-intelligent tabs
+  // Known nested structures that should be preserved (not flattened)
+  const preserveNested = [
+    'query_classifier',
+    'thinking_mode',
+    'agent_config',
+    'conversation_memory',
+    'error_recovery',
+    'response_generation',
+    'vector_db',
+    'iceberg'
+  ];
+
   const categorizeFields = (data: any, category?: string) => {
     let categories: Record<string, { title: string; fields: Record<string, any> }>;
     
@@ -380,27 +742,71 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
         structured: { title: 'Iceberg (Structured)', fields: {} }
       };
     } else {
-      // Default LLM category structure
+      // Default LLM category structure - consolidated context into settings
       categories = {
         settings: { title: 'Settings', fields: {} },
-        context: { title: 'Context Length', fields: {} },
         classifier: { title: 'Query Classifier', fields: {} },
         thinking: { title: 'Thinking Mode', fields: {} }
       };
     }
 
-    // Flatten nested objects recursively
+    // Flatten nested objects recursively, but preserve certain known structures
     const flattenObject = (obj: any, prefix: string = ''): Record<string, any> => {
       const flattened: Record<string, any> = {};
+      const seenKeys = new Set<string>(); // Track keys to prevent duplicates
+      
+      // Special debug for storage category
+      if (category === 'storage' && !prefix) {
+        console.log('[SettingsFormRenderer] Input to flattenObject:', obj);
+        console.log('[SettingsFormRenderer] Input keys:', Object.keys(obj));
+      }
       
       Object.entries(obj).forEach(([key, value]) => {
+        // Skip if this key starts with "settings." - it's likely a duplicate
+        if (key.startsWith('settings.')) {
+          return;
+        }
+        
         const fullKey = prefix ? `${prefix}.${key}` : key;
         
-        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-          // Recursively flatten nested objects
-          Object.assign(flattened, flattenObject(value, fullKey));
+        // If this is a known nested structure at the top level, keep it as-is
+        if (!prefix && preserveNested.includes(key) && typeof value === 'object' && value !== null) {
+          if (category === 'storage' && key === 'vector_db') {
+            console.log('[SettingsFormRenderer] Preserving vector_db:', value);
+          }
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            flattened[key] = value;
+          }
+        } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          // Don't flatten if this is a preserved nested structure at any level
+          const shouldPreserve = preserveNested.some(preserved => 
+            key === preserved || fullKey.endsWith(`.${preserved}`)
+          );
+          
+          if (shouldPreserve) {
+            if (category === 'storage' && key === 'vector_db') {
+              console.log('[SettingsFormRenderer] Preserving nested vector_db:', value);
+            }
+            if (!seenKeys.has(fullKey)) {
+              seenKeys.add(fullKey);
+              flattened[fullKey] = value;
+            }
+          } else {
+            // Recursively flatten other nested objects
+            const nestedFlattened = flattenObject(value, fullKey);
+            Object.entries(nestedFlattened).forEach(([nestedKey, nestedValue]) => {
+              if (!seenKeys.has(nestedKey)) {
+                seenKeys.add(nestedKey);
+                flattened[nestedKey] = nestedValue;
+              }
+            });
+          }
         } else {
-          flattened[fullKey] = value;
+          if (!seenKeys.has(fullKey)) {
+            seenKeys.add(fullKey);
+            flattened[fullKey] = value;
+          }
         }
       });
       
@@ -408,9 +814,26 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
     };
 
     const flattenedData = flattenObject(data);
+    
+    // Debug logging for storage category
+    if (category === 'storage') {
+      console.log('[SettingsFormRenderer] Flattened data:', flattenedData);
+      console.log('[SettingsFormRenderer] Flattened keys:', Object.keys(flattenedData));
+      if (flattenedData.vector_db) {
+        console.log('[SettingsFormRenderer] vector_db in flattened data:', typeof flattenedData.vector_db, flattenedData.vector_db);
+      }
+    }
 
     Object.entries(flattenedData).forEach(([key, value]) => {
       const lowerKey = key.toLowerCase();
+      
+      // Skip keys that are already part of a preserved nested object
+      const isPartOfNestedObject = key.includes('.') && 
+        preserveNested.some(nested => key.startsWith(nested + '.'));
+      
+      if (isPartOfNestedObject) {
+        return; // Skip this field as it's part of a preserved nested structure
+      }
       
       if (category === 'rag') {
         // RAG-specific field categorization
@@ -439,8 +862,25 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
         }
       } else if (category === 'storage') {
         // Storage-specific field categorization
-        if (lowerKey.includes('milvus') || lowerKey.includes('qdrant') || lowerKey.includes('vector') || 
-            lowerKey.includes('embedding') || lowerKey.includes('pinecone') || lowerKey.includes('weaviate') ||
+        console.log('[DEBUG] Processing storage field:', key, 'value type:', typeof value);
+        
+        // Handle preserved nested structures (vector_db, iceberg)
+        if (key === 'vector_db' || key === 'iceberg') {
+          console.log('[DEBUG] Found preserved structure:', key);
+          if (key === 'vector_db') {
+            categories.vector.fields[key] = value;
+          } else {
+            categories.structured.fields[key] = value;
+          }
+        }
+        // Skip embedding fields - they're handled by VectorDatabaseManager
+        else if (key === 'embedding_model' || key === 'embedding_endpoint') {
+          // Don't add to any category - will be handled specially
+          return;
+        }
+        // For other flattened fields, categorize by keywords
+        else if (lowerKey.includes('milvus') || lowerKey.includes('qdrant') || lowerKey.includes('vector') || 
+            lowerKey.includes('pinecone') || lowerKey.includes('weaviate') ||
             lowerKey.includes('chroma') || lowerKey.includes('faiss')) {
           categories.vector.fields[key] = value;
         }
@@ -456,18 +896,15 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
         }
       } else {
         // LLM-specific field categorization
-        if (lowerKey.includes('max_tokens') || lowerKey.includes('context_length') || lowerKey.includes('context')) {
-          categories.context.fields[key] = value;
-        }
         // Query Classifier Tab - All classifier-related settings
-        else if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {
+        if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {
           categories.classifier.fields[key] = value;
         }
         // Thinking Mode Tab - Thinking-specific parameters (including non-thinking mode)
         else if (lowerKey.includes('thinking_mode') || lowerKey.includes('thinking') || lowerKey.includes('non_thinking')) {
           categories.thinking.fields[key] = value;
         }
-        // Settings Tab - Core model configuration (everything else)
+        // Settings Tab - Core model configuration and context-related fields (everything else)
         else {
           categories.settings.fields[key] = value;
         }
@@ -489,8 +926,18 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
     setPasswordVisibility(prev => ({ ...prev, [fieldKey]: !prev[fieldKey] }));
   };
 
-  const renderField = (key: string, value: any, depth: number = 0, customOnChange?: (field: string, value: any) => void) => {
-    const formatLabel = (str: string) => str.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+  const renderField = (key: string, value: any, depth: number = 0, customOnChange?: (field: string, value: any) => void, fieldCategory?: string, onShowSuccessCallback?: (message?: string) => void) => {
+    const formatLabel = (str: string) => {
+      // Remove redundant "settings." prefix if present
+      let cleanStr = str;
+      if (cleanStr.startsWith('settings.settings.')) {
+        cleanStr = cleanStr.replace('settings.settings.', '');
+      } else if (cleanStr.startsWith('settings.')) {
+        cleanStr = cleanStr.replace('settings.', '');
+      }
+      // Format the label: replace underscores with spaces and capitalize words
+      return cleanStr.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    };
     const onChangeHandler = customOnChange || onChange;
     
     // Detect field complexity for layout
@@ -589,11 +1036,39 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
 
     if (typeof value === 'string') {
       const isLongText = value.length > 100;
-      const isPassword = key.toLowerCase().includes('password') || 
-                        key.toLowerCase().includes('secret') || 
-                        key.toLowerCase().includes('key') ||
-                        key.toLowerCase().includes('token') ||
-                        key.toLowerCase().includes('access');
+      const lowerKey = key.toLowerCase();
+      
+      // Debug logging for max_tokens
+      if (lowerKey.includes('max_tokens') || lowerKey.includes('maxtoken')) {
+        console.log('[DEBUG] Max tokens field:', key, 'Value:', value, 'Type:', typeof value);
+      }
+      
+      // Special handling for model field in LLM category
+      console.log('[DEBUG] Checking model field:', { fieldCategory, key, value, fullKey: key });
+      // Check for both 'model' and 'settings.model' due to potential nesting
+      if (fieldCategory === 'llm' && (key === 'model' || key === 'settings.model' || key.endsWith('.model'))) {
+        console.log('[DEBUG] Rendering model selector for LLM');
+        return (
+          <ModelSelector
+            key={key}
+            fieldKey={key}
+            value={value}
+            onChangeHandler={onChangeHandler}
+            depth={depth}
+            onShowSuccess={onShowSuccessCallback || onShowSuccess}
+          />
+        );
+      }
+      
+      // Explicitly exclude max_tokens from password fields
+      const isPassword = !lowerKey.includes('max_tokens') && !lowerKey.includes('maxtoken') && (
+                        lowerKey.includes('password') || 
+                        lowerKey.includes('secret') || 
+                        lowerKey.includes('api_key') ||
+                        lowerKey.includes('apikey') ||
+                        lowerKey.includes('access_key') ||
+                        lowerKey.includes('token') ||
+                        lowerKey.includes('credentials'));
       
       const isVisible = passwordVisibility[key] || false;
       
@@ -690,9 +1165,161 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
       );
     }
 
-    // Skip nested objects since we've already flattened them
+    // Special handling for vector_db configuration
+    if (key === 'vector_db' && typeof value === 'object' && value !== null) {
+      console.log('[DEBUG] vector_db value:', value);
+      
+      // Get embedding values from parent data
+      const parentData = data || {};
+      const embeddingModel = parentData.embedding_model || '';
+      const embeddingEndpoint = parentData.embedding_endpoint || '';
+      
+      return (
+        <div key={key} style={{ marginLeft: `${depth * 20}px`, marginBottom: '16px' }}>
+          <VectorDatabaseManager
+            data={value}
+            onChange={(updatedValue) => onChangeHandler(key, updatedValue)}
+            embeddingModel={embeddingModel}
+            embeddingEndpoint={embeddingEndpoint}
+            onEmbeddingChange={onChange}
+          />
+        </div>
+      );
+    }
+    
+    
+    // Special handling for Iceberg configuration
+    if (key === 'iceberg' && typeof value === 'object' && value !== null) {
+      return (
+        <Card
+          key={key}
+          variant="outlined"
+          className="jarvis-form-group full-width"
+          sx={{
+            marginLeft: `${depth * 20}px`,
+            marginBottom: '16px',
+            gridColumn: '1 / -1'
+          }}
+        >
+          <CardContent>
+            <Typography variant="h6" sx={{ mb: 2 }}>
+              Apache Iceberg Configuration
+            </Typography>
+            
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {/* Catalog Settings Section */}
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
+                  Catalog Settings
+                </Typography>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {['uri', 'name', 'token', 'warehouse'].map(field => {
+                    if (value[field] !== undefined) {
+                      const isPasswordField = field === 'token';
+                      const fieldKey = `iceberg.${field}`;
+                      const isVisible = icebergPasswordVisibility[fieldKey] || false;
+                      
+                      return (
+                        <TextField
+                          key={field}
+                          label={field.charAt(0).toUpperCase() + field.slice(1)}
+                          value={value[field]}
+                          onChange={(e) => {
+                            const updatedValue = { ...value, [field]: e.target.value };
+                            onChangeHandler(key, updatedValue);
+                          }}
+                          fullWidth
+                          type={isPasswordField && !isVisible ? 'password' : 'text'}
+                          placeholder={field === 'uri' ? 'https://catalog.example.com/...' : ''}
+                          InputProps={isPasswordField ? {
+                            endAdornment: (
+                              <IconButton
+                                onClick={() => setIcebergPasswordVisibility(prev => ({ 
+                                  ...prev, 
+                                  [fieldKey]: !prev[fieldKey] 
+                                }))}
+                                edge="end"
+                                size="small"
+                              >
+                                {isVisible ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                              </IconButton>
+                            )
+                          } : undefined}
+                        />
+                      );
+                    }
+                    return null;
+                  })}
+                </Box>
+              </Box>
+              
+              {/* S3 Configuration Section */}
+              {Object.entries(value).some(([k]) => k.startsWith('s3.')) && (
+                <Box>
+                  <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
+                    S3 Configuration
+                  </Typography>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {Object.entries(value).filter(([k]) => k.startsWith('s3.')).map(([nestedKey, nestedValue]) => {
+                      const fieldName = nestedKey.replace('s3.', '');
+                      const isPasswordField = fieldName.toLowerCase().includes('secret') || fieldName.toLowerCase().includes('key');
+                      const fieldKey = `iceberg.${nestedKey}`;
+                      const isVisible = icebergPasswordVisibility[fieldKey] || false;
+                      
+                      return (
+                        <TextField
+                          key={nestedKey}
+                          label={fieldName.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
+                          value={nestedValue as string}
+                          onChange={(e) => {
+                            const updatedValue = { ...value, [nestedKey]: e.target.value };
+                            onChangeHandler(key, updatedValue);
+                          }}
+                          fullWidth
+                          type={isPasswordField && !isVisible ? 'password' : 'text'}
+                          InputProps={isPasswordField ? {
+                            endAdornment: (
+                              <IconButton
+                                onClick={() => setIcebergPasswordVisibility(prev => ({ 
+                                  ...prev, 
+                                  [fieldKey]: !prev[fieldKey] 
+                                }))}
+                                edge="end"
+                                size="small"
+                              >
+                                {isVisible ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                              </IconButton>
+                            )
+                          } : undefined}
+                        />
+                      );
+                    })}
+                  </Box>
+                </Box>
+              )}
+            </Box>
+          </CardContent>
+        </Card>
+      );
+    }
+    
+    // Handle nested objects (for preserved structures like query_classifier)
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      return null;
+      return (
+        <div key={key} className="jarvis-nested-group" style={{ marginLeft: `${depth * 20}px`, marginBottom: '16px' }}>
+          <h4 className="jarvis-nested-title" style={{ marginBottom: '12px', fontSize: '14px', fontWeight: 600 }}>
+            {formatLabel(key)}
+          </h4>
+          <div style={{ marginLeft: '16px' }}>
+            {Object.entries(value).map(([nestedKey, nestedValue]) => 
+              renderField(`${key}.${nestedKey}`, nestedValue, depth + 1, (_field, val) => {
+                const updatedValue = { ...value, [nestedKey]: val };
+                onChangeHandler(key, updatedValue);
+              }, fieldCategory)
+            )}
+          </div>
+        </div>
+      );
     }
 
     return (
@@ -708,11 +1335,10 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
   const categoryKeys = Object.keys(categories);
   
   // Set first available category as active if current active tab doesn't exist
-  React.useEffect(() => {
-    if (categoryKeys.length > 0 && !categoryKeys.includes(activeTab)) {
-      setActiveTab(categoryKeys[0]);
-    }
-  }, [categoryKeys, activeTab]);
+  // Removed useEffect to avoid hooks in non-component functions
+  if (categoryKeys.length > 0 && !categoryKeys.includes(activeTab)) {
+    setActiveTab(categoryKeys[0]);
+  }
 
   if (categoryKeys.length === 0) {
     return <div className="jarvis-help-text">No settings available to configure.</div>;
@@ -741,12 +1367,77 @@ const renderStandardForm = (data: any, onChange: (field: string, value: any) => 
         >
           <div className="jarvis-tab-panel">
             <div className="jarvis-form-grid">
-              {Object.entries(categories[categoryKey].fields).map(([key, value]) => 
-                renderField(key, value, 0, (fieldKey, fieldValue) => {
-                  // Handle nested field updates properly
-                  onChange(fieldKey, fieldValue);
-                })
-              )}
+              {(() => {
+                // Deduplicate fields before rendering
+                const fieldEntries = Object.entries(categories[categoryKey].fields);
+                const renderedFields = new Map<string, { key: string, value: any }>();
+                
+                fieldEntries.forEach(([fieldKey, fieldValue]) => {
+                  // Get the base field name (last part after dots)
+                  const baseKey = fieldKey.split('.').pop() || fieldKey;
+                  
+                  // Keep track of what we're rendering to avoid duplicates
+                  const existing = renderedFields.get(baseKey);
+                  
+                  // Prefer non-dotted keys over dotted ones
+                  if (!existing || (!fieldKey.includes('.') && existing.key.includes('.'))) {
+                    renderedFields.set(baseKey, { key: fieldKey, value: fieldValue });
+                  }
+                });
+                
+                // Define preferred field order for LLM settings
+                const getFieldOrder = (fieldKey: string): number => {
+                  const lowerKey = fieldKey.toLowerCase();
+                  const orderMap: Record<string, number> = {
+                    'model': 100,
+                    'max_tokens': 200,
+                    'maxtoken': 200,
+                    'model_server': 300,
+                    'system_prompt': 400,
+                    'systemprompt': 400,
+                    'context_length': 500,
+                    'contextlength': 500,
+                    'repeat_penalty': 600,
+                    'repeatpenalty': 600,
+                    'stop': 700, // Stop parameter positioned after basic settings
+                    'temperature': 800,
+                    'top_p': 900,
+                    'top_k': 1000,
+                    'min_p': 1100
+                  };
+                  
+                  // Check for exact matches first
+                  for (const [pattern, order] of Object.entries(orderMap)) {
+                    if (lowerKey === pattern || lowerKey.endsWith('.' + pattern)) {
+                      return order;
+                    }
+                  }
+                  
+                  // Check for partial matches
+                  for (const [pattern, order] of Object.entries(orderMap)) {
+                    if (lowerKey.includes(pattern)) {
+                      return order;
+                    }
+                  }
+                  
+                  return 10000; // Default for unmatched fields
+                };
+
+                // Sort fields by priority for LLM settings
+                const sortedFields = category === 'llm' && categoryKey === 'settings' 
+                  ? Array.from(renderedFields.values()).sort((a, b) => 
+                      getFieldOrder(a.key) - getFieldOrder(b.key)
+                    )
+                  : Array.from(renderedFields.values());
+
+                // Render sorted fields
+                return sortedFields.map(({ key, value }) => 
+                  renderField(key, value, 0, (fieldKey, fieldValue) => {
+                    // Handle nested field updates properly
+                    onChange(fieldKey, fieldValue);
+                  }, category, onShowSuccess)
+                );
+              })()}
             </div>
           </div>
         </div>

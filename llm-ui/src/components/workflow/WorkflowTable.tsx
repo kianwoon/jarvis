@@ -18,7 +18,6 @@ import {
 import {
   Edit as EditIcon,
   Delete as DeleteIcon,
-  PlayArrow as PlayIcon,
   ContentCopy as CopyIcon,
   PowerSettingsNew as PowerIcon,
   AccountTree as NodeIcon,
@@ -43,7 +42,6 @@ interface WorkflowTableProps {
   onDelete: (workflowId: string) => void;
   onDuplicate: (workflow: WorkflowData) => void;
   onToggleActive: (workflow: WorkflowData) => void;
-  onExecute: (workflowId: string) => void;
 }
 
 type Order = 'asc' | 'desc';
@@ -54,8 +52,7 @@ const WorkflowTable: React.FC<WorkflowTableProps> = ({
   onEdit,
   onDelete,
   onDuplicate,
-  onToggleActive,
-  onExecute
+  onToggleActive
 }) => {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
@@ -219,15 +216,6 @@ const WorkflowTable: React.FC<WorkflowTableProps> = ({
                   </TableCell>
                   <TableCell align="right">
                     <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
-                      <Tooltip title="Execute">
-                        <IconButton
-                          size="small"
-                          color="primary"
-                          onClick={() => onExecute(workflow.id)}
-                        >
-                          <PlayIcon />
-                        </IconButton>
-                      </Tooltip>
                       <Tooltip title="Edit">
                         <IconButton
                           size="small"
