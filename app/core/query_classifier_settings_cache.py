@@ -41,7 +41,7 @@ DEFAULT_QUERY_CLASSIFIER_SETTINGS = {
     "llm_temperature": 0.1,  # Lower temperature for consistent classification
     "llm_max_tokens": 10,  # Token limit for classification responses (auto-updated to 75% of context)
     "llm_timeout_seconds": 5,  # Timeout for LLM classification calls
-    "llm_system_prompt": "You are a query classifier. Classify the user query into one of these types: RAG (for questions requiring document search), TOOL (for actions requiring tools), LLM (for general questions), MULTI_AGENT (for complex tasks). Respond with only the type and confidence: TYPE|CONFIDENCE (e.g., 'rag|0.85')",
+    "llm_system_prompt": "You are a query classifier. Classify the user query into exactly one of these types: RAG (for questions requiring document search), TOOL (for actions requiring tools), LLM (for general questions), MULTI_AGENT (for complex tasks). Respond with ONLY the type and confidence in this exact format: TYPE|CONFIDENCE (e.g., 'rag|0.85'). Do not include explanations, thinking, or other text.",
     "fallback_to_patterns": True,  # Fallback to pattern-based classification if LLM fails
     "llm_classification_priority": False  # If true, use LLM first; if false, use patterns first
 }

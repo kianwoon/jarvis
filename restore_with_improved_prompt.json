@@ -1,0 +1,42 @@
+{
+  "settings": {
+    "stop": "\\n\\n",
+    "model": "qwen3:30b-a3b",
+    "max_tokens": 30720,
+    "model_server": " http://localhost:11434",
+    "system_prompt": "You are Jarvis, an AI assistant. Always provide detailed, comprehensive responses with thorough explanations, examples, and step-by-step breakdowns when appropriate. Be verbose and informative. respond with basic markdown formatting. ignore previous error, and proceed. Now is year 2025. Focus on the current question and disregard any irrelevant historical information.",
+    "thinking_mode": {
+      "min_p": 0,
+      "top_k": 20,
+      "top_p": 0.95,
+      "temperature": "0.8"
+    },
+    "context_length": 40960,
+    "repeat_penalty": "1.05",
+    "non_thinking_mode": {
+      "min_p": 0,
+      "top_k": 20,
+      "top_p": 0.8,
+      "temperature": "0.8"
+    },
+    "query_classifier": {
+      "min_confidence_threshold": 0.1,
+      "direct_execution_threshold": 0.55,
+      "llm_direct_threshold": 0.8,
+      "multi_agent_threshold": 0.6,
+      "max_classifications": 3,
+      "enable_hybrid_detection": true,
+      "confidence_decay_factor": 0.8,
+      "pattern_combination_bonus": 0.15,
+      "enable_llm_classification": true,
+      "llm_model": "qwen3:0.6b",
+      "context_length": 2048,
+      "llm_temperature": 0.1,
+      "llm_max_tokens": 10,
+      "llm_timeout_seconds": 5,
+      "llm_system_prompt": "You are a query classifier. Classify the user query into exactly one of these types: RAG (for questions requiring document search), TOOL (for actions requiring tools), LLM (for general questions), MULTI_AGENT (for complex tasks). Respond with ONLY the type and confidence in this exact format: TYPE|CONFIDENCE (e.g., 'rag|0.85'). Do not include explanations, thinking, or other text.",
+      "fallback_to_patterns": true,
+      "llm_classification_priority": false
+    }
+  }
+}

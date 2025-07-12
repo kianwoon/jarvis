@@ -89,36 +89,42 @@ class EnhancedQueryClassifier:
             return self._get_default_config()
     
     def _load_dynamic_settings(self):
-        """Load dynamic settings from Redis cache/database"""
+        """Load dynamic settings from Query Classifier Redis cache/database"""
         try:
-            # Load LLM-based classifier settings from your configured Redis cache
-            from app.core.enhanced_query_classifier_cache import get_enhanced_classifier_settings
-            dynamic_settings = get_enhanced_classifier_settings()
+            # Load LLM-based classifier settings from Query Classifier configuration
+            from app.core.query_classifier_settings_cache import get_query_classifier_settings
+            dynamic_settings = get_query_classifier_settings()
             
-            # Override config settings with your Redis-cached settings
+            # Override config settings with Query Classifier Redis-cached settings
             if 'settings' not in self.config:
                 self.config['settings'] = {}
             
             self.config['settings'].update(dynamic_settings)
-            logger.info(f"Loaded dynamic query classifier settings: {dynamic_settings}")
+            logger.info(f"Loaded Query Classifier settings: {dynamic_settings}")
             
-            # Check if LLM-based classification is configured
-            # Require both max_tokens AND system_prompt to enable LLM classification
-            if dynamic_settings.get('classifier_max_tokens') and dynamic_settings.get('system_prompt'):
+            # Check if LLM-based classification is enabled
+            # Use new enable_llm_classification flag and require model to be configured
+            enable_llm = dynamic_settings.get('enable_llm_classification', False)
+            llm_model = dynamic_settings.get('llm_model', '').strip()
+            llm_system_prompt = dynamic_settings.get('llm_system_prompt', '').strip()
+            
+            if enable_llm and llm_model and llm_system_prompt:
                 self.use_llm_classification = True
-                logger.info("LLM-based query classification enabled from settings")
+                logger.info(f"LLM-based query classification enabled with model: {llm_model}")
             else:
                 self.use_llm_classification = False
-                if dynamic_settings.get('classifier_max_tokens') and not dynamic_settings.get('system_prompt'):
-                    logger.info("Pattern-based query classification enabled (no system prompt configured)")
-                else:
-                    logger.info("Pattern-based query classification enabled")
+                if not enable_llm:
+                    logger.info("LLM-based query classification disabled in settings")
+                elif not llm_model:
+                    logger.info("LLM-based query classification disabled - no model configured")
+                elif not llm_system_prompt:
+                    logger.info("LLM-based query classification disabled - no system prompt configured")
                 
         except ImportError as e:
-            logger.warning(f"Enhanced classifier cache not available yet: {e}")
+            logger.warning(f"Query Classifier settings cache not available yet: {e}")
             self.use_llm_classification = False
         except Exception as e:
-            logger.warning(f"Failed to load dynamic settings, using defaults: {e}")
+            logger.warning(f"Failed to load Query Classifier settings, using defaults: {e}")
             self.use_llm_classification = False
     
     def _load_mcp_tools(self):
@@ -128,6 +134,7 @@ class EnhancedQueryClassifier:
             self.available_mcp_tools = get_enabled_mcp_tools()
             self.mcp_tool_names = set(self.available_mcp_tools.keys()) if self.available_mcp_tools else set()
             logger.info(f"Loaded {len(self.mcp_tool_names)} MCP tools: {list(self.mcp_tool_names)}")
+            logger.info(f"[MCP TOOLS DEBUG] Sample tool data: {list(self.available_mcp_tools.items())[:2] if self.available_mcp_tools else 'No tools available'}")
             
         except Exception as e:
             logger.warning(f"Failed to load MCP tools: {e}")
@@ -166,6 +173,7 @@ class EnhancedQueryClassifier:
                 self.collection_keywords.update(collection_info['keywords'])
             
             logger.info(f"Loaded {len(self.rag_collections)} RAG collections with {len(self.collection_keywords)} keywords")
+            logger.info(f"[RAG COLLECTIONS DEBUG] Sample collection data: {list(self.rag_collections.items())[:2] if self.rag_collections else 'No collections available'}")
             
             # Log collection summary for debugging
             for name, info in self.rag_collections.items():
@@ -437,25 +445,50 @@ class EnhancedQueryClassifier:
                 logger.warning(f"Failed to create classification span: {e}")
         
         try:
-            from app.core.llm_settings_cache import get_llm_settings
-            llm_settings = get_llm_settings()
-            classifier_config = llm_settings.get('query_classifier', {})
+            from app.core.query_classifier_settings_cache import get_query_classifier_settings
+            classifier_config = get_query_classifier_settings()
             
-            # Use your configured settings
-            max_tokens = int(classifier_config.get('classifier_max_tokens', 10))
+            # Use Query Classifier configured settings
+            max_tokens = int(classifier_config.get('llm_max_tokens', 20))  # Increased for TYPE|CONFIDENCE response
             min_confidence = float(classifier_config.get('min_confidence_threshold', 0.1))
             max_classifications = int(classifier_config.get('max_classifications', 3))  # Reserved for future use
+            llm_model = classifier_config.get('llm_model', '')
+            temperature = float(classifier_config.get('llm_temperature', 0.1))
+            timeout_seconds = int(classifier_config.get('llm_timeout_seconds', 5))
             
-            # Get system prompt from configuration
-            system_prompt = classifier_config.get('system_prompt')
+            # Get system prompt from Query Classifier configuration
+            system_prompt = classifier_config.get('llm_system_prompt')
             
             if system_prompt:
                 # Build detailed tool and collection information
                 tools_info = self._build_tools_info()
                 collections_info = self._build_collections_info()
                 
-                # Assemble prompt structure as specified
+                # Debug logging to verify what data is being fed to classifier
+                logger.info(f"[MAIN CLASSIFIER DEBUG] Tools info length: {len(tools_info)} chars")
+                logger.info(f"[MAIN CLASSIFIER DEBUG] Tools info preview: {tools_info[:300]}...")
+                logger.info(f"[MAIN CLASSIFIER DEBUG] Collections info length: {len(collections_info)} chars")
+                logger.info(f"[MAIN CLASSIFIER DEBUG] Collections info preview: {collections_info[:300]}...")
+                logger.info(f"[MAIN CLASSIFIER DEBUG] Available MCP tools count: {len(self.mcp_tool_names)}")
+                logger.info(f"[MAIN CLASSIFIER DEBUG] Available RAG collections count: {len(self.rag_collections)}")
+                
+                # Assemble comprehensive prompt with classification guidance and explicit format requirements
                 prompt = f"""{system_prompt}
+
+**Classification Guidelines:**
+- TOOL: Use when specific tools can answer the query (datetime, search, email, calendar, etc.)
+- RAG: Use when query asks about topics that might be in the knowledge collections
+- LLM: Use ONLY when no tools or collections can help (creative tasks, general explanations)
+- MULTI_AGENT: Use for complex multi-step tasks requiring coordination of multiple systems
+
+**Key Decision Rules:**
+- If query asks for current date/time → TOOL (get_datetime available)
+- If query contains "latest", "recent", "current", "new", "today", "now" → TOOL (google_search available)
+- If query needs web search or real-time info → TOOL (google_search available)  
+- If query about company/training topics → RAG (check collections)
+- If purely creative/explanatory with no tools needed → LLM
+
+**CRITICAL: "Latest" queries MUST use TOOL for fresh information, never LLM or RAG**
 
 **Available Tools:**
 {tools_info}
@@ -463,45 +496,51 @@ class EnhancedQueryClassifier:
 **Available RAG Collections:**
 {collections_info}
 
-Query: "{query}"
+**Query to classify:** "{query}"
 
-Respond with the classification type and confidence score in this exact format: TYPE|CONFIDENCE
-Where TYPE is one of: tool, rag, llm, multi_agent
-Where CONFIDENCE is a decimal between 0.0 and 1.0 indicating your certainty
+**Response format:** TYPE|CONFIDENCE
+**Examples:** tool|0.85, rag|0.90, llm|0.75, multi_agent|0.80
+**Note:** Confidence must be decimal (0.0-1.0), NOT percentage
 
-Example: tool|0.85"""
+Answer:"""
                 
-                # Debug log the prompt
+                # Debug log the prompt with structured sections
                 logger.info(f"LLM Classifier prompt length: {len(prompt)} chars")
-                logger.info(f"LLM Classifier prompt preview:\n{prompt[:200]}...")  # First 200 chars
+                logger.info(f"LLM Classifier prompt preview:\n{prompt[:300]}...")  # More context
+                logger.info(f"LLM Classifier tools summary: {len(self.mcp_tool_names)} tools, {len(self.rag_collections)} collections")
                 
-                # Log the last part to see /no_think
-                logger.info(f"LLM Classifier prompt end: ...{prompt[-100:]}")  # Last 100 chars
+                # Log tools and collections count for monitoring
+                if self.mcp_tool_names:
+                    logger.info(f"Available tools: {', '.join(list(self.mcp_tool_names)[:5])}{'...' if len(self.mcp_tool_names) > 5 else ''}")
+                if self.rag_collections:
+                    logger.info(f"Available collections: {', '.join(list(self.rag_collections.keys())[:3])}{'...' if len(self.rag_collections) > 3 else ''}")
             else:
                 # No system prompt configured - cannot classify
                 logger.error("No system prompt configured for query classifier")
-                return await self._pattern_classify_fallback(query)
+                return await self._retry_llm_classification(query, "no_system_prompt")
 
-            # Use your LLM settings to make the classification call
+            # Use Query Classifier LLM settings to make the classification call
             from app.llm.ollama import OllamaLLM
             from app.llm.base import LLMConfig
+            from app.core.llm_settings_cache import get_llm_settings
             
-            # Use LLM configuration from your settings - no hardcoding
-            # Use non_thinking_mode for classifier to avoid thinking tags
-            non_thinking_mode = llm_settings.get('non_thinking_mode')
+            # Get main LLM settings for model_server only
+            main_llm_settings = get_llm_settings()
+            
+            # Use Query Classifier specific configuration - no hardcoding
             llm_config = LLMConfig(
-                model_name=llm_settings.get('model'),
-                temperature=float(non_thinking_mode.get('temperature')),
+                model_name=llm_model,
+                temperature=temperature,
                 max_tokens=max_tokens,
-                top_p=float(non_thinking_mode.get('top_p'))
+                top_p=0.95  # Use default top_p for classification
             )
             
             # Use same approach as main system - check env var first, then settings, then default
             import os
             model_server = os.environ.get("OLLAMA_BASE_URL")
             if not model_server:
-                # Try settings if env var not set
-                model_server = llm_settings.get('model_server', '').strip()
+                # Try main LLM settings if env var not set
+                model_server = main_llm_settings.get('model_server', '').strip()
                 if not model_server:
                     # Use same default as main system
                     model_server = "http://ollama:11434"
@@ -524,15 +563,16 @@ Example: tool|0.85"""
                 except Exception as e:
                     logger.warning(f"Failed to create classification generation span: {e}")
             
-            # Add timeout wrapper for LLM classification
+            # Add timeout wrapper for LLM classification using Query Classifier settings
+            classifier_timeout = timeout_seconds + 5  # Add 5 second buffer over configured timeout
             try:
                 response = await asyncio.wait_for(
                     llm.generate(prompt),
-                    timeout=45.0  # 45 second timeout (15s buffer over Ollama's 30s)
+                    timeout=classifier_timeout
                 )
                 response_text = response.text
             except asyncio.TimeoutError:
-                logger.error("LLM classification timed out after 45 seconds")
+                logger.error(f"LLM classification timed out after {classifier_timeout} seconds")
                 return await self._retry_llm_classification(query, "llm_timeout")
             
             # End generation span with result
@@ -559,9 +599,15 @@ Example: tool|0.85"""
                 parts = clean_response.strip().split('|')
                 query_type_str = parts[0].strip().upper()
                 try:
-                    confidence = float(parts[1].strip())
+                    confidence_str = parts[1].strip()
+                    # Handle percentage format (e.g., "90%" -> 0.9)
+                    if confidence_str.endswith('%'):
+                        confidence = float(confidence_str[:-1]) / 100.0
+                    else:
+                        confidence = float(confidence_str)
                     # Clamp confidence to valid range
                     confidence = max(0.0, min(1.0, confidence))
+                    logger.info(f"Parsed confidence: '{parts[1].strip()}' -> {confidence}")
                 except (ValueError, IndexError) as e:
                     logger.error(f"LLM provided invalid confidence in response: '{clean_response}', error: {e}")
                     return await self._retry_llm_classification(query, "invalid_confidence")
@@ -585,7 +631,18 @@ Example: tool|0.85"""
                 'MULTI_AGENT': QueryType.MULTI_AGENT
             }
             
-            query_type = type_mapping.get(query_type_str, QueryType.LLM)
+            # Check if response is a collection name (should be mapped to RAG)
+            if query_type_str not in type_mapping:
+                # If it's not a standard type, check if it matches a RAG collection
+                if query_type_str.lower() in [col.lower() for col in self.rag_collections.keys()]:
+                    query_type = QueryType.RAG
+                    logger.info(f"LLM classified query for RAG collection: {query_type_str}")
+                else:
+                    # Default to LLM for unknown responses
+                    query_type = QueryType.LLM
+                    logger.warning(f"Unknown classification type '{query_type_str}', defaulting to LLM")
+            else:
+                query_type = type_mapping[query_type_str]
             
             # Always accept valid classifications, even with low confidence
             # The confidence value is still useful for routing decisions
@@ -638,9 +695,8 @@ Example: tool|0.85"""
         logger.warning(f"LLM classification failed ({reason}), creating error result")
         
         # Return a default tool classification with low confidence to indicate uncertainty
-        from app.core.llm_settings_cache import get_llm_settings
-        llm_settings = get_llm_settings()
-        classifier_config = llm_settings.get('query_classifier', {})
+        from app.core.query_classifier_settings_cache import get_query_classifier_settings
+        classifier_config = get_query_classifier_settings()
         min_confidence = float(classifier_config.get('min_confidence_threshold', 0.1))
         
         result = ClassificationResult(
@@ -660,11 +716,19 @@ Example: tool|0.85"""
         return [result]
     
     def _build_tools_info(self) -> str:
-        """Build detailed information about available MCP tools"""
+        """Build detailed information about available MCP tools categorized by functionality"""
         if not self.available_mcp_tools:
             return "No MCP tools are currently available."
         
-        tools_list = []
+        # Categorize tools by functionality for better classification guidance
+        tool_categories = {
+            'search': [],
+            'email': [],
+            'datetime': [],
+            'jira': [],
+            'other': []
+        }
+        
         for tool_name, tool_info in self.available_mcp_tools.items():
             # Extract tool description if available from manifest
             description = "Available for use"
@@ -676,26 +740,361 @@ Example: tool|0.85"""
                             description = tool_def.get('description', description)
                             break
             
-            tools_list.append(f"- {tool_name}: {description}")
+            # Enhance descriptions with capability details
+            enhanced_description = self._enhance_tool_description(tool_name, description)
+            
+            # Categorize based on tool name patterns
+            tool_lower = tool_name.lower()
+            if 'search' in tool_lower or 'google' in tool_lower:
+                tool_categories['search'].append(f"{tool_name}: {enhanced_description}")
+            elif 'email' in tool_lower or 'mail' in tool_lower:
+                tool_categories['email'].append(f"{tool_name}: {enhanced_description}")
+            elif 'datetime' in tool_lower or 'date' in tool_lower or 'time' in tool_lower:
+                tool_categories['datetime'].append(f"{tool_name}: {enhanced_description}")
+            elif 'jira' in tool_lower or 'ticket' in tool_lower:
+                tool_categories['jira'].append(f"{tool_name}: {enhanced_description}")
+            else:
+                tool_categories['other'].append(f"{tool_name}: {enhanced_description}")
         
-        return "\n".join(tools_list) if tools_list else "No tools available."
+        # Build categorized output
+        tool_sections = []
+        for category, tools in tool_categories.items():
+            if tools:
+                tool_sections.append(f"{category.title()} Tools:\n" + "\n".join(f"  - {tool}" for tool in tools))
+        
+        return "\n\n".join(tool_sections) if tool_sections else "No tools available."
     
     def _build_collections_info(self) -> str:
-        """Build detailed information about available RAG collections"""
+        """Build detailed information about available RAG collections with domain expertise"""
         if not self.rag_collections:
             return "No RAG collections are currently available."
         
+        # Sort collections by document count (most comprehensive first) for better guidance
+        sorted_collections = sorted(
+            self.rag_collections.items(), 
+            key=lambda x: x[1].get('document_count', 0), 
+            reverse=True
+        )
+        
         collections_list = []
-        for collection_name, collection_info in self.rag_collections.items():
+        for collection_name, collection_info in sorted_collections:
             description = collection_info.get('description', 'No description available')
             doc_count = collection_info.get('document_count', 0)
             collection_type = collection_info.get('type', 'Unknown')
+            keywords = collection_info.get('keywords', set())
+            
+            # Build a more informative entry with keywords for classification guidance
+            keyword_hint = f" [Keywords: {', '.join(list(keywords)[:5])}]" if keywords else ""
+            status = "✓ Active" if doc_count > 0 else "⚠ Empty"
             
             collections_list.append(
-                f"- {collection_name}: {description} (Type: {collection_type}, Documents: {doc_count})"
+                f"- {collection_name}: {description}{keyword_hint}\n"
+                f"  Status: {status} | Type: {collection_type} | Documents: {doc_count:,}"
             )
         
-        return "\n".join(collections_list) if collections_list else "No collections available."
+        header = f"Available Knowledge Collections ({len(self.rag_collections)} total):"
+        return f"{header}\n" + "\n\n".join(collections_list)
+    
+    def _enhance_tool_description(self, tool_name: str, base_description: str) -> str:
+        """Enhance tool descriptions with specific capabilities for better LLM classification"""
+        tool_lower = tool_name.lower()
+        
+        # Provide rich, capability-specific descriptions based on tool names
+        enhanced_descriptions = {
+            'google_search': 'Search the web for current information, news, and real-time data. Use for "latest", "recent", "current", "new", or any time-sensitive queries.',
+            'get_datetime': 'Get current date and time information. Use for queries asking "what time is it", "what\'s the date", "current time/date".',
+            'send_email': 'Send emails to recipients. Use when user wants to send, compose, or email someone.',
+            'read_email': 'Read and retrieve email messages. Use when user wants to check, read, or view emails.',
+            'create_jira_issue': 'Create new JIRA tickets/issues. Use when user wants to create, log, or report bugs/tasks.',
+            'search_jira': 'Search for existing JIRA issues and tickets. Use when user wants to find, lookup, or check JIRA items.',
+            'calendar_search': 'Search calendar events and appointments. Use when user asks about meetings, appointments, or calendar events.',
+            'create_calendar_event': 'Create new calendar appointments. Use when user wants to schedule, book, or create meetings.',
+            'file_search': 'Search through files and documents. Use when user wants to find specific files or content within files.',
+            'weather': 'Get weather information and forecasts. Use for weather-related queries.',
+            'calculator': 'Perform mathematical calculations. Use for math problems, computations, and numerical queries.',
+            'note_taking': 'Create and manage notes. Use when user wants to save, create, or manage notes/memos.',
+            'translation': 'Translate text between languages. Use for translation requests.',
+            'currency_converter': 'Convert between different currencies. Use for currency exchange rate queries.',
+            'stock_info': 'Get stock prices and financial market data. Use for stock quotes, market information.',
+            'news_feed': 'Get news articles and current events. Use for news-related queries.',
+            'task_manager': 'Manage tasks and to-do items. Use when user wants to create, update, or manage tasks.',
+            'password_manager': 'Manage passwords and credentials securely. Use for password-related requests.',
+            'system_info': 'Get system information and status. Use for system monitoring, performance queries.',
+            'url_shortener': 'Shorten long URLs. Use when user wants to create short links.',
+            'qr_code': 'Generate QR codes. Use when user wants to create QR codes for text, URLs, etc.',
+            'screenshot': 'Take screenshots of the screen. Use when user wants to capture screen content.',
+            'text_to_speech': 'Convert text to speech audio. Use for text-to-speech requests.',
+            'image_analysis': 'Analyze and describe images. Use when user wants to understand image content.',
+            'pdf_reader': 'Read and extract text from PDF files. Use for PDF document queries.',
+            'code_formatter': 'Format and beautify code. Use for code formatting requests.',
+            'json_validator': 'Validate and format JSON data. Use for JSON-related queries.',
+            'base64_encoder': 'Encode/decode base64 data. Use for base64 encoding/decoding.',
+            'hash_generator': 'Generate hash values (MD5, SHA, etc.). Use for hash generation requests.',
+            'regex_tester': 'Test and validate regular expressions. Use for regex-related queries.',
+            'color_picker': 'Work with colors and color codes. Use for color-related queries.',
+            'unit_converter': 'Convert between different units of measurement. Use for unit conversion requests.',
+            'timezone_converter': 'Convert times between different timezones. Use for timezone-related queries.',
+            'ip_lookup': 'Lookup IP address information and geolocation. Use for IP-related queries.',
+            'domain_checker': 'Check domain availability and information. Use for domain-related queries.',
+            'port_scanner': 'Scan network ports and services. Use for network diagnostic queries.',
+            'ssl_checker': 'Check SSL certificate information. Use for SSL/certificate queries.',
+            'backup_manager': 'Manage file backups and restore operations. Use for backup-related requests.',
+            'log_analyzer': 'Analyze log files and extract insights. Use for log analysis queries.',
+            'database_query': 'Query databases and retrieve data. Use for database-related requests.',
+            'api_tester': 'Test API endpoints and responses. Use for API testing queries.',
+            'ssh_client': 'Connect to remote servers via SSH. Use for remote server access.',
+            'ftp_client': 'Transfer files via FTP/SFTP. Use for file transfer requests.',
+            'git_manager': 'Manage Git repositories and version control. Use for Git-related operations.',
+            'docker_manager': 'Manage Docker containers and images. Use for Docker-related queries.',
+            'kubernetes_client': 'Interact with Kubernetes clusters. Use for Kubernetes operations.',
+            'cloud_storage': 'Manage cloud storage (AWS S3, Google Drive, etc.). Use for cloud file operations.',
+            'monitoring_alerts': 'Set up and manage system alerts. Use for monitoring and alerting.',
+            'performance_profiler': 'Profile application performance. Use for performance analysis.',
+            'security_scanner': 'Scan for security vulnerabilities. Use for security assessment queries.',
+            'compliance_checker': 'Check compliance with standards and policies. Use for compliance queries.',
+            'data_anonymizer': 'Anonymize sensitive data. Use for data privacy requests.',
+            'report_generator': 'Generate reports and documentation. Use for report creation.',
+            'workflow_automation': 'Automate workflows and processes. Use for automation requests.',
+            'integration_manager': 'Manage system integrations. Use for integration-related queries.',
+            'analytics_dashboard': 'View analytics and metrics. Use for analytics queries.',
+            'user_management': 'Manage users and permissions. Use for user administration.',
+            'audit_logger': 'Log and track system activities. Use for audit and compliance.',
+            'configuration_manager': 'Manage system configurations. Use for config-related requests.',
+            'deployment_manager': 'Manage application deployments. Use for deployment operations.',
+            'load_balancer': 'Manage load balancing and traffic distribution. Use for load balancing.',
+            'cache_manager': 'Manage caching systems. Use for cache-related queries.',
+            'message_queue': 'Manage message queues and async processing. Use for messaging.',
+            'scheduler': 'Schedule and manage recurring tasks. Use for scheduling requests.',
+            'notification_service': 'Send notifications and alerts. Use for notification requests.',
+            'search_engine': 'Perform advanced search operations. Use for complex search queries.',
+            'recommendation_engine': 'Generate recommendations and suggestions. Use for recommendation queries.',
+            'machine_learning': 'Apply ML models and predictions. Use for AI/ML requests.',
+            'data_visualization': 'Create charts and visualizations. Use for data visualization.',
+            'export_import': 'Export/import data in various formats. Use for data export/import.',
+            'template_engine': 'Generate content from templates. Use for template-based generation.',
+            'validator': 'Validate data and formats. Use for validation requests.',
+            'sanitizer': 'Clean and sanitize data. Use for data cleaning.',
+            'transformer': 'Transform data between formats. Use for data transformation.',
+            'aggregator': 'Aggregate and summarize data. Use for data aggregation.',
+            'comparison_tool': 'Compare files, data, or configurations. Use for comparison requests.',
+            'merge_tool': 'Merge files or data sources. Use for merging operations.',
+            'diff_viewer': 'View differences between files or data. Use for diff operations.',
+            'version_control': 'Track and manage versions. Use for versioning requests.',
+            'rollback_manager': 'Rollback changes and deployments. Use for rollback operations.',
+            'feature_toggle': 'Manage feature flags and toggles. Use for feature management.',
+            'experiment_manager': 'Manage A/B tests and experiments. Use for experimentation.',
+            'feedback_collector': 'Collect and manage user feedback. Use for feedback requests.',
+            'survey_tool': 'Create and manage surveys. Use for survey-related queries.',
+            'poll_creator': 'Create polls and voting systems. Use for polling requests.',
+            'form_builder': 'Build and manage forms. Use for form creation.',
+            'document_generator': 'Generate documents and reports. Use for document creation.',
+            'signature_tool': 'Manage digital signatures. Use for signature requests.',
+            'encryption_tool': 'Encrypt and decrypt data. Use for encryption/decryption.',
+            'compression_tool': 'Compress and decompress files. Use for compression operations.',
+            'archiver': 'Create and extract archives. Use for archiving operations.',
+            'thumbnail_generator': 'Generate image thumbnails. Use for thumbnail creation.',
+            'watermark_tool': 'Add watermarks to images/documents. Use for watermarking.',
+            'ocr_scanner': 'Extract text from images using OCR. Use for text extraction from images.',
+            'barcode_scanner': 'Scan and generate barcodes. Use for barcode operations.',
+            'voice_recognition': 'Convert speech to text. Use for voice recognition.',
+            'language_detector': 'Detect the language of text. Use for language detection.',
+            'sentiment_analyzer': 'Analyze sentiment in text. Use for sentiment analysis.',
+            'keyword_extractor': 'Extract keywords from text. Use for keyword extraction.',
+            'summarizer': 'Summarize long text content. Use for text summarization.',
+            'plagiarism_checker': 'Check for plagiarism in text. Use for plagiarism detection.',
+            'grammar_checker': 'Check and correct grammar. Use for grammar checking.',
+            'spell_checker': 'Check and correct spelling. Use for spell checking.',
+            'readability_analyzer': 'Analyze text readability. Use for readability assessment.',
+            'word_counter': 'Count words, characters, and paragraphs. Use for text statistics.',
+            'text_cleaner': 'Clean and format text. Use for text cleaning.',
+            'case_converter': 'Convert text case (upper, lower, title). Use for case conversion.',
+            'text_splitter': 'Split text into segments. Use for text segmentation.',
+            'text_merger': 'Merge multiple text sources. Use for text merging.',
+            'pattern_finder': 'Find patterns in text or data. Use for pattern matching.',
+            'anomaly_detector': 'Detect anomalies in data. Use for anomaly detection.',
+            'trend_analyzer': 'Analyze trends in data. Use for trend analysis.',
+            'forecaster': 'Forecast future values. Use for prediction queries.',
+            'clustering_tool': 'Group similar data points. Use for clustering analysis.',
+            'classifier': 'Classify data into categories. Use for classification tasks.',
+            'recommendation_filter': 'Filter and rank recommendations. Use for filtering.',
+            'personalization_engine': 'Personalize content and experiences. Use for personalization.',
+            'ab_tester': 'Run A/B tests and experiments. Use for testing queries.',
+            'performance_monitor': 'Monitor system performance. Use for performance monitoring.',
+            'health_checker': 'Check system health and status. Use for health checks.',
+            'uptime_monitor': 'Monitor service uptime. Use for uptime monitoring.',
+            'error_tracker': 'Track and manage errors. Use for error tracking.',
+            'debug_helper': 'Debug applications and issues. Use for debugging.',
+            'profiler': 'Profile code and system performance. Use for profiling.',
+            'benchmark_tool': 'Benchmark performance. Use for benchmarking.',
+            'load_tester': 'Test system load and capacity. Use for load testing.',
+            'stress_tester': 'Stress test systems. Use for stress testing.',
+            'security_audit': 'Audit security configurations. Use for security audits.',
+            'vulnerability_scanner': 'Scan for vulnerabilities. Use for vulnerability assessment.',
+            'penetration_tester': 'Perform penetration testing. Use for pen testing.',
+            'firewall_manager': 'Manage firewall rules. Use for firewall configuration.',
+            'access_controller': 'Control access and permissions. Use for access management.',
+            'identity_manager': 'Manage identities and authentication. Use for identity management.',
+            'session_manager': 'Manage user sessions. Use for session management.',
+            'token_manager': 'Manage authentication tokens. Use for token operations.',
+            'certificate_manager': 'Manage SSL/TLS certificates. Use for certificate management.',
+            'key_manager': 'Manage encryption keys. Use for key management.',
+            'secret_manager': 'Manage secrets and credentials. Use for secret management.',
+            'vault': 'Secure storage for sensitive data. Use for secure storage.',
+            'backup_scheduler': 'Schedule automated backups. Use for backup scheduling.',
+            'disaster_recovery': 'Manage disaster recovery procedures. Use for DR operations.',
+            'failover_manager': 'Manage system failover. Use for failover operations.',
+            'cluster_manager': 'Manage server clusters. Use for cluster management.',
+            'auto_scaler': 'Automatically scale resources. Use for auto-scaling.',
+            'resource_optimizer': 'Optimize resource usage. Use for resource optimization.',
+            'cost_analyzer': 'Analyze and optimize costs. Use for cost analysis.',
+            'usage_tracker': 'Track resource usage. Use for usage monitoring.',
+            'billing_manager': 'Manage billing and invoicing. Use for billing operations.',
+            'subscription_manager': 'Manage subscriptions. Use for subscription management.',
+            'license_manager': 'Manage software licenses. Use for license tracking.',
+            'compliance_monitor': 'Monitor compliance status. Use for compliance monitoring.',
+            'policy_enforcer': 'Enforce organizational policies. Use for policy enforcement.',
+            'governance_tool': 'Manage IT governance. Use for governance operations.',
+            'risk_assessor': 'Assess and manage risks. Use for risk assessment.',
+            'incident_manager': 'Manage security incidents. Use for incident response.',
+            'change_manager': 'Manage system changes. Use for change management.',
+            'release_manager': 'Manage software releases. Use for release management.',
+            'environment_manager': 'Manage deployment environments. Use for environment management.',
+            'pipeline_manager': 'Manage CI/CD pipelines. Use for pipeline operations.',
+            'artifact_manager': 'Manage build artifacts. Use for artifact management.',
+            'dependency_manager': 'Manage software dependencies. Use for dependency tracking.',
+            'package_manager': 'Manage software packages. Use for package management.',
+            'update_manager': 'Manage system updates. Use for update operations.',
+            'patch_manager': 'Manage security patches. Use for patch management.',
+            'inventory_manager': 'Track IT inventory. Use for inventory management.',
+            'asset_tracker': 'Track organizational assets. Use for asset tracking.',
+            'lifecycle_manager': 'Manage asset lifecycles. Use for lifecycle management.',
+            'maintenance_scheduler': 'Schedule system maintenance. Use for maintenance planning.',
+            'service_desk': 'Manage service requests. Use for service desk operations.',
+            'helpdesk': 'Provide technical support. Use for helpdesk queries.',
+            'knowledge_base': 'Manage knowledge articles. Use for knowledge management.',
+            'documentation_tool': 'Create and manage documentation. Use for documentation.',
+            'training_manager': 'Manage training programs. Use for training operations.',
+            'certification_tracker': 'Track certifications. Use for certification management.',
+            'skill_assessor': 'Assess technical skills. Use for skill assessment.',
+            'performance_evaluator': 'Evaluate performance. Use for performance evaluation.',
+            'goal_tracker': 'Track goals and objectives. Use for goal management.',
+            'project_manager': 'Manage projects. Use for project management.',
+            'task_scheduler': 'Schedule and assign tasks. Use for task scheduling.',
+            'time_tracker': 'Track time and attendance. Use for time tracking.',
+            'resource_planner': 'Plan resource allocation. Use for resource planning.',
+            'capacity_planner': 'Plan system capacity. Use for capacity planning.',
+            'budget_manager': 'Manage budgets and expenses. Use for budget management.',
+            'procurement_tool': 'Manage procurement processes. Use for procurement.',
+            'vendor_manager': 'Manage vendor relationships. Use for vendor management.',
+            'contract_manager': 'Manage contracts and agreements. Use for contract management.',
+            'approval_workflow': 'Manage approval processes. Use for approval workflows.',
+            'escalation_manager': 'Manage escalation procedures. Use for escalations.',
+            'notification_router': 'Route notifications intelligently. Use for notification routing.',
+            'alert_manager': 'Manage system alerts. Use for alert management.',
+            'dashboard_builder': 'Build custom dashboards. Use for dashboard creation.',
+            'widget_manager': 'Manage dashboard widgets. Use for widget operations.',
+            'theme_manager': 'Manage UI themes. Use for theme customization.',
+            'layout_manager': 'Manage UI layouts. Use for layout customization.',
+            'menu_builder': 'Build custom menus. Use for menu creation.',
+            'form_validator': 'Validate form inputs. Use for form validation.',
+            'data_mapper': 'Map data between systems. Use for data mapping.',
+            'field_mapper': 'Map fields between formats. Use for field mapping.',
+            'schema_validator': 'Validate data schemas. Use for schema validation.',
+            'format_converter': 'Convert between data formats. Use for format conversion.',
+            'protocol_handler': 'Handle different protocols. Use for protocol operations.',
+            'connector': 'Connect to external systems. Use for system integration.',
+            'adapter': 'Adapt between different interfaces. Use for system adaptation.',
+            'bridge': 'Bridge different systems. Use for system bridging.',
+            'proxy': 'Proxy requests to other systems. Use for proxy operations.',
+            'gateway': 'Gateway for API access. Use for API gateway operations.',
+            'middleware': 'Process requests between systems. Use for middleware operations.',
+            'interceptor': 'Intercept and process requests. Use for request interception.',
+            'filter': 'Filter data and requests. Use for filtering operations.',
+            'transformer_pipeline': 'Transform data through pipelines. Use for data transformation.',
+            'processor': 'Process data and requests. Use for data processing.',
+            'handler': 'Handle specific operations. Use for operation handling.',
+            'resolver': 'Resolve dependencies and references. Use for resolution operations.',
+            'locator': 'Locate resources and services. Use for resource location.',
+            'registry': 'Register and discover services. Use for service registry.',
+            'catalog': 'Catalog resources and metadata. Use for resource cataloging.',
+            'indexer': 'Index data for searching. Use for data indexing.',
+            'crawler': 'Crawl and extract data. Use for data crawling.',
+            'scraper': 'Scrape web content. Use for web scraping.',
+            'extractor': 'Extract data from sources. Use for data extraction.',
+            'parser': 'Parse structured data. Use for data parsing.',
+            'interpreter': 'Interpret commands and scripts. Use for interpretation.',
+            'compiler': 'Compile code and scripts. Use for compilation.',
+            'transpiler': 'Transpile between languages. Use for transpilation.',
+            'minifier': 'Minify code and assets. Use for minification.',
+            'obfuscator': 'Obfuscate code. Use for code obfuscation.',
+            'optimizer': 'Optimize code and resources. Use for optimization.',
+            'bundler': 'Bundle assets and dependencies. Use for bundling.',
+            'packager': 'Package applications. Use for packaging.',
+            'installer': 'Install software and packages. Use for installation.',
+            'uninstaller': 'Uninstall software. Use for uninstallation.',
+            'updater': 'Update software and packages. Use for updates.',
+            'patcher': 'Apply patches and fixes. Use for patching.',
+            'rollback': 'Rollback to previous versions. Use for rollback operations.',
+            'migrator': 'Migrate data and systems. Use for migration.',
+            'importer': 'Import data from external sources. Use for data import.',
+            'exporter': 'Export data to external formats. Use for data export.',
+            'synchronizer': 'Synchronize data between systems. Use for synchronization.',
+            'replicator': 'Replicate data and configurations. Use for replication.',
+            'distributor': 'Distribute content and updates. Use for distribution.',
+            'publisher': 'Publish content and releases. Use for publishing.',
+            'subscriber': 'Subscribe to events and updates. Use for subscription.',
+            'broadcaster': 'Broadcast messages and events. Use for broadcasting.',
+            'multicaster': 'Multicast to multiple recipients. Use for multicasting.',
+            'router': 'Route messages and requests. Use for routing.',
+            'balancer': 'Balance load across resources. Use for load balancing.',
+            'scheduler_queue': 'Queue and schedule tasks. Use for task queuing.',
+            'worker': 'Process background tasks. Use for background processing.',
+            'daemon': 'Run background services. Use for daemon operations.',
+            'service': 'Provide specific services. Use for service operations.',
+            'agent': 'Autonomous task execution. Use for agent-based operations.',
+            'bot': 'Automated interactions. Use for bot operations.',
+            'assistant': 'AI-powered assistance. Use for AI assistance.',
+            'helper': 'General purpose utilities. Use for utility operations.',
+            'utility': 'Utility functions. Use for utility operations.',
+            'tool': 'General purpose tools. Use for various operations.',
+        }
+        
+        # Look for exact matches first, then partial matches
+        if tool_lower in enhanced_descriptions:
+            return enhanced_descriptions[tool_lower]
+        
+        # Look for partial matches in tool name
+        for pattern, description in enhanced_descriptions.items():
+            if pattern in tool_lower:
+                return description
+        
+        # If no match found, provide a generic but informative description
+        if base_description and base_description != "Available for use":
+            return base_description
+        
+        # Last resort: categorize by common patterns
+        if any(keyword in tool_lower for keyword in ['search', 'find', 'lookup', 'query']):
+            return 'Search and retrieval tool. Use for finding information or data.'
+        elif any(keyword in tool_lower for keyword in ['create', 'add', 'make', 'generate', 'build']):
+            return 'Creation and generation tool. Use for creating new content or resources.'
+        elif any(keyword in tool_lower for keyword in ['update', 'modify', 'edit', 'change', 'set']):
+            return 'Modification tool. Use for updating or changing existing content.'
+        elif any(keyword in tool_lower for keyword in ['delete', 'remove', 'clear', 'clean']):
+            return 'Deletion and cleanup tool. Use for removing or cleaning data.'
+        elif any(keyword in tool_lower for keyword in ['send', 'notify', 'alert', 'message']):
+            return 'Communication tool. Use for sending messages, notifications, or alerts.'
+        elif any(keyword in tool_lower for keyword in ['read', 'get', 'fetch', 'retrieve', 'view']):
+            return 'Data retrieval tool. Use for accessing and viewing information.'
+        elif any(keyword in tool_lower for keyword in ['manage', 'admin', 'control', 'configure']):
+            return 'Management tool. Use for administrative and configuration tasks.'
+        elif any(keyword in tool_lower for keyword in ['monitor', 'watch', 'track', 'observe']):
+            return 'Monitoring tool. Use for tracking and observing system status.'
+        elif any(keyword in tool_lower for keyword in ['analyze', 'check', 'test', 'validate']):
+            return 'Analysis tool. Use for testing, validation, and analysis tasks.'
+        elif any(keyword in tool_lower for keyword in ['convert', 'transform', 'format', 'process']):
+            return 'Data processing tool. Use for converting and transforming data.'
+        else:
+            return f'Utility tool for {tool_name.replace("_", " ").title()} operations. Available for specialized tasks.'
     
     def _detect_hybrid_patterns(self, query_lower: str) -> List[Tuple[str, List[str], float]]:
         """Detect hybrid query patterns"""
@@ -945,33 +1344,46 @@ Example: tool|0.85"""
             return []
         
         try:
+            from app.core.query_classifier_settings_cache import get_query_classifier_settings
             from app.core.llm_settings_cache import get_llm_settings
-            llm_settings = get_llm_settings()
+            classifier_config = get_query_classifier_settings()
+            main_llm_settings = get_llm_settings()
             
-            # Create simple, direct prompt
-            prompt = f"""Query: {query}
+            # Create enhanced prompt with tool descriptions for better selection
+            tool_info = self._build_tools_info()
+            
+            # Debug logging to check what's being fed
+            logger.info(f"[TOOL SUGGESTION DEBUG] Tool info length: {len(tool_info)} chars")
+            logger.info(f"[TOOL SUGGESTION DEBUG] Tool info preview: {tool_info[:200]}...")
+            logger.info(f"[TOOL SUGGESTION DEBUG] Available tool names: {list(self.mcp_tool_names)[:5]}...")
+            
+            prompt = f"""You are a tool selector. Select the most relevant tool for this query.
 
-Tools: {', '.join(self.mcp_tool_names)}
+Query: "{query}"
 
-Output only the most relevant tool name (no explanations):/NO_THINK"""
+Available Tools:
+{tool_info}
 
-            # Use same LLM configuration as classification
+Respond with ONLY the exact tool name that best matches the query based on the tool descriptions. Do not include explanations, thinking, or additional text.
+
+Tool name:"""
+            
+            # Use same LLM configuration as Query Classifier
             from app.llm.ollama import OllamaLLM
             from app.llm.base import LLMConfig
             
-            non_thinking_mode = llm_settings.get('non_thinking_mode', {})
             llm_config = LLMConfig(
-                model_name=llm_settings.get('model'),
-                temperature=float(non_thinking_mode.get('temperature', 0.1)),
-                max_tokens=50,  # Short response needed - just tool names
-                top_p=float(non_thinking_mode.get('top_p', 0.9))
+                model_name=classifier_config.get('llm_model', ''),
+                temperature=0.0,  # Use temperature 0 for deterministic tool selection
+                max_tokens=int(classifier_config.get('llm_max_tokens', 100)),  # Use same max_tokens as main classifier
+                top_p=0.95
             )
             
             # Use same model server detection as main classifier
             import os
             model_server = os.environ.get("OLLAMA_BASE_URL")
             if not model_server:
-                model_server = llm_settings.get('model_server', '').strip()
+                model_server = main_llm_settings.get('model_server', '').strip()
                 if not model_server:
                     model_server = "http://ollama:11434"
             
@@ -981,28 +1393,39 @@ Output only the most relevant tool name (no explanations):/NO_THINK"""
             try:
                 response = await asyncio.wait_for(
                     llm.generate(prompt),
-                    timeout=30.0  # 30 second timeout for tool suggestions
+                    timeout=10.0  # Shorter timeout for tool suggestions
                 )
                 response_text = response.text.strip()
             except asyncio.TimeoutError:
-                logger.error("LLM tool suggestion timed out after 30 seconds")
-                return []  # Return empty list if timeout
+                logger.error("LLM tool suggestion timed out after 10 seconds")
+                return []
             
+            # Clean the response - remove any thinking tags, explanations, etc.
             clean_response = response_text
+            
+            # Remove thinking tags if present
+            if '<think>' in clean_response:
+                clean_response = re.sub(r'<think>.*?</think>', '', clean_response, flags=re.DOTALL).strip()
+            
+            # Remove any extra formatting
+            clean_response = re.sub(r'^[^\w]*', '', clean_response)  # Remove leading non-word chars
+            clean_response = clean_response.split('\n')[0].strip()  # Take first line only
+            clean_response = clean_response.split(' ')[0].strip()   # Take first word only
             
             logger.info(f"LLM tool suggestion for '{query}': {clean_response}")
             
             # Parse LLM response to extract tool names
             suggested_tools = []
-            if clean_response.lower() != "none":
-                lines = clean_response.strip().split('\n')
-                for line in lines:
-                    line = line.strip()
-                    # Remove bullet points, numbers, etc.
-                    line = re.sub(r'^[-*•\d+.)\s]+', '', line).strip()
-                    # Only include if it's a valid tool name
-                    if line in self.mcp_tool_names:
-                        suggested_tools.append(line)
+            if clean_response and clean_response.lower() != "none":
+                # Check if the cleaned response is a valid tool name
+                if clean_response in self.mcp_tool_names:
+                    suggested_tools.append(clean_response)
+                else:
+                    # Try to find partial matches for common typos
+                    for tool_name in self.mcp_tool_names:
+                        if tool_name.lower() in clean_response.lower() or clean_response.lower() in tool_name.lower():
+                            suggested_tools.append(tool_name)
+                            break
             
             logger.info(f"Parsed suggested tools: {suggested_tools}")
             return suggested_tools
