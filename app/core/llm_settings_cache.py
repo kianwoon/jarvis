@@ -58,6 +58,14 @@ def reload_llm_settings():
                 if 'thinking_mode' not in settings or 'non_thinking_mode' not in settings:
                     raise RuntimeError('LLM settings missing thinking_mode or non_thinking_mode')
                 
+                # Merge in latest query classifier settings with new LLM fields
+                try:
+                    from app.core.query_classifier_settings_cache import get_query_classifier_settings
+                    latest_query_classifier = get_query_classifier_settings()
+                    settings['query_classifier'] = latest_query_classifier
+                except Exception as e:
+                    print(f"Warning: Failed to merge query classifier settings: {e}")
+                
                 # Try to cache in Redis
                 redis_client = _get_redis_client()
                 if redis_client:

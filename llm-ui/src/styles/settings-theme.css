@@ -137,6 +137,11 @@
   grid-column: 1 / -1;
 }
 
+/* Single column layout override */
+.jarvis-form-grid.single-column {
+  grid-template-columns: 1fr;
+}
+
 /* Settings Sections */
 .settings-section {
   background: var(--jarvis-surface);

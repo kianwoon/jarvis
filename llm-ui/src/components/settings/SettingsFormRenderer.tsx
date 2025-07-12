@@ -471,7 +471,8 @@ const ModelSelector: React.FC<{
   onChangeHandler: (key: string, value: any) => void;
   depth: number;
   onShowSuccess?: (message?: string) => void;
-}> = ({ fieldKey, value, onChangeHandler, depth, onShowSuccess }) => {
+  customOnChange?: (field: string, value: any) => void;
+}> = ({ fieldKey, value, onChangeHandler, depth, onShowSuccess, customOnChange }) => {
   const [models, setModels] = React.useState<Array<{name: string, id: string, size: string, modified: string, context_length: string}>>([]);
   const [loading, setLoading] = React.useState(false);
 
@@ -570,19 +571,25 @@ const ModelSelector: React.FC<{
                 const newSelectedModel = models.find(m => m.name === newModelName);
                 
                 // Update the model field
+                console.log('[DEBUG] ModelSelector onChange:', { fieldKey, newModelName, previousValue: value });
                 onChangeHandler(fieldKey, newModelName);
                 
-                // Also update related fields if we have model information
+                // Auto-update for both Settings and Query Classifier (now flattened)
                 if (newSelectedModel && newSelectedModel.context_length !== 'Unknown') {
-                  // Parse context_length (e.g., "40,960" -> 40960)
                   const contextLength = parseInt(newSelectedModel.context_length.replace(/,/g, ''));
                   if (!isNaN(contextLength)) {
-                    // Update context_length field
-                    onChangeHandler('context_length', contextLength);
                     
-                    // Set max_tokens to ~75% of context length as a reasonable default
-                    const suggestedMaxTokens = Math.floor(contextLength * 0.75);
-                    onChangeHandler('max_tokens', suggestedMaxTokens);
+                    if (fieldKey === 'model') {
+                      // Settings tab
+                      onChangeHandler('context_length', contextLength);
+                      const suggestedMaxTokens = Math.floor(contextLength * 0.75);
+                      onChangeHandler('max_tokens', suggestedMaxTokens);
+                    } else if (fieldKey === 'query_classifier.llm_model') {
+                      // Query Classifier tab - exactly same as Settings tab
+                      onChangeHandler('query_classifier.context_length', contextLength);
+                      const suggestedLlmMaxTokens = Math.floor(contextLength * 0.75);
+                      onChangeHandler('query_classifier.llm_max_tokens', suggestedLlmMaxTokens);
+                    }
                   }
                 }
               }}
@@ -935,7 +942,58 @@ const renderStandardForm = (
       } else if (cleanStr.startsWith('settings.')) {
         cleanStr = cleanStr.replace('settings.', '');
       }
-      // Format the label: replace underscores with spaces and capitalize words
+      
+      // Custom labels for query classifier fields
+      const customLabels = {
+        // Classification thresholds
+        'min_confidence_threshold': 'Minimum Confidence Threshold',
+        'direct_execution_threshold': 'Direct Tool Execution Threshold',
+        'llm_direct_threshold': 'LLM Direct Response Threshold',
+        'multi_agent_threshold': 'Multi-Agent Task Threshold',
+        
+        // Pattern-based classification
+        'max_classifications': 'Maximum Classifications',
+        'enable_hybrid_detection': 'Enable Hybrid Detection',
+        'confidence_decay_factor': 'Confidence Decay Factor',
+        'pattern_combination_bonus': 'Pattern Combination Bonus',
+        
+        // LLM-based classification
+        'enable_llm_classification': 'Enable LLM Classification',
+        'llm_model': 'LLM Model',
+        'context_length': 'Context Length',
+        'llm_temperature': 'LLM Temperature',
+        'llm_max_tokens': 'LLM Max Tokens',
+        'llm_timeout_seconds': 'LLM Timeout (seconds)',
+        'llm_system_prompt': 'LLM System Prompt',
+        'fallback_to_patterns': 'Fallback to Patterns',
+        'llm_classification_priority': 'Use LLM First (vs Patterns First)',
+        
+        // Nested field handling
+        'query_classifier.min_confidence_threshold': 'Minimum Confidence Threshold',
+        'query_classifier.direct_execution_threshold': 'Direct Tool Execution Threshold',
+        'query_classifier.llm_direct_threshold': 'LLM Direct Response Threshold',
+        'query_classifier.multi_agent_threshold': 'Multi-Agent Task Threshold',
+        'query_classifier.max_classifications': 'Maximum Classifications',
+        'query_classifier.enable_hybrid_detection': 'Enable Hybrid Detection',
+        'query_classifier.confidence_decay_factor': 'Confidence Decay Factor',
+        'query_classifier.pattern_combination_bonus': 'Pattern Combination Bonus',
+        'query_classifier.enable_llm_classification': 'Enable LLM Classification',
+        'query_classifier.llm_model': 'LLM Model',
+        'query_classifier.context_length': 'Context Length',
+        'query_classifier.llm_temperature': 'LLM Temperature',
+        'query_classifier.llm_max_tokens': 'LLM Max Tokens',
+        'query_classifier.llm_timeout_seconds': 'LLM Timeout (seconds)',
+        'query_classifier.llm_system_prompt': 'LLM System Prompt',
+        'query_classifier.fallback_to_patterns': 'Fallback to Patterns',
+        'query_classifier.llm_classification_priority': 'Use LLM First (vs Patterns First)'
+      };
+      
+      // Check for custom label first
+      if (customLabels[cleanStr]) {
+        return customLabels[cleanStr];
+      }
+      
+      // Default: replace underscores with spaces and capitalize words
       return cleanStr.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     };
     const onChangeHandler = customOnChange || onChange;
@@ -1044,10 +1102,10 @@ const renderStandardForm = (
       }
       
       // Special handling for model field in LLM category
-      console.log('[DEBUG] Checking model field:', { fieldCategory, key, value, fullKey: key });
-      // Check for both 'model' and 'settings.model' due to potential nesting
-      if (fieldCategory === 'llm' && (key === 'model' || key === 'settings.model' || key.endsWith('.model'))) {
-        console.log('[DEBUG] Rendering model selector for LLM');
+      console.log('[DEBUG] Checking model field:', { fieldCategory, key, value, fullKey: key, customOnChange: !!customOnChange });
+      // Check for both 'model' and 'settings.model' due to potential nesting, including llm_model
+      if (fieldCategory === 'llm' && (key === 'model' || key === 'settings.model' || key.endsWith('.model') || key.endsWith('.llm_model') || key === 'llm_model')) {
+        console.log('[DEBUG] Rendering model selector for LLM, using onChangeHandler:', onChangeHandler.toString().substring(0, 100));
         return (
           <ModelSelector
             key={key}
@@ -1056,6 +1114,7 @@ const renderStandardForm = (
             onChangeHandler={onChangeHandler}
             depth={depth}
             onShowSuccess={onShowSuccessCallback || onShowSuccess}
+            customOnChange={customOnChange}
           />
         );
       }
@@ -1303,23 +1362,36 @@ const renderStandardForm = (
       );
     }
     
-    // Handle nested objects (for preserved structures like query_classifier)
+    // Handle nested objects - but flatten query_classifier to work like Settings
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      return (
-        <div key={key} className="jarvis-nested-group" style={{ marginLeft: `${depth * 20}px`, marginBottom: '16px' }}>
-          <h4 className="jarvis-nested-title" style={{ marginBottom: '12px', fontSize: '14px', fontWeight: 600 }}>
-            {formatLabel(key)}
-          </h4>
-          <div style={{ marginLeft: '16px' }}>
+      if (key === 'query_classifier') {
+        // Flatten query_classifier fields to work like Settings fields
+        return (
+          <div key={key} style={{ marginLeft: `${depth * 20}px`, marginBottom: '16px' }}>
             {Object.entries(value).map(([nestedKey, nestedValue]) => 
-              renderField(`${key}.${nestedKey}`, nestedValue, depth + 1, (_field, val) => {
-                const updatedValue = { ...value, [nestedKey]: val };
-                onChangeHandler(key, updatedValue);
-              }, fieldCategory)
+              renderField(`${key}.${nestedKey}`, nestedValue, depth, onChangeHandler, fieldCategory)
             )}
           </div>
-        </div>
-      );
+        );
+      } else {
+        // Normal nested object handling for other cases
+        return (
+          <div key={key} className="jarvis-nested-group" style={{ marginLeft: `${depth * 20}px`, marginBottom: '16px' }}>
+            <h4 className="jarvis-nested-title" style={{ marginBottom: '12px', fontSize: '14px', fontWeight: 600 }}>
+              {formatLabel(key)}
+            </h4>
+            <div style={{ marginLeft: '16px' }}>
+              {Object.entries(value).map(([nestedKey, nestedValue]) => 
+                renderField(`${key}.${nestedKey}`, nestedValue, depth + 1, (field, val) => {
+                  console.log('[DEBUG] Nested field onChange:', { field, nestedKey, val, parentKey: key });
+                  const updatedValue = { ...value, [nestedKey]: val };
+                  onChangeHandler(key, updatedValue);
+                }, fieldCategory)
+              )}
+            </div>
+          </div>
+        );
+      }
     }
 
     return (
@@ -1366,7 +1438,7 @@ const renderStandardForm = (
           className={`jarvis-tab-content ${activeTab === categoryKey ? 'active' : ''}`}
         >
           <div className="jarvis-tab-panel">
-            <div className="jarvis-form-grid">
+            <div className={`jarvis-form-grid ${categoryKey === 'classifier' ? 'single-column' : ''}`}>
               {(() => {
                 // Deduplicate fields before rendering
                 const fieldEntries = Object.entries(categories[categoryKey].fields);

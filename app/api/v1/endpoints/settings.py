@@ -8,6 +8,7 @@ from app.core.iceberg_settings_cache import reload_iceberg_settings
 from app.core.mcp_tools_cache import reload_enabled_mcp_tools
 from app.core.large_generation_settings_cache import reload_large_generation_settings, validate_large_generation_config, merge_with_defaults
 from app.core.rag_settings_cache import reload_rag_settings
+from app.core.query_classifier_settings_cache import reload_query_classifier_settings
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
 import requests
@@ -36,6 +37,21 @@ def reload_llm_cache():
     except Exception as e:
         logger.error(f"Failed to reload LLM cache: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload LLM cache: {str(e)}")
+
+@router.post("/query-classifier/cache/reload")
+def reload_query_classifier_cache():
+    """Force reload Query Classifier settings cache from database and initialize with defaults if needed"""
+    try:
+        settings = reload_query_classifier_settings()
+        return {
+            "success": True, 
+            "message": "Query Classifier cache reloaded successfully",
+            "settings": settings,
+            "cache_size": len(str(settings))
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload Query Classifier cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload Query Classifier cache: {str(e)}")
 
 # Dependency to get DB session
 def get_db():
@@ -384,7 +400,10 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
                 'min_confidence_threshold', 'max_classifications', 'classifier_max_tokens',
                 'enable_hybrid_detection', 'confidence_decay_factor', 'pattern_combination_bonus',
                 'llm_direct_threshold', 'multi_agent_threshold', 'direct_execution_threshold',
-                'system_prompt'
+                'system_prompt',
+                # New LLM-based classification fields
+                'enable_llm_classification', 'llm_model', 'context_length', 'llm_temperature', 'llm_max_tokens',
+                'llm_timeout_seconds', 'llm_system_prompt', 'fallback_to_patterns', 'llm_classification_priority'
             ]
             
             # Extract query_classifier fields if they exist at top level
@@ -405,6 +424,7 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         db.refresh(settings_row)
         
         reload_llm_settings()
+        reload_query_classifier_settings()
     
     # If updating storage settings, reload all related caches
     if category == 'storage':

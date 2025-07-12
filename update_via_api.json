@@ -1,0 +1,22 @@
+{
+  "settings": {
+    "query_classifier": {
+      "min_confidence_threshold": 0.1,
+      "direct_execution_threshold": 0.55,
+      "llm_direct_threshold": 0.8,
+      "multi_agent_threshold": 0.6,
+      "max_classifications": 3,
+      "enable_hybrid_detection": true,
+      "confidence_decay_factor": 0.8,
+      "pattern_combination_bonus": 0.15,
+      "enable_llm_classification": false,
+      "llm_model": "",
+      "llm_temperature": 0.1,
+      "llm_max_tokens": 10,
+      "llm_timeout_seconds": 5,
+      "llm_system_prompt": "You are a query classifier. Classify the user query into one of these types: RAG (for questions requiring document search), TOOL (for actions requiring tools), LLM (for general questions), MULTI_AGENT (for complex tasks). Respond with only the type and confidence: TYPE|CONFIDENCE (e.g., 'rag|0.85')",
+      "fallback_to_patterns": true,
+      "llm_classification_priority": false
+    }
+  }
+}
