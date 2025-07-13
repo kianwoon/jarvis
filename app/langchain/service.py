@@ -10,6 +10,7 @@ from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
 from app.core.collection_registry_cache import get_all_collections
+from app.core.rag_tool_config import get_rag_tool_config
 from app.api.v1.endpoints.document import HTTPEmbeddingFunction
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Milvus
@@ -18,6 +19,26 @@ from app.rag.bm25_processor import BM25Processor, BM25CorpusManager
 logger = logging.getLogger(__name__)
 
 # Enhanced conversation management with Redis fallback
+
+# Cache RAG tool name to avoid repeated config calls
+_rag_tool_name_cache = None
+
+def get_rag_tool_name():
+    """Get the configurable RAG tool name (cached)"""
+    global _rag_tool_name_cache
+    if _rag_tool_name_cache is None:
+        rag_config = get_rag_tool_config()
+        _rag_tool_name_cache = rag_config.get_tool_name()
+    return _rag_tool_name_cache
+
+def reload_rag_tool_name_cache():
+    """Reload the RAG tool name cache"""
+    global _rag_tool_name_cache
+    _rag_tool_name_cache = None
+
+def is_rag_tool(tool_name: str) -> bool:
+    """Check if a tool name matches the configurable RAG tool"""
+    return tool_name.lower() == get_rag_tool_name().lower() or get_rag_tool_name().lower() in tool_name.lower()
 _conversation_cache = {}  # In-memory fallback
 
 # Simple query cache for RAG results (in-memory, expires after 5 minutes)
@@ -138,24 +159,26 @@ def build_enhanced_system_prompt(base_prompt: str = None) -> str:
             mcp_tools = get_enabled_mcp_tools()
             example_tools = []
             
-            # Add knowledge_search example if available
-            if 'knowledge_search' in mcp_tools:
-                example_tools.append('- <tool>knowledge_search({"query": "partnership information"})</tool>')
+            # Add RAG search example if available (using configurable tool name)
+            rag_tool_name = get_rag_tool_name()
+            if rag_tool_name in mcp_tools:
+                example_tools.append(f'- <tool>{rag_tool_name}({{"query": "partnership information"}})</tool>')
             
             # Add datetime tool example if available
             datetime_tools = [name for name in mcp_tools.keys() if 'datetime' in name.lower() or 'time' in name.lower()]
             if datetime_tools:
                 example_tools.append(f'- <tool>{datetime_tools[0]}()</tool>')
             
-            # Add search tool example if available (but not knowledge_search)
-            search_tools = [name for name in mcp_tools.keys() if 'search' in name.lower() and name != 'knowledge_search']
+            # Add search tool example if available (but not RAG tool)
+            rag_tool_name = get_rag_tool_name()
+            search_tools = [name for name in mcp_tools.keys() if 'search' in name.lower() and name != rag_tool_name]
             if search_tools:
                 example_tools.append(f'- <tool>{search_tools[0]}({{"query": "latest news"}})</tool>')
             
             # If no specific tools found, use generic examples
             if not example_tools:
                 example_tools = [
-                    '- <tool>knowledge_search({"query": "search query"})</tool>',
+                    f'- <tool>{get_rag_tool_name()}({{"query": "search query"}})</tool>',
                     '- <tool>get_datetime()</tool>'
                 ]
             
@@ -164,7 +187,7 @@ def build_enhanced_system_prompt(base_prompt: str = None) -> str:
                 
         except Exception as e:
             # Fallback to safe examples if tool loading fails
-            enhanced_prompt += '\n- <tool>knowledge_search({"query": "search query"})</tool>'
+            enhanced_prompt += f'\n- <tool>{get_rag_tool_name()}({{"query": "search query"}})</tool>'
             enhanced_prompt += "\n- <tool>get_datetime()</tool>"
         
         enhanced_prompt += "\n\nIMPORTANT: Use ONLY the exact tool names listed above. Actually include these tool calls in your response when needed, don't just describe what you would do."
@@ -2770,7 +2793,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                     
                     # Extract documents from knowledge_search tool results
                     for result in search_results:
-                        if result.get('tool') == 'knowledge_search' and result.get('success'):
+                        if is_rag_tool(result.get('tool', '')) and result.get('success'):
                             tool_result = result.get('result', {})
                             # Handle JSON-RPC response format
                             if isinstance(tool_result, dict) and 'result' in tool_result:
@@ -2791,7 +2814,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                                     
                                     # Replace instead of append to prevent document stacking
                                     rag_sources = tool_rag_sources
-                                    print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from knowledge_search results")
+                                    print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from {get_rag_tool_name()} results")
                     
                     # Keep query_type as TOOLS but ensure synthesis happens
                 else:
@@ -3202,7 +3225,7 @@ Please generate the requested items incorporating relevant information from the 
                         tool_context = f"\n{tool_name}: {json.dumps(direct_result, indent=2) if isinstance(direct_result, dict) else direct_result}\n"
                         
                         # Extract documents from direct tool call results
-                        if tool_name == 'knowledge_search':
+                        if is_rag_tool(tool_name):
                             # Handle JSON-RPC response format
                             if isinstance(direct_result, dict) and 'result' in direct_result:
                                 rag_result = direct_result['result']
@@ -3290,7 +3313,7 @@ Please generate the requested items incorporating relevant information from the 
                     
                     # Extract documents from knowledge_search tool results
                     for tc in tool_calls:
-                        if tc.get('tool') == 'knowledge_search' and tc.get('success'):
+                        if tc.get('tool') == get_rag_tool_name() and tc.get('success'):
                             tool_result = tc.get('result', {})
                             # Handle JSON-RPC response format
                             if isinstance(tool_result, dict) and 'result' in tool_result:
@@ -3346,7 +3369,7 @@ Please generate the requested items incorporating relevant information from the 
                                 print(f"  - Tool: {tc.get('tool', 'unknown')} - Success: {tc.get('success', False)}")
                                 
                                 # Extract documents from simple tool executor results
-                                if tc.get('tool') == 'knowledge_search' and tc.get('success'):
+                                if tc.get('tool') == get_rag_tool_name() and tc.get('success'):
                                     tool_result = tc.get('result', {})
                                     # Handle JSON-RPC response format
                                     if isinstance(tool_result, dict) and 'result' in tool_result:
@@ -3378,7 +3401,7 @@ Please generate the requested items incorporating relevant information from the 
                         # Extract documents from fallback results
                         if tool_calls:
                             for tc in tool_calls:
-                                if tc.get('tool') == 'knowledge_search' and tc.get('success'):
+                                if tc.get('tool') == get_rag_tool_name() and tc.get('success'):
                                     tool_result = tc.get('result', {})
                                     # Handle JSON-RPC response format
                                     if isinstance(tool_result, dict) and 'result' in tool_result:
@@ -3446,7 +3469,7 @@ Please generate the requested items incorporating relevant information from the 
     
     print(f"[DEBUG] rag_answer: final prompt = {prompt[:500]}...")
     print(f"[DEBUG] rag_answer: prompt contains 'tool': {'tool>' in prompt.lower()}")
-    print(f"[DEBUG] rag_answer: prompt contains 'knowledge_search': {'knowledge_search' in prompt.lower()}")
+    print(f"[DEBUG] rag_answer: prompt contains get_rag_tool_name(): {get_rag_tool_name() in prompt.lower()}")
     print(f"[DEBUG] rag_answer: source = {source}")
     
     # Generate response using direct LLM instead of HTTP API for better streaming
@@ -3600,7 +3623,7 @@ Please generate the requested items incorporating relevant information from the 
                 
                 # Extract documents from tool results
                 for tr in tool_results:
-                    if tr.get('tool') == 'knowledge_search' and tr.get('success'):
+                    if tr.get('tool') == get_rag_tool_name() and tr.get('success'):
                         tool_result = tr.get('result', {})
                         # Handle JSON-RPC response format
                         if isinstance(tool_result, dict) and 'result' in tool_result:
@@ -4079,18 +4102,21 @@ def _map_tool_parameters_service(tool_name: str, params: dict) -> tuple[str, dic
     mapped_params = params.copy()
     original_tool_name = tool_name
     
-    # Tool name correction mapping - fix common LLM mistakes
+    # Tool name correction mapping - fix common LLM mistakes (using configurable RAG tool name)
+    rag_tool_name = get_rag_tool_name()
+    
     tool_name_mapping = {
         # Common search tool mistakes
-        'search_knowledge': 'knowledge_search',
-        'search_internal_knowledge': 'knowledge_search',
-        'internal_knowledge_search': 'knowledge_search',
-        'search_knowledge_base': 'knowledge_search',
-        'knowledge_base_search': 'knowledge_search',
-        'search_documents': 'knowledge_search',
-        'document_search': 'knowledge_search',
-        'rag_search': 'knowledge_search',
-        'internal_search': 'knowledge_search',
+        'search_knowledge': rag_tool_name,
+        'search_internal_knowledge': rag_tool_name,
+        'internal_knowledge_search': rag_tool_name,
+        'search_knowledge_base': rag_tool_name,
+        'knowledge_base_search': rag_tool_name,
+        'search_documents': rag_tool_name,
+        'document_search': rag_tool_name,
+        'rag_search': rag_tool_name,
+        'internal_search': rag_tool_name,
+        get_rag_tool_name(): rag_tool_name,
         
         # Gmail/email tool variations
         'search_email': 'find_email',
@@ -4121,7 +4147,7 @@ def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> 
     logger = logging.getLogger(__name__)
     
     try:
-        if tool_name == "knowledge_search":
+        if tool_name == get_rag_tool_name():
             # Import and call RAG service
             import asyncio
             from app.mcp_services.rag_mcp_service import execute_rag_search, execute_rag_search_sync
@@ -4512,8 +4538,8 @@ async def extract_and_execute_tool_calls_async(text, stream_callback=None, trace
             print(f"[DEBUG] Tool execution [{i+1}/{len(tool_calls)}]: {tool_name}")
             
             # Skip knowledge_search tools if skip_knowledge_search is enabled (prevents redundant RAG operations)
-            # Handle both exact matches and malformed tool names containing "knowledge_search"
-            if skip_knowledge_search and ("knowledge_search" in tool_name.lower()):
+            # Handle both exact matches and malformed tool names containing get_rag_tool_name()
+            if skip_knowledge_search and is_rag_tool(tool_name):
                 print(f"[DEBUG] Skipping knowledge_search tool call to prevent redundant RAG operation (tool_name: {tool_name})")
                 if stream_callback:
                     stream_callback(f"⏭️ Skipping knowledge_search (RAG already performed)")
