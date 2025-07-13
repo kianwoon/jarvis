@@ -55,9 +55,10 @@ async def rag_endpoint(request: RAGRequest):
     generation = None
     
     # Get model name from LLM settings for proper tracing
-    from app.core.llm_settings_cache import get_llm_settings
+    from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
     llm_settings = get_llm_settings()
-    model_name = llm_settings.get("model", "unknown")
+    main_llm_config = get_main_llm_full_config(llm_settings)
+    model_name = main_llm_config.get("model", "unknown")
     
     if not tracer._initialized:
         tracer.initialize()
@@ -503,9 +504,10 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
     generation = None
     
     # Get model name from LLM settings for proper tracing
-    from app.core.llm_settings_cache import get_llm_settings
+    from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
     llm_settings = get_llm_settings()
-    model_name = llm_settings.get("model", "unknown")
+    main_llm_config = get_main_llm_full_config(llm_settings)
+    model_name = main_llm_config.get("model", "unknown")
     
     if not tracer._initialized:
         tracer.initialize()
@@ -711,9 +713,10 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
     generation = None
     
     # Get model name from LLM settings for proper tracing
-    from app.core.llm_settings_cache import get_llm_settings
+    from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
     llm_settings = get_llm_settings()
-    model_name = llm_settings.get("model", "unknown")
+    main_llm_config = get_main_llm_full_config(llm_settings)
+    model_name = main_llm_config.get("model", "unknown")
     
     if not tracer._initialized:
         tracer.initialize()
@@ -1284,9 +1287,10 @@ Please provide a clear, direct answer based on the tool results."""
                     # Get LLM settings first
                     from app.llm.ollama import OllamaLLM
                     from app.llm.base import LLMConfig
-                    from app.core.llm_settings_cache import get_llm_settings
+                    from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
                     
                     llm_settings = get_llm_settings()
+                    main_llm_config = get_main_llm_full_config(llm_settings)
                     
                     # Create synthesis generation span for Langfuse tracing
                     synthesis_generation_span = None
@@ -1297,7 +1301,7 @@ Please provide a clear, direct answer based on the tool results."""
                             if tracer.is_enabled():
                                 synthesis_generation_span = tracer.create_llm_generation_span(
                                     trace,
-                                    model=llm_settings.get('model'),
+                                    model=main_llm_config.get('model'),
                                     prompt=synthesis_prompt,
                                     operation="direct_tool_synthesis"
                                 )
@@ -1305,21 +1309,19 @@ Please provide a clear, direct answer based on the tool results."""
                         except Exception as e:
                             logger.warning(f"Failed to create synthesis generation span: {e}")
                     
-                    # Configure LLM for streaming
-                    thinking_mode = llm_settings.get('thinking_mode', {})
-                    
+                    # Configure LLM for streaming using refactored config
                     llm_config = LLMConfig(
-                        model_name=llm_settings.get('model'),
-                        temperature=float(thinking_mode.get('temperature', 0.8)),
-                        max_tokens=int(thinking_mode.get('max_tokens', 4000)),
-                        top_p=float(thinking_mode.get('top_p', 0.9))
+                        model_name=main_llm_config.get('model'),
+                        temperature=float(main_llm_config.get('temperature', 0.8)),
+                        max_tokens=int(main_llm_config.get('max_tokens', 4000)),
+                        top_p=float(main_llm_config.get('top_p', 0.9))
                     )
                     
                     # Use same model server detection as service
                     import os
                     model_server = os.environ.get("OLLAMA_BASE_URL")
                     if not model_server:
-                        model_server = llm_settings.get('model_server', '').strip()
+                        model_server = main_llm_config.get('model_server', '').strip()
                         if not model_server:
                             model_server = "http://ollama:11434"
                     

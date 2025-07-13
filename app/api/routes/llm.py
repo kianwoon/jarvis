@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
-from app.core.llm_settings_cache import get_llm_settings
+from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
 from app.core.langfuse_integration import trace_llm_call, get_tracer
 import asyncio
 from fastapi.responses import StreamingResponse
@@ -17,19 +17,21 @@ ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
 # Helper to create a new inference object with the latest settings
 def get_inference(thinking: bool = False):
     settings = get_llm_settings()
-    required_fields = ["model", "max_tokens"]
-    missing = [f for f in required_fields if f not in settings or settings[f] is None]
+    
+    # Get full LLM configuration
+    mode = get_main_llm_full_config(settings)
+    
+    # Check required fields in mode config
+    required_params = ["temperature", "top_p", "model", "max_tokens"]
+    missing = [f for f in required_params if f not in mode or mode[f] is None]
     if missing:
         raise HTTPException(status_code=500, detail=f"Missing required LLM config fields: {', '.join(missing)}")
-    mode = settings["thinking_mode"] if thinking else settings["non_thinking_mode"]
-    for param in ["temperature", "top_p", "top_k", "min_p"]:
-        if param not in mode:
-            raise HTTPException(status_code=500, detail=f"Missing '{param}' in {'thinking_mode' if thinking else 'non_thinking_mode'}")
+    
     config = LLMConfig(
-        model_name=settings["model"],
+        model_name=mode["model"],
         temperature=float(mode["temperature"]),
         top_p=float(mode["top_p"]),
-        max_tokens=int(settings["max_tokens"])
+        max_tokens=int(mode["max_tokens"])
     )
     return OllamaLLM(config, base_url=ollama_base_url)
 

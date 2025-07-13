@@ -11,7 +11,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Milvus
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from app.core.llm_settings_cache import get_llm_settings
+from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
@@ -452,7 +452,7 @@ def generate_response_node(state: RAGState) -> RAGState:
     
     # Generate response
     llm_api_url = "http://localhost:8000/api/v1/generate_stream"
-    mode = llm_cfg["thinking_mode"] if state.get("thinking") else llm_cfg["non_thinking_mode"]
+    mode = get_main_llm_full_config(llm_cfg)
     
     payload = {
         "prompt": full_prompt,

@@ -16,8 +16,11 @@ def _load_llm_settings_from_db():
             row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
             if row and row.settings:
                 settings = row.settings
-                if 'thinking_mode' not in settings or 'non_thinking_mode' not in settings:
-                    raise RuntimeError('LLM settings missing thinking_mode or non_thinking_mode')
+                # Validate structure - check for new schema first, then old schema
+                has_new_schema = 'thinking_mode_params' in settings and 'non_thinking_mode_params' in settings
+                has_old_schema = 'thinking_mode' in settings and 'non_thinking_mode' in settings
+                if not has_new_schema and not has_old_schema:
+                    raise RuntimeError('LLM settings missing mode parameters (expecting thinking_mode_params/non_thinking_mode_params or thinking_mode/non_thinking_mode)')
                 return settings
             else:
                 raise RuntimeError('No LLM settings found in database')
@@ -28,11 +31,17 @@ def _load_llm_settings_from_db():
         raise
 
 def _get_default_llm_settings():
-    """Default LLM settings factory"""
+    """Default LLM settings factory - using new schema"""
     return {
-        "model": "llama3.1:8b",
-        "thinking_mode": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 4000},
-        "non_thinking_mode": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 4000},
+        "main_llm": {
+            "mode": "thinking",
+            "model": "llama3.1:8b",
+            "max_tokens": 4000,
+            "model_server": "http://localhost:11434",
+            "system_prompt": "You are Jarvis, an AI assistant."
+        },
+        "thinking_mode_params": {"temperature": 0.7, "top_p": 0.9, "min_p": 0, "top_k": 20},
+        "non_thinking_mode_params": {"temperature": 0.7, "top_p": 0.9, "min_p": 0, "top_k": 20},
         "max_tokens": 4000,
         "query_classifier": {
             "min_confidence_threshold": 0.1,

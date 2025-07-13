@@ -105,7 +105,8 @@ class EnhancedQueryClassifier:
             # Check if LLM-based classification is enabled
             # Use new enable_llm_classification flag and require model to be configured
             enable_llm = dynamic_settings.get('enable_llm_classification', False)
-            llm_model = dynamic_settings.get('llm_model', '').strip()
+            # Try both old and new schema model field names
+            llm_model = dynamic_settings.get('llm_model', '').strip() or dynamic_settings.get('model', '').strip()
             llm_system_prompt = dynamic_settings.get('llm_system_prompt', '').strip()
             
             if enable_llm and llm_model and llm_system_prompt:
@@ -445,19 +446,28 @@ class EnhancedQueryClassifier:
                 logger.warning(f"Failed to create classification span: {e}")
         
         try:
+            from app.core.llm_settings_cache import get_llm_settings, get_query_classifier_full_config
             from app.core.query_classifier_settings_cache import get_query_classifier_settings
-            classifier_config = get_query_classifier_settings()
             
-            # Use Query Classifier configured settings
-            max_tokens = int(classifier_config.get('llm_max_tokens', 20))  # Increased for TYPE|CONFIDENCE response
-            min_confidence = float(classifier_config.get('min_confidence_threshold', 0.1))
-            max_classifications = int(classifier_config.get('max_classifications', 3))  # Reserved for future use
-            llm_model = classifier_config.get('llm_model', '')
-            temperature = float(classifier_config.get('llm_temperature', 0.1))
-            timeout_seconds = int(classifier_config.get('llm_timeout_seconds', 5))
+            # Get full query classifier configuration from LLM cache
+            llm_settings = get_llm_settings()
+            classifier_config = get_query_classifier_full_config(llm_settings)
             
-            # Get system prompt from Query Classifier configuration
-            system_prompt = classifier_config.get('llm_system_prompt')
+            # Get additional classifier-specific settings from query classifier cache
+            classifier_specific_settings = get_query_classifier_settings()
+            
+            # Use LLM cache config for model parameters
+            max_tokens = int(classifier_config.get('max_tokens', 100))  # Use LLM cache max_tokens
+            llm_model = classifier_config.get('model', '')
+            temperature = float(classifier_config.get('temperature', 0.1))
+            
+            # Use classifier-specific settings for classification behavior
+            min_confidence = float(classifier_specific_settings.get('min_confidence_threshold', 0.1))
+            max_classifications = int(classifier_specific_settings.get('max_classifications', 3))
+            timeout_seconds = int(classifier_specific_settings.get('llm_timeout_seconds', 5))
+            
+            # Get system prompt from classifier-specific settings
+            system_prompt = classifier_specific_settings.get('llm_system_prompt')
             
             if system_prompt:
                 # Build detailed tool and collection information
@@ -627,6 +637,8 @@ Answer:"""
                 'TOOLS': QueryType.TOOL,
                 'WEB_SEARCH': QueryType.TOOL,  # Map WEB_SEARCH to TOOL for now
                 'RAG': QueryType.RAG,
+                'KNOWLEDGE': QueryType.RAG,  # Map KNOWLEDGE to RAG (common LLM response)
+                'SEARCH': QueryType.RAG,     # Map SEARCH to RAG (common LLM response)
                 'LLM': QueryType.LLM,
                 'MULTI_AGENT': QueryType.MULTI_AGENT
             }
@@ -696,8 +708,8 @@ Answer:"""
         
         # Return a default tool classification with low confidence to indicate uncertainty
         from app.core.query_classifier_settings_cache import get_query_classifier_settings
-        classifier_config = get_query_classifier_settings()
-        min_confidence = float(classifier_config.get('min_confidence_threshold', 0.1))
+        classifier_specific_settings = get_query_classifier_settings()
+        min_confidence = float(classifier_specific_settings.get('min_confidence_threshold', 0.1))
         
         result = ClassificationResult(
             query_type=QueryType.TOOL,
@@ -1344,10 +1356,13 @@ Answer:"""
             return []
         
         try:
+            from app.core.llm_settings_cache import get_llm_settings, get_query_classifier_full_config
             from app.core.query_classifier_settings_cache import get_query_classifier_settings
-            from app.core.llm_settings_cache import get_llm_settings
-            classifier_config = get_query_classifier_settings()
+            
+            # Get full query classifier configuration from LLM cache
             main_llm_settings = get_llm_settings()
+            classifier_config = get_query_classifier_full_config(main_llm_settings)
+            classifier_specific_settings = get_query_classifier_settings()
             
             # Create enhanced prompt with tool descriptions for better selection
             tool_info = self._build_tools_info()
@@ -1373,9 +1388,9 @@ Tool name:"""
             from app.llm.base import LLMConfig
             
             llm_config = LLMConfig(
-                model_name=classifier_config.get('llm_model', ''),
+                model_name=classifier_config.get('model', ''),
                 temperature=0.0,  # Use temperature 0 for deterministic tool selection
-                max_tokens=int(classifier_config.get('llm_max_tokens', 100)),  # Use same max_tokens as main classifier
+                max_tokens=int(classifier_config.get('max_tokens', 100)),  # Use LLM cache max_tokens
                 top_p=0.95
             )
             
@@ -1433,3 +1448,32 @@ Tool name:"""
         except Exception as e:
             logger.error(f"Failed to get LLM tool suggestions: {e}", exc_info=True)
             return []
+
+    async def detect_explicit_search_intent(self, query: str) -> bool:
+        """
+        Detect if user has explicit search intent using configuration-based patterns only
+        Returns True if user explicitly wants to search (should bypass skip_knowledge_search)
+        """
+        try:
+            # Get explicit search patterns from configuration only
+            from app.core.query_classifier_settings_cache import get_query_classifier_settings
+            classifier_settings = get_query_classifier_settings()
+            
+            # Use only patterns from configuration - no fallback defaults
+            explicit_patterns = classifier_settings.get("explicit_search_patterns", [])
+            
+            if not explicit_patterns:
+                logger.debug("No explicit search patterns configured - defaulting to False")
+                return False
+            
+            query_lower = query.lower()
+            for pattern in explicit_patterns:
+                if re.search(pattern, query_lower, re.IGNORECASE):
+                    logger.info(f"Explicit search intent detected with pattern: {pattern}")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.warning(f"Failed to detect explicit search intent: {e}")
+            return False

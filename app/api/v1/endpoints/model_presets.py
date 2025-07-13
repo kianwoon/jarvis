@@ -5,6 +5,7 @@ Model presets API endpoints for LLM configuration
 from fastapi import APIRouter, HTTPException
 from typing import Dict, List, Optional
 from pydantic import BaseModel
+from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
 
 router = APIRouter()
 
@@ -194,7 +195,23 @@ async def apply_preset_to_settings(model_name: str, current_settings: dict):
     updated_settings["max_tokens"] = str(preset.recommended_max_tokens)
     updated_settings["context_length"] = str(preset.context_length)
     
-    # Update mode settings
+    # Update mode settings using centralized helper functions
+    # Update thinking mode parameters
+    if "thinking_mode_params" in updated_settings:
+        updated_settings["thinking_mode_params"]["temperature"] = preset.default_temperature
+        updated_settings["thinking_mode_params"]["top_p"] = preset.default_top_p
+    
+    # Update non-thinking mode parameters  
+    if "non_thinking_mode_params" in updated_settings:
+        updated_settings["non_thinking_mode_params"]["temperature"] = preset.default_temperature
+        updated_settings["non_thinking_mode_params"]["top_p"] = preset.default_top_p
+    
+    # Update main LLM configuration
+    if "main_llm" in updated_settings:
+        updated_settings["main_llm"]["model"] = model_name
+        updated_settings["main_llm"]["max_tokens"] = preset.recommended_max_tokens
+    
+    # Legacy schema support (deprecated)
     if "thinking_mode" in updated_settings:
         updated_settings["thinking_mode"]["temperature"] = str(preset.default_temperature)
         updated_settings["thinking_mode"]["top_p"] = str(preset.default_top_p)

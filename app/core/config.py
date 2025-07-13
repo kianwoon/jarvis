@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # Database
     POSTGRES_USER: Optional[str] = "postgres"
     POSTGRES_PASSWORD: Optional[str] = "postgres"
-    POSTGRES_DB: Optional[str] = "jarvis"
+    POSTGRES_DB: Optional[str] = "llm_platform"
     POSTGRES_HOST: Optional[str] = "postgres"
     POSTGRES_PORT: Optional[int] = 5432
     

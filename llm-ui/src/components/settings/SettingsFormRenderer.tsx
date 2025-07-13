@@ -26,7 +26,9 @@ import {
   InputLabel,
   FormControl,
   CircularProgress,
-  Tooltip
+  Tooltip,
+  Radio,
+  RadioGroup
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -907,7 +909,7 @@ const renderStandardForm = (
         if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {
           categories.classifier.fields[key] = value;
         }
-        // Thinking Mode Tab - Thinking-specific parameters (including non-thinking mode)
+        // Thinking Mode Tab - Include thinking mode related fields
         else if (lowerKey.includes('thinking_mode') || lowerKey.includes('thinking') || lowerKey.includes('non_thinking')) {
           categories.thinking.fields[key] = value;
         }
@@ -1438,79 +1440,256 @@ const renderStandardForm = (
           className={`jarvis-tab-content ${activeTab === categoryKey ? 'active' : ''}`}
         >
           <div className="jarvis-tab-panel">
-            <div className={`jarvis-form-grid ${categoryKey === 'classifier' ? 'single-column' : ''}`}>
-              {(() => {
-                // Deduplicate fields before rendering
-                const fieldEntries = Object.entries(categories[categoryKey].fields);
-                const renderedFields = new Map<string, { key: string, value: any }>();
+            {/* Special rendering for Thinking Mode tab */}
+            {categoryKey === 'thinking' ? (
+              <div style={{ 
+                display: 'grid', 
+                gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', 
+                gap: '24px', 
+                padding: '16px',
+                maxWidth: '1200px',
+                margin: '0 auto'
+              }}>
+                {/* Thinking Mode Card */}
+                <Card variant="outlined" sx={{ height: 'fit-content' }}>
+                  <CardHeader 
+                    title="Thinking Mode Parameters"
+                    subheader="Used when the model shows step-by-step reasoning"
+                    sx={{ pb: 1 }}
+                  />
+                  <CardContent>
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                      <Typography variant="body2">
+                        <strong>Recommended:</strong> Temperature=0.6, TopP=0.95, TopK=20, MinP=0
+                      </Typography>
+                    </Alert>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      {(() => {
+                        const thinkingModeParams = data.thinking_mode_params || {};
+                        const parameterFields = [
+                          { key: 'temperature', label: 'Temperature', type: 'number', step: 0.1, min: 0, max: 2 },
+                          { key: 'top_p', label: 'Top P', type: 'number', step: 0.05, min: 0, max: 1 },
+                          { key: 'top_k', label: 'Top K', type: 'number', step: 1, min: 0, max: 100 },
+                          { key: 'min_p', label: 'Min P', type: 'number', step: 0.01, min: 0, max: 1 }
+                        ];
+                        
+                        return parameterFields.map(({ key, label, type, step, min, max }) => (
+                          <TextField
+                            key={key}
+                            label={label}
+                            type={type}
+                            value={thinkingModeParams[key] !== undefined ? thinkingModeParams[key] : ''}
+                            onChange={(e) => {
+                              const newValue = type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value;
+                              const updatedParams = { ...thinkingModeParams, [key]: newValue };
+                              onChange('thinking_mode_params', updatedParams);
+                            }}
+                            fullWidth
+                            variant="outlined"
+                            size="small"
+                            inputProps={{ step, min, max }}
+                          />
+                        ));
+                      })()}
+                    </Box>
+                  </CardContent>
+                </Card>
+
+                {/* Non-Thinking Mode Card */}
+                <Card variant="outlined" sx={{ height: 'fit-content' }}>
+                  <CardHeader 
+                    title="Non-Thinking Mode Parameters"
+                    subheader="Used for direct responses without explicit reasoning"
+                    sx={{ pb: 1 }}
+                  />
+                  <CardContent>
+                    <Alert severity="success" sx={{ mb: 2 }}>
+                      <Typography variant="body2">
+                        <strong>Direct responses</strong> without showing step-by-step reasoning
+                      </Typography>
+                    </Alert>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      {(() => {
+                        const nonThinkingModeParams = data.non_thinking_mode_params || {};
+                        const parameterFields = [
+                          { key: 'temperature', label: 'Temperature', type: 'number', step: 0.1, min: 0, max: 2 },
+                          { key: 'top_p', label: 'Top P', type: 'number', step: 0.05, min: 0, max: 1 },
+                          { key: 'top_k', label: 'Top K', type: 'number', step: 1, min: 0, max: 100 },
+                          { key: 'min_p', label: 'Min P', type: 'number', step: 0.01, min: 0, max: 1 }
+                        ];
+                        
+                        return parameterFields.map(({ key, label, type, step, min, max }) => (
+                          <TextField
+                            key={key}
+                            label={label}
+                            type={type}
+                            value={nonThinkingModeParams[key] !== undefined ? nonThinkingModeParams[key] : ''}
+                            onChange={(e) => {
+                              const newValue = type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value;
+                              const updatedParams = { ...nonThinkingModeParams, [key]: newValue };
+                              onChange('non_thinking_mode_params', updatedParams);
+                            }}
+                            fullWidth
+                            variant="outlined"
+                            size="small"
+                            inputProps={{ step, min, max }}
+                          />
+                        ));
+                      })()}
+                    </Box>
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              /* Regular form rendering for other tabs */
+              <div style={{ padding: '16px' }}>
+                {/* Mode Selection for Settings and Query Classifier tabs */}
+                {(categoryKey === 'settings' || categoryKey === 'classifier') && (
+                  <Card variant="outlined" sx={{ mb: 3 }}>
+                    <CardHeader 
+                      title={categoryKey === 'settings' ? "LLM Mode Selection" : "Query Classifier Mode Selection"}
+                      subheader={categoryKey === 'settings' ? "Select between thinking and non-thinking modes" : "Select mode for query classification"}
+                    />
+                    <CardContent>
+                      <FormControl component="fieldset">
+                        <RadioGroup
+                          value={
+                            categoryKey === 'settings' 
+                              ? data.main_llm?.mode || 'thinking'
+                              : data.query_classifier?.mode || 'non-thinking'
+                          }
+                          onChange={(e) => {
+                            if (categoryKey === 'settings') {
+                              const updatedMainLlm = { ...data.main_llm, mode: e.target.value };
+                              onChange('main_llm', updatedMainLlm);
+                            } else {
+                              const updatedQueryClassifier = { ...data.query_classifier, mode: e.target.value };
+                              onChange('query_classifier', updatedQueryClassifier);
+                            }
+                          }}
+                        >
+                          <FormControlLabel 
+                            value="thinking" 
+                            control={<Radio />} 
+                            label={
+                              <Box>
+                                <Typography variant="body2" fontWeight={600}>
+                                  Thinking Mode
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {categoryKey === 'settings' 
+                                    ? "Enable step-by-step reasoning with <think> tags"
+                                    : "Use thinking mode parameters for classification"
+                                  }
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                          <FormControlLabel 
+                            value="non-thinking" 
+                            control={<Radio />} 
+                            label={
+                              <Box>
+                                <Typography variant="body2" fontWeight={600}>
+                                  Non-Thinking Mode
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {categoryKey === 'settings'
+                                    ? "Direct responses without explicit reasoning steps"
+                                    : "Use non-thinking mode parameters for classification"
+                                  }
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        </RadioGroup>
+                      </FormControl>
+                    </CardContent>
+                  </Card>
+                )}
                 
-                fieldEntries.forEach(([fieldKey, fieldValue]) => {
-                  // Get the base field name (last part after dots)
-                  const baseKey = fieldKey.split('.').pop() || fieldKey;
+                <div className={`jarvis-form-grid ${categoryKey === 'classifier' ? 'single-column' : ''}`}>
+                {(() => {
+                  // Deduplicate fields before rendering
+                  const fieldEntries = Object.entries(categories[categoryKey].fields);
+                  const renderedFields = new Map<string, { key: string, value: any }>();
                   
-                  // Keep track of what we're rendering to avoid duplicates
-                  const existing = renderedFields.get(baseKey);
+                  fieldEntries.forEach(([fieldKey, fieldValue]) => {
+                    // Skip mode fields since we handle them with radio buttons
+                    if (fieldKey === 'mode' || fieldKey.endsWith('.mode') || 
+                        (categoryKey === 'settings' && fieldKey === 'main_llm.mode') ||
+                        (categoryKey === 'classifier' && fieldKey === 'query_classifier.mode')) {
+                      return;
+                    }
+                    
+                    // Get the base field name (last part after dots)
+                    const baseKey = fieldKey.split('.').pop() || fieldKey;
+                    
+                    // Keep track of what we're rendering to avoid duplicates
+                    const existing = renderedFields.get(baseKey);
+                    
+                    // Prefer non-dotted keys over dotted ones
+                    if (!existing || (!fieldKey.includes('.') && existing.key.includes('.'))) {
+                      renderedFields.set(baseKey, { key: fieldKey, value: fieldValue });
+                    }
+                  });
                   
-                  // Prefer non-dotted keys over dotted ones
-                  if (!existing || (!fieldKey.includes('.') && existing.key.includes('.'))) {
-                    renderedFields.set(baseKey, { key: fieldKey, value: fieldValue });
-                  }
-                });
-                
-                // Define preferred field order for LLM settings
-                const getFieldOrder = (fieldKey: string): number => {
-                  const lowerKey = fieldKey.toLowerCase();
-                  const orderMap: Record<string, number> = {
-                    'model': 100,
-                    'max_tokens': 200,
-                    'maxtoken': 200,
-                    'model_server': 300,
-                    'system_prompt': 400,
-                    'systemprompt': 400,
-                    'context_length': 500,
-                    'contextlength': 500,
-                    'repeat_penalty': 600,
-                    'repeatpenalty': 600,
-                    'stop': 700, // Stop parameter positioned after basic settings
-                    'temperature': 800,
-                    'top_p': 900,
-                    'top_k': 1000,
-                    'min_p': 1100
+                  // Define preferred field order for LLM settings
+                  const getFieldOrder = (fieldKey: string): number => {
+                    const lowerKey = fieldKey.toLowerCase();
+                    const orderMap: Record<string, number> = {
+                      'model': 100,
+                      'max_tokens': 200,
+                      'maxtoken': 200,
+                      'model_server': 300,
+                      'system_prompt': 400,
+                      'systemprompt': 400,
+                      'context_length': 500,
+                      'contextlength': 500,
+                      'repeat_penalty': 600,
+                      'repeatpenalty': 600,
+                      'stop': 700, // Stop parameter positioned after basic settings
+                      'temperature': 800,
+                      'top_p': 900,
+                      'top_k': 1000,
+                      'min_p': 1100
+                    };
+                    
+                    // Check for exact matches first
+                    for (const [pattern, order] of Object.entries(orderMap)) {
+                      if (lowerKey === pattern || lowerKey.endsWith('.' + pattern)) {
+                        return order;
+                      }
+                    }
+                    
+                    // Check for partial matches
+                    for (const [pattern, order] of Object.entries(orderMap)) {
+                      if (lowerKey.includes(pattern)) {
+                        return order;
+                      }
+                    }
+                    
+                    return 10000; // Default for unmatched fields
                   };
-                  
-                  // Check for exact matches first
-                  for (const [pattern, order] of Object.entries(orderMap)) {
-                    if (lowerKey === pattern || lowerKey.endsWith('.' + pattern)) {
-                      return order;
-                    }
-                  }
-                  
-                  // Check for partial matches
-                  for (const [pattern, order] of Object.entries(orderMap)) {
-                    if (lowerKey.includes(pattern)) {
-                      return order;
-                    }
-                  }
-                  
-                  return 10000; // Default for unmatched fields
-                };
 
-                // Sort fields by priority for LLM settings
-                const sortedFields = category === 'llm' && categoryKey === 'settings' 
-                  ? Array.from(renderedFields.values()).sort((a, b) => 
-                      getFieldOrder(a.key) - getFieldOrder(b.key)
-                    )
-                  : Array.from(renderedFields.values());
+                  // Sort fields by priority for LLM settings
+                  const sortedFields = category === 'llm' && categoryKey === 'settings' 
+                    ? Array.from(renderedFields.values()).sort((a, b) => 
+                        getFieldOrder(a.key) - getFieldOrder(b.key)
+                      )
+                    : Array.from(renderedFields.values());
 
-                // Render sorted fields
-                return sortedFields.map(({ key, value }) => 
-                  renderField(key, value, 0, (fieldKey, fieldValue) => {
-                    // Handle nested field updates properly
-                    onChange(fieldKey, fieldValue);
-                  }, category, onShowSuccess)
-                );
-              })()}
-            </div>
+                  // Render sorted fields
+                  return sortedFields.map(({ key, value }) => 
+                    renderField(key, value, 0, (fieldKey, fieldValue) => {
+                      // Handle nested field updates properly
+                      onChange(fieldKey, fieldValue);
+                    }, category, onShowSuccess)
+                  );
+                })()}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       ))}

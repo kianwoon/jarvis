@@ -351,10 +351,11 @@ class RAGMCPService:
         perf_settings = get_performance_settings()
         timeout_seconds = perf_settings.get('connection_timeout_s', 30)
         
-        # Use Ollama directly like the rest of the system
-        from app.core.llm_settings_cache import get_llm_settings
+        # Use Ollama directly like the rest of the system - use main LLM config, not base settings
+        from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
         llm_settings = get_llm_settings()
-        model_name = llm_settings.get("model", "qwen3:30b-a3b")
+        main_llm_config = get_main_llm_full_config(llm_settings)
+        model_name = main_llm_config.get("model", "qwen3:30b-a3b")
         
         # Determine Ollama URL based on environment
         # Check if we're running inside Docker
@@ -443,10 +444,11 @@ class RAGMCPService:
         perf_settings = get_performance_settings()
         timeout_seconds = perf_settings.get('connection_timeout_s', 30)
         
-        # Use Ollama directly like the rest of the system
-        from app.core.llm_settings_cache import get_llm_settings
+        # Use Ollama directly like the rest of the system - use main LLM config, not base settings
+        from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
         llm_settings = get_llm_settings()
-        model_name = llm_settings.get("model", "qwen3:30b-a3b")
+        main_llm_config = get_main_llm_full_config(llm_settings)
+        model_name = main_llm_config.get("model", "qwen3:30b-a3b")
         
         # Determine Ollama URL based on environment
         # Check if we're running inside Docker

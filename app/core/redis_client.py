@@ -19,8 +19,10 @@ def get_redis_pool() -> Optional[redis.ConnectionPool]:
     global _redis_pool
     
     if _redis_pool is None:
-        redis_host = os.getenv("REDIS_HOST", "redis")
-        redis_port = int(os.getenv("REDIS_PORT", 6379))
+        from app.core.config import get_settings
+        settings = get_settings()
+        redis_host = settings.REDIS_HOST
+        redis_port = settings.REDIS_PORT
         
         # In development, if Redis host is localhost but we're in Docker, try 'redis' first
         if redis_host == "localhost" and os.path.exists("/.dockerenv"):

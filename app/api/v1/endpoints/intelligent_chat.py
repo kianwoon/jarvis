@@ -13,7 +13,7 @@ import logging
 import asyncio
 from datetime import datetime
 
-from app.core.llm_settings_cache import get_llm_settings
+from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
 from app.core.collection_registry_cache import get_all_collections
 from app.core.query_classifier_settings_cache import get_query_classifier_settings
@@ -834,14 +834,14 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
             # Get LLM settings and create LLM instance
             llm_settings = get_llm_settings()
             
-            # Choose mode based on thinking parameter
-            mode_config = llm_settings["thinking_mode"] if request.thinking else llm_settings["non_thinking_mode"]
+            # Get full LLM configuration
+            mode_config = get_main_llm_full_config(llm_settings)
             
             llm_config = LLMConfig(
-                model_name=llm_settings["model"],
+                model_name=mode_config["model"],
                 temperature=float(mode_config["temperature"]),
                 top_p=float(mode_config["top_p"]),
-                max_tokens=int(llm_settings["max_tokens"])
+                max_tokens=int(mode_config["max_tokens"])
             )
             
             # Get model server URL
@@ -858,7 +858,7 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
             yield json.dumps({
                 "type": "chat_start",
                 "conversation_id": request.conversation_id,
-                "model": llm_settings["model"],
+                "model": mode_config["model"],
                 "thinking": request.thinking,
                 "confidence": routing_result.get("confidence", 0.0),
                 "classification": routing_result.get("classification", "unknown")

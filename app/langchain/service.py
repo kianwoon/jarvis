@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Tuple
-from app.core.llm_settings_cache import get_llm_settings
+from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config, get_query_classifier_full_config
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
@@ -515,10 +515,16 @@ def unified_llm_synthesis(
     # Build unified synthesis prompt with enhanced system context
     prompt_parts = []
     
-    # Add enhanced system prompt with MCP tools and RAG collections
-    # This exposes all available resources to the LLM
-    enhanced_system = build_enhanced_system_prompt()
-    prompt_parts.append(enhanced_system)
+    # Add system prompt - include tools only if we have tool context
+    if tool_context:
+        # Include tools for hybrid/tool queries
+        enhanced_system = build_enhanced_system_prompt()
+        prompt_parts.append(enhanced_system)
+    else:
+        # For RAG-only queries, use simple system prompt without tools
+        llm_settings = get_llm_settings()
+        base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
+        prompt_parts.append(base_prompt)
     
     # Add conversation history if available
     if history_prompt:
@@ -537,7 +543,9 @@ def unified_llm_synthesis(
         prompt_parts.append(f"""You have access to relevant information from our internal knowledge base. Synthesize this with your broader knowledge to provide a comprehensive answer.
 
 📚 Internal Knowledge Base:
-{rag_context}""")
+{rag_context}
+
+Answer the user's question directly using the information above. Do not use tool calls or search functions - the information has already been retrieved for you.""")
     elif tool_context:
         # Check if this is from web search fallback
         if "google_search" in str(tool_context).lower():
@@ -907,16 +915,20 @@ Answer with exactly one word: RAG, TOOLS, or LLM"""
         classifier_config = llm_cfg.get("query_classifier", {})
         max_tokens = int(classifier_config.get("classifier_max_tokens", 10))
         
-        # Create LLM config for classification
+        # Create LLM config for classification using main LLM
+        main_llm_config = get_main_llm_full_config(llm_cfg)
         llm_config = LLMConfig(
-            model_name=llm_cfg["model"],
+            model_name=main_llm_config["model"],
             temperature=0.1,  # Low temperature for consistent classification
             top_p=0.9,
             max_tokens=max_tokens
         )
         
         # Create LLM instance
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+        ollama_url = main_llm_config.get("model_server", "http://ollama:11434")
+        # If localhost, change to host.docker.internal for Docker containers
+        if "localhost" in ollama_url:
+            ollama_url = ollama_url.replace("localhost", "host.docker.internal")
         llm = OllamaLLM(llm_config, base_url=ollama_url)
         
         # Get classification (collect all text)
@@ -2406,7 +2418,10 @@ Documents to score:
 def make_llm_call(prompt: str, thinking: bool, context: str, llm_cfg: dict) -> str:
     """Make a synchronous LLM API call and return the complete response"""
     llm_api_url = "http://localhost:8000/api/v1/generate_stream"
-    mode_config = llm_cfg["thinking_mode"] if thinking else llm_cfg["non_thinking_mode"]
+    # CRITICAL FIX: Ensure we get main LLM config, not query classifier config
+    main_llm_settings = get_llm_settings()
+    mode_config = get_main_llm_full_config(main_llm_settings)
+    llm_cfg = main_llm_settings  # Override llm_cfg with clean main LLM settings
     
     # Get max_tokens from config
     max_tokens_raw = llm_cfg.get("max_tokens", 16384)
@@ -2448,7 +2463,10 @@ def make_llm_call(prompt: str, thinking: bool, context: str, llm_cfg: dict) -> s
 def streaming_llm_call(prompt: str, thinking: bool, context: str, conversation_id: str, llm_cfg: dict):
     """Generator for streaming LLM responses"""
     llm_api_url = "http://localhost:8000/api/v1/generate_stream"
-    mode_config = llm_cfg["thinking_mode"] if thinking else llm_cfg["non_thinking_mode"]
+    # CRITICAL FIX: Ensure we get main LLM config, not query classifier config
+    main_llm_settings = get_llm_settings()
+    mode_config = get_main_llm_full_config(main_llm_settings)
+    llm_cfg = main_llm_settings  # Override llm_cfg with clean main LLM settings
     
     # Get max_tokens from config
     max_tokens_raw = llm_cfg.get("max_tokens", 16384)
@@ -2519,12 +2537,23 @@ def get_llm_response_direct(question: str, thinking: bool = False, stream: bool 
     if conversation_id:
         store_conversation_message(conversation_id, "user", question)
     
-    # Get LLM settings
+    # Get LLM settings and validate - check for both old and new schema
     llm_cfg = get_llm_settings()
-    required_fields = ["model", "thinking_mode", "non_thinking_mode", "max_tokens"]
-    missing = [f for f in required_fields if f not in llm_cfg or llm_cfg[f] is None]
-    if missing:
-        raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
+    
+    # Check for new schema first
+    if 'main_llm' in llm_cfg and 'thinking_mode_params' in llm_cfg and 'non_thinking_mode_params' in llm_cfg:
+        # New schema - validate main_llm structure
+        main_llm = llm_cfg.get('main_llm', {})
+        required_main_fields = ["model", "max_tokens"]
+        missing_main = [f for f in required_main_fields if f not in main_llm or main_llm[f] is None]
+        if missing_main:
+            raise RuntimeError(f"Missing required main_llm config fields: {', '.join(missing_main)}")
+    else:
+        # Old schema - check for thinking_mode and non_thinking_mode
+        required_fields = ["model", "thinking_mode", "non_thinking_mode", "max_tokens"]
+        missing = [f for f in required_fields if f not in llm_cfg or llm_cfg[f] is None]
+        if missing:
+            raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
     
     # Get conversation history
     conversation_history = get_conversation_history(conversation_id) if conversation_id else ""
@@ -2604,12 +2633,23 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
             print(f"[DEBUG] Falling back to original implementation")
     
     # Original implementation follows...
-    # Validate configuration
+    # Validate configuration - check for both old and new schema
     llm_cfg = get_llm_settings()
-    required_fields = ["model", "thinking_mode", "non_thinking_mode", "max_tokens"]
-    missing = [f for f in required_fields if f not in llm_cfg or llm_cfg[f] is None]
-    if missing:
-        raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
+    
+    # Check for new schema first
+    if 'main_llm' in llm_cfg and 'thinking_mode_params' in llm_cfg and 'non_thinking_mode_params' in llm_cfg:
+        # New schema - validate main_llm structure
+        main_llm = llm_cfg.get('main_llm', {})
+        required_main_fields = ["model", "max_tokens"]
+        missing_main = [f for f in required_main_fields if f not in main_llm or main_llm[f] is None]
+        if missing_main:
+            raise RuntimeError(f"Missing required main_llm config fields: {', '.join(missing_main)}")
+    else:
+        # Old schema - check for thinking_mode and non_thinking_mode
+        required_fields = ["model", "thinking_mode", "non_thinking_mode", "max_tokens"]
+        missing = [f for f in required_fields if f not in llm_cfg or llm_cfg[f] is None]
+        if missing:
+            raise RuntimeError(f"Missing required LLM config fields: {', '.join(missing)}")
     
     # Initialize rag_sources at the top level to ensure it's always available
     rag_sources = []
@@ -3405,11 +3445,20 @@ Please generate the requested items incorporating relevant information from the 
     
     # Thinking is now handled in unified_llm_synthesis function
     
-    print(f"[DEBUG] rag_answer: final prompt = {prompt[:200]}...")
+    print(f"[DEBUG] rag_answer: final prompt = {prompt[:500]}...")
+    print(f"[DEBUG] rag_answer: prompt contains 'tool': {'tool>' in prompt.lower()}")
+    print(f"[DEBUG] rag_answer: prompt contains 'knowledge_search': {'knowledge_search' in prompt.lower()}")
     print(f"[DEBUG] rag_answer: source = {source}")
     
     # Generate response using direct LLM instead of HTTP API for better streaming
-    mode_config = llm_cfg["thinking_mode"] if thinking else llm_cfg["non_thinking_mode"]
+    # CRITICAL FIX: Ensure we get main LLM config, not query classifier config
+    main_llm_settings = get_llm_settings()
+    mode_config = get_main_llm_full_config(main_llm_settings)
+    
+    # Force use of main LLM config instead of potentially contaminated llm_cfg
+    print(f"[DEBUG] FIXED: Using main LLM config instead of llm_cfg")
+    print(f"[DEBUG] Main LLM model: {mode_config.get('model')}")
+    llm_cfg = main_llm_settings  # Override llm_cfg with clean main LLM settings
     
     # Dynamic max_tokens based on request type
     if "generate" in question.lower() and any(word in question.lower() for word in ["questions", "items", "list"]):
@@ -3446,7 +3495,7 @@ Please generate the requested items incorporating relevant information from the 
             max_tokens = fallback_tokens
     
     print(f"[DEBUG] rag_answer: Final max_tokens being sent: {max_tokens}")
-    print(f"[DEBUG] rag_answer: Model: {llm_cfg.get('model', 'unknown')}")
+    print(f"[DEBUG] rag_answer: Model: {mode_config.get('model', 'unknown')}")
     print(f"[DEBUG] rag_answer: Temperature: {mode_config.get('temperature', 0.7)}")
     
     payload = {
@@ -3462,21 +3511,26 @@ Please generate the requested items incorporating relevant information from the 
         async def stream_tokens():
             from app.llm.ollama import OllamaLLM
             from app.llm.base import LLMConfig
-            import os
             
             # Ensure rag_sources is available in this nested function scope
             nonlocal rag_sources
             
             # Create LLM config exactly like multi-agent
             llm_config = LLMConfig(
-                model_name=llm_cfg["model"],
+                model_name=mode_config["model"],
                 temperature=float(mode_config.get("temperature", 0.7)),
                 top_p=float(mode_config.get("top_p", 1.0)),
                 max_tokens=int(max_tokens)
             )
             
-            # Get Ollama URL
-            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+            # Get Ollama URL from LLM config
+            ollama_url = mode_config.get("model_server", "http://ollama:11434")
+            print(f"[DEBUG] Ollama URL from config: {ollama_url}")
+            
+            # If localhost, change to host.docker.internal for Docker containers
+            if "localhost" in ollama_url:
+                ollama_url = ollama_url.replace("localhost", "host.docker.internal")
+                print(f"[DEBUG] Converted to Docker URL: {ollama_url}")
             
             # Create LLM instance
             llm = OllamaLLM(llm_config, base_url=ollama_url)
@@ -3528,9 +3582,12 @@ Please generate the requested items incorporating relevant information from the 
                 except Exception as e:
                     logger.warning(f"Failed to end LLM generation span: {e}")
             
-            # Parse and execute tool calls using enhanced error handling
-            # Skip redundant knowledge_search if RAG was already performed for this query type
-            skip_knowledge_search = (query_type == "RAG" and rag_context)
+            # Parse and execute tool calls using enhanced error handling  
+            # Skip redundant knowledge_search if RAG was already performed, unless explicit search intent detected
+            from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier
+            classifier = EnhancedQueryClassifier()
+            has_explicit_search_intent = await classifier.detect_explicit_search_intent(question)
+            skip_knowledge_search = (query_type == "RAG" and rag_context and not has_explicit_search_intent)
             tool_results = extract_and_execute_tool_calls(
                 response_text, 
                 trace=trace, 
@@ -3689,13 +3746,16 @@ Based on these search results, provide a comprehensive answer to the user's ques
             rag_sources = []
         
         llm_config = LLMConfig(
-            model_name=llm_cfg["model"],
+            model_name=mode_config["model"],
             temperature=float(mode_config.get("temperature", 0.7)),
             top_p=float(mode_config.get("top_p", 1.0)),
             max_tokens=int(max_tokens)
         )
         
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+        ollama_url = mode_config.get("model_server", "http://ollama:11434")
+        # If localhost, change to host.docker.internal for Docker containers
+        if "localhost" in ollama_url:
+            ollama_url = ollama_url.replace("localhost", "host.docker.internal")
         llm = OllamaLLM(llm_config, base_url=ollama_url)
         
         # Create LLM generation span for non-streaming response
@@ -3731,8 +3791,11 @@ Based on these search results, provide a comprehensive answer to the user's ques
                 logger.warning(f"Failed to end LLM generation span: {e}")
         
         # Parse and execute tool calls using enhanced error handling
-        # Skip redundant knowledge_search if RAG was already performed for this query type
-        skip_knowledge_search = (query_type == "RAG" and rag_context)
+        # Skip redundant knowledge_search if RAG was already performed, unless explicit search intent detected
+        from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier
+        classifier = EnhancedQueryClassifier()
+        has_explicit_search_intent = await classifier.detect_explicit_search_intent(question)
+        skip_knowledge_search = (query_type == "RAG" and rag_context and not has_explicit_search_intent)
         tool_results = extract_and_execute_tool_calls(
             response_text, 
             trace=trace, 

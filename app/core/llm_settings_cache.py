@@ -26,9 +26,6 @@ def get_llm_settings():
             cached = redis_client.get(LLM_SETTINGS_KEY)
             if cached:
                 settings = json.loads(cached)
-                # Validate structure
-                if 'thinking_mode' not in settings or 'non_thinking_mode' not in settings:
-                    raise RuntimeError('LLM settings missing thinking_mode or non_thinking_mode')
                 return settings
         except Exception as e:
             print(f"Redis error: {e}, falling back to database")
@@ -55,8 +52,6 @@ def reload_llm_settings():
             row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
             if row:
                 settings = row.settings
-                if 'thinking_mode' not in settings or 'non_thinking_mode' not in settings:
-                    raise RuntimeError('LLM settings missing thinking_mode or non_thinking_mode')
                 
                 # Merge in latest query classifier settings with new LLM fields
                 try:
@@ -82,38 +77,45 @@ def reload_llm_settings():
             db.close()
     except Exception as e:
         print(f"Failed to load LLM settings from database: {e}")
-        # Return default settings to prevent complete failure
-        return {
-            "model": "llama3.1:8b",
-            "thinking_mode": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 4000},
-            "non_thinking_mode": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 4000},
-            "max_tokens": 4000,
-            "multi_agent_timing": {
-                "startup_delay": 0.3,
-                "progress_delay": 0.2,
-                "agent_communication_delay": 0.3,
-                "tool_execution_delay": 0.5,
-                "token_streaming_delay": 0.02,
-                "synthesis_startup_delay": 0.5,
-                "synthesis_progress_delay": 0.3,
-                "synthesis_token_delay": 0.02,
-                "completion_delay": 0.2
-            },
-            "response_requirements": {
-                "min_paragraphs": 3,
-                "max_paragraphs": 4,
-                "min_words": 300,
-                "max_words": 500,
-                "quality_level": "comprehensive",
-                "include_examples": True,
-                "include_recommendations": True
-            },
-            "query_classifier": {
-                "min_confidence_threshold": 0.1,
-                "max_classifications": 3,
-                "classifier_max_tokens": 10,
-                "enable_hybrid_detection": True,
-                "confidence_decay_factor": 0.8,
-                "pattern_combination_bonus": 0.15
-            }
-        } 
+        raise
+
+def get_main_llm_full_config(settings=None):
+    """Construct full main_llm configuration by merging base config with mode parameters"""
+    if settings is None:
+        settings = get_llm_settings()
+    
+    main_llm = settings.get('main_llm', {})
+    mode = main_llm.get('mode', 'thinking')
+    
+    # Get the appropriate mode parameters
+    if mode == 'thinking':
+        mode_params = settings.get('thinking_mode_params', {})
+    else:
+        mode_params = settings.get('non_thinking_mode_params', {})
+    
+    # Merge base config with mode parameters
+    full_config = main_llm.copy()
+    full_config.update(mode_params)
+    
+    return full_config
+
+def get_query_classifier_full_config(settings=None):
+    """Construct full query_classifier configuration by merging base config with mode parameters"""
+    if settings is None:
+        settings = get_llm_settings()
+    
+    query_classifier = settings.get('query_classifier', {})
+    # Query classifier should default to non-thinking mode for simple classification responses
+    mode = query_classifier.get('mode', 'non-thinking')
+    
+    # Get the appropriate mode parameters
+    if mode == 'thinking':
+        mode_params = settings.get('thinking_mode_params', {})
+    else:
+        mode_params = settings.get('non_thinking_mode_params', {})
+    
+    # Merge base config with mode parameters
+    full_config = query_classifier.copy()
+    full_config.update(mode_params)
+    
+    return full_config 

@@ -2,7 +2,7 @@ import httpx
 from app.llm.base import BaseLLM, LLMConfig, LLMResponse
 from typing import AsyncGenerator
 import json
-from app.core.llm_settings_cache import get_llm_settings
+from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
 
 class OllamaLLM(BaseLLM):
     def __init__(self, config: LLMConfig, base_url: str = "http://localhost:11434"):
@@ -73,6 +73,7 @@ class OllamaLLM(BaseLLM):
         }
         
         print(f"[DEBUG] Ollama payload - model: {self.model_name}, num_predict: {self.config.max_tokens}, num_ctx: {context_length}")
+        print(f"[DEBUG] Ollama URL: {self.base_url}/api/generate")
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("POST", f"{self.base_url}/api/generate", json=payload) as response:
                 async for line in response.aiter_lines():
@@ -101,17 +102,20 @@ class JarvisLLM:
 
     def _build_llm(self, mode, max_tokens):
         settings = get_llm_settings()
-        if "model" not in settings or "max_tokens" not in settings:
-            raise RuntimeError("Missing required LLM config fields: model, max_tokens")
-        mode_settings = settings["thinking_mode"] if mode == "thinking" else settings["non_thinking_mode"]
-        for param in ["temperature", "top_p"]:
-            if param not in mode_settings:
-                raise RuntimeError(f"Missing '{param}' in {'thinking_mode' if mode == 'thinking' else 'non_thinking_mode'}")
+        
+        # Use helper function to get full LLM configuration
+        mode_settings = get_main_llm_full_config(settings)
+        
+        # Check required fields in mode config
+        required_params = ["model", "max_tokens", "temperature", "top_p"]
+        missing = [f for f in required_params if f not in mode_settings or mode_settings[f] is None]
+        if missing:
+            raise RuntimeError(f"Missing required LLM config fields in {mode} mode: {', '.join(missing)}")
         # Handle both string and int values for max_tokens
         if max_tokens is not None:
             max_tokens_value = int(max_tokens)
         else:
-            max_tokens_raw = settings["max_tokens"]
+            max_tokens_raw = mode_settings["max_tokens"]
             try:
                 max_tokens_value = int(max_tokens_raw)
             except (ValueError, TypeError):
@@ -119,7 +123,7 @@ class JarvisLLM:
                 max_tokens_value = 16384
                 
         config = LLMConfig(
-            model_name=settings["model"],
+            model_name=mode_settings["model"],
             temperature=float(mode_settings["temperature"]),
             top_p=float(mode_settings["top_p"]),
             max_tokens=max_tokens_value
