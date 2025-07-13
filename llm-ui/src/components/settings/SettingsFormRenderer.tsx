@@ -1095,8 +1095,9 @@ const renderStandardForm = (
     }
 
     if (typeof value === 'string') {
-      const isLongText = value.length > 100;
       const lowerKey = key.toLowerCase();
+      // Always use textarea for prompt fields to prevent height changes while typing
+      const isLongText = value.length > 100 || lowerKey.includes('prompt') || lowerKey.includes('system');
       
       // Debug logging for max_tokens
       if (lowerKey.includes('max_tokens') || lowerKey.includes('maxtoken')) {
@@ -1442,14 +1443,30 @@ const renderStandardForm = (
           <div className="jarvis-tab-panel">
             {/* Special rendering for Thinking Mode tab */}
             {categoryKey === 'thinking' ? (
-              <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', 
-                gap: '24px', 
-                padding: '16px',
-                maxWidth: '1200px',
-                margin: '0 auto'
-              }}>
+              <div style={{ padding: '16px', maxWidth: '1200px', margin: '0 auto' }}>
+                {/* General Information */}
+                <Alert severity="info" sx={{ mb: 3 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                    <strong>Parameter Configuration Guidelines</strong>
+                  </Typography>
+                  <Typography variant="body2" sx={{ mt: 1 }}>
+                    For more information, refer to{' '}
+                    <a 
+                      href="https://huggingface.co/Qwen/Qwen3-4B-MLX-4bit#best-practices" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      style={{ color: 'inherit', textDecoration: 'underline' }}
+                    >
+                      Qwen3 Best Practices
+                    </a>
+                  </Typography>
+                </Alert>
+                
+                <div style={{ 
+                  display: 'grid', 
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', 
+                  gap: '24px'
+                }}>
                 {/* Thinking Mode Card */}
                 <Card variant="outlined" sx={{ height: 'fit-content' }}>
                   <CardHeader 
@@ -1505,7 +1522,7 @@ const renderStandardForm = (
                   <CardContent>
                     <Alert severity="success" sx={{ mb: 2 }}>
                       <Typography variant="body2">
-                        <strong>Direct responses</strong> without showing step-by-step reasoning
+                        <strong>Recommended:</strong> Temperature=0.7, TopP=0.8, TopK=20, MinP=0
                       </Typography>
                     </Alert>
                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -1539,6 +1556,7 @@ const renderStandardForm = (
                     </Box>
                   </CardContent>
                 </Card>
+                </div>
               </div>
             ) : (
               /* Regular form rendering for other tabs */
