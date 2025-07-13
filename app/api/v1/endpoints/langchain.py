@@ -1261,7 +1261,9 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                             tool_context += f"\n{tr['tool']}: {tr['result']}\n"
                             
                             # Extract documents from RAG search results
-                            if tr['tool'] == 'knowledge_search' and isinstance(tr.get('result'), dict):
+                            # Import is_rag_tool function for flexible tool name matching
+                            from app.langchain.service import is_rag_tool
+                            if is_rag_tool(tr['tool']) and isinstance(tr.get('result'), dict):
                                 # Parse JSON-RPC response
                                 result_data = tr['result']
                                 if 'result' in result_data and isinstance(result_data['result'], dict):
@@ -1310,10 +1312,12 @@ Please provide a clear, direct answer based on the tool results."""
                             logger.warning(f"Failed to create synthesis generation span: {e}")
                     
                     # Configure LLM for streaming using refactored config
+                    max_tokens_from_config = main_llm_config.get('max_tokens', 4000)
+                    print(f"[DEBUG] Direct handler max_tokens from config: {max_tokens_from_config}")
                     llm_config = LLMConfig(
                         model_name=main_llm_config.get('model'),
                         temperature=float(main_llm_config.get('temperature', 0.8)),
-                        max_tokens=int(main_llm_config.get('max_tokens', 4000)),
+                        max_tokens=int(max_tokens_from_config),
                         top_p=float(main_llm_config.get('top_p', 0.9))
                     )
                     

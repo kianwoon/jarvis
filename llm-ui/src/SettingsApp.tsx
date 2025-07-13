@@ -185,6 +185,7 @@ function SettingsApp() {
       // Handle different endpoint patterns based on category
       if (category === 'mcp') {
         // MCP uses multiple endpoints for servers, tools, and general settings
+        // Prioritize mcp_tools table as authoritative source for tools
         const [serversResponse, toolsResponse, settingsResponse] = await Promise.all([
           fetch('/api/v1/mcp/servers/'),
           fetch('/api/v1/mcp/tools/'),
@@ -210,6 +211,12 @@ function SettingsApp() {
         if (settingsResponse.ok) {
           const settingsData = await settingsResponse.json();
           settings = settingsData.settings || {};
+          
+          // CRITICAL FIX: Override settings.tools with authoritative mcp_tools table data
+          // This ensures UI displays current tool names from mcp_tools table, not stale settings cache
+          if (tools && Array.isArray(tools) && tools.length > 0) {
+            settings.tools = tools;
+          }
         } else {
           //console.error(`Failed to load MCP settings: ${settingsResponse.status} ${settingsResponse.statusText}`);
         }

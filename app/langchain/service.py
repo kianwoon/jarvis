@@ -38,7 +38,7 @@ def reload_rag_tool_name_cache():
 
 def is_rag_tool(tool_name: str) -> bool:
     """Check if a tool name matches the configurable RAG tool"""
-    return tool_name.lower() == get_rag_tool_name().lower() or get_rag_tool_name().lower() in tool_name.lower()
+    return tool_name.lower() == get_rag_tool_name().lower() or tool_name.lower() in get_rag_tool_name().lower()
 _conversation_cache = {}  # In-memory fallback
 
 # Simple query cache for RAG results (in-memory, expires after 5 minutes)
@@ -3313,7 +3313,7 @@ Please generate the requested items incorporating relevant information from the 
                     
                     # Extract documents from knowledge_search tool results
                     for tc in tool_calls:
-                        if tc.get('tool') == get_rag_tool_name() and tc.get('success'):
+                        if is_rag_tool(tc.get('tool', '')) and tc.get('success'):
                             tool_result = tc.get('result', {})
                             # Handle JSON-RPC response format
                             if isinstance(tool_result, dict) and 'result' in tool_result:
@@ -3369,7 +3369,7 @@ Please generate the requested items incorporating relevant information from the 
                                 print(f"  - Tool: {tc.get('tool', 'unknown')} - Success: {tc.get('success', False)}")
                                 
                                 # Extract documents from simple tool executor results
-                                if tc.get('tool') == get_rag_tool_name() and tc.get('success'):
+                                if is_rag_tool(tc.get('tool', '')) and tc.get('success'):
                                     tool_result = tc.get('result', {})
                                     # Handle JSON-RPC response format
                                     if isinstance(tool_result, dict) and 'result' in tool_result:
@@ -3401,7 +3401,7 @@ Please generate the requested items incorporating relevant information from the 
                         # Extract documents from fallback results
                         if tool_calls:
                             for tc in tool_calls:
-                                if tc.get('tool') == get_rag_tool_name() and tc.get('success'):
+                                if is_rag_tool(tc.get('tool', '')) and tc.get('success'):
                                     tool_result = tc.get('result', {})
                                     # Handle JSON-RPC response format
                                     if isinstance(tool_result, dict) and 'result' in tool_result:
@@ -3491,19 +3491,19 @@ Please generate the requested items incorporating relevant information from the 
         # Estimate ~100 tokens per question + 500 buffer for instructions
         estimated_tokens = target_num * 100 + 500
         # Use higher cap for models with larger context windows
-        llm_model = llm_cfg.get("model", "").lower()
+        llm_model = mode_config.get("model", "").lower()
         token_cap = 32768 if "deepseek" in llm_model else 8192
         max_tokens = min(estimated_tokens, token_cap)
         print(f"[DEBUG] rag_answer: Using dynamic max_tokens={max_tokens} for {target_num} items (cap: {token_cap})")
     else:
-        # Use configured max_tokens
-        max_tokens_raw = llm_cfg.get("max_tokens", 16384)
+        # Use configured max_tokens from main LLM config (FIXED: was using llm_cfg instead of mode_config)
+        max_tokens_raw = mode_config.get("max_tokens", 16384)
         # Handle both string and int values
         try:
             max_tokens = int(max_tokens_raw)
             # Sanity check - if someone set max_tokens to context window size, fix it
             # Make this configurable based on model capabilities
-            context_length = llm_cfg.get("context_length", 40960)
+            context_length = mode_config.get("context_length", 40960)
             max_output_ratio = 0.4  # Use max 40% of context for output
             max_safe_tokens = int(context_length * max_output_ratio)
             if max_tokens > max_safe_tokens:
@@ -3511,7 +3511,7 @@ Please generate the requested items incorporating relevant information from the 
                 max_tokens = max_safe_tokens
         except (ValueError, TypeError):
             # Use fallback based on context length instead of hardcoded value
-            context_length = llm_cfg.get("context_length", 40960)
+            context_length = mode_config.get("context_length", 40960)
             fallback_tokens = int(context_length * 0.3)  # Conservative 30% for fallback
             print(f"[WARNING] Invalid max_tokens value: {max_tokens_raw}, using {fallback_tokens} (30% of {context_length} context)")
             max_tokens = fallback_tokens
@@ -3623,7 +3623,7 @@ Please generate the requested items incorporating relevant information from the 
                 
                 # Extract documents from tool results
                 for tr in tool_results:
-                    if tr.get('tool') == get_rag_tool_name() and tr.get('success'):
+                    if is_rag_tool(tr.get('tool', '')) and tr.get('success'):
                         tool_result = tr.get('result', {})
                         # Handle JSON-RPC response format
                         if isinstance(tool_result, dict) and 'result' in tool_result:
