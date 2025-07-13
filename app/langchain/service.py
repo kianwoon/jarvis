@@ -66,7 +66,7 @@ def build_enhanced_system_prompt(base_prompt: str = None) -> str:
     # Get base system prompt from settings if not provided
     if not base_prompt:
         llm_settings = get_llm_settings()
-        base_prompt = llm_settings.get('system_prompt', 'You are Jarvis, an AI assistant.')
+        base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
     
     # Get available MCP tools from cache
     tools_info = []

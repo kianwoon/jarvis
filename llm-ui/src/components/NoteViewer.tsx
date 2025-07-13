@@ -64,7 +64,28 @@ const NoteViewer: React.FC<NoteViewerProps> = ({
               borderRadius: 0.5
             }
           }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown 
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a: ({ href, children }) => (
+                  <Box
+                    component="a"
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    sx={{
+                      color: 'primary.main',
+                      textDecoration: 'underline',
+                      '&:hover': {
+                        textDecoration: 'none'
+                      }
+                    }}
+                  >
+                    {children}
+                  </Box>
+                )
+              }}
+            >
               {cleanOutputText(content)}
             </ReactMarkdown>
           </Box>

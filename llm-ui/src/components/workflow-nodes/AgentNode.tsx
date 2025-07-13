@@ -209,6 +209,24 @@ const MarkdownContent: React.FC<{ content: string; sx?: any }> = ({ content, sx 
           {children}
         </ol>
       ),
+      // Customize links to open in new window
+      a: ({ href, children }) => (
+        <Box
+          component="a"
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          sx={{
+            color: 'primary.main',
+            textDecoration: 'underline',
+            '&:hover': {
+              textDecoration: 'none'
+            }
+          }}
+        >
+          {children}
+        </Box>
+      ),
     }}
     style={sx}
   >

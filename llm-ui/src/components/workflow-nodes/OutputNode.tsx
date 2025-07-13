@@ -133,7 +133,28 @@ const OutputNode: React.FC<OutputNodeProps> = ({ data, id, updateNodeData, showI
             overflow: 'auto'
           }
         }}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown 
+            remarkPlugins={[remarkGfm]}
+            components={{
+              a: ({ href, children }) => (
+                <Box
+                  component="a"
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  sx={{
+                    color: 'primary.main',
+                    textDecoration: 'underline',
+                    '&:hover': {
+                      textDecoration: 'none'
+                    }
+                  }}
+                >
+                  {children}
+                </Box>
+              )
+            }}
+          >
             {output}
           </ReactMarkdown>
         </Box>
@@ -410,7 +431,28 @@ const OutputNode: React.FC<OutputNodeProps> = ({ data, id, updateNodeData, showI
                             borderRadius: 0.5
                           }
                         }}>
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          <ReactMarkdown 
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              a: ({ href, children }) => (
+                                <Box
+                                  component="a"
+                                  href={href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  sx={{
+                                    color: 'primary.main',
+                                    textDecoration: 'underline',
+                                    '&:hover': {
+                                      textDecoration: 'none'
+                                    }
+                                  }}
+                                >
+                                  {children}
+                                </Box>
+                              )
+                            }}
+                          >
                             {output}
                           </ReactMarkdown>
                         </Box>

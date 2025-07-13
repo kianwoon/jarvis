@@ -399,7 +399,7 @@ def build_lightweight_decision_prompt() -> str:
     
     # Get base system prompt from settings
     llm_settings = get_llm_settings()
-    base_prompt = llm_settings.get('system_prompt', 'You are Jarvis, an AI assistant.')
+    base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
     
     # Get lightweight context for decision making
     tools_summary, collections_summary = build_lightweight_decision_context()

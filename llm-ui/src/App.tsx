@@ -313,6 +313,23 @@ const MessageContent = React.memo(({ content }: { content: string }) => {
                   >
                     {children}
                   </Box>
+                ),
+                a: ({ href, children }) => (
+                  <Box
+                    component="a"
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    sx={{
+                      color: 'primary.main',
+                      textDecoration: 'underline',
+                      '&:hover': {
+                        textDecoration: 'none'
+                      }
+                    }}
+                  >
+                    {children}
+                  </Box>
                 )
               }}
             >
@@ -378,7 +395,24 @@ const MessageContent = React.memo(({ content }: { content: string }) => {
                             <code>{children}</code>
                           </Box>
                         );
-                      }
+                      },
+                      a: ({ href, children }) => (
+                        <Box
+                          component="a"
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{
+                            color: 'primary.main',
+                            textDecoration: 'underline',
+                            '&:hover': {
+                              textDecoration: 'none'
+                            }
+                          }}
+                        >
+                          {children}
+                        </Box>
+                      )
                     }}
                   >
                     {part.text}

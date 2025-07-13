@@ -220,9 +220,11 @@ async def apply_preset_to_settings(model_name: str, current_settings: dict):
         updated_settings["non_thinking_mode"]["temperature"] = str(preset.default_temperature)
         updated_settings["non_thinking_mode"]["top_p"] = str(preset.default_top_p)
     
-    # Add recommended system prompt
-    if "system_prompt" not in updated_settings or not updated_settings["system_prompt"]:
-        updated_settings["system_prompt"] = preset.recommended_system_prompts["balanced"]
+    # Add recommended system prompt to main_llm
+    if "main_llm" not in updated_settings:
+        updated_settings["main_llm"] = {}
+    if "system_prompt" not in updated_settings["main_llm"] or not updated_settings["main_llm"]["system_prompt"]:
+        updated_settings["main_llm"]["system_prompt"] = preset.recommended_system_prompts["balanced"]
     
     return {
         "settings": updated_settings,
