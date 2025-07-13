@@ -39,7 +39,7 @@ python-magic>=0.4.27
 
 # AI and ML (optimized versions)
 torch>=2.1.0,<2.3.0
-transformers>=4.35.0,<4.45.0
+transformers>=4.51.0
 numpy>=1.24.0,<1.26.0
 accelerate>=0.24.0
 sentencepiece>=0.1.99

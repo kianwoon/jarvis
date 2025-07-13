@@ -1699,20 +1699,21 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
         except Exception as e:
             logger.warning(f"Failed to create RAG span: {e}")
     
-    # Check cache first for performance
-    query_hash = hash(question.lower().strip())
-    current_time = time.time()
+    # Check cache first for performance - DISABLED FOR FRESH RESULTS
+    # query_hash = hash(question.lower().strip())
+    # current_time = time.time()
     
-    if query_hash in _rag_cache:
-        cached_result, timestamp = _rag_cache[query_hash]
-        cache_settings = get_rag_cache_settings()
-        cache_ttl = cache_settings['ttl']
-        if current_time - timestamp < cache_ttl:
-            print(f"[DEBUG] handle_rag_query: Using cached result for query")
-            return cached_result
-        else:
-            # Remove expired cache entry
-            del _rag_cache[query_hash]
+    # if query_hash in _rag_cache:
+    #     cached_result, timestamp = _rag_cache[query_hash]
+    #     cache_settings = get_rag_cache_settings()
+    #     cache_ttl = cache_settings['ttl']
+    #     if current_time - timestamp < cache_ttl:
+    #         print(f"[DEBUG] handle_rag_query: Using cached result for query")
+    #         return cached_result
+    #     else:
+    #         # Remove expired cache entry
+    #         del _rag_cache[query_hash]
+    print(f"[DEBUG] handle_rag_query: Cache disabled, performing fresh document retrieval")
     
     try:
         embedding_cfg = get_embedding_settings()
@@ -2137,14 +2138,56 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
         print(f"[DEBUG] handle_rag_query: Doc distance={score:.3f}, similarity={similarity:.3f}, content preview = {doc.page_content[:100]}")
         
         if score <= SIMILARITY_THRESHOLD:  # Filter by distance threshold
-            # Calculate keyword-based relevance for reranking (hybrid search)
-            keyword_relevance = calculate_relevance_score(question, doc.page_content)
+            # Enhanced BM25-based relevance calculation with corpus stats
+            from app.core.rag_settings_cache import get_bm25_settings
+            try:
+                bm25_settings = get_bm25_settings()
+                bm25_enabled = bm25_settings.get('enable_bm25', True)
+                bm25_weight = bm25_settings.get('bm25_weight', 0.3)
+            except:
+                bm25_enabled = True
+                bm25_weight = 0.3
             
-            # Hybrid search: Balance vector similarity and keyword relevance
-            # Use query analysis to determine optimal weighting
-            keyword_weight = query_analysis['keyword_priority']
+            if bm25_enabled:
+                # Calculate BM25-enhanced relevance score
+                keyword_relevance = calculate_relevance_score(question, doc.page_content)
+                
+                # Apply BM25 weight from settings
+                enhanced_keyword_score = keyword_relevance * (1 + bm25_weight)
+                print(f"[DEBUG] BM25 enhanced score: {keyword_relevance:.3f} -> {enhanced_keyword_score:.3f}")
+            else:
+                # Fallback to legacy scoring
+                keyword_relevance = calculate_relevance_score(question, doc.page_content)
+                enhanced_keyword_score = keyword_relevance
+            
+            # Hybrid search: Balance vector similarity and enhanced keyword relevance
+            # Use query analysis to determine optimal weighting, with special handling for partnership queries
+            base_keyword_weight = query_analysis['keyword_priority']
+            
+            # Boost keyword weight for partnership/entity-specific queries
+            from app.core.rag_settings_cache import get_search_strategy_settings
+            try:
+                search_settings = get_search_strategy_settings()
+                partnership_boost = search_settings.get('partnership_keyword_boost', 0.2)
+            except:
+                partnership_boost = 0.2
+            
+            # Detect partnership queries and adjust weighting
+            query_lower = question.lower()
+            is_partnership_query = any(term in query_lower for term in [
+                'partnership', 'collaboration', 'relationship', 'between'
+            ])
+            
+            if is_partnership_query:
+                # Increase keyword weight for partnership queries to prioritize specific company content
+                keyword_weight = min(0.8, base_keyword_weight + partnership_boost)
+                print(f"[DEBUG] Partnership query detected, boosted keyword weight: {base_keyword_weight:.2f} -> {keyword_weight:.2f}")
+            else:
+                keyword_weight = base_keyword_weight
+            
             vector_weight = 1 - keyword_weight
-            combined_score = (similarity * vector_weight) + (keyword_relevance * keyword_weight)
+            combined_score = (similarity * vector_weight) + (enhanced_keyword_score * keyword_weight)
+            
             
             filtered_and_ranked.append((doc, score, similarity, keyword_relevance, combined_score))
     
@@ -2154,18 +2197,30 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
     # Qwen3-Reranker-4B based re-ranking for top candidates
     if filtered_and_ranked and llm_cfg:
         try:
-            # Check if reranker is enabled
+            # Check if reranker is enabled via settings (not just environment)
             from app.core.reranker_config import RerankerConfig
+            from app.core.rag_settings_cache import get_reranking_settings
             
-            if not RerankerConfig.is_enabled():
-                raise ImportError("Reranker is disabled in this environment")
+            # Check both config and database settings
+            try:
+                rerank_settings = get_reranking_settings()
+                enable_qwen_reranker = rerank_settings.get('enable_qwen_reranker', True)
+            except:
+                enable_qwen_reranker = True
+            
+            if not enable_qwen_reranker:
+                raise ImportError("Qwen reranker disabled in RAG settings")
+            
+            # Try to initialize reranker regardless of Docker environment if enabled in settings
+            if not RerankerConfig.is_enabled() and not enable_qwen_reranker:
+                raise ImportError("Reranker disabled in environment config")
             
             # Try to use Qwen3-Reranker-4B if available
             from app.rag.qwen_reranker import get_qwen_reranker
             
             # Re-rank top 20 candidates (we can handle more with dedicated model)
             num_to_rerank = min(20, len(filtered_and_ranked))
-            print(f"[DEBUG] Starting Qwen3-Reranker-4B re-ranking of top {num_to_rerank} documents")
+            print(f"[DEBUG] Starting Qwen reranker re-ranking of top {num_to_rerank} documents")
             
             # Get reranker instance
             reranker = get_qwen_reranker()
@@ -2232,25 +2287,47 @@ Documents to score:
             rerank_prompt += "\nProvide ONLY the scores in format: Doc1:X, Doc2:Y, Doc3:Z, etc. No explanations."
             
             try:
-                llm_api_url = "http://localhost:8000/api/v1/generate_stream"
+                # Use non-streaming endpoint for faster, more reliable reranking
+                # Get LLM URL from config to handle Docker environment
+                import os
+                llm_api_url = llm_cfg.get('main_llm', {}).get('model_server', 'http://localhost:11434')
+                # Detect Docker environment more reliably
+                is_docker = os.path.exists('/root') or os.environ.get('DOCKER_ENVIRONMENT')
+                if 'localhost' in llm_api_url and is_docker:
+                    llm_api_url = llm_api_url.replace('localhost', 'host.docker.internal')
+                    print(f"[DEBUG] Docker environment detected, using Docker URL: {llm_api_url}")
+                llm_api_url = f"{llm_api_url}/api/generate"
+                
+                # Get the main LLM model for reranking
+                main_llm_config = llm_cfg.get('main_llm', {})
+                model_name = main_llm_config.get('model', 'qwen3:0.6b')  # Use faster model for reranking
+                
                 payload = {
+                    "model": model_name,
                     "prompt": rerank_prompt,
                     "temperature": 0.1,
                     "top_p": 0.9,
-                    "max_tokens": 100
+                    "options": {
+                        "num_predict": 80,  # Ollama uses options.num_predict instead of max_tokens
+                        "temperature": 0.1,
+                        "top_p": 0.9
+                    },
+                    "stream": False
                 }
                 
+                print(f"[DEBUG] LLM reranking using model: {model_name} at {llm_api_url}")
+                
                 scores_text = ""
-                with httpx.Client(timeout=15) as client:
-                    with client.stream("POST", llm_api_url, json=payload) as response:
-                        for line in response.iter_lines():
-                            if not line:
-                                continue
-                            if isinstance(line, bytes):
-                                line = line.decode("utf-8")
-                            if line.startswith("data: "):
-                                token = line.replace("data: ", "")
-                                scores_text += token
+                with httpx.Client(timeout=30) as client:  # Increased timeout for non-streaming
+                    response = client.post(llm_api_url, json=payload)
+                    if response.status_code == 200:
+                        result = response.json()
+                        # Ollama returns response in different format
+                        scores_text = result.get("response", "")
+                    else:
+                        print(f"[DEBUG] LLM API returned status {response.status_code}")
+                        print(f"[DEBUG] Response content: {response.text[:200]}")
+                        raise Exception(f"LLM API error: {response.status_code}")
                 
                 # Parse scores
                 llm_scores = {}
@@ -2404,7 +2481,7 @@ Documents to score:
                 except Exception as e:
                     logger.warning(f"Failed to end RAG span: {e}")
             
-            _cache_rag_result(query_hash, result, current_time)
+            # _cache_rag_result(query_hash, result, current_time)  # Cache disabled
             return result
         
         # Context is relevant, return it for hybrid processing
@@ -2422,8 +2499,8 @@ Documents to score:
             except Exception as e:
                 logger.warning(f"Failed to end RAG span: {e}")
         
-        # Cache the result for performance
-        _cache_rag_result(query_hash, result, current_time)
+        # Cache the result for performance - DISABLED
+        # _cache_rag_result(query_hash, result, current_time)
         return result
     else:
         print(f"[RAG DEBUG] No relevant documents found")
@@ -2436,9 +2513,76 @@ Documents to score:
                 logger.warning(f"Failed to end RAG span: {e}")
         
         result = ("", [])
-        # Cache the result for performance
-        _cache_rag_result(query_hash, result, current_time)
+        # Cache the result for performance - DISABLED
+        # _cache_rag_result(query_hash, result, current_time)
         return result
+
+def apply_reranking_to_sources(question: str, sources: list) -> list:
+    """Apply reranking to sources obtained from tools (like MCP rag_knowledge_search)"""
+    if not sources or len(sources) <= 1:
+        return sources
+    
+    try:
+        # Import here to avoid circular imports
+        from app.rag.qwen_reranker import get_qwen_reranker
+        from app.core.rag_settings_cache import get_reranking_settings
+        
+        # Check if reranker is enabled
+        try:
+            rerank_settings = get_reranking_settings()
+            enable_qwen_reranker = rerank_settings.get('enable_qwen_reranker', True)
+        except:
+            enable_qwen_reranker = True
+        
+        if not enable_qwen_reranker:
+            print(f"[DEBUG] Qwen reranker disabled, skipping tool results reranking")
+            return sources
+        
+        # Convert sources to format expected by reranker
+        class MockDoc:
+            def __init__(self, content):
+                self.page_content = content
+        
+        documents_for_reranking = []
+        for source in sources:
+            doc = MockDoc(source.get('content', ''))
+            score = source.get('score', 0.8)
+            documents_for_reranking.append((doc, score))
+        
+        print(f"[DEBUG] Applying reranking to {len(documents_for_reranking)} tool result documents")
+        
+        # Try to get reranker instance
+        reranker = get_qwen_reranker()
+        if reranker:
+            # Use reranker
+            rerank_results = reranker.rerank(
+                query=question,
+                documents=documents_for_reranking,
+                top_k=len(documents_for_reranking)
+            )
+            
+            # Convert back to sources format
+            reranked_sources = []
+            for result in rerank_results:
+                # Find original source that matches this content
+                original_content = result.document.page_content
+                for source in sources:
+                    if source.get('content', '') == original_content:
+                        # Create new source with reranked score
+                        reranked_source = source.copy()
+                        reranked_source['score'] = result.score
+                        reranked_sources.append(reranked_source)
+                        break
+            
+            print(f"[DEBUG] Reranked {len(reranked_sources)} tool result documents using Qwen3-Reranker-4B")
+            return reranked_sources
+        else:
+            print(f"[DEBUG] Qwen reranker not available for tool results, using original order")
+            return sources
+            
+    except Exception as e:
+        print(f"[DEBUG] Tool results reranking failed: {e}")
+        return sources
 
 def make_llm_call(prompt: str, thinking: bool, context: str, llm_cfg: dict) -> str:
     """Make a synchronous LLM API call and return the complete response"""
@@ -2812,9 +2956,9 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                                             }
                                             tool_rag_sources.append(source_info)
                                     
-                                    # Replace instead of append to prevent document stacking
-                                    rag_sources = tool_rag_sources
-                                    print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from {get_rag_tool_name()} results")
+                                    # Apply reranking to tool results if available
+                                    rag_sources = apply_reranking_to_sources(question, tool_rag_sources)
+                                    print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from {get_rag_tool_name()} results (reranked)")
                     
                     # Keep query_type as TOOLS but ensure synthesis happens
                 else:
@@ -3332,9 +3476,9 @@ Please generate the requested items incorporating relevant information from the 
                                             }
                                             tool_rag_sources.append(source_info)
                                     
-                                    # Replace instead of append to prevent document stacking
-                                    rag_sources = tool_rag_sources
-                                    print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from intelligent executor results")
+                                    # Apply reranking to tool results if available
+                                    rag_sources = apply_reranking_to_sources(question, tool_rag_sources)
+                                    print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from intelligent executor results (reranked)")
                     
                     # End chat span with results
                     if chat_span:
@@ -3387,9 +3531,9 @@ Please generate the requested items incorporating relevant information from the 
                                                     }
                                                     tool_rag_sources.append(source_info)
                                             
-                                            # Replace instead of append to prevent document stacking
-                                            rag_sources = tool_rag_sources
-                                            print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from simple tool executor results")
+                                            # Apply reranking to tool results if available
+                                            rag_sources = apply_reranking_to_sources(question, tool_rag_sources)
+                                            print(f"[DEBUG] rag_answer: Replaced rag_sources with {len(rag_sources)} documents from simple tool executor results (reranked)")
                     except Exception as e2:
                         print(f"[DEBUG] rag_answer: Simple tool executor also failed: {e2}, trying original method")
                         # Fallback to original method
