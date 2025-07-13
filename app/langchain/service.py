@@ -540,12 +540,12 @@ def unified_llm_synthesis(
 🔧 Current Information (Web Search):
 {tool_context}""")
     elif rag_context:
-        prompt_parts.append(f"""You have access to relevant information from our internal knowledge base. Synthesize this with your broader knowledge to provide a comprehensive answer.
+        prompt_parts.append(f"""You have access to relevant information from our internal knowledge base. Use this information to provide a direct, helpful answer to the user's question.
 
 📚 Internal Knowledge Base:
 {rag_context}
 
-Answer the user's question directly using the information above. Do not use tool calls or search functions - the information has already been retrieved for you.""")
+IMPORTANT: Provide a natural language response that directly answers the user's question. Do not evaluate documents, do not return JSON format, do not assess relevance - simply answer the question using the information provided above.""")
     elif tool_context:
         # Check if this is from web search fallback
         if "google_search" in str(tool_context).lower():
@@ -723,7 +723,9 @@ def _calculate_legacy_relevance_score(query: str, context: str) -> float:
 def detect_large_output_potential(question: str) -> dict:
     """Detect if question will likely produce large output requiring chunked processing"""
     # Skip large generation detection for questions that already contain tool results
-    if "Tool Results:" in question or "Please provide a complete answer using the tool results" in question:
+    from app.langchain.smart_query_classifier import classify_query
+    query_type, confidence = classify_query(question)
+    if query_type == "tools":
         return {
             "likely_large": False,
             "estimated_items": 1,
@@ -2372,9 +2374,9 @@ Documents to score:
             if rag_span and tracer:
                 try:
                     tracer.end_span_with_result(rag_span, {
-                        "documents_found": len([doc for doc, _, _, _, _ in filtered_and_ranked]),
-                        "context_length": len(final_context),
-                        "search_context_length": len(search_context)
+                        "documents_found": len(filtered_docs),
+                        "context_length": len(context),
+                        "search_context_length": len(context)
                     }, True)
                 except Exception as e:
                     logger.warning(f"Failed to end RAG span: {e}")
@@ -2677,9 +2679,6 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
         # Use pre-computed classification from API layer to avoid double work
         query_type = query_type.upper()  # Normalize case
         print(f"[DEBUG] rag_answer: Using pre-computed query_type = {query_type}")
-    elif "Tool Results:" in question or "Please provide a complete answer using the tool results" in question:
-        query_type = "TOOLS"  # Force to TOOLS to avoid large generation misdetection
-        print(f"[DEBUG] rag_answer: Enhanced question with tool results detected, forcing query_type = TOOLS")
     else:
         # Use efficient classification to avoid unnecessary RAG calls
         query_type = await classify_query_type_efficient(question, llm_cfg)

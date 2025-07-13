@@ -1,5 +1,8 @@
 import json
+import logging
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 config = get_settings()
 REDIS_HOST = config.REDIS_HOST
@@ -19,7 +22,7 @@ def _get_redis_client():
     return r
 
 def get_rag_settings():
-    """Get RAG settings from cache or database"""
+    """Get RAG settings from cache or database - NO HARDCODED FALLBACKS"""
     # Try to get from Redis cache first
     redis_client = _get_redis_client()
     if redis_client:
@@ -27,40 +30,55 @@ def get_rag_settings():
             cached = redis_client.get(RAG_SETTINGS_KEY)
             if cached:
                 settings = json.loads(cached)
-                # Validate structure has main categories
-                required_categories = ['document_retrieval', 'search_strategy', 'reranking', 'bm25_scoring', 'performance', 'agent_settings']
-                if all(cat in settings for cat in required_categories):
-                    # Ensure collection_selection exists (migrate from old collection_selection_rules if needed)
-                    if 'collection_selection' not in settings:
-                        settings['collection_selection'] = get_default_rag_settings()['collection_selection']
-                    
-                    # Remove old collection_selection_rules if it exists
-                    if 'collection_selection_rules' in settings:
-                        del settings['collection_selection_rules']
-                    
-                    return settings
+                logger.debug(f"Retrieved RAG settings from Redis cache with {len(settings)} categories")
+                return settings
         except Exception as e:
-            print(f"Redis error: {e}, falling back to database")
+            logger.warning(f"Redis error retrieving RAG settings: {e}, falling back to database")
     
     # If not cached or Redis failed, load from DB
     return reload_rag_settings()
 
 def set_rag_settings(settings_dict):
-    """Set RAG settings in cache"""
-    # Ensure collection_selection exists and remove old collection_selection_rules
-    if 'collection_selection' not in settings_dict:
-        settings_dict['collection_selection'] = get_default_rag_settings()['collection_selection']
-    
-    # Remove old collection_selection_rules if it exists
-    if 'collection_selection_rules' in settings_dict:
-        del settings_dict['collection_selection_rules']
-    
-    redis_client = _get_redis_client()
-    if redis_client:
+    """Set RAG settings in cache and database"""
+    if not settings_dict:
+        logger.error("Cannot set empty RAG settings")
+        return False
+        
+    try:
+        # Store in database first
+        from app.core.db import SessionLocal, Settings as SettingsModel
+        
+        db = SessionLocal()
         try:
-            redis_client.set(RAG_SETTINGS_KEY, json.dumps(settings_dict))
-        except Exception as e:
-            print(f"Failed to cache RAG settings in Redis: {e}")
+            # Update or create database entry
+            row = db.query(SettingsModel).filter(SettingsModel.category == 'rag').first()
+            if row:
+                row.settings = settings_dict
+                logger.info("Updated existing RAG settings in database")
+            else:
+                new_settings = SettingsModel(category='rag', settings=settings_dict)
+                db.add(new_settings)
+                logger.info("Created new RAG settings in database")
+            
+            db.commit()
+            
+            # Cache in Redis after successful database update
+            redis_client = _get_redis_client()
+            if redis_client:
+                try:
+                    redis_client.set(RAG_SETTINGS_KEY, json.dumps(settings_dict))
+                    logger.debug("Cached RAG settings in Redis")
+                except Exception as e:
+                    logger.warning(f"Failed to cache RAG settings in Redis: {e}")
+            
+            return True
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"Failed to set RAG settings: {e}")
+        return False
 
 def reload_rag_settings():
     """Reload RAG settings from database and cache them"""
@@ -71,144 +89,183 @@ def reload_rag_settings():
         db = SessionLocal()
         try:
             row = db.query(SettingsModel).filter(SettingsModel.category == 'rag').first()
-            if row:
+            if row and row.settings:
                 settings = row.settings
+                logger.info(f"Loaded RAG settings from database with {len(settings)} categories")
                 
-                # Validate required categories exist
-                required_categories = ['document_retrieval', 'search_strategy', 'reranking', 'bm25_scoring', 'performance', 'agent_settings']
-                if not all(cat in settings for cat in required_categories):
-                    print("RAG settings missing required categories, using defaults")
-                    settings = get_default_rag_settings()
-                
-                # Ensure collection_selection exists (migrate from old collection_selection_rules if needed)
-                if 'collection_selection' not in settings:
-                    settings['collection_selection'] = get_default_rag_settings()['collection_selection']
-                
-                # Remove old collection_selection_rules if it exists
-                if 'collection_selection_rules' in settings:
-                    del settings['collection_selection_rules']
-                
-                # Try to cache in Redis
+                # Cache in Redis
                 redis_client = _get_redis_client()
                 if redis_client:
                     try:
                         redis_client.set(RAG_SETTINGS_KEY, json.dumps(settings))
+                        logger.debug("Cached RAG settings in Redis")
                     except Exception as e:
-                        print(f"Failed to cache RAG settings in Redis: {e}")
+                        logger.warning(f"Failed to cache RAG settings in Redis: {e}")
                 
                 return settings
             else:
-                # No user-defined settings, use defaults
-                print('No RAG settings found in database, using defaults')
-                default_settings = get_default_rag_settings()
-                set_rag_settings(default_settings)
-                return default_settings
+                logger.error("No RAG settings found in database and no defaults available")
+                logger.error("RAG settings must be configured via the UI before use")
+                raise ValueError("RAG settings not configured - please configure via Settings UI")
+                
         finally:
             db.close()
+            
     except Exception as e:
-        print(f"Failed to load RAG settings from database: {e}")
-        # Return default settings to prevent complete failure
-        return get_default_rag_settings()
+        logger.error(f"Failed to load RAG settings from database: {e}")
+        raise
 
-def get_default_rag_settings():
-    """Get default RAG settings with current hardcoded values as defaults"""
-    return {
-        "document_retrieval": {
-            "similarity_threshold": 1.5,
-            "num_docs_retrieve": 20,
-            "max_documents_mcp": 8,
-            "cache_max_size": 100,
-            "default_collections": ["default_knowledge"],
-            "enable_query_expansion": True
-        },
-        "search_strategy": {
-            "default_max_results": 10,
-            "semantic_weight": 0.7,
-            "keyword_weight": 0.3,
-            "hybrid_threshold": 0.7,
-            "enable_focused_search": True,
-            "top_k_vector_search": 50,
-            "search_strategy": "auto"  # auto, semantic, keyword, hybrid
-        },
-        "reranking": {
-            "enable_qwen_reranker": True,
-            "rerank_weight": 0.7,
-            "num_to_rerank": 20,
-            "batch_size": 10,
-            "enable_advanced_reranking": True,
-            "rerank_threshold": 0.5
-        },
-        "bm25_scoring": {
-            "k1": 1.2,
-            "b": 0.75,
-            "corpus_batch_size": 1000,
-            "enable_bm25": True,
-            "bm25_weight": 0.3
-        },
-        "performance": {
-            "execution_timeout_ms": 30000,
-            "connection_timeout_s": 30,
-            "cache_ttl_hours": 2,
-            "max_concurrent_searches": 5,
-            "enable_caching": True,
-            "vector_search_nprobe": 10
-        },
-        "agent_settings": {
-            "confidence_threshold": 0.6,
-            "max_results_per_collection": 10,
-            "collection_size_threshold": 0,
-            "enable_collection_auto_detection": True,
-            "default_query_strategy": "auto",
-            "min_relevance_score": 0.25,
-            "complex_query_threshold": 0.15
-        },
-        "query_processing": {
-            "enable_query_classification": True,
-            "max_query_length": 1000,
-            "enable_stop_word_removal": True,
-            "enable_stemming": False,
-            "query_expansion_methods": ["llm", "synonym"],
-            "window_size": 50
-        },
-        "collection_selection": {
-            "enable_llm_selection": True,
-            "selection_prompt_template": "Given the following query and available collections, determine which collections are most relevant to search:\n\nQuery: {query}\n\nAvailable Collections:\n{collections}\n\nReturn only the collection names that are relevant, separated by commas.",
-            "max_collections": 3,
-            "confidence_threshold": 0.7,
-            "cache_selections": True,
-            "fallback_collections": ["default_knowledge"]
-        }
-    }
+def clear_rag_settings_cache():
+    """Clear RAG settings from Redis cache to force reload from database"""
+    redis_client = _get_redis_client()
+    if redis_client:
+        try:
+            redis_client.delete(RAG_SETTINGS_KEY)
+            logger.info("Cleared RAG settings cache")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to clear RAG settings cache: {e}")
+            return False
+    return False
+
+def validate_rag_settings(settings):
+    """Validate RAG settings structure and required fields"""
+    required_categories = [
+        'document_retrieval', 'search_strategy', 'reranking', 
+        'bm25_scoring', 'performance', 'agent_settings',
+        'query_processing', 'collection_selection'
+    ]
+    
+    if not isinstance(settings, dict):
+        return False, "Settings must be a dictionary"
+    
+    missing_categories = [cat for cat in required_categories if cat not in settings]
+    if missing_categories:
+        return False, f"Missing required categories: {missing_categories}"
+    
+    # Validate critical numeric settings exist and are reasonable
+    try:
+        doc_retrieval = settings['document_retrieval']
+        if 'similarity_threshold' not in doc_retrieval or not isinstance(doc_retrieval['similarity_threshold'], (int, float)):
+            return False, "similarity_threshold must be a number"
+        if 'num_docs_retrieve' not in doc_retrieval or not isinstance(doc_retrieval['num_docs_retrieve'], int):
+            return False, "num_docs_retrieve must be an integer"
+            
+        agent_settings = settings['agent_settings']
+        if 'min_relevance_score' not in agent_settings or not isinstance(agent_settings['min_relevance_score'], (int, float)):
+            return False, "min_relevance_score must be a number"
+            
+    except KeyError as e:
+        return False, f"Missing required setting: {e}"
+    
+    return True, "Settings validation passed"
+
+def get_rag_setting(category, key, default=None):
+    """Get a specific RAG setting value"""
+    try:
+        settings = get_rag_settings()
+        return settings.get(category, {}).get(key, default)
+    except Exception as e:
+        logger.error(f"Failed to get RAG setting {category}.{key}: {e}")
+        if default is not None:
+            return default
+        raise
+
+def update_rag_setting(category, key, value):
+    """Update a specific RAG setting value"""
+    try:
+        settings = get_rag_settings()
+        if category not in settings:
+            settings[category] = {}
+        settings[category][key] = value
+        
+        is_valid, error = validate_rag_settings(settings)
+        if not is_valid:
+            logger.error(f"Invalid RAG settings after update: {error}")
+            return False
+            
+        return set_rag_settings(settings)
+    except Exception as e:
+        logger.error(f"Failed to update RAG setting {category}.{key}: {e}")
+        return False
 
 # Convenience functions for specific setting categories
 def get_document_retrieval_settings():
     """Get document retrieval specific settings"""
-    return get_rag_settings().get('document_retrieval', get_default_rag_settings()['document_retrieval'])
+    try:
+        return get_rag_settings()['document_retrieval']
+    except KeyError:
+        logger.error("Document retrieval settings not found")
+        raise ValueError("Document retrieval settings not configured")
 
 def get_search_strategy_settings():
     """Get search strategy specific settings"""
-    return get_rag_settings().get('search_strategy', get_default_rag_settings()['search_strategy'])
+    try:
+        return get_rag_settings()['search_strategy']
+    except KeyError:
+        logger.error("Search strategy settings not found")
+        raise ValueError("Search strategy settings not configured")
 
 def get_reranking_settings():
     """Get reranking specific settings"""
-    return get_rag_settings().get('reranking', get_default_rag_settings()['reranking'])
+    try:
+        return get_rag_settings()['reranking']
+    except KeyError:
+        logger.error("Reranking settings not found")
+        raise ValueError("Reranking settings not configured")
 
 def get_bm25_settings():
     """Get BM25 scoring specific settings"""
-    return get_rag_settings().get('bm25_scoring', get_default_rag_settings()['bm25_scoring'])
+    try:
+        return get_rag_settings()['bm25_scoring']
+    except KeyError:
+        logger.error("BM25 settings not found")
+        raise ValueError("BM25 settings not configured")
 
 def get_performance_settings():
     """Get performance specific settings"""
-    return get_rag_settings().get('performance', get_default_rag_settings()['performance'])
+    try:
+        return get_rag_settings()['performance']
+    except KeyError:
+        logger.error("Performance settings not found")
+        raise ValueError("Performance settings not configured")
 
 def get_agent_settings():
     """Get agent specific settings"""
-    return get_rag_settings().get('agent_settings', get_default_rag_settings()['agent_settings'])
+    try:
+        return get_rag_settings()['agent_settings']
+    except KeyError:
+        logger.error("Agent settings not found")
+        raise ValueError("Agent settings not configured")
 
 def get_query_processing_settings():
     """Get query processing specific settings"""
-    return get_rag_settings().get('query_processing', get_default_rag_settings()['query_processing'])
+    try:
+        return get_rag_settings()['query_processing']
+    except KeyError:
+        logger.error("Query processing settings not found")
+        raise ValueError("Query processing settings not configured")
 
 def get_collection_selection_settings():
     """Get collection selection settings"""
-    return get_rag_settings().get('collection_selection', get_default_rag_settings()['collection_selection'])
+    try:
+        return get_rag_settings()['collection_selection']
+    except KeyError:
+        logger.error("Collection selection settings not found")
+        raise ValueError("Collection selection settings not configured")
+
+def ensure_rag_settings_exist():
+    """
+    Check if RAG settings exist and are valid.
+    Returns True if settings exist, False if they need to be configured.
+    """
+    try:
+        settings = get_rag_settings()
+        is_valid, error = validate_rag_settings(settings)
+        if not is_valid:
+            logger.warning(f"RAG settings exist but are invalid: {error}")
+            return False
+        return True
+    except Exception:
+        logger.warning("RAG settings do not exist or are inaccessible")
+        return False

@@ -128,11 +128,14 @@ def initialize_mcp_tables(db: Session = Depends(get_db)):
 def get_settings(category: str, db: Session = Depends(get_db)):
     settings_row = db.query(SettingsModel).filter(SettingsModel.category == category).first()
     if not settings_row:
-        # Return default settings for specific categories
+        # Return appropriate response for specific categories
         if category == 'rag':
-            from app.core.rag_settings_cache import get_default_rag_settings
-            default_settings = get_default_rag_settings()
-            return {"category": category, "settings": default_settings}
+            return {
+                "category": category, 
+                "settings": {},
+                "message": "RAG settings not configured. Please configure via Settings UI.",
+                "requires_configuration": True
+            }
         elif category == 'large_generation':
             from app.core.large_generation_settings_cache import DEFAULT_LARGE_GENERATION_CONFIG
             # Flatten the nested structure for UI
@@ -290,23 +293,11 @@ def get_settings(category: str, db: Session = Depends(get_db)):
             # Already in flattened format
             return {"category": category, "settings": settings_row.settings}
     
-    # Special handling for RAG settings to ensure proper migration
+    # Special handling for RAG settings - just return as-is from database
     if category == 'rag' and settings_row:
-        from app.core.rag_settings_cache import get_default_rag_settings
         settings = settings_row.settings.copy() if settings_row.settings else {}
         
-        # Ensure collection_selection exists with all required fields
-        if 'collection_selection' not in settings:
-            settings['collection_selection'] = get_default_rag_settings()['collection_selection']
-        else:
-            # Merge with defaults to ensure all fields exist
-            default_collection_selection = get_default_rag_settings()['collection_selection']
-            settings['collection_selection'] = {
-                **default_collection_selection,
-                **settings.get('collection_selection', {})
-            }
-        
-        # Remove old collection_selection_rules if it exists
+        # Remove old collection_selection_rules if it exists (legacy cleanup)
         if 'collection_selection_rules' in settings:
             del settings['collection_selection_rules']
         
@@ -432,31 +423,29 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         reload_embedding_settings()
         reload_iceberg_settings()
     
-    # If updating RAG settings, ensure proper structure and reload cache
+    # If updating RAG settings, validate and reload cache
     if category == 'rag':
-        from app.core.rag_settings_cache import reload_rag_settings, get_default_rag_settings
+        from app.core.rag_settings_cache import reload_rag_settings, validate_rag_settings
         
-        # Ensure collection_selection exists with all required fields
-        if 'collection_selection' not in settings_for_db:
-            settings_for_db['collection_selection'] = get_default_rag_settings()['collection_selection']
-        else:
-            # Merge with defaults to ensure all fields exist
-            default_collection_selection = get_default_rag_settings()['collection_selection']
-            settings_for_db['collection_selection'] = {
-                **default_collection_selection,
-                **settings_for_db.get('collection_selection', {})
-            }
+        # Validate settings structure
+        is_valid, error_message = validate_rag_settings(settings_for_db)
+        if not is_valid:
+            return {"success": False, "error": f"Invalid RAG settings: {error_message}"}
         
-        # Remove old collection_selection_rules if it exists
+        # Remove old collection_selection_rules if it exists (legacy cleanup)
         if 'collection_selection_rules' in settings_for_db:
             del settings_for_db['collection_selection_rules']
         
-        # Update the database with migrated settings
+        # Update the database with validated settings
         settings_row.settings = settings_for_db
         db.commit()
         db.refresh(settings_row)
         
-        reload_rag_settings()
+        # Reload and validate cache
+        try:
+            reload_rag_settings()
+        except Exception as e:
+            return {"success": False, "error": f"Failed to reload RAG settings: {str(e)}"}
     
     # If updating MCP settings, handle special processing
     if category == 'mcp':
