@@ -422,12 +422,27 @@ Please provide a detailed, helpful response based on the information found in th
                     
                     print(f"[DEBUG] API endpoint - Got synthesis stream: {type(rag_stream)}")
                     
+                    # Track complete response for final message
+                    complete_response = ""
+                    
                     # Stream the synthesis results
                     async for chunk in rag_stream:
                         try:
                             if chunk:  # Only yield non-empty chunks
                                 chunk_count += 1
                                 yield chunk
+                                
+                                # Parse chunk to accumulate complete response
+                                try:
+                                    chunk_data = json_module.loads(chunk.strip())
+                                    if "token" in chunk_data:
+                                        complete_response += chunk_data["token"]
+                                    elif "answer" in chunk_data:
+                                        # Some responses send complete answer
+                                        complete_response = chunk_data["answer"]
+                                except:
+                                    pass  # Not a JSON chunk
+                                
                                 # Add small delay to ensure streaming
                                 import asyncio
                                 await asyncio.sleep(0)
@@ -442,6 +457,33 @@ Please provide a detailed, helpful response based on the information found in th
                                 yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
                             except:
                                 break  # If we can't even send error, client is likely gone
+                    
+                    # Send completion event with documents for UI accordion
+                    if extracted_documents:
+                        # Format documents for frontend
+                        formatted_docs = []
+                        for doc in extracted_documents:
+                            formatted_doc = {
+                                "content": doc.get('content', ''),
+                                "source": (
+                                    doc.get('file') or 
+                                    doc.get('filename') or 
+                                    doc.get('source') or 
+                                    doc.get('metadata', {}).get('source') or
+                                    doc.get('metadata', {}).get('file') or
+                                    'Unknown source'
+                                ),
+                                "relevance_score": doc.get('score', 0.0)
+                            }
+                            formatted_docs.append(formatted_doc)
+                        
+                        # Send completion event matching frontend expectations
+                        yield json_module.dumps({
+                            "answer": complete_response,
+                            "source": "RAG",
+                            "conversation_id": conversation_id,
+                            "documents": formatted_docs
+                        }) + "\n"
                 else:
                     # No documents found, provide a fallback response
                     yield json_module.dumps({
