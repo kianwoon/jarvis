@@ -35,15 +35,15 @@ DEFAULT_QUERY_CLASSIFIER_SETTINGS = {
     "pattern_combination_bonus": 0.15,
     
     # LLM-based classification settings
-    "enable_llm_classification": False,  # Feature toggle for LLM-based classification
+    "enable_llm_classification": True,  # Feature toggle for LLM-based classification
     "llm_model": "",  # LLM model for classification (e.g., "qwen2.5:0.5b")
     "context_length": 0,  # Model context length (auto-updated when model changes)
     "llm_temperature": 0.1,  # Lower temperature for consistent classification
     "llm_max_tokens": 10,  # Token limit for classification responses (auto-updated to 75% of context)
     "llm_timeout_seconds": 5,  # Timeout for LLM classification calls
-    "llm_system_prompt": "You are a query classifier. Classify the user query into exactly one of these types: RAG (for questions requiring document search), TOOL (for actions requiring tools), LLM (for general questions), MULTI_AGENT (for complex tasks). Respond with ONLY the type and confidence in this exact format: TYPE|CONFIDENCE (e.g., 'rag|0.85'). Do not include explanations, thinking, or other text.",
+    "llm_system_prompt": "You are a query classifier. Respond with ONLY the type and confidence in this exact format: TYPE|CONFIDENCE (e.g., 'rag|0.85'). Do not include explanations, thinking, or other text.",
     "fallback_to_patterns": True,  # Fallback to pattern-based classification if LLM fails
-    "llm_classification_priority": False  # If true, use LLM first; if false, use patterns first
+    "llm_classification_priority": True  # If true, use LLM first; if false, use patterns first
 }
 
 def _get_redis_client():
