@@ -128,6 +128,11 @@ class EnhancedQueryClassifier:
             logger.warning(f"Failed to load Query Classifier settings, using defaults: {e}")
             self.use_llm_classification = False
     
+    def reload_settings(self):
+        """Reload dynamic settings from cache/database for hot reloading"""
+        logger.info("Reloading query classifier settings due to cache update")
+        self._load_dynamic_settings()
+    
     def _load_mcp_tools(self):
         """Load available MCP tools for better classification"""
         try:
@@ -416,6 +421,12 @@ class EnhancedQueryClassifier:
         Returns:
             List of ClassificationResult objects sorted by confidence
         """
+        # Refresh settings to ensure we have the latest configuration
+        try:
+            self.reload_settings()
+        except Exception as e:
+            logger.warning(f"Failed to reload settings, using cached: {e}")
+        
         # Use LLM-based classification only - no pattern fallback
         if hasattr(self, 'use_llm_classification') and self.use_llm_classification:
             return await self._llm_classify(query, trace=trace)
@@ -467,7 +478,7 @@ class EnhancedQueryClassifier:
             timeout_seconds = int(classifier_specific_settings.get('llm_timeout_seconds', 5))
             
             # Get system prompt from classifier-specific settings
-            system_prompt = classifier_specific_settings.get('llm_system_prompt')
+            system_prompt = classifier_config.get('system_prompt')
             
             if system_prompt:
                 # Build detailed tool and collection information
@@ -482,35 +493,16 @@ class EnhancedQueryClassifier:
                 logger.info(f"[MAIN CLASSIFIER DEBUG] Available MCP tools count: {len(self.mcp_tool_names)}")
                 logger.info(f"[MAIN CLASSIFIER DEBUG] Available RAG collections count: {len(self.rag_collections)}")
                 
-                # Assemble comprehensive prompt with classification guidance and explicit format requirements
-                prompt = f"""{system_prompt}
-
-**Classification Guidelines:**
-- TOOL: Use when specific tools can answer the query (datetime, search, email, calendar, etc.)
-- RAG: Use when query asks about topics that might be in the knowledge collections
-- LLM: Use ONLY when no tools or collections can help (creative tasks, general explanations)
-- MULTI_AGENT: Use for complex multi-step tasks requiring coordination of multiple systems
-
-**Key Decision Rules:**
-- If query asks for current date/time → TOOL (get_datetime available)
-- If query contains "latest", "recent", "current", "new", "today", "now" → TOOL (google_search available)
-- If query needs web search or real-time info → TOOL (google_search available)  
-- If query about company/training topics → RAG (check collections)
-- If purely creative/explanatory with no tools needed → LLM
-
-**CRITICAL: "Latest" queries MUST use TOOL for fresh information, never LLM or RAG**
-
-**Available Tools:**
-{tools_info}
-
-**Available RAG Collections:**
-{collections_info}
+                # Process template placeholders in system prompt
+                processed_prompt = system_prompt.format(
+                    rag_collection=collections_info,
+                    mcp_tools=tools_info
+                )
+                
+                # Assemble comprehensive prompt with query
+                prompt = f"""{processed_prompt}
 
 **Query to classify:** "{query}"
-
-**Response format:** TYPE|CONFIDENCE
-**Examples:** tool|0.85, rag|0.90, llm|0.75, multi_agent|0.80
-**Note:** Confidence must be decimal (0.0-1.0), NOT percentage
 
 Answer:"""
                 
@@ -675,7 +667,7 @@ Answer:"""
                 suggested_tools=suggested_tools
             )
             
-            logger.info(f"LLM classification: {query_type.value} (confidence: {confidence:.2f})")
+            logger.info(f"Query classified as: {query_type.value}|{confidence:.2f}")
             
             # End classification span with success
             if classification_span and tracer:
@@ -724,23 +716,16 @@ Answer:"""
             suggested_tools=[]
         )
         
-        logger.info(f"Fallback classification: {result.query_type.value} (confidence: {result.confidence:.2f}) due to {reason}")
+        # Log fallback classification at debug level to avoid confusion
+        logger.debug(f"Fallback classification: {result.query_type.value}|{result.confidence:.2f} (reason: {reason})")
         return [result]
     
     def _build_tools_info(self) -> str:
-        """Build detailed information about available MCP tools categorized by functionality"""
+        """Build simple tool information in format: tool_name : description"""
         if not self.available_mcp_tools:
             return "No MCP tools are currently available."
         
-        # Categorize tools by functionality for better classification guidance
-        tool_categories = {
-            'search': [],
-            'email': [],
-            'datetime': [],
-            'jira': [],
-            'other': []
-        }
-        
+        tool_list = []
         for tool_name, tool_info in self.available_mcp_tools.items():
             # Extract tool description if available from manifest
             description = "Available for use"
@@ -755,57 +740,27 @@ Answer:"""
             # Enhance descriptions with capability details
             enhanced_description = self._enhance_tool_description(tool_name, description)
             
-            # Categorize based on tool name patterns
-            tool_lower = tool_name.lower()
-            if 'search' in tool_lower or 'google' in tool_lower:
-                tool_categories['search'].append(f"{tool_name}: {enhanced_description}")
-            elif 'email' in tool_lower or 'mail' in tool_lower:
-                tool_categories['email'].append(f"{tool_name}: {enhanced_description}")
-            elif 'datetime' in tool_lower or 'date' in tool_lower or 'time' in tool_lower:
-                tool_categories['datetime'].append(f"{tool_name}: {enhanced_description}")
-            elif 'jira' in tool_lower or 'ticket' in tool_lower:
-                tool_categories['jira'].append(f"{tool_name}: {enhanced_description}")
-            else:
-                tool_categories['other'].append(f"{tool_name}: {enhanced_description}")
+            # Simple format: tool_name : description
+            tool_list.append(f"{tool_name} : {enhanced_description}")
         
-        # Build categorized output
-        tool_sections = []
-        for category, tools in tool_categories.items():
-            if tools:
-                tool_sections.append(f"{category.title()} Tools:\n" + "\n".join(f"  - {tool}" for tool in tools))
-        
-        return "\n\n".join(tool_sections) if tool_sections else "No tools available."
+        # Sort alphabetically for consistent presentation
+        tool_list.sort()
+        return "\n".join(tool_list)
     
     def _build_collections_info(self) -> str:
-        """Build detailed information about available RAG collections with domain expertise"""
+        """Build simple collection information in format: collection_name : description"""
         if not self.rag_collections:
             return "No RAG collections are currently available."
         
-        # Sort collections by document count (most comprehensive first) for better guidance
-        sorted_collections = sorted(
-            self.rag_collections.items(), 
-            key=lambda x: x[1].get('document_count', 0), 
-            reverse=True
-        )
-        
         collections_list = []
-        for collection_name, collection_info in sorted_collections:
+        for collection_name, collection_info in self.rag_collections.items():
             description = collection_info.get('description', 'No description available')
-            doc_count = collection_info.get('document_count', 0)
-            collection_type = collection_info.get('type', 'Unknown')
-            keywords = collection_info.get('keywords', set())
-            
-            # Build a more informative entry with keywords for classification guidance
-            keyword_hint = f" [Keywords: {', '.join(list(keywords)[:5])}]" if keywords else ""
-            status = "✓ Active" if doc_count > 0 else "⚠ Empty"
-            
-            collections_list.append(
-                f"- {collection_name}: {description}{keyword_hint}\n"
-                f"  Status: {status} | Type: {collection_type} | Documents: {doc_count:,}"
-            )
+            # Simple format: collection_name : description
+            collections_list.append(f"{collection_name} : {description}")
         
-        header = f"Available Knowledge Collections ({len(self.rag_collections)} total):"
-        return f"{header}\n" + "\n\n".join(collections_list)
+        # Sort alphabetically for consistent presentation
+        collections_list.sort()
+        return "\n".join(collections_list)
     
     def _enhance_tool_description(self, tool_name: str, base_description: str) -> str:
         """Enhance tool descriptions with specific capabilities for better LLM classification"""
@@ -1372,16 +1327,14 @@ Answer:"""
             logger.info(f"[TOOL SUGGESTION DEBUG] Tool info preview: {tool_info[:200]}...")
             logger.info(f"[TOOL SUGGESTION DEBUG] Available tool names: {list(self.mcp_tool_names)[:5]}...")
             
-            prompt = f"""You are a tool selector. Select the most relevant tool for this query.
-
-Query: "{query}"
-
-Available Tools:
-{tool_info}
-
-Respond with ONLY the exact tool name that best matches the query based on the tool descriptions. Do not include explanations, thinking, or additional text.
-
-Tool name:"""
+            # Use configurable tool suggestion prompt
+            tool_suggestion_template = classifier_specific_settings.get('tool_suggestion_prompt', 
+                'Given the following query and available tools, select the most relevant tool:\n\nQuery: {query}\n\nAvailable MCP Tools:\n{tool_info}\n\nReturn ONLY the exact tool name that best matches the query.')
+            
+            prompt = tool_suggestion_template.format(
+                query=query,
+                tool_info=tool_info
+            )
             
             # Use same LLM configuration as Query Classifier
             from app.llm.ollama import OllamaLLM

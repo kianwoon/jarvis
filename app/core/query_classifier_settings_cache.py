@@ -41,7 +41,8 @@ DEFAULT_QUERY_CLASSIFIER_SETTINGS = {
     "llm_temperature": 0.1,  # Lower temperature for consistent classification
     "llm_max_tokens": 10,  # Token limit for classification responses (auto-updated to 75% of context)
     "llm_timeout_seconds": 5,  # Timeout for LLM classification calls
-    "llm_system_prompt": "You are a query classifier. Respond with ONLY the type and confidence in this exact format: TYPE|CONFIDENCE (e.g., 'rag|0.85'). Do not include explanations, thinking, or other text.",
+    "llm_system_prompt": "You are a capable AI assistant. please provide accurate response with your best effort and validate your answer. based on the user's query; analyse it and referring to guideline below\n\n## guideline for type\n1. \"rag\" - refer to internal corporate knowledge base. there are list of collections, and different collection contains different info.\n2. \"tool\" - there are many MCP tools available. please identify the correct tool to use based on the tool description.\n3. For any latest info or latest news or you aren't 90% certain. please go for \"tool\".\n\nwhen user ask for latest info, use \"tool\" for online search.\n\n## rag information\nRAG collection {rag_collection}\n\n## tools information\ntools {mcp_tools}\n\n## please do not make assumption. strictly follow the available tools and collections given to you ONLY. Based on your analysis, answer in this exact format. TYPE|CONFIDENCE (e.g., 'rag|0.85'). Do not include explanations, thinking, or other text.",
+    "tool_suggestion_prompt": "Given the following query and available tools, select the most relevant tool:\n\nQuery: {query}\n\nAvailable MCP Tools:\n{tool_info}\n\n**Selection Rules:**\n- \"latest\", \"recent\", \"current\", \"when\", \"news\" → google_search\n- Company/internal information → rag_knowledge_search\n- Email tasks → gmail/email tools\n- Calendar tasks → calendar tools\n- Date/time questions → get_datetime\n\nReturn ONLY the exact tool name that best matches the query.",
     "fallback_to_patterns": True,  # Fallback to pattern-based classification if LLM fails
     "llm_classification_priority": True  # If true, use LLM first; if false, use patterns first
 }
@@ -177,6 +178,7 @@ def validate_query_classifier_settings(settings: Dict) -> Dict:
     # Validate strings
     validated["llm_model"] = str(validated.get("llm_model", "")).strip()
     validated["llm_system_prompt"] = str(validated.get("llm_system_prompt", DEFAULT_QUERY_CLASSIFIER_SETTINGS["llm_system_prompt"])).strip()
+    validated["tool_suggestion_prompt"] = str(validated.get("tool_suggestion_prompt", DEFAULT_QUERY_CLASSIFIER_SETTINGS["tool_suggestion_prompt"])).strip()
     
     return validated
 
