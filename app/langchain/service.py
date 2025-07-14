@@ -3005,6 +3005,11 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                 rag_end_time = time.time()
                 print(f"[DEBUG] rag_answer: RAG retrieval took {rag_end_time - rag_start_time:.2f} seconds")
                 print(f"[DEBUG] rag_answer: RAG context length = {len(rag_context) if rag_context else 0}")
+        elif query_type == "SYNTHESIS":
+            print(f"[DEBUG] rag_answer: SYNTHESIS query detected - skipping RAG retrieval, using provided context")
+            print(f"[EXECUTION TRACKER] SYNTHESIS mode: No additional RAG search needed")
+            rag_context = ""  # No additional RAG needed, context already provided in question
+            rag_sources = []
         else:
             # Unknown query type, default to RAG for safety
             print(f"[DEBUG] rag_answer: Unknown query_type '{query_type}' - defaulting to RAG retrieval")
@@ -3753,7 +3758,18 @@ Please generate the requested items incorporating relevant information from the 
             from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier
             classifier = EnhancedQueryClassifier()
             has_explicit_search_intent = await classifier.detect_explicit_search_intent(question)
-            skip_knowledge_search = (query_type == "RAG" and rag_context and not has_explicit_search_intent)
+            skip_knowledge_search = (
+                (query_type == "RAG" and rag_context and not has_explicit_search_intent) or
+                (query_type == "SYNTHESIS")  # Skip tool execution for synthesis mode to prevent triple execution
+            )
+            
+            if skip_knowledge_search:
+                logger.info(f"[EXECUTION TRACKER] SKIPPING tool execution - query_type={query_type}, rag_context={'present' if rag_context else 'absent'}")
+                print(f"[EXECUTION TRACKER] SKIPPING tool execution - query_type={query_type}")
+            else:
+                logger.info(f"[EXECUTION TRACKER] EXECUTION #2: Tool parsing from streaming LLM response")
+                print(f"[EXECUTION TRACKER] EXECUTION #2: Tool parsing from streaming LLM response")
+            
             tool_results = extract_and_execute_tool_calls(
                 response_text, 
                 trace=trace, 
@@ -3961,7 +3977,18 @@ Based on these search results, provide a comprehensive answer to the user's ques
         from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier
         classifier = EnhancedQueryClassifier()
         has_explicit_search_intent = await classifier.detect_explicit_search_intent(question)
-        skip_knowledge_search = (query_type == "RAG" and rag_context and not has_explicit_search_intent)
+        skip_knowledge_search = (
+            (query_type == "RAG" and rag_context and not has_explicit_search_intent) or
+            (query_type == "SYNTHESIS")  # Skip tool execution for synthesis mode to prevent triple execution
+        )
+        
+        if skip_knowledge_search:
+            logger.info(f"[EXECUTION TRACKER] SKIPPING tool execution - query_type={query_type}, rag_context={'present' if rag_context else 'absent'}")
+            print(f"[EXECUTION TRACKER] SKIPPING tool execution - query_type={query_type}")
+        else:
+            logger.info(f"[EXECUTION TRACKER] EXECUTION #3: Tool parsing from non-streaming LLM response")
+            print(f"[EXECUTION TRACKER] EXECUTION #3: Tool parsing from non-streaming LLM response")
+        
         tool_results = extract_and_execute_tool_calls(
             response_text, 
             trace=trace, 

@@ -49,6 +49,10 @@ class RAGResponse(BaseModel):
 
 @router.post("/rag")
 async def rag_endpoint(request: RAGRequest):
+    # Initialize execution tracking to prevent duplicate MCP calls
+    request._rag_knowledge_search_executed = False
+    request._rag_documents = None
+    
     # Initialize Langfuse tracing
     tracer = get_tracer()
     trace = None
@@ -114,6 +118,59 @@ async def rag_endpoint(request: RAGRequest):
     
     # Use session_id as conversation_id if conversation_id is not provided
     conversation_id = request.conversation_id or request.session_id
+    
+    # Unified function to prevent duplicate rag_knowledge_search executions
+    async def execute_rag_search_once(enhanced_question, trace_span=None):
+        """Execute rag_knowledge_search only once per request to prevent duplicates"""
+        if request._rag_knowledge_search_executed:
+            logger.info(f"[EXECUTION TRACKER] SKIPPING duplicate rag_knowledge_search call - already executed")
+            print(f"[EXECUTION TRACKER] SKIPPING duplicate rag_knowledge_search call - already executed")
+            return request._rag_documents
+        
+        # Mark as executed to prevent future calls
+        request._rag_knowledge_search_executed = True
+        logger.info(f"[EXECUTION TRACKER] EXECUTION #1: Direct MCP call to rag_knowledge_search (unified)")
+        print(f"[EXECUTION TRACKER] EXECUTION #1: Direct MCP call to rag_knowledge_search (unified)")
+        
+        # Prepare parameters for rag_knowledge_search tool
+        from app.core.rag_settings_cache import get_document_retrieval_settings
+        doc_settings = get_document_retrieval_settings()
+        max_docs = doc_settings.get('max_documents_mcp', 8)
+        
+        tool_parameters = {
+            "query": enhanced_question,
+            "include_content": True,
+            "max_documents": max_docs
+        }
+        
+        # Add collections if specified
+        if request.collections:
+            tool_parameters["collections"] = request.collections
+        
+        print(f"[DEBUG] Unified RAG search - tool parameters: {tool_parameters}")
+        
+        # Execute rag_knowledge_search tool
+        from app.langchain.service import call_mcp_tool
+        rag_tool_result = call_mcp_tool(
+            tool_name="rag_knowledge_search",
+            parameters=tool_parameters,
+            trace=trace_span or trace
+        )
+        
+        # Extract documents from tool result
+        extracted_documents = []
+        if isinstance(rag_tool_result, dict):
+            result_data = rag_tool_result
+            if 'result' in result_data and isinstance(result_data['result'], dict):
+                rag_result = result_data['result']
+                if 'documents' in rag_result:
+                    extracted_documents.extend(rag_result['documents'])
+        
+        # Cache the result for future use in this request
+        request._rag_documents = extracted_documents
+        logger.info(f"[EXECUTION TRACKER] Unified search found {len(extracted_documents)} documents")
+        
+        return extracted_documents
     
     # Check if we should bypass classification for hybrid RAG mode
     if request.use_hybrid_rag and conversation_id:
@@ -299,41 +356,171 @@ Please answer the user's question using the information from the uploaded docume
                     import traceback
                     logger.warning(f"Full traceback: {traceback.format_exc()}")
             
-            from app.langchain.service import rag_answer
-            rag_stream = await rag_answer(
-                enhanced_question, 
-                thinking=request.thinking, 
-                stream=True,
-                conversation_id=conversation_id,
-                use_langgraph=request.use_langgraph,
-                collections=request.collections,
-                collection_strategy=request.collection_strategy,
-                query_type=simple_query_type,
-                trace=rag_span or trace,
-                hybrid_context=hybrid_context  # Pass hybrid context if available
-            )
-            print(f"[DEBUG] API endpoint - Got rag_stream: {type(rag_stream)}")
-            
-            # rag_answer returns async generator
-            async for chunk in rag_stream:
-                try:
-                    if chunk:  # Only yield non-empty chunks
-                        chunk_count += 1
-                        yield chunk
-                        # Add small delay to ensure streaming
-                        import asyncio
-                        await asyncio.sleep(0)
-                except GeneratorExit:
-                    # Client disconnected, log and stop gracefully
-                    print(f"[INFO] Client disconnected after {chunk_count} chunks")
-                    break
-                except Exception as chunk_error:
-                    print(f"[ERROR] Error yielding chunk {chunk_count}: {chunk_error}")
-                    # Try to yield error message, but don't fail the whole stream
+            # Use unified RAG search to prevent duplicate executions
+            try:
+                yield json_module.dumps({
+                    "type": "status", 
+                    "message": "Searching knowledge base..."
+                }) + "\n"
+                
+                # Execute rag_knowledge_search once using unified function
+                extracted_documents = await execute_rag_search_once(enhanced_question, rag_span or trace)
+                
+                print(f"[DEBUG] API endpoint - Extracted {len(extracted_documents)} documents from unified RAG search")
+                
+                if extracted_documents:
+                    yield json_module.dumps({
+                        "type": "status", 
+                        "message": f"Found {len(extracted_documents)} relevant documents, generating response..."
+                    }) + "\n"
+                    
+                    # Build synthesis prompt (similar to tool path approach)
+                    # Extract document content for context
+                    document_contexts = []
+                    for doc in extracted_documents:
+                        content = doc.get('content', '')
+                        # Try multiple ways to get file information from MCP response
+                        file_info = (
+                            doc.get('file') or 
+                            doc.get('filename') or 
+                            doc.get('source') or 
+                            doc.get('metadata', {}).get('source') or
+                            doc.get('metadata', {}).get('file') or
+                            'Unknown source'
+                        )
+                        print(f"[DEBUG] Document metadata: {doc.keys()}")
+                        print(f"[DEBUG] Extracted file_info: {file_info}")
+                        document_contexts.append(f"**📄 {file_info}:**\n{content}")
+                    
+                    documents_text = "\n\n".join(document_contexts)
+                    
+                    synthesis_prompt = f"""Based on the search results below, provide a comprehensive answer to the user's question.
+
+User Question: {request.question}
+
+📚 Internal Knowledge Base Results:
+{documents_text}
+
+Please provide a detailed, helpful response based on the information found in the knowledge base."""
+
+                    # Generate response using LLM synthesis (skip RAG search)
+                    from app.langchain.service import rag_answer
+                    
+                    # Use rag_answer in direct synthesis mode (skip tool planning)
+                    rag_stream = await rag_answer(
+                        synthesis_prompt,
+                        thinking=request.thinking, 
+                        stream=True,
+                        conversation_id=conversation_id,
+                        use_langgraph=False,  # Disable langgraph to prevent tool planning
+                        collections=None,  # Don't search again, use provided context
+                        collection_strategy="all",  # Use available collections but we won't search
+                        query_type="SYNTHESIS",  # Custom type to skip tool planning
+                        trace=rag_span or trace,
+                        hybrid_context=hybrid_context
+                    )
+                    
+                    print(f"[DEBUG] API endpoint - Got synthesis stream: {type(rag_stream)}")
+                    
+                    # Stream the synthesis results
+                    async for chunk in rag_stream:
+                        try:
+                            if chunk:  # Only yield non-empty chunks
+                                chunk_count += 1
+                                yield chunk
+                                # Add small delay to ensure streaming
+                                import asyncio
+                                await asyncio.sleep(0)
+                        except GeneratorExit:
+                            # Client disconnected, log and stop gracefully
+                            print(f"[INFO] Client disconnected after {chunk_count} chunks")
+                            break
+                        except Exception as chunk_error:
+                            print(f"[ERROR] Error yielding chunk {chunk_count}: {chunk_error}")
+                            # Try to yield error message, but don't fail the whole stream
+                            try:
+                                yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
+                            except:
+                                break  # If we can't even send error, client is likely gone
+                else:
+                    # No documents found, provide a fallback response
+                    yield json_module.dumps({
+                        "type": "status", 
+                        "message": "No relevant documents found, providing general response..."
+                    }) + "\n"
+                    
+                    # Fallback to direct LLM response
+                    fallback_prompt = f"I couldn't find specific information in the knowledge base for: {request.question}\n\nPlease provide a helpful response based on general knowledge."
+                    
+                    from app.langchain.service import rag_answer
+                    rag_stream = await rag_answer(
+                        fallback_prompt,
+                        thinking=request.thinking, 
+                        stream=True,
+                        conversation_id=conversation_id,
+                        use_langgraph=request.use_langgraph,
+                        collections=None,
+                        collection_strategy="skip",
+                        query_type="LLM",
+                        trace=rag_span or trace,
+                        hybrid_context=hybrid_context
+                    )
+                    
+                    async for chunk in rag_stream:
+                        try:
+                            if chunk:
+                                chunk_count += 1
+                                yield chunk
+                                import asyncio
+                                await asyncio.sleep(0)
+                        except GeneratorExit:
+                            print(f"[INFO] Client disconnected after {chunk_count} chunks")
+                            break
+                        except Exception as chunk_error:
+                            print(f"[ERROR] Error yielding chunk {chunk_count}: {chunk_error}")
+                            try:
+                                yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
+                            except:
+                                break
+                                
+            except Exception as tool_error:
+                print(f"[ERROR] RAG tool execution failed: {tool_error}")
+                # Fallback to original rag_answer approach if tool fails
+                yield json_module.dumps({
+                    "type": "status", 
+                    "message": "Tool execution failed, falling back to direct search..."
+                }) + "\n"
+                
+                from app.langchain.service import rag_answer
+                rag_stream = await rag_answer(
+                    enhanced_question, 
+                    thinking=request.thinking, 
+                    stream=True,
+                    conversation_id=conversation_id,
+                    use_langgraph=request.use_langgraph,
+                    collections=request.collections,
+                    collection_strategy=request.collection_strategy,
+                    query_type=simple_query_type,
+                    trace=rag_span or trace,
+                    hybrid_context=hybrid_context
+                )
+                
+                async for chunk in rag_stream:
                     try:
-                        yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
-                    except:
-                        break  # If we can't even send error, client is likely gone
+                        if chunk:
+                            chunk_count += 1
+                            yield chunk
+                            import asyncio
+                            await asyncio.sleep(0)
+                    except GeneratorExit:
+                        print(f"[INFO] Client disconnected after {chunk_count} chunks")
+                        break
+                    except Exception as chunk_error:
+                        print(f"[ERROR] Error yielding chunk {chunk_count}: {chunk_error}")
+                        try:
+                            yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
+                        except:
+                            break
         except (ConnectionError, BrokenPipeError) as conn_error:
             print(f"[INFO] Connection lost during RAG processing: {conn_error}")
             # Client disconnected, don't try to send anything
