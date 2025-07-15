@@ -3907,8 +3907,7 @@ Based on these search results, provide a comprehensive answer to the user's ques
             yield json.dumps({
                 "answer": response_text,
                 "source": source + ("+TOOLS" if tool_results else ""),
-                "conversation_id": conversation_id,
-                "documents": documents
+                "conversation_id": conversation_id
             }) + "\n"
             
             # Store conversation
