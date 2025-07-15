@@ -940,8 +940,8 @@ Answer with exactly one word: RAG, TOOLS, or LLM"""
         classifier_config = llm_cfg.get("query_classifier", {})
         max_tokens = int(classifier_config.get("classifier_max_tokens", 10))
         
-        # Create LLM config for classification using main LLM
-        main_llm_config = get_main_llm_full_config(llm_cfg)
+        # Create LLM config for classification using second LLM
+        main_llm_config = get_second_llm_full_config(llm_cfg)
         llm_config = LLMConfig(
             model_name=main_llm_config["model"],
             temperature=0.1,  # Low temperature for consistent classification

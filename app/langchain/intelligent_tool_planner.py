@@ -431,12 +431,12 @@ IMPORTANT:
             from app.langchain.service import make_llm_call
             
             # Use existing LLM settings
-            from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
+            from app.core.llm_settings_cache import get_llm_settings, get_second_llm_full_config
             llm_settings = get_llm_settings()
             
             # Validate required settings using helper function
             try:
-                main_llm_config = get_main_llm_full_config(llm_settings)
+                main_llm_config = get_second_llm_full_config(llm_settings)
                 if not main_llm_config or not main_llm_config.get('model'):
                     logger.error("[TOOL PLANNER] LLM settings not properly configured")
                     raise ValueError("LLM settings not available")

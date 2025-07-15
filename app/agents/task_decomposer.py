@@ -11,7 +11,7 @@ from datetime import datetime
 import hashlib
 import math
 
-from app.core.llm_settings_cache import get_llm_settings
+from app.core.llm_settings_cache import get_llm_settings, get_second_llm_full_config
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 import os
@@ -245,7 +245,7 @@ Focus on understanding what type of content needs to be generated and how to mai
     async def _call_llm(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2000) -> str:
         """Call LLM for task analysis"""
         try:
-            model_config = self.llm_settings.get("thinking_mode", {})
+            model_config = get_second_llm_full_config(self.llm_settings)
             
             config = LLMConfig(
                 model_name=model_config.get("model", "qwen3:30b-a3b"),

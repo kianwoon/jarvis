@@ -581,11 +581,16 @@ const ModelSelector: React.FC<{
                   const contextLength = parseInt(newSelectedModel.context_length.replace(/,/g, ''));
                   if (!isNaN(contextLength)) {
                     
-                    if (fieldKey === 'model') {
+                    if (fieldKey === 'model' || fieldKey === 'main_llm.model') {
                       // Settings tab
-                      onChangeHandler('context_length', contextLength);
+                      onChangeHandler(fieldKey.includes('main_llm') ? 'main_llm.context_length' : 'context_length', contextLength);
                       const suggestedMaxTokens = Math.floor(contextLength * 0.75);
-                      onChangeHandler('max_tokens', suggestedMaxTokens);
+                      onChangeHandler(fieldKey.includes('main_llm') ? 'main_llm.max_tokens' : 'max_tokens', suggestedMaxTokens);
+                    } else if (fieldKey === 'second_llm.model') {
+                      // Second LLM tab
+                      onChangeHandler('second_llm.context_length', contextLength);
+                      const suggestedMaxTokens = Math.floor(contextLength * 0.75);
+                      onChangeHandler('second_llm.max_tokens', suggestedMaxTokens);
                     } else if (fieldKey === 'query_classifier.llm_model') {
                       // Query Classifier tab - exactly same as Settings tab
                       onChangeHandler('query_classifier.context_length', contextLength);
@@ -724,6 +729,8 @@ const renderStandardForm = (
   // Flatten nested objects and categorize fields into domain-intelligent tabs
   // Known nested structures that should be preserved (not flattened)
   const preserveNested = [
+    'main_llm',
+    'second_llm',
     'query_classifier',
     'thinking_mode',
     'agent_config',
@@ -753,7 +760,8 @@ const renderStandardForm = (
     } else {
       // Default LLM category structure - consolidated context into settings
       categories = {
-        settings: { title: 'Settings', fields: {} },
+        settings: { title: 'Main LLM', fields: {} },
+        second_llm: { title: 'Second LLM', fields: {} },
         classifier: { title: 'Query Classifier', fields: {} },
         thinking: { title: 'Thinking Mode', fields: {} }
       };
@@ -905,8 +913,12 @@ const renderStandardForm = (
         }
       } else {
         // LLM-specific field categorization
+        // Second LLM Tab - All second_llm-related settings
+        if (lowerKey.includes('second_llm')) {
+          categories.second_llm.fields[key] = value;
+        }
         // Query Classifier Tab - All classifier-related settings
-        if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {
+        else if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {
           categories.classifier.fields[key] = value;
         }
         // Thinking Mode Tab - Include thinking mode related fields
@@ -1106,8 +1118,8 @@ const renderStandardForm = (
       
       // Special handling for model field in LLM category
       console.log('[DEBUG] Checking model field:', { fieldCategory, key, value, fullKey: key, customOnChange: !!customOnChange });
-      // Check for both 'model' and 'settings.model' due to potential nesting, including llm_model
-      if (fieldCategory === 'llm' && (key === 'model' || key === 'settings.model' || key.endsWith('.model') || key.endsWith('.llm_model') || key === 'llm_model')) {
+      // Check for both 'model' and 'settings.model' due to potential nesting, including llm_model and second_llm.model
+      if (fieldCategory === 'llm' && (key === 'model' || key === 'settings.model' || key.endsWith('.model') || key.endsWith('.llm_model') || key === 'llm_model' || key === 'main_llm.model' || key === 'second_llm.model')) {
         console.log('[DEBUG] Rendering model selector for LLM, using onChangeHandler:', onChangeHandler.toString().substring(0, 100));
         return (
           <ModelSelector
@@ -1365,15 +1377,41 @@ const renderStandardForm = (
       );
     }
     
-    // Handle nested objects - but flatten query_classifier to work like Settings
+    // Handle nested objects - but flatten query_classifier, main_llm, and second_llm to work like Settings
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      if (key === 'query_classifier') {
-        // Flatten query_classifier fields to work like Settings fields
+      if (key === 'query_classifier' || key === 'main_llm' || key === 'second_llm') {
+        // Flatten these fields to work like Settings fields, but skip mode fields and apply ordering
+        const getFieldOrder = (fieldKey: string): number => {
+          const lowerKey = fieldKey.toLowerCase();
+          const orderMap: Record<string, number> = {
+            'model': 100,
+            'max_tokens': 200,
+            'model_server': 300,
+            'system_prompt': 400,
+            'context_length': 500,
+            'repeat_penalty': 600,
+            'temperature': 700,
+            'top_p': 800,
+            'top_k': 900,
+            'min_p': 1000,
+            'stop': 1100 // Stop at bottom
+          };
+          return orderMap[lowerKey] || 10000;
+        };
+        
+        const sortedEntries = Object.entries(value).sort(([keyA], [keyB]) => 
+          getFieldOrder(keyA) - getFieldOrder(keyB)
+        );
+        
         return (
           <div key={key} style={{ marginLeft: `${depth * 20}px`, marginBottom: '16px' }}>
-            {Object.entries(value).map(([nestedKey, nestedValue]) => 
-              renderField(`${key}.${nestedKey}`, nestedValue, depth, onChangeHandler, fieldCategory)
-            )}
+            {sortedEntries.map(([nestedKey, nestedValue]) => {
+              // Skip mode field for nested objects
+              if (nestedKey === 'mode') {
+                return null;
+              }
+              return renderField(`${key}.${nestedKey}`, nestedValue, depth, onChangeHandler, fieldCategory);
+            })}
           </div>
         );
       } else {
@@ -1562,11 +1600,19 @@ const renderStandardForm = (
               /* Regular form rendering for other tabs */
               <div style={{ padding: '16px' }}>
                 {/* Mode Selection for Settings and Query Classifier tabs */}
-                {(categoryKey === 'settings' || categoryKey === 'classifier') && (
+                {(categoryKey === 'settings' || categoryKey === 'second_llm' || categoryKey === 'classifier') && (
                   <Card variant="outlined" sx={{ mb: 3 }}>
                     <CardHeader 
-                      title={categoryKey === 'settings' ? "LLM Mode Selection" : "Query Classifier Mode Selection"}
-                      subheader={categoryKey === 'settings' ? "Select between thinking and non-thinking modes" : "Select mode for query classification"}
+                      title={
+                        categoryKey === 'settings' ? "LLM Mode Selection" : 
+                        categoryKey === 'second_llm' ? "Second LLM Mode Selection" : 
+                        "Query Classifier Mode Selection"
+                      }
+                      subheader={
+                        categoryKey === 'settings' ? "Select between thinking and non-thinking modes" : 
+                        categoryKey === 'second_llm' ? "Select mode for the second LLM" : 
+                        "Select mode for query classification"
+                      }
                     />
                     <CardContent>
                       <FormControl component="fieldset">
@@ -1574,12 +1620,17 @@ const renderStandardForm = (
                           value={
                             categoryKey === 'settings' 
                               ? data.main_llm?.mode || 'thinking'
+                              : categoryKey === 'second_llm'
+                              ? data.second_llm?.mode || 'thinking'
                               : data.query_classifier?.mode || 'non-thinking'
                           }
                           onChange={(e) => {
                             if (categoryKey === 'settings') {
                               const updatedMainLlm = { ...data.main_llm, mode: e.target.value };
                               onChange('main_llm', updatedMainLlm);
+                            } else if (categoryKey === 'second_llm') {
+                              const updatedSecondLlm = { ...data.second_llm, mode: e.target.value };
+                              onChange('second_llm', updatedSecondLlm);
                             } else {
                               const updatedQueryClassifier = { ...data.query_classifier, mode: e.target.value };
                               onChange('query_classifier', updatedQueryClassifier);
@@ -1596,6 +1647,8 @@ const renderStandardForm = (
                                 </Typography>
                                 <Typography variant="caption" color="text.secondary">
                                   {categoryKey === 'settings' 
+                                    ? "Enable step-by-step reasoning with <think> tags"
+                                    : categoryKey === 'second_llm'
                                     ? "Enable step-by-step reasoning with <think> tags"
                                     : "Use thinking mode parameters for classification"
                                   }
@@ -1614,6 +1667,8 @@ const renderStandardForm = (
                                 <Typography variant="caption" color="text.secondary">
                                   {categoryKey === 'settings'
                                     ? "Direct responses without explicit reasoning steps"
+                                    : categoryKey === 'second_llm'
+                                    ? "Direct responses without explicit reasoning steps"
                                     : "Use non-thinking mode parameters for classification"
                                   }
                                 </Typography>
@@ -1626,7 +1681,7 @@ const renderStandardForm = (
                   </Card>
                 )}
                 
-                <div className={`jarvis-form-grid ${categoryKey === 'classifier' ? 'single-column' : ''}`}>
+                <div className={`jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
                 {(() => {
                   // Deduplicate fields before rendering
                   const fieldEntries = Object.entries(categories[categoryKey].fields);
@@ -1635,8 +1690,7 @@ const renderStandardForm = (
                   fieldEntries.forEach(([fieldKey, fieldValue]) => {
                     // Skip mode fields since we handle them with radio buttons
                     if (fieldKey === 'mode' || fieldKey.endsWith('.mode') || 
-                        (categoryKey === 'settings' && fieldKey === 'main_llm.mode') ||
-                        (categoryKey === 'classifier' && fieldKey === 'query_classifier.mode')) {
+                        fieldKey === 'main_llm.mode' || fieldKey === 'second_llm.mode' || fieldKey === 'query_classifier.mode') {
                       return;
                     }
                     
@@ -1666,11 +1720,11 @@ const renderStandardForm = (
                       'contextlength': 500,
                       'repeat_penalty': 600,
                       'repeatpenalty': 600,
-                      'stop': 700, // Stop parameter positioned after basic settings
-                      'temperature': 800,
-                      'top_p': 900,
-                      'top_k': 1000,
-                      'min_p': 1100
+                      'temperature': 700,
+                      'top_p': 800,
+                      'top_k': 900,
+                      'min_p': 1000,
+                      'stop': 1100 // Stop parameter positioned at the bottom
                     };
                     
                     // Check for exact matches first

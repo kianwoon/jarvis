@@ -118,4 +118,24 @@ def get_query_classifier_full_config(settings=None):
     full_config = query_classifier.copy()
     full_config.update(mode_params)
     
+    return full_config
+
+def get_second_llm_full_config(settings=None):
+    """Construct full second_llm configuration by merging base config with mode parameters"""
+    if settings is None:
+        settings = get_llm_settings()
+    
+    second_llm = settings.get('second_llm', {})
+    mode = second_llm.get('mode', 'thinking')
+    
+    # Get the appropriate mode parameters
+    if mode == 'thinking':
+        mode_params = settings.get('thinking_mode_params', {})
+    else:
+        mode_params = settings.get('non_thinking_mode_params', {})
+    
+    # Merge base config with mode parameters
+    full_config = second_llm.copy()
+    full_config.update(mode_params)
+    
     return full_config 

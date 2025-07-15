@@ -12,6 +12,7 @@ from app.core.langgraph_agents_cache import get_langgraph_agents
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 from app.core.langfuse_integration import get_tracer
+from app.core.llm_settings_cache import get_second_llm_full_config
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +84,17 @@ class AgentBridge:
             
             # Get model configuration (following your patterns)
             config = agent_config.get("config", {})
-            model_name = config.get("model", "qwen3:30b-a3b")  # Default to thinking model
+            
+            # Use second_llm for lightweight agent bridge tasks
+            second_llm_config = get_second_llm_full_config()
+            model_name = config.get("model", second_llm_config.get("model", "qwen3:1.7b"))  # Default to second_llm
             
             # Create LLM instance (following your Ollama patterns)
             llm_config = LLMConfig(
                 model_name=model_name,
-                temperature=config.get("temperature", 0.7),
-                top_p=config.get("top_p", 0.9),
-                max_tokens=config.get("max_tokens", 2000)
+                temperature=config.get("temperature", second_llm_config.get("temperature", 0.7)),
+                top_p=config.get("top_p", second_llm_config.get("top_p", 0.9)),
+                max_tokens=config.get("max_tokens", second_llm_config.get("max_tokens", 2000))
             )
             
             llm = OllamaLLM(llm_config, base_url=self.ollama_url)
