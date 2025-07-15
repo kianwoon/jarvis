@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -23,7 +23,10 @@ import {
   Select,
   MenuItem,
   Switch,
-  FormControlLabel
+  FormControlLabel,
+  OutlinedInput,
+  Checkbox,
+  ListItemText
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -96,11 +99,40 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
   const [viewDialog, setViewDialog] = useState(false);
   const [viewingRecord, setViewingRecord] = useState<any>(null);
   const [localData, setLocalData] = useState(data);
+  const [availableTools, setAvailableTools] = useState<string[]>([]);
 
   // Update local data when props change
   React.useEffect(() => {
     setLocalData(data);
   }, [data]);
+
+  // Fetch available tools for LangGraph agents
+  useEffect(() => {
+    if (category === 'langgraph_agents') {
+      fetchAvailableTools();
+    }
+  }, [category]);
+
+  const fetchAvailableTools = async () => {
+    try {
+      const response = await fetch('/api/v1/mcp/tools/');
+      if (response.ok) {
+        const tools = await response.json();
+        const toolNames = Array.isArray(tools) 
+          ? tools.map((tool: any) => tool.name).filter(Boolean)
+          : (tools.data || []).map((tool: any) => tool.name).filter(Boolean);
+        setAvailableTools(toolNames);
+      } else {
+        console.error('Failed to fetch tools');
+        // Fallback to common tools if API fails
+        setAvailableTools(['search', 'calculator', 'weather', 'email', 'file_manager', 'database']);
+      }
+    } catch (error) {
+      console.error('Error fetching tools:', error);
+      // Fallback to common tools if API fails
+      setAvailableTools(['search', 'calculator', 'weather', 'email', 'file_manager', 'database']);
+    }
+  };
 
   const getTableHeaders = () => {
     switch (category) {
@@ -485,20 +517,52 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
               required
               sx={{ fontFamily: 'monospace' }}
             />
-            <TextField
-              label="Tools (JSON Array)"
-              value={JSON.stringify(editingRecord.tools || [])}
-              onChange={(e) => {
-                try {
-                  const tools = JSON.parse(e.target.value);
-                  setEditingRecord({...editingRecord, tools});
-                } catch {}
-              }}
-              fullWidth
-              multiline
-              rows={3}
-              sx={{ fontFamily: 'monospace' }}
-            />
+            <FormControl fullWidth>
+              <InputLabel id="tools-select-label">Tools</InputLabel>
+              <Select
+                labelId="tools-select-label"
+                id="tools-select"
+                multiple
+                value={editingRecord.tools || []}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setEditingRecord({
+                    ...editingRecord,
+                    tools: typeof value === 'string' ? value.split(',') : value
+                  });
+                }}
+                input={<OutlinedInput label="Tools" />}
+                renderValue={(selected) => (
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                    {(selected as string[]).map((value) => (
+                      <Chip 
+                        key={value} 
+                        label={value} 
+                        size="small"
+                        onDelete={(event) => {
+                          event.stopPropagation();
+                          const newTools = (editingRecord.tools || []).filter((tool: string) => tool !== value);
+                          setEditingRecord({
+                            ...editingRecord,
+                            tools: newTools
+                          });
+                        }}
+                        onMouseDown={(event) => {
+                          event.stopPropagation();
+                        }}
+                      />
+                    ))}
+                  </Box>
+                )}
+              >
+                {availableTools.map((tool) => (
+                  <MenuItem key={tool} value={tool}>
+                    <Checkbox checked={(editingRecord.tools || []).indexOf(tool) > -1} />
+                    <ListItemText primary={tool} />
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
             <TextField
               label="Configuration (JSON)"
               value={JSON.stringify(editingRecord.config || {}, null, 2)}
