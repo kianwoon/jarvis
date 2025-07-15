@@ -104,9 +104,61 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
     );
   }
 
-  // Special handling for environment variables
+  // Special handling for environment variables - use card-based layout
   if (category === 'environment') {
-    return renderEnvironmentEditor(data, onChange);
+    // Convert environment_variables to flat structure for card rendering
+    const envVars = data?.environment_variables || {};
+    const flattenedFields = Object.entries(envVars).map(([key, value]) => ({ key, value }));
+    
+    if (flattenedFields.length === 0) {
+      // Show the old editor if no variables exist, so user can add new ones
+      return renderEnvironmentEditor(data, onChange);
+    }
+    
+    // Use the new card-based layout for existing variables
+    return renderEnvironmentFieldsWithCards(flattenedFields, 'settings', (field, value) => {
+      // Handle both regular field updates and deletions
+      if (value === undefined) {
+        // Delete the environment variable
+        const updated = { ...envVars };
+        delete updated[field];
+        onChange('environment_variables', updated);
+      } else {
+        // Update the environment variable
+        onChange('environment_variables', {
+          ...envVars,
+          [field]: value
+        });
+      }
+    }, onShowSuccess, (key, value, depth, customOnChange, fieldCategory, onShowSuccessCallback) => {
+      // Simple field renderer for environment variables
+      return (
+        <Box key={key} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+          <Box sx={{ flex: 1 }}>
+            <TextField
+              label={key}
+              value={value || ''}
+              onChange={(e) => customOnChange?.(key, e.target.value)}
+              fullWidth
+              variant="outlined"
+              size="small"
+              type={key.toLowerCase().includes('password') || key.toLowerCase().includes('secret') || key.toLowerCase().includes('key') ? 'password' : 'text'}
+            />
+          </Box>
+          <IconButton
+            size="small"
+            onClick={() => {
+              if (confirm(`Delete environment variable "${key}"?`)) {
+                customOnChange?.(key, undefined);
+              }
+            }}
+            sx={{ color: 'error.main' }}
+          >
+            <DeleteIcon />
+          </IconButton>
+        </Box>
+      );
+    });
   }
 
   // Special handling for MCP configuration
@@ -1143,6 +1195,141 @@ const renderLangfuseFieldsWithCards = (
   );
 };
 
+const renderEnvironmentFieldsWithCards = (
+  fields: Array<{key: string, value: any}>,
+  categoryKey: string,
+  onChange: (field: string, value: any) => void,
+  onShowSuccess?: (message?: string) => void,
+  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void) => React.ReactNode
+) => {
+  // Debug logging for Environment
+  console.log('[DEBUG] Environment - categoryKey:', categoryKey);
+  console.log('[DEBUG] Environment - fields:', fields.map(f => f.key));
+  
+  // Define card configurations for Environment & Runtime settings
+  const cardConfigurations: Record<string, Array<{title: string, subtitle: string, fields: string[]}>> = {
+    settings: [
+      {
+        title: 'API Keys & Authentication',
+        subtitle: 'API keys, tokens, and authentication credentials',
+        fields: ['api_key', 'secret_key', 'access_token', 'auth_token', 'openai_api_key', 'anthropic_api_key', 'google_api_key']
+      },
+      {
+        title: 'Database Configuration', 
+        subtitle: 'Database connection strings and credentials',
+        fields: ['database_url', 'db_host', 'db_port', 'db_user', 'db_password', 'redis_url', 'postgres_url', 'mysql_url']
+      },
+      {
+        title: 'Service URLs & Endpoints',
+        subtitle: 'External service URLs and API endpoints',
+        fields: ['base_url', 'endpoint', 'webhook_url', 'callback_url', 'service_url', 'api_url']
+      },
+      {
+        title: 'Runtime Configuration',
+        subtitle: 'Environment settings and runtime parameters',
+        fields: ['environment', 'debug', 'log_level', 'port', 'host', 'timeout', 'max_workers', 'workers']
+      }
+    ]
+  };
+
+  const cards = cardConfigurations[categoryKey] || [];
+  
+  // Track which fields have been assigned to cards
+  const assignedFields = new Set<string>();
+  
+  const cardComponents = cards.map((card, index) => {
+    const cardFields = fields.filter(field => 
+      card.fields.some(fieldPattern => {
+        const fieldKey = field.key.toLowerCase();
+        const pattern = fieldPattern.toLowerCase();
+        // Try exact match first
+        if (fieldKey === pattern) return true;
+        // Try partial matches
+        if (fieldKey.includes(pattern) || pattern.includes(fieldKey)) return true;
+        // Try removing dots and underscores
+        const cleanFieldKey = fieldKey.replace(/[._]/g, '');
+        const cleanPattern = pattern.replace(/[._]/g, '');
+        return cleanFieldKey === cleanPattern || cleanFieldKey.includes(cleanPattern) || cleanPattern.includes(cleanFieldKey);
+      })
+    );
+    
+    // Mark these fields as assigned
+    cardFields.forEach(field => assignedFields.add(field.key));
+    
+    if (cardFields.length === 0) return null;
+    
+    return (
+      <Card key={`${categoryKey}-${index}`} variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <CardHeader 
+          title={card.title}
+          subheader={card.subtitle}
+          sx={{ pb: 1 }}
+        />
+        <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div className="jarvis-form-grid single-column">
+            {cardFields.map(({ key, value }) => 
+              renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
+                onChange(fieldKey, fieldValue);
+              }, 'environment', onShowSuccess)
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }).filter(Boolean);
+
+  // Create an "Other Environment Variables" card for unassigned fields
+  const unassignedFields = fields.filter(field => !assignedFields.has(field.key));
+  if (unassignedFields.length > 0) {
+    cardComponents.push(
+      <Card key="other" variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <CardHeader 
+          title="Other Environment Variables"
+          subheader="Additional environment settings and custom variables"
+          sx={{ pb: 1 }}
+        />
+        <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div className="jarvis-form-grid single-column">
+            {unassignedFields.map(({ key, value }) => 
+              renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
+                onChange(fieldKey, fieldValue);
+              }, 'environment', onShowSuccess)
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  return (
+    <div style={{ width: '100%', maxWidth: 'none', display: 'block', boxSizing: 'border-box' }}>
+      {/* Add Variable Button */}
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
+        <Button
+          variant="contained"
+          startIcon={<AddIcon />}
+          onClick={() => {
+            const newVar = prompt('Enter environment variable name:');
+            if (newVar && newVar.trim()) {
+              onChange('environment_variables', {
+                ...fields.reduce((acc, field) => ({ ...acc, [field.key]: field.value }), {}),
+                [newVar.trim()]: ''
+              });
+            }
+          }}
+          size="small"
+        >
+          Add Variable
+        </Button>
+      </Box>
+      
+      <div className="rag-cards-grid">
+        {cardComponents}
+      </div>
+    </div>
+  );
+};
+
 const renderStandardForm = (
   data: any, 
   onChange: (field: string, value: any) => void, 
@@ -1766,6 +1953,63 @@ const renderStandardForm = (
     return null;
   };
 
+  const getEnvironmentHelpText = (key: string): string | null => {
+    const helpTexts: Record<string, string> = {
+      // API Keys & Authentication
+      'openai_api_key': 'OpenAI API key for accessing GPT models and other OpenAI services',
+      'anthropic_api_key': 'Anthropic API key for accessing Claude models',
+      'google_api_key': 'Google API key for accessing Google Cloud services',
+      'api_key': 'General API key for authentication with external services',
+      'secret_key': 'Secret key used for signing and encryption operations',
+      'access_token': 'Access token for API authentication',
+      'auth_token': 'Authentication token for service access',
+      
+      // Database Configuration
+      'database_url': 'Full database connection URL with credentials',
+      'db_host': 'Database server hostname or IP address',
+      'db_port': 'Database server port number (default: 5432 for PostgreSQL, 3306 for MySQL)',
+      'db_user': 'Database username for authentication',
+      'db_password': 'Database password for authentication',
+      'redis_url': 'Redis server connection URL for caching and sessions',
+      'postgres_url': 'PostgreSQL database connection URL',
+      'mysql_url': 'MySQL database connection URL',
+      
+      // Service URLs & Endpoints
+      'base_url': 'Base URL for the application or API service',
+      'endpoint': 'API endpoint URL for external service integration',
+      'webhook_url': 'Webhook URL for receiving callbacks from external services',
+      'callback_url': 'Callback URL for OAuth and authentication flows',
+      'service_url': 'External service URL for API calls',
+      'api_url': 'API base URL for making requests',
+      
+      // Runtime Configuration
+      'environment': 'Runtime environment (development, staging, production)',
+      'debug': 'Enable debug mode for verbose logging (true/false)',
+      'log_level': 'Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL',
+      'port': 'Server port number (default: 8000)',
+      'host': 'Server hostname or IP address (default: 0.0.0.0)',
+      'timeout': 'Request timeout in seconds',
+      'max_workers': 'Maximum number of worker processes',
+      'workers': 'Number of worker processes to spawn'
+    };
+    
+    const lowerKey = key.toLowerCase();
+    
+    // Try exact match first
+    if (helpTexts[lowerKey]) {
+      return helpTexts[lowerKey];
+    }
+    
+    // Try partial matches
+    for (const [helpKey, helpText] of Object.entries(helpTexts)) {
+      if (lowerKey.includes(helpKey.toLowerCase()) || helpKey.toLowerCase().includes(lowerKey)) {
+        return helpText;
+      }
+    }
+    
+    return null;
+  };
+
   const renderField = (key: string, value: any, depth: number = 0, customOnChange?: (field: string, value: any) => void, fieldCategory?: string, onShowSuccessCallback?: (message?: string) => void) => {
     const formatLabel = (str: string) => {
       // Remove redundant "settings." prefix if present
@@ -1896,7 +2140,7 @@ const renderStandardForm = (
     };
     
     if (typeof value === 'boolean') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">
@@ -1914,7 +2158,7 @@ const renderStandardForm = (
     }
 
     if (typeof value === 'number') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : null;
       
       // Check if this looks like a slider parameter (temperature, top_p, etc.)
       const isSliderParam = key.toLowerCase().includes('temperature') || 
@@ -2000,7 +2244,7 @@ const renderStandardForm = (
 
     if (typeof value === 'string') {
       const lowerKey = key.toLowerCase();
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : null;
       
       // Always use textarea for prompt fields to prevent height changes while typing
       const isLongText = value.length > 100 || lowerKey.includes('prompt') || lowerKey.includes('system');
@@ -2105,7 +2349,7 @@ const renderStandardForm = (
     }
 
     if (Array.isArray(value)) {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">{renderLabelWithHelp(formatLabel(key), helpText)}</label>
@@ -2592,7 +2836,7 @@ const renderStandardForm = (
                   </Card>
                 )}
                 
-                <div className={category === 'rag' || category === 'large_generation' || category === 'langfuse' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
+                <div className={category === 'rag' || category === 'large_generation' || category === 'langfuse' || category === 'environment' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
                 {(() => {
                   // Deduplicate fields before rendering
                   const fieldEntries = Object.entries(categories[categoryKey].fields);
@@ -2675,6 +2919,11 @@ const renderStandardForm = (
                   // Special rendering for Langfuse/Monitoring settings with card grouping
                   if (category === 'langfuse') {
                     return renderLangfuseFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
+                  }
+                  
+                  // Special rendering for Environment & Runtime settings with card grouping
+                  if (category === 'environment') {
+                    return renderEnvironmentFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
                   }
                   
                   // Render sorted fields normally for other categories

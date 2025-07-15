@@ -243,8 +243,8 @@ function SettingsApp() {
           data = { collections: [] };
         }
       } else if (category === 'environment') {
-        // Environment variables from config
-        response = await fetch('/api/v1/system/config');
+        // Environment variables from .env file
+        response = await fetch('/api/v1/settings/environment');
         if (response.ok) {
           data = await response.json();
         } else {
