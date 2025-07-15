@@ -874,7 +874,153 @@ const renderRAGFieldsWithCards = (
   }
   
   return (
-    <div style={{ width: '100%', padding: '16px' }}>
+    <div style={{ width: '100%', maxWidth: 'none', display: 'block', boxSizing: 'border-box' }}>
+      <div className="rag-cards-grid">
+        {cardComponents}
+      </div>
+    </div>
+  );
+};
+
+const renderPerformanceFieldsWithCards = (
+  fields: Array<{key: string, value: any}>,
+  categoryKey: string,
+  onChange: (field: string, value: any) => void,
+  onShowSuccess?: (message?: string) => void,
+  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void) => React.ReactNode
+) => {
+  // Debug logging for Performance Optimization
+  console.log('[DEBUG] Performance Optimization - categoryKey:', categoryKey);
+  console.log('[DEBUG] Performance Optimization - fields:', fields.map(f => f.key));
+  
+  // Define card configurations for Performance Optimization tabs based on actual data structure
+  const cardConfigurations: Record<string, Array<{title: string, subtitle: string, fields: string[]}>> = {
+    detection: [
+      {
+        title: 'Detection Thresholds',
+        subtitle: 'Numeric thresholds for detecting large output patterns',
+        fields: ['strong_number_threshold', 'medium_number_threshold', 'small_number_threshold', 'min_items_for_chunking']
+      },
+      {
+        title: 'Scoring Parameters', 
+        subtitle: 'Scoring weights and multipliers for detection algorithms',
+        fields: ['numeric_score_weight', 'keyword_score_weight', 'pattern_score_weight', 'score_multiplier_for_chunks']
+      },
+      {
+        title: 'Confidence & Timing',
+        subtitle: 'Confidence scoring and time-based calculations',
+        fields: ['confidence_threshold', 'base_time']
+      }
+    ],
+    processing: [
+      {
+        title: 'Chunk Processing',
+        subtitle: 'Parameters for breaking large outputs into manageable chunks',
+        fields: ['items_per_chunk', 'target_chunk_count', 'time_per_chunk']
+      },
+      {
+        title: 'Performance Optimization',
+        subtitle: 'Advanced settings for processing performance and efficiency',
+        fields: ['chunking_bonus_multiplier']
+      }
+    ],
+    memory: [
+      {
+        title: 'Redis Configuration',
+        subtitle: 'Redis cache settings and conversation management',
+        fields: ['redis_ttl', 'max_messages', 'max_history_display']
+      },
+      {
+        title: 'Memory Management',
+        subtitle: 'Memory optimization and resource allocation',
+        fields: ['enable_memory_optimization']
+      }
+    ],
+    patterns: [
+      {
+        title: 'Large Output Indicators',
+        subtitle: 'Keywords that indicate requests for large comprehensive outputs',
+        fields: ['keywords']
+      },
+      {
+        title: 'Pattern Matching',
+        subtitle: 'Regular expression patterns for detecting large output requests',
+        fields: ['regex_patterns']
+      }
+    ]
+  };
+
+  const cards = cardConfigurations[categoryKey] || [];
+  
+  // Track which fields have been assigned to cards
+  const assignedFields = new Set<string>();
+  
+  const cardComponents = cards.map((card, index) => {
+    const cardFields = fields.filter(field => 
+      card.fields.some(fieldPattern => {
+        const fieldKey = field.key.toLowerCase();
+        const pattern = fieldPattern.toLowerCase();
+        // Try exact match first
+        if (fieldKey === pattern) return true;
+        // Try partial matches
+        if (fieldKey.includes(pattern) || pattern.includes(fieldKey)) return true;
+        // Try removing dots and underscores
+        const cleanFieldKey = fieldKey.replace(/[._]/g, '');
+        const cleanPattern = pattern.replace(/[._]/g, '');
+        return cleanFieldKey === cleanPattern || cleanFieldKey.includes(cleanPattern) || cleanPattern.includes(cleanFieldKey);
+      })
+    );
+    
+    // Mark these fields as assigned
+    cardFields.forEach(field => assignedFields.add(field.key));
+    
+    if (cardFields.length === 0) return null;
+    
+    return (
+      <Card key={`${categoryKey}-${index}`} variant="outlined" sx={{ height: 'fit-content' }}>
+        <CardHeader 
+          title={card.title}
+          subheader={card.subtitle}
+          sx={{ pb: 1 }}
+        />
+        <CardContent>
+          <div className="jarvis-form-grid single-column">
+            {cardFields.map(({ key, value }) => 
+              renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
+                onChange(fieldKey, fieldValue);
+              }, 'large_generation', onShowSuccess)
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }).filter(Boolean);
+
+  // Create an "Other Settings" card for unassigned fields
+  const unassignedFields = fields.filter(field => !assignedFields.has(field.key));
+  if (unassignedFields.length > 0) {
+    cardComponents.push(
+      <Card key="other" variant="outlined" sx={{ height: 'fit-content' }}>
+        <CardHeader 
+          title="Other Settings"
+          subheader="Additional performance optimization options"
+          sx={{ pb: 1 }}
+        />
+        <CardContent>
+          <div className="jarvis-form-grid single-column">
+            {unassignedFields.map(({ key, value }) => 
+              renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
+                onChange(fieldKey, fieldValue);
+              }, 'large_generation', onShowSuccess)
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  return (
+    <div style={{ width: '100%', maxWidth: 'none', display: 'block', boxSizing: 'border-box' }}>
       <div className="rag-cards-grid">
         {cardComponents}
       </div>
@@ -925,6 +1071,13 @@ const renderStandardForm = (
       categories = {
         vector: { title: 'Vector Databases (Unstructured)', fields: {} },
         structured: { title: 'Iceberg (Structured)', fields: {} }
+      };
+    } else if (category === 'large_generation') {
+      categories = {
+        detection: { title: 'Detection & Scoring', fields: {} },
+        processing: { title: 'Processing & Performance', fields: {} },
+        memory: { title: 'Memory & Caching', fields: {} },
+        patterns: { title: 'Keywords & Patterns', fields: {} }
       };
     } else if (category === 'llm') {
       // LLM category structure - consolidated context into settings
@@ -1095,6 +1248,32 @@ const renderStandardForm = (
         else {
           categories.vector.fields[key] = value;
         }
+      } else if (category === 'large_generation') {
+        // Performance Optimization field categorization
+        
+        // Detection & Scoring
+        if (lowerKey.includes('threshold') || lowerKey.includes('score') && lowerKey.includes('weight') ||
+            lowerKey.includes('confidence') || lowerKey.includes('min_items')) {
+          categories.detection.fields[key] = value;
+        }
+        // Processing & Performance  
+        else if (lowerKey.includes('chunk') || lowerKey.includes('time') || lowerKey.includes('multiplier') ||
+                 lowerKey.includes('target') || lowerKey.includes('items_per')) {
+          categories.processing.fields[key] = value;
+        }
+        // Memory & Caching
+        else if (lowerKey.includes('redis') || lowerKey.includes('ttl') || lowerKey.includes('memory') ||
+                 lowerKey.includes('max_messages') || lowerKey.includes('history') || lowerKey.includes('optimization')) {
+          categories.memory.fields[key] = value;
+        }
+        // Keywords & Patterns
+        else if (lowerKey.includes('keyword') || lowerKey.includes('pattern') || lowerKey.includes('regex')) {
+          categories.patterns.fields[key] = value;
+        }
+        // Default to detection category
+        else {
+          categories.detection.fields[key] = value;
+        }
       } else if (category === 'llm') {
         // LLM-specific field categorization
         // Second LLM Tab - All second_llm-related settings
@@ -1205,6 +1384,72 @@ const renderStandardForm = (
     return null;
   };
 
+  const getPerformanceHelpText = (key: string): string | null => {
+    const helpTexts: Record<string, string> = {
+      // Detection Thresholds
+      'strong_number_threshold': 'Threshold for detecting strong numeric patterns in queries. Higher values = more selective detection. Recommended: 20-50.',
+      'medium_number_threshold': 'Threshold for detecting medium numeric patterns. Should be lower than strong threshold. Recommended: 10-30.',
+      'small_number_threshold': 'Threshold for detecting small numeric patterns. Lowest detection threshold. Recommended: 5-20.',
+      'min_items_for_chunking': 'Minimum number of items before chunking is considered. Lower values = more aggressive chunking. Recommended: 10-50.',
+      
+      // Scoring Parameters
+      'min_score_for_keywords': 'Minimum score required for keyword-based detection. Higher values = more selective. Recommended: 2-5.',
+      'min_score_for_medium_numbers': 'Minimum score for medium number detection. Usually lower than keyword score. Recommended: 1-3.',
+      'score_multiplier': 'Global score multiplier for detection algorithms. Higher values increase sensitivity. Recommended: 10-20.',
+      'pattern_score_weight': 'Weight given to pattern matching in scoring. Higher values prioritize patterns. Recommended: 1-3.',
+      
+      // Confidence Calculation
+      'max_score_for_confidence': 'Maximum score used for confidence calculation. Higher values = more nuanced confidence. Recommended: 3-10.',
+      'max_number_for_confidence': 'Maximum number threshold for confidence scoring. Used for normalization. Recommended: 50-200.',
+      'default_comprehensive_items': 'Default number of items for comprehensive requests. Recommended: 20-50.',
+      'min_estimated_items': 'Minimum estimated items to trigger large generation mode. Recommended: 5-15.',
+      
+      // Chunk Processing
+      'default_chunk_size': 'Default number of items per chunk. Lower values = more chunks, better streaming. Recommended: 10-25.',
+      'max_target_count': 'Maximum number of chunks to create. Higher values = more granular processing. Recommended: 100-1000.',
+      'estimated_seconds_per_chunk': 'Estimated processing time per chunk in seconds. Used for time estimation. Recommended: 30-120.',
+      
+      // Performance Optimization
+      'chunking_bonus_multiplier': 'Bonus multiplier for chunking decisions. Higher values make chunking more attractive. Recommended: 1.1-1.5.',
+      'base_time_estimation': 'Base time estimation for processing (seconds). Used as baseline for calculations. Recommended: 5-30.',
+      'optimization_threshold': 'Threshold for triggering performance optimizations. Lower values = more aggressive. Recommended: 0.3-0.7.',
+      
+      // Redis Configuration
+      'redis_conversation_ttl': 'Time-to-live for Redis conversation cache in seconds. Higher values = longer retention. Recommended: 3600-604800.',
+      'max_redis_messages': 'Maximum number of messages to store in Redis. Higher values = more context. Recommended: 20-100.',
+      'conversation_history_display': 'Maximum number of history items to display in UI. Recommended: 5-20.',
+      
+      // Memory Management
+      'max_memory_messages': 'Maximum number of messages to keep in memory. Higher values = more context but more memory. Recommended: 10-50.',
+      'memory_optimization_enabled': 'Enable memory optimization features to reduce memory usage during large generations.',
+      'cleanup_interval': 'Interval for memory cleanup operations in seconds. Lower values = more frequent cleanup. Recommended: 60-300.',
+      
+      // Keywords & Indicators
+      'large_output_indicators': 'Keywords that indicate large output requests (e.g., "generate", "create", "list", "comprehensive").',
+      'comprehensive_keywords': 'Keywords that specifically indicate comprehensive requests (e.g., "comprehensive", "detailed", "all").',
+      
+      // Pattern Matching
+      'large_patterns': 'Regular expression patterns for detecting large output requests in queries.',
+      'pattern_weights': 'Weights for different pattern types. Higher weights = more influence on detection.'
+    };
+    
+    const lowerKey = key.toLowerCase();
+    
+    // Try exact match first
+    if (helpTexts[lowerKey]) {
+      return helpTexts[lowerKey];
+    }
+    
+    // Try partial matches
+    for (const [helpKey, helpText] of Object.entries(helpTexts)) {
+      if (lowerKey.includes(helpKey.toLowerCase()) || helpKey.toLowerCase().includes(lowerKey)) {
+        return helpText;
+      }
+    }
+    
+    return null;
+  };
+
   const getRAGDropdownOptions = (key: string): Array<{value: string, label: string}> | null => {
     const lowerKey = key.toLowerCase();
     
@@ -1230,17 +1475,17 @@ const renderStandardForm = (
   };
 
   const validateRAGField = (key: string, value: any, category?: string): string | null => {
-    if (category !== 'rag') return null;
+    if (category !== 'rag' && category !== 'large_generation') return null;
     
     const lowerKey = key.toLowerCase();
     
     if (typeof value === 'number') {
-      // Validate numeric ranges
-      if (lowerKey.includes('threshold') || lowerKey.includes('similarity')) {
+      // Validate numeric ranges (but skip Performance Optimization fields)
+      if ((lowerKey.includes('threshold') || lowerKey.includes('similarity')) && category !== 'large_generation') {
         if (value < 0 || value > 1) {
           return 'Value must be between 0 and 1';
         }
-      } else if (lowerKey.includes('weight')) {
+      } else if (lowerKey.includes('weight') && category !== 'large_generation') {
         if (value < 0 || value > 1) {
           return 'Weight must be between 0 and 1';
         }
@@ -1267,6 +1512,87 @@ const renderStandardForm = (
       } else if (lowerKey.includes('cache') && lowerKey.includes('size')) {
         if (value < 10 || value > 10000) {
           return 'Cache size should be between 10 and 10000';
+        }
+      }
+      
+      // Performance Optimization specific validations
+      if (category === 'large_generation') {
+        if (lowerKey.includes('strong_number_threshold')) {
+          if (value < 1 || value > 100) {
+            return 'Strong number threshold should be between 1 and 100';
+          }
+        } else if (lowerKey.includes('medium_number_threshold')) {
+          if (value < 1 || value > 100) {
+            return 'Medium number threshold should be between 1 and 100';
+          }
+        } else if (lowerKey.includes('small_number_threshold')) {
+          if (value < 1 || value > 100) {
+            return 'Small number threshold should be between 1 and 100';
+          }
+        } else if (lowerKey.includes('min_items_for_chunking')) {
+          if (value < 1 || value > 100) {
+            return 'Min items for chunking should be between 1 and 100';
+          }
+        } else if (lowerKey.includes('min_score_for_keywords')) {
+          if (value < 1 || value > 10) {
+            return 'Min score for keywords should be between 1 and 10';
+          }
+        } else if (lowerKey.includes('min_score_for_medium_numbers')) {
+          if (value < 1 || value > 10) {
+            return 'Min score for medium numbers should be between 1 and 10';
+          }
+        } else if (lowerKey.includes('score_multiplier')) {
+          if (value < 1 || value > 50) {
+            return 'Score multiplier should be between 1 and 50';
+          }
+        } else if (lowerKey.includes('pattern_score_weight')) {
+          if (value < 1 || value > 10) {
+            return 'Pattern score weight should be between 1 and 10';
+          }
+        } else if (lowerKey.includes('max_score_for_confidence')) {
+          if (value < 1 || value > 20) {
+            return 'Max score for confidence should be between 1 and 20';
+          }
+        } else if (lowerKey.includes('max_number_for_confidence')) {
+          if (value < 10 || value > 500) {
+            return 'Max number for confidence should be between 10 and 500';
+          }
+        } else if (lowerKey.includes('default_comprehensive_items')) {
+          if (value < 5 || value > 100) {
+            return 'Default comprehensive items should be between 5 and 100';
+          }
+        } else if (lowerKey.includes('min_estimated_items')) {
+          if (value < 1 || value > 50) {
+            return 'Min estimated items should be between 1 and 50';
+          }
+        } else if (lowerKey.includes('default_chunk_size')) {
+          if (value < 5 || value > 50) {
+            return 'Default chunk size should be between 5 and 50';
+          }
+        } else if (lowerKey.includes('max_target_count')) {
+          if (value < 10 || value > 2000) {
+            return 'Max target count should be between 10 and 2000';
+          }
+        } else if (lowerKey.includes('estimated_seconds_per_chunk')) {
+          if (value < 1 || value > 300) {
+            return 'Estimated seconds per chunk should be between 1 and 300';
+          }
+        } else if (lowerKey.includes('redis_conversation_ttl')) {
+          if (value < 3600 || value > 604800) {
+            return 'Redis conversation TTL should be between 1 hour and 7 days';
+          }
+        } else if (lowerKey.includes('max_redis_messages')) {
+          if (value < 10 || value > 500) {
+            return 'Max Redis messages should be between 10 and 500';
+          }
+        } else if (lowerKey.includes('max_memory_messages')) {
+          if (value < 5 || value > 200) {
+            return 'Max memory messages should be between 5 and 200';
+          }
+        } else if (lowerKey.includes('conversation_history_display')) {
+          if (value < 1 || value > 50) {
+            return 'Conversation history display should be between 1 and 50';
+          }
         }
       }
     }
@@ -1365,7 +1691,7 @@ const renderStandardForm = (
     
     // Helper function to render label with help tooltip
     const renderLabelWithHelp = (labelText: string, helpText: string | null = null, isInlineCheckbox: boolean = false) => {
-      if (fieldCategory === 'rag' && helpText) {
+      if ((fieldCategory === 'rag' || fieldCategory === 'large_generation') && helpText) {
         return (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
             <span>{labelText}</span>
@@ -1404,7 +1730,7 @@ const renderStandardForm = (
     };
     
     if (typeof value === 'boolean') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">
@@ -1422,7 +1748,7 @@ const renderStandardForm = (
     }
 
     if (typeof value === 'number') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : null;
       
       // Check if this looks like a slider parameter (temperature, top_p, etc.)
       const isSliderParam = key.toLowerCase().includes('temperature') || 
@@ -1508,7 +1834,7 @@ const renderStandardForm = (
 
     if (typeof value === 'string') {
       const lowerKey = key.toLowerCase();
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : null;
       
       // Always use textarea for prompt fields to prevent height changes while typing
       const isLongText = value.length > 100 || lowerKey.includes('prompt') || lowerKey.includes('system');
@@ -1613,7 +1939,7 @@ const renderStandardForm = (
     }
 
     if (Array.isArray(value)) {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">{renderLabelWithHelp(formatLabel(key), helpText)}</label>
@@ -2017,7 +2343,7 @@ const renderStandardForm = (
               </div>
             ) : (
               /* Regular form rendering for other tabs */
-              <div style={{ padding: '16px' }}>
+              <div style={{ width: '100%', maxWidth: 'none' }}>
                 {/* Mode Selection for Settings and Query Classifier tabs */}
                 {category === 'llm' && (categoryKey === 'settings' || categoryKey === 'second_llm' || categoryKey === 'classifier') && (
                   <Card variant="outlined" sx={{ mb: 3 }}>
@@ -2100,7 +2426,7 @@ const renderStandardForm = (
                   </Card>
                 )}
                 
-                <div className={category === 'rag' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
+                <div className={category === 'rag' || category === 'large_generation' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
                 {(() => {
                   // Deduplicate fields before rendering
                   const fieldEntries = Object.entries(categories[categoryKey].fields);
@@ -2173,6 +2499,11 @@ const renderStandardForm = (
                   // Special rendering for RAG settings with card grouping
                   if (category === 'rag') {
                     return renderRAGFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
+                  }
+                  
+                  // Special rendering for Performance Optimization settings with card grouping
+                  if (category === 'large_generation') {
+                    return renderPerformanceFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
                   }
                   
                   // Render sorted fields normally for other categories

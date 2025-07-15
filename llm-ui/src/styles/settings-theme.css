@@ -124,8 +124,11 @@
   gap: var(--jarvis-spacing-md) var(--jarvis-spacing-lg);
   align-items: start;
   padding-bottom: var(--jarvis-spacing-lg);
-  width: 100%;
-  max-width: none;
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
 }
 
 .jarvis-form-grid .jarvis-form-group {
@@ -600,25 +603,42 @@
 
 /* RAG Cards Grid Layout */
 .rag-cards-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  align-items: stretch;
-  width: 100%;
-  max-width: none;
-  box-sizing: border-box;
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 20px !important;
+  align-items: stretch !important;
+  width: 100% !important;
+  max-width: none !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  flex: 1 !important;
 }
 
 .rag-cards-grid > * {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  flex: 1 !important;
 }
 
 @media (max-width: 1200px) {
   .rag-cards-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr !important;
   }
+}
+
+/* Target specific containers to avoid breaking other pages */
+.rag-cards-grid .MuiCard-root {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+.rag-cards-grid .MuiCardContent-root {
+  width: 100% !important;
+  max-width: none !important;
 }
 
 /* Print styles */

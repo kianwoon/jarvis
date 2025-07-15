@@ -610,8 +610,8 @@ function SettingsApp() {
         </Box>
 
         {/* Main Content with Left Nav + Modern Design */}
-        <Container maxWidth={false} sx={{ flex: 1, py: 2, overflow: 'hidden' }}>
-          <Grid container spacing={2} sx={{ height: '100%' }}>
+        <Container maxWidth={false} sx={{ flex: 1, py: 2, overflow: 'hidden', width: '100%', maxWidth: 'none' }}>
+          <Grid container spacing={2} sx={{ height: '100%', width: '100%', maxWidth: 'none' }}>
             {/* Settings Categories Sidebar */}
             <Grid item xs={12} md={3} sx={{ height: '100%' }}>
               <Paper sx={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
@@ -647,8 +647,8 @@ function SettingsApp() {
             </Grid>
 
             {/* Settings Content */}
-            <Grid item xs={12} md={9} sx={{ height: '100%' }}>
-              <Paper sx={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', p: 2 }}>
+            <Grid item xs={12} md={9} sx={{ height: '100%', width: '100%', maxWidth: 'none' }}>
+              <Paper sx={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', p: 2, width: '100%', maxWidth: 'none' }}>
                 {/* Modern Header */}
                 <div className="settings-header">
                   <div className="settings-header-content">
@@ -676,7 +676,7 @@ function SettingsApp() {
                 </div>
 
                 {/* Settings Content */}
-                <Box sx={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+                <Box sx={{ flex: 1, overflow: 'auto', minHeight: 0, width: '100%', maxWidth: 'none' }}>
                   {renderSettingsForm(selectedCategory)}
                 </Box>
               </Paper>
