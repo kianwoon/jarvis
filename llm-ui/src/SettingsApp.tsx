@@ -235,8 +235,8 @@ function SettingsApp() {
           data = { agents: [] };
         }
       } else if (category === 'collection_registry') {
-        // Collection registry might use a different endpoint
-        response = await fetch('/api/v1/collections/?include_stats=true');
+        // Collection registry - load basic data first, then stats if needed
+        response = await fetch('/api/v1/collections/');
         if (response.ok) {
           data = await response.json();
         } else {

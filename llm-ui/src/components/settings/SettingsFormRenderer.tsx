@@ -977,13 +977,13 @@ const renderPerformanceFieldsWithCards = (
     if (cardFields.length === 0) return null;
     
     return (
-      <Card key={`${categoryKey}-${index}`} variant="outlined" sx={{ height: 'fit-content' }}>
+      <Card key={`${categoryKey}-${index}`} variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
         <CardHeader 
           title={card.title}
           subheader={card.subtitle}
           sx={{ pb: 1 }}
         />
-        <CardContent>
+        <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           <div className="jarvis-form-grid single-column">
             {cardFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
@@ -1000,13 +1000,13 @@ const renderPerformanceFieldsWithCards = (
   const unassignedFields = fields.filter(field => !assignedFields.has(field.key));
   if (unassignedFields.length > 0) {
     cardComponents.push(
-      <Card key="other" variant="outlined" sx={{ height: 'fit-content' }}>
+      <Card key="other" variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
         <CardHeader 
           title="Other Settings"
           subheader="Additional performance optimization options"
           sx={{ pb: 1 }}
         />
-        <CardContent>
+        <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           <div className="jarvis-form-grid single-column">
             {unassignedFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
