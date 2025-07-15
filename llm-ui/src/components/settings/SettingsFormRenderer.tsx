@@ -38,7 +38,8 @@ import {
   Visibility as VisibilityIcon,
   VisibilityOff as VisibilityOffIcon,
   Cached as CacheIcon,
-  CheckCircle as CheckCircleIcon
+  CheckCircle as CheckCircleIcon,
+  HelpOutline as HelpOutlineIcon
 } from '@mui/icons-material';
 import YamlEditor from './YamlEditor';
 import DatabaseTableManager from './DatabaseTableManager';
@@ -713,6 +714,174 @@ const ModelSelector: React.FC<{
   );
 };
 
+const renderRAGFieldsWithCards = (
+  fields: Array<{key: string, value: any}>,
+  categoryKey: string,
+  onChange: (field: string, value: any) => void,
+  onShowSuccess?: (message?: string) => void,
+  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void) => React.ReactNode
+) => {
+  // Define card configurations for each tab
+  const cardConfigurations: Record<string, Array<{title: string, subtitle: string, fields: string[]}>> = {
+    retrieval: [
+      {
+        title: 'Performance & Caching',
+        subtitle: 'Connection timeouts, execution timeouts, and cache settings',
+        fields: ['performance.enable_caching', 'performance.cache_ttl_hours', 'performance.connection_timeout_s', 
+                'performance.execution_timeout_ms', 'document_retrieval.cache_max_size']
+      },
+      {
+        title: 'Search Configuration',
+        subtitle: 'Vector search parameters and similarity thresholds',
+        fields: ['search_strategy.top_k_vector_search', 'performance.vector_search_nprobe', 
+                'document_retrieval.similarity_threshold', 'document_retrieval.num_docs_retrieve',
+                'document_retrieval.max_documents_mcp']
+      },
+      {
+        title: 'Collection Auto-Detection',
+        subtitle: 'Automatic collection selection and limits',
+        fields: ['agent_settings.enable_collection_auto_detection', 'agent_settings.max_results_per_collection',
+                'collection_selection.max_collections', 'collection_selection.cache_selections',
+                'collection_selection.enable_llm_selection', 'document_retrieval.enable_query_expansion']
+      },
+      {
+        title: 'Collection Management',
+        subtitle: 'Default and fallback collections configuration',
+        fields: ['document_retrieval.default_collections', 'collection_selection.fallback_collections',
+                'collection_selection.selection_prompt_template']
+      }
+    ],
+    reranking: [
+      {
+        title: 'Reranking Configuration',
+        subtitle: 'Advanced reranking and scoring parameters',
+        fields: ['reranking.enable_advanced_reranking', 'reranking.enable_qwen_reranker',
+                'reranking.rerank_weight', 'reranking.rerank_threshold', 'reranking.num_to_rerank',
+                'reranking.batch_size']
+      },
+      {
+        title: 'BM25 Scoring',
+        subtitle: 'BM25 algorithm parameters and corpus settings',
+        fields: ['bm25_scoring.enable_bm25', 'bm25_scoring.k1', 'bm25_scoring.b',
+                'bm25_scoring.bm25_weight', 'bm25_scoring.corpus_batch_size']
+      },
+      {
+        title: 'Relevance Thresholds',
+        subtitle: 'Agent confidence and relevance scoring',
+        fields: ['agent_settings.min_relevance_score', 'agent_settings.confidence_threshold',
+                'agent_settings.complex_query_threshold', 'agent_settings.collection_size_threshold']
+      },
+      {
+        title: 'Search Weight Distribution',
+        subtitle: 'Balance between keyword and semantic search',
+        fields: ['search_strategy.keyword_weight', 'search_strategy.semantic_weight',
+                'search_strategy.hybrid_threshold']
+      }
+    ],
+    search: [
+      {
+        title: 'Strategy Configuration',
+        subtitle: 'Search strategy and performance settings',
+        fields: ['search_strategy.search_strategy', 'agent_settings.default_query_strategy',
+                'search_strategy.enable_focused_search', 'search_strategy.default_max_results',
+                'performance.max_concurrent_searches']
+      },
+      {
+        title: 'Query Classification',
+        subtitle: 'Query analysis and classification settings',
+        fields: ['query_processing.enable_query_classification', 'query_processing.max_query_length',
+                'query_processing.window_size']
+      },
+      {
+        title: 'Text Processing',
+        subtitle: 'Text preprocessing and normalization',
+        fields: ['query_processing.enable_stemming', 'query_processing.enable_stop_word_removal']
+      },
+      {
+        title: 'Query Expansion',
+        subtitle: 'Query enhancement and expansion methods',
+        fields: ['query_processing.query_expansion_methods']
+      }
+    ]
+  };
+
+  const cards = cardConfigurations[categoryKey] || [];
+  
+  // Track which fields have been assigned to cards
+  const assignedFields = new Set<string>();
+  
+  const cardComponents = cards.map((card, index) => {
+    const cardFields = fields.filter(field => 
+      card.fields.some(fieldPattern => {
+        const fieldKey = field.key.toLowerCase();
+        const pattern = fieldPattern.toLowerCase();
+        
+        // Direct match
+        if (fieldKey === pattern) return true;
+        
+        // Pattern matching - check if field contains all parts of pattern
+        const patternParts = pattern.split('.');
+        return patternParts.every(part => fieldKey.includes(part));
+      })
+    );
+
+    // Mark these fields as assigned
+    cardFields.forEach(field => assignedFields.add(field.key));
+
+    if (cardFields.length === 0) return null;
+
+    return (
+      <Card key={index} variant="outlined" sx={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }}>
+        <CardHeader 
+          title={card.title}
+          subheader={card.subtitle}
+          sx={{ pb: 1, flexShrink: 0 }}
+        />
+        <CardContent sx={{ flexGrow: 1 }}>
+          <div className="jarvis-form-grid single-column">
+            {cardFields.map(({ key, value }) => 
+              renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
+                onChange(fieldKey, fieldValue);
+              }, 'rag', onShowSuccess)
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }).filter(Boolean);
+
+  // Create an "Other Settings" card for unassigned fields
+  const unassignedFields = fields.filter(field => !assignedFields.has(field.key));
+  if (unassignedFields.length > 0) {
+    cardComponents.push(
+      <Card key="other" variant="outlined" sx={{ height: 'fit-content' }}>
+        <CardHeader 
+          title="Other Settings"
+          subheader="Additional configuration options"
+          sx={{ pb: 1 }}
+        />
+        <CardContent>
+          <div className="jarvis-form-grid single-column">
+            {unassignedFields.map(({ key, value }) => 
+              renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
+                onChange(fieldKey, fieldValue);
+              }, 'rag', onShowSuccess)
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  return (
+    <div style={{ width: '100%', padding: '16px' }}>
+      <div className="rag-cards-grid">
+        {cardComponents}
+      </div>
+    </div>
+  );
+};
+
 const renderStandardForm = (
   data: any, 
   onChange: (field: string, value: any) => void, 
@@ -757,13 +926,18 @@ const renderStandardForm = (
         vector: { title: 'Vector Databases (Unstructured)', fields: {} },
         structured: { title: 'Iceberg (Structured)', fields: {} }
       };
-    } else {
-      // Default LLM category structure - consolidated context into settings
+    } else if (category === 'llm') {
+      // LLM category structure - consolidated context into settings
       categories = {
         settings: { title: 'Main LLM', fields: {} },
         second_llm: { title: 'Second LLM', fields: {} },
         classifier: { title: 'Query Classifier', fields: {} },
         thinking: { title: 'Thinking Mode', fields: {} }
+      };
+    } else {
+      // Default single-tab structure for other categories (monitoring, mcp, etc.)
+      categories = {
+        settings: { title: 'Settings', fields: {} }
       };
     }
 
@@ -853,27 +1027,37 @@ const renderStandardForm = (
       }
       
       if (category === 'rag') {
-        // RAG-specific field categorization
-        if (lowerKey.includes('embedding') || lowerKey.includes('vector') || lowerKey.includes('similarity') || 
-            lowerKey.includes('chunk') || lowerKey.includes('top_k') || lowerKey.includes('retrieval')) {
+        // RAG-specific field categorization with card grouping
+        
+        // Retrieval Settings Tab
+        if (lowerKey.includes('performance') && 
+            (lowerKey.includes('cache') || lowerKey.includes('timeout') || lowerKey.includes('connection'))) {
           categories.retrieval.fields[key] = value;
         }
-        // Reranking & Scoring
-        else if (lowerKey.includes('rerank') || lowerKey.includes('score') || lowerKey.includes('bm25') || 
-                 lowerKey.includes('weight') || lowerKey.includes('threshold')) {
+        else if (lowerKey.includes('search') && lowerKey.includes('top_k') ||
+                 lowerKey.includes('vector') && lowerKey.includes('nprobe') ||
+                 lowerKey.includes('similarity') && lowerKey.includes('threshold') ||
+                 lowerKey.includes('retrieval') && (lowerKey.includes('num_docs') || lowerKey.includes('max_documents'))) {
+          categories.retrieval.fields[key] = value;
+        }
+        else if (lowerKey.includes('collection') || lowerKey.includes('agent') && lowerKey.includes('max_results') ||
+                 lowerKey.includes('detection') || lowerKey.includes('default') || lowerKey.includes('fallback')) {
+          categories.retrieval.fields[key] = value;
+        }
+        
+        // Reranking & Scoring Tab
+        else if (lowerKey.includes('rerank') || lowerKey.includes('bm25') || lowerKey.includes('score') || 
+                 lowerKey.includes('weight') || lowerKey.includes('threshold') || lowerKey.includes('relevance')) {
           categories.reranking.fields[key] = value;
         }
-        // Search Strategy
+        
+        // Search Strategy Tab
         else if (lowerKey.includes('search') || lowerKey.includes('query') || lowerKey.includes('strategy') || 
-                 lowerKey.includes('hybrid') || lowerKey.includes('filter')) {
+                 lowerKey.includes('hybrid') || lowerKey.includes('processing') || lowerKey.includes('expansion')) {
           categories.search.fields[key] = value;
         }
-        // Document Processing
-        else if (lowerKey.includes('document') || lowerKey.includes('processing') || lowerKey.includes('indexing') || 
-                 lowerKey.includes('text') || lowerKey.includes('content')) {
-          categories.processing.fields[key] = value;
-        }
-        // Default to retrieval if we can't categorize
+        
+        // Anything else goes to retrieval as default
         else {
           categories.retrieval.fields[key] = value;
         }
@@ -911,7 +1095,7 @@ const renderStandardForm = (
         else {
           categories.vector.fields[key] = value;
         }
-      } else {
+      } else if (category === 'llm') {
         // LLM-specific field categorization
         // Second LLM Tab - All second_llm-related settings
         if (lowerKey.includes('second_llm')) {
@@ -929,6 +1113,9 @@ const renderStandardForm = (
         else {
           categories.settings.fields[key] = value;
         }
+      } else {
+        // Default single-tab categorization for other categories (monitoring, mcp, etc.)
+        categories.settings.fields[key] = value;
       }
     });
 
@@ -945,6 +1132,146 @@ const renderStandardForm = (
 
   const togglePasswordVisibility = (fieldKey: string) => {
     setPasswordVisibility(prev => ({ ...prev, [fieldKey]: !prev[fieldKey] }));
+  };
+
+  const getRAGHelpText = (key: string): string | null => {
+    const helpTexts: Record<string, string> = {
+      // Performance & Caching
+      'performance.cache_ttl_hours': 'How long to cache results in hours. Recommended: 2-24 hours for balance between performance and freshness.',
+      'performance.connection_timeout_s': 'Maximum seconds to wait for database connections. Recommended: 30-300 seconds.',
+      'performance.execution_timeout_ms': 'Maximum milliseconds for query execution. Recommended: 10000-60000ms.',
+      'performance.enable_caching': 'Enable caching to improve performance by storing frequently accessed results.',
+      'document_retrieval.cache_max_size': 'Maximum number of cached queries. Recommended: 100-1000 based on memory.',
+      
+      // Search Configuration
+      'search_strategy.top_k_vector_search': 'Number of documents to retrieve from vector search. Higher values = more comprehensive but slower. Recommended: 20-100.',
+      'performance.vector_search_nprobe': 'Number of probes for vector search. Higher values = more accurate but slower. Recommended: 8-20.',
+      'document_retrieval.similarity_threshold': 'Minimum cosine similarity for document relevance. Higher values = more precise but fewer results. Recommended: 0.6-0.8.',
+      'document_retrieval.num_docs_retrieve': 'Total number of documents to retrieve across all collections. Recommended: 10-50.',
+      'document_retrieval.max_documents_mcp': 'Maximum documents to return to MCP tools. Lower values prevent overwhelming tools. Recommended: 5-15.',
+      
+      // Collection Management
+      'agent_settings.enable_collection_auto_detection': 'Automatically detect which collections to search based on query content.',
+      'agent_settings.max_results_per_collection': 'Maximum results from each collection. Helps distribute results evenly. Recommended: 5-20.',
+      'collection_selection.max_collections': 'Maximum number of collections to search simultaneously. More = comprehensive but slower. Recommended: 3-10.',
+      'collection_selection.cache_selections': 'Cache collection selection decisions to improve performance for similar queries.',
+      'collection_selection.enable_llm_selection': 'Use LLM to intelligently select relevant collections instead of searching all.',
+      
+      // BM25 Scoring
+      'bm25_scoring.k1': 'Controls term frequency saturation. Higher values give more weight to term frequency. Recommended: 1.2-2.0.',
+      'bm25_scoring.b': 'Controls document length normalization. Higher values penalize longer documents more. Recommended: 0.7-0.8.',
+      'bm25_scoring.bm25_weight': 'Weight of BM25 score in hybrid search. Higher values favor keyword matching. Recommended: 0.2-0.5.',
+      'bm25_scoring.enable_bm25': 'Enable BM25 keyword search to complement vector search for better results.',
+      
+      // Reranking
+      'reranking.rerank_weight': 'Weight of reranking score in final ranking. Higher values trust reranker more. Recommended: 0.5-0.8.',
+      'reranking.rerank_threshold': 'Minimum reranking score threshold. Higher values = more selective. Recommended: 0.5-0.8.',
+      'reranking.enable_advanced_reranking': 'Enable advanced reranking algorithms for better result quality.',
+      'reranking.enable_qwen_reranker': 'Use Qwen model for reranking. Provides better semantic understanding.',
+      
+      // Search Strategy
+      'search_strategy.keyword_weight': 'Weight of keyword search in hybrid search. Higher values favor exact matches. Recommended: 0.2-0.4.',
+      'search_strategy.semantic_weight': 'Weight of semantic search in hybrid search. Higher values favor meaning. Recommended: 0.6-0.8.',
+      'search_strategy.hybrid_threshold': 'Threshold for hybrid search activation. Lower values activate hybrid more often. Recommended: 0.5-0.8.',
+      'search_strategy.search_strategy': 'Search strategy: auto (adaptive), vector (semantic), hybrid (both), or keyword (exact).',
+      
+      // Relevance & Thresholds
+      'agent_settings.min_relevance_score': 'Minimum relevance score for including results. Higher values = more selective. Recommended: 0.3-0.6.',
+      'agent_settings.confidence_threshold': 'Confidence threshold for agent decisions. Higher values = more conservative. Recommended: 0.5-0.8.',
+      'agent_settings.complex_query_threshold': 'Threshold for detecting complex queries requiring special handling. Recommended: 0.1-0.3.',
+      
+      // Query Processing
+      'query_processing.enable_query_classification': 'Classify queries to apply appropriate search strategies.',
+      'query_processing.enable_stemming': 'Reduce words to their root forms for better matching (e.g., "running" → "run").',
+      'query_processing.enable_stop_word_removal': 'Remove common words like "the", "and" to focus on important terms.',
+      'query_processing.max_query_length': 'Maximum query length in characters. Longer queries are truncated. Recommended: 2000-8000.',
+      'query_processing.window_size': 'Size of context window for query processing. Recommended: 50-200.'
+    };
+    
+    const lowerKey = key.toLowerCase();
+    
+    // Try exact match first
+    if (helpTexts[lowerKey]) {
+      return helpTexts[lowerKey];
+    }
+    
+    // Try partial matches
+    for (const [helpKey, helpText] of Object.entries(helpTexts)) {
+      if (lowerKey.includes(helpKey.toLowerCase()) || helpKey.toLowerCase().includes(lowerKey)) {
+        return helpText;
+      }
+    }
+    
+    return null;
+  };
+
+  const getRAGDropdownOptions = (key: string): Array<{value: string, label: string}> | null => {
+    const lowerKey = key.toLowerCase();
+    
+    if (lowerKey.includes('search') && lowerKey.includes('strategy')) {
+      return [
+        { value: 'auto', label: 'Auto (Adaptive)' },
+        { value: 'vector', label: 'Vector (Semantic)' },
+        { value: 'hybrid', label: 'Hybrid (Vector + Keyword)' },
+        { value: 'keyword', label: 'Keyword (Exact Match)' }
+      ];
+    }
+    
+    if (lowerKey.includes('query') && lowerKey.includes('strategy')) {
+      return [
+        { value: 'auto', label: 'Auto (Adaptive)' },
+        { value: 'simple', label: 'Simple' },
+        { value: 'complex', label: 'Complex' },
+        { value: 'focused', label: 'Focused' }
+      ];
+    }
+    
+    return null;
+  };
+
+  const validateRAGField = (key: string, value: any, category?: string): string | null => {
+    if (category !== 'rag') return null;
+    
+    const lowerKey = key.toLowerCase();
+    
+    if (typeof value === 'number') {
+      // Validate numeric ranges
+      if (lowerKey.includes('threshold') || lowerKey.includes('similarity')) {
+        if (value < 0 || value > 1) {
+          return 'Value must be between 0 and 1';
+        }
+      } else if (lowerKey.includes('weight')) {
+        if (value < 0 || value > 1) {
+          return 'Weight must be between 0 and 1';
+        }
+      } else if (lowerKey.includes('k1')) {
+        if (value < 1.0 || value > 3.0) {
+          return 'K1 parameter should be between 1.0 and 3.0';
+        }
+      } else if ((lowerKey.includes('bm25_b') || lowerKey === 'b') && lowerKey.includes('bm25')) {
+        if (value < 0.0 || value > 1.0) {
+          return 'B parameter should be between 0.0 and 1.0';
+        }
+      } else if (lowerKey.includes('batch') && lowerKey.includes('size')) {
+        if (value < 1 || value > 10000) {
+          return 'Batch size should be between 1 and 10000';
+        }
+      } else if (lowerKey.includes('top_k')) {
+        if (value < 1 || value > 200) {
+          return 'Top K should be between 1 and 200';
+        }
+      } else if (lowerKey.includes('timeout')) {
+        if (value < 1) {
+          return 'Timeout must be greater than 0';
+        }
+      } else if (lowerKey.includes('cache') && lowerKey.includes('size')) {
+        if (value < 10 || value > 10000) {
+          return 'Cache size should be between 10 and 10000';
+        }
+      }
+    }
+    
+    return null;
   };
 
   const renderField = (key: string, value: any, depth: number = 0, customOnChange?: (field: string, value: any) => void, fieldCategory?: string, onShowSuccessCallback?: (message?: string) => void) => {
@@ -1034,8 +1361,50 @@ const renderStandardForm = (
     
     const isComplex = isComplexField(key, value);
     const fieldClass = `jarvis-form-group${isComplex ? ' complex' : ''}`;
+    const validationError = validateRAGField(key, value, fieldCategory);
+    
+    // Helper function to render label with help tooltip
+    const renderLabelWithHelp = (labelText: string, helpText: string | null = null, isInlineCheckbox: boolean = false) => {
+      if (fieldCategory === 'rag' && helpText) {
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            <span>{labelText}</span>
+            <Tooltip title={helpText} placement="top-start" arrow>
+              <HelpOutlineIcon 
+                sx={{ 
+                  fontSize: '16px', 
+                  color: 'text.secondary',
+                  cursor: 'help',
+                  '&:hover': { color: 'primary.main' }
+                }} 
+              />
+            </Tooltip>
+          </span>
+        );
+      }
+      return labelText;
+    };
+
+    // Helper function to render validation error
+    const renderValidationError = (error: string | null) => {
+      if (!error) return null;
+      return (
+        <div style={{ 
+          color: '#f44336', 
+          fontSize: '12px', 
+          marginTop: '4px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '4px'
+        }}>
+          <span>⚠️</span>
+          <span>{error}</span>
+        </div>
+      );
+    };
     
     if (typeof value === 'boolean') {
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">
@@ -1045,31 +1414,59 @@ const renderStandardForm = (
               onChange={(e) => onChangeHandler(key, e.target.checked)}
               style={{ marginRight: '8px' }}
             />
-            {formatLabel(key)}
+            {renderLabelWithHelp(formatLabel(key), helpText, true)}
           </label>
+          {renderValidationError(validationError)}
         </div>
       );
     }
 
     if (typeof value === 'number') {
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : null;
+      
       // Check if this looks like a slider parameter (temperature, top_p, etc.)
       const isSliderParam = key.toLowerCase().includes('temperature') || 
                           key.toLowerCase().includes('top_p') || 
                           key.toLowerCase().includes('top_k') || 
-                          key.toLowerCase().includes('penalty');
+                          key.toLowerCase().includes('penalty') ||
+                          // RAG-specific slider parameters
+                          (fieldCategory === 'rag' && (
+                            key.toLowerCase().includes('weight') ||
+                            key.toLowerCase().includes('threshold') ||
+                            key.toLowerCase().includes('score') ||
+                            key.toLowerCase().includes('similarity')
+                          ));
       
       if (isSliderParam) {
-        const min = key.toLowerCase().includes('top_k') ? 0 : 
-                   key.toLowerCase().includes('temperature') ? 0 : 
-                   key.toLowerCase().includes('top_p') ? 0 : 1;
-        const max = key.toLowerCase().includes('top_k') ? 100 : 
-                   key.toLowerCase().includes('temperature') ? 2 : 
-                   key.toLowerCase().includes('top_p') ? 1 : 2;
-        const step = key.toLowerCase().includes('top_k') ? 1 : 0.01;
+        const lowerKey = key.toLowerCase();
+        let min = 0, max = 1, step = 0.01;
+        
+        if (lowerKey.includes('top_k')) {
+          min = 0; max = 100; step = 1;
+        } else if (lowerKey.includes('temperature')) {
+          min = 0; max = 2; step = 0.01;
+        } else if (lowerKey.includes('top_p')) {
+          min = 0; max = 1; step = 0.01;
+        } else if (lowerKey.includes('penalty')) {
+          min = 1; max = 2; step = 0.01;
+        } else if (fieldCategory === 'rag') {
+          // RAG-specific slider ranges
+          if (lowerKey.includes('weight')) {
+            min = 0; max = 1; step = 0.01;
+          } else if (lowerKey.includes('threshold') || lowerKey.includes('similarity')) {
+            min = 0; max = 1; step = 0.01;
+          } else if (lowerKey.includes('score')) {
+            min = 0; max = 1; step = 0.01;
+          } else if (lowerKey.includes('k1')) {
+            min = 1.0; max = 3.0; step = 0.1;
+          } else if (lowerKey.includes('b') && lowerKey.includes('bm25')) {
+            min = 0.0; max = 1.0; step = 0.05;
+          }
+        }
         
         return (
           <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
-            <label className="jarvis-form-label">{formatLabel(key)}</label>
+            <label className="jarvis-form-label">{renderLabelWithHelp(formatLabel(key), helpText)}</label>
             <div className="jarvis-slider-container">
               <div className="jarvis-slider-header">
                 <span></span>
@@ -1089,18 +1486,21 @@ const renderStandardForm = (
                 <span>{max}</span>
               </div>
             </div>
+            {renderValidationError(validationError)}
           </div>
         );
       } else {
         return (
           <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
-            <label className="jarvis-form-label">{formatLabel(key)}</label>
+            <label className="jarvis-form-label">{renderLabelWithHelp(formatLabel(key), helpText)}</label>
             <input
               type="number"
               className="jarvis-form-input"
               value={value}
               onChange={(e) => onChangeHandler(key, parseFloat(e.target.value) || 0)}
+              style={{ borderColor: validationError ? '#f44336' : undefined }}
             />
+            {renderValidationError(validationError)}
           </div>
         );
       }
@@ -1108,6 +1508,8 @@ const renderStandardForm = (
 
     if (typeof value === 'string') {
       const lowerKey = key.toLowerCase();
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : null;
+      
       // Always use textarea for prompt fields to prevent height changes while typing
       const isLongText = value.length > 100 || lowerKey.includes('prompt') || lowerKey.includes('system');
       
@@ -1146,10 +1548,26 @@ const renderStandardForm = (
       
       const isVisible = passwordVisibility[key] || false;
       
+      // Check if this should be a dropdown for RAG settings
+      const shouldUseDropdown = fieldCategory === 'rag' && !isPassword && !isLongText;
+      const dropdownOptions = shouldUseDropdown ? getRAGDropdownOptions(key) : null;
+      
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
-          <label className="jarvis-form-label">{formatLabel(key)}</label>
-          {isLongText ? (
+          <label className="jarvis-form-label">{renderLabelWithHelp(formatLabel(key), helpText)}</label>
+          {dropdownOptions ? (
+            <select
+              className="jarvis-form-select"
+              value={value}
+              onChange={(e) => onChangeHandler(key, e.target.value)}
+            >
+              {dropdownOptions.map(option => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          ) : isLongText ? (
             <textarea
               className="jarvis-form-textarea"
               value={value}
@@ -1195,9 +1613,10 @@ const renderStandardForm = (
     }
 
     if (Array.isArray(value)) {
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
-          <label className="jarvis-form-label">{formatLabel(key)}</label>
+          <label className="jarvis-form-label">{renderLabelWithHelp(formatLabel(key), helpText)}</label>
           <div className="settings-section" style={{ padding: 'var(--jarvis-spacing-md)', maxHeight: '50vh', overflow: 'auto' }}>
             {value.map((item, index) => (
               <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
@@ -1600,7 +2019,7 @@ const renderStandardForm = (
               /* Regular form rendering for other tabs */
               <div style={{ padding: '16px' }}>
                 {/* Mode Selection for Settings and Query Classifier tabs */}
-                {(categoryKey === 'settings' || categoryKey === 'second_llm' || categoryKey === 'classifier') && (
+                {category === 'llm' && (categoryKey === 'settings' || categoryKey === 'second_llm' || categoryKey === 'classifier') && (
                   <Card variant="outlined" sx={{ mb: 3 }}>
                     <CardHeader 
                       title={
@@ -1681,7 +2100,7 @@ const renderStandardForm = (
                   </Card>
                 )}
                 
-                <div className={`jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
+                <div className={category === 'rag' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
                 {(() => {
                   // Deduplicate fields before rendering
                   const fieldEntries = Object.entries(categories[categoryKey].fields);
@@ -1751,7 +2170,12 @@ const renderStandardForm = (
                       )
                     : Array.from(renderedFields.values());
 
-                  // Render sorted fields
+                  // Special rendering for RAG settings with card grouping
+                  if (category === 'rag') {
+                    return renderRAGFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
+                  }
+                  
+                  // Render sorted fields normally for other categories
                   return sortedFields.map(({ key, value }) => 
                     renderField(key, value, 0, (fieldKey, fieldValue) => {
                       // Handle nested field updates properly

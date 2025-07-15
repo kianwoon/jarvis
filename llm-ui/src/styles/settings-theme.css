@@ -2,11 +2,12 @@
 
 /* Main Settings Container */
 .settings-container {
-  max-width: 1200px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
   padding: var(--jarvis-spacing-lg);
   height: 100%;
   background-color: var(--jarvis-bg-primary);
+  width: 100%;
 }
 
 /* Header Section */
@@ -123,6 +124,8 @@
   gap: var(--jarvis-spacing-md) var(--jarvis-spacing-lg);
   align-items: start;
   padding-bottom: var(--jarvis-spacing-lg);
+  width: 100%;
+  max-width: none;
 }
 
 .jarvis-form-grid .jarvis-form-group {
@@ -593,6 +596,29 @@
 .jarvis-form-textarea:focus-visible {
   outline: 2px solid var(--jarvis-accent);
   outline-offset: 2px;
+}
+
+/* RAG Cards Grid Layout */
+.rag-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: stretch;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+
+.rag-cards-grid > * {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+@media (max-width: 1200px) {
+  .rag-cards-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Print styles */
