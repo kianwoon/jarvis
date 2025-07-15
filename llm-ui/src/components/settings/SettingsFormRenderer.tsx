@@ -1028,6 +1028,121 @@ const renderPerformanceFieldsWithCards = (
   );
 };
 
+const renderLangfuseFieldsWithCards = (
+  fields: Array<{key: string, value: any}>,
+  categoryKey: string,
+  onChange: (field: string, value: any) => void,
+  onShowSuccess?: (message?: string) => void,
+  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void) => React.ReactNode
+) => {
+  // Debug logging for Langfuse
+  console.log('[DEBUG] Langfuse - categoryKey:', categoryKey);
+  console.log('[DEBUG] Langfuse - fields:', fields.map(f => f.key));
+  
+  // Define card configurations for Langfuse/Monitoring settings
+  const cardConfigurations: Record<string, Array<{title: string, subtitle: string, fields: string[]}>> = {
+    settings: [
+      {
+        title: 'Connection Settings',
+        subtitle: 'Langfuse server connection and authentication configuration',
+        fields: ['host', 'public_key', 'secret_key', 'enabled', 'enable_langfuse', 'langfuse_enabled']
+      },
+      {
+        title: 'Monitoring Configuration', 
+        subtitle: 'Monitoring features and data collection settings',
+        fields: ['sample_rate', 'sampling_rate', 'trace_enabled', 'enable_tracing', 'debug_mode', 'log_level']
+      },
+      {
+        title: 'Performance Settings',
+        subtitle: 'Performance optimization and resource management',
+        fields: ['batch_size', 'flush_interval', 'timeout', 'max_retries', 'queue_size', 'async_enabled']
+      },
+      {
+        title: 'Cost Tracking',
+        subtitle: 'Cost monitoring and budget management settings',
+        fields: ['cost_tracking', 'enable_cost_tracking', 'budget_limit', 'cost_threshold', 'currency']
+      }
+    ]
+  };
+
+  const cards = cardConfigurations[categoryKey] || [];
+  
+  // Track which fields have been assigned to cards
+  const assignedFields = new Set<string>();
+  
+  const cardComponents = cards.map((card, index) => {
+    const cardFields = fields.filter(field => 
+      card.fields.some(fieldPattern => {
+        const fieldKey = field.key.toLowerCase();
+        const pattern = fieldPattern.toLowerCase();
+        // Try exact match first
+        if (fieldKey === pattern) return true;
+        // Try partial matches
+        if (fieldKey.includes(pattern) || pattern.includes(fieldKey)) return true;
+        // Try removing dots and underscores
+        const cleanFieldKey = fieldKey.replace(/[._]/g, '');
+        const cleanPattern = pattern.replace(/[._]/g, '');
+        return cleanFieldKey === cleanPattern || cleanFieldKey.includes(cleanPattern) || cleanPattern.includes(cleanFieldKey);
+      })
+    );
+    
+    // Mark these fields as assigned
+    cardFields.forEach(field => assignedFields.add(field.key));
+    
+    if (cardFields.length === 0) return null;
+    
+    return (
+      <Card key={`${categoryKey}-${index}`} variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <CardHeader 
+          title={card.title}
+          subheader={card.subtitle}
+          sx={{ pb: 1 }}
+        />
+        <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div className="jarvis-form-grid single-column">
+            {cardFields.map(({ key, value }) => 
+              renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
+                onChange(fieldKey, fieldValue);
+              }, 'langfuse', onShowSuccess)
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }).filter(Boolean);
+
+  // Create an "Other Settings" card for unassigned fields
+  const unassignedFields = fields.filter(field => !assignedFields.has(field.key));
+  if (unassignedFields.length > 0) {
+    cardComponents.push(
+      <Card key="other" variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <CardHeader 
+          title="Other Settings"
+          subheader="Additional monitoring and tracing options"
+          sx={{ pb: 1 }}
+        />
+        <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div className="jarvis-form-grid single-column">
+            {unassignedFields.map(({ key, value }) => 
+              renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
+                onChange(fieldKey, fieldValue);
+              }, 'langfuse', onShowSuccess)
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  return (
+    <div style={{ width: '100%', maxWidth: 'none', display: 'block', boxSizing: 'border-box' }}>
+      <div className="rag-cards-grid">
+        {cardComponents}
+      </div>
+    </div>
+  );
+};
+
 const renderStandardForm = (
   data: any, 
   onChange: (field: string, value: any) => void, 
@@ -1600,6 +1715,57 @@ const renderStandardForm = (
     return null;
   };
 
+  const getLangfuseHelpText = (key: string): string | null => {
+    const helpTexts: Record<string, string> = {
+      // Connection Settings
+      'host': 'Langfuse server URL (e.g., https://cloud.langfuse.com or your self-hosted instance)',
+      'public_key': 'Public API key for Langfuse authentication - safe to expose in client-side code',
+      'secret_key': 'Secret API key for Langfuse authentication - keep secure and private',
+      'enabled': 'Enable or disable Langfuse monitoring globally',
+      'enable_langfuse': 'Enable Langfuse integration for monitoring and tracing',
+      'langfuse_enabled': 'Toggle Langfuse monitoring on/off',
+      
+      // Monitoring Configuration
+      'sample_rate': 'Percentage of requests to monitor (0.0-1.0). Lower values reduce overhead.',
+      'sampling_rate': 'Rate at which to sample requests for monitoring (0.0-1.0)',
+      'trace_enabled': 'Enable detailed tracing of AI model calls and responses',
+      'enable_tracing': 'Enable distributed tracing for request flow monitoring',
+      'debug_mode': 'Enable debug mode for verbose logging and troubleshooting',
+      'log_level': 'Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL',
+      
+      // Performance Settings
+      'batch_size': 'Number of events to batch before sending to Langfuse (1-1000)',
+      'flush_interval': 'Interval in seconds to flush batched events (1-300)',
+      'timeout': 'Request timeout in seconds for Langfuse API calls (1-60)',
+      'max_retries': 'Maximum number of retry attempts for failed requests (0-10)',
+      'queue_size': 'Maximum size of the event queue before dropping events (100-10000)',
+      'async_enabled': 'Enable asynchronous processing to reduce request latency',
+      
+      // Cost Tracking
+      'cost_tracking': 'Enable cost tracking and budget monitoring',
+      'enable_cost_tracking': 'Track costs for AI model usage and API calls',
+      'budget_limit': 'Monthly budget limit in USD (0 = no limit)',
+      'cost_threshold': 'Cost threshold for warnings (percentage of budget)',
+      'currency': 'Currency code for cost tracking (USD, EUR, etc.)'
+    };
+    
+    const lowerKey = key.toLowerCase();
+    
+    // Try exact match first
+    if (helpTexts[lowerKey]) {
+      return helpTexts[lowerKey];
+    }
+    
+    // Try partial matches
+    for (const [helpKey, helpText] of Object.entries(helpTexts)) {
+      if (lowerKey.includes(helpKey.toLowerCase()) || helpKey.toLowerCase().includes(lowerKey)) {
+        return helpText;
+      }
+    }
+    
+    return null;
+  };
+
   const renderField = (key: string, value: any, depth: number = 0, customOnChange?: (field: string, value: any) => void, fieldCategory?: string, onShowSuccessCallback?: (message?: string) => void) => {
     const formatLabel = (str: string) => {
       // Remove redundant "settings." prefix if present
@@ -1730,7 +1896,7 @@ const renderStandardForm = (
     };
     
     if (typeof value === 'boolean') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">
@@ -1748,7 +1914,7 @@ const renderStandardForm = (
     }
 
     if (typeof value === 'number') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : null;
       
       // Check if this looks like a slider parameter (temperature, top_p, etc.)
       const isSliderParam = key.toLowerCase().includes('temperature') || 
@@ -1834,7 +2000,7 @@ const renderStandardForm = (
 
     if (typeof value === 'string') {
       const lowerKey = key.toLowerCase();
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : null;
       
       // Always use textarea for prompt fields to prevent height changes while typing
       const isLongText = value.length > 100 || lowerKey.includes('prompt') || lowerKey.includes('system');
@@ -1939,7 +2105,7 @@ const renderStandardForm = (
     }
 
     if (Array.isArray(value)) {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">{renderLabelWithHelp(formatLabel(key), helpText)}</label>
@@ -2426,7 +2592,7 @@ const renderStandardForm = (
                   </Card>
                 )}
                 
-                <div className={category === 'rag' || category === 'large_generation' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
+                <div className={category === 'rag' || category === 'large_generation' || category === 'langfuse' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
                 {(() => {
                   // Deduplicate fields before rendering
                   const fieldEntries = Object.entries(categories[categoryKey].fields);
@@ -2504,6 +2670,11 @@ const renderStandardForm = (
                   // Special rendering for Performance Optimization settings with card grouping
                   if (category === 'large_generation') {
                     return renderPerformanceFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
+                  }
+                  
+                  // Special rendering for Langfuse/Monitoring settings with card grouping
+                  if (category === 'langfuse') {
+                    return renderLangfuseFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
                   }
                   
                   // Render sorted fields normally for other categories
