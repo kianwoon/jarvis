@@ -226,6 +226,9 @@ function SettingsApp() {
           tools: Array.isArray(tools) ? tools : (tools as any).data || [],
           settings: settings
         };
+        console.log('[DEBUG] MCP data structure:', data);
+        console.log('[DEBUG] MCP servers count:', data.servers.length);
+        console.log('[DEBUG] MCP tools count:', data.tools.length);
       } else if (category === 'langgraph_agents') {
         // LangGraph agents use a specific endpoint
         response = await fetch('/api/v1/langgraph/agents');
@@ -301,8 +304,24 @@ function SettingsApp() {
       };
       
       // Extract the actual settings data
-      const settingsData = data.settings || data;
+      // For MCP category, we need to preserve the servers and tools arrays
+      let settingsData;
+      if (category === 'mcp' && data.servers !== undefined && data.tools !== undefined) {
+        // MCP has a special structure with servers, tools, and settings
+        settingsData = data;
+      } else {
+        // Other categories use data.settings or data directly
+        settingsData = data.settings || data;
+      }
       const cleanedData = cleanNestedSettings(settingsData);
+      
+      // Debug log for MCP category after cleaning
+      if (category === 'mcp') {
+        console.log('[SettingsApp] MCP settingsData before cleaning:', settingsData);
+        console.log('[SettingsApp] MCP cleanedData after cleaning:', cleanedData);
+        console.log('[SettingsApp] MCP cleanedData.servers:', cleanedData.servers);
+        console.log('[SettingsApp] MCP cleanedData.tools:', cleanedData.tools);
+      }
       
       // Debug log for storage category after cleaning
       if (category === 'storage') {
