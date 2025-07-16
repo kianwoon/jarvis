@@ -247,7 +247,7 @@ async def execute_workflow_stream(
     trace = None
     generation = None
     
-    # Get model name from LLM settings for proper tracing (copy from langchain.py)
+    # Temporarily get model from LLM settings, will update after workflow is loaded
     from app.core.llm_settings_cache import get_llm_settings
     llm_settings = get_llm_settings()
     model_name = llm_settings.get("model", "unknown")
@@ -266,6 +266,61 @@ async def execute_workflow_stream(
         if not workflow.get("is_active", False):
             raise HTTPException(status_code=400, detail="Workflow is not active")
         
+        # Extract models from agent nodes in the workflow
+        workflow_models = []
+        
+        # Use langflow_config as that's what the automation executor uses
+        langflow_config = workflow.get("langflow_config", {})
+        nodes = langflow_config.get("nodes", [])
+        
+        logger.info(f"[AUTOMATION API] Workflow keys: {list(workflow.keys())}")
+        logger.info(f"[AUTOMATION API] Langflow config found: {'langflow_config' in workflow}")
+        logger.info(f"[AUTOMATION API] Workflow has {len(nodes)} nodes")
+        
+        for node in nodes:
+            node_type = node.get("type")
+            logger.info(f"[AUTOMATION API] Node type: {node_type}, id: {node.get('id')}")
+            
+            if node_type in ["AgentNode", "agentnode"]:
+                # Use the EXACT same extraction logic as agent_workflow_executor
+                node_data = node.get("data", {})
+                logger.info(f"[AUTOMATION API] AgentNode data keys: {list(node_data.keys())}")
+                
+                # The model is stored in node_data.node.model based on the data structure
+                node_info = node_data.get("node", {})
+                logger.info(f"[AUTOMATION API] node_info keys: {list(node_info.keys())}")
+                
+                # Extract model from the correct path
+                node_model = node_info.get("model")
+                
+                # Fallback to other possible locations
+                agent_config = node_data.get("agent_config", {})
+                if not node_model:
+                    node_model = agent_config.get("model")
+                
+                if not node_model:
+                    node_model = node_data.get("model")
+                
+                logger.info(f"[AUTOMATION API] AgentNode model: {node_model}")
+                logger.info(f"[AUTOMATION API] node_info.get('model'): {node_info.get('model')}")
+                logger.info(f"[AUTOMATION API] agent_config.get('model'): {agent_config.get('model')}")
+                logger.info(f"[AUTOMATION API] node_data.get('model'): {node_data.get('model')}")
+                
+                if node_model:
+                    workflow_models.append(node_model)
+        
+        # Update model name if models found in workflow  
+        if workflow_models:
+            model_name = workflow_models[0]
+            logger.info(f"[AUTOMATION API] Using model from workflow config: {model_name}, all models: {workflow_models}")
+        else:
+            logger.info(f"[AUTOMATION API] No models in workflow, using LLM settings: {model_name}")
+            # If no models found in workflow, use the same pattern as RAG endpoint
+            from app.core.llm_settings_cache import get_main_llm_full_config
+            main_llm_config = get_main_llm_full_config(llm_settings)
+            model_name = main_llm_config.get("model", "unknown")
+            logger.info(f"[AUTOMATION API] Updated to use main LLM config model: {model_name}")
+        
         # Generate execution ID
         execution_id = str(uuid.uuid4())
         
@@ -280,7 +335,8 @@ async def execute_workflow_stream(
                     "execution_id": execution_id,
                     "has_message": request.message is not None,
                     "has_input_data": request.input_data is not None,
-                    "model": model_name
+                    "model": model_name,
+                    "models_in_workflow": workflow_models if workflow_models else []
                 }
             )
             logger.debug(f"Automation trace created: {trace is not None}")
@@ -372,7 +428,9 @@ async def execute_workflow_stream(
                                     "response_length": len(final_answer) if final_answer else len(collected_output),
                                     "streaming": True,
                                     "workflow_id": workflow_id,
-                                    "execution_id": execution_id
+                                    "execution_id": execution_id,
+                                    "model": model_name,  # Include the model from workflow config
+                                    "models_used": workflow_models if workflow_models else [model_name]  # All models in workflow
                                 }
                             )
                             logger.debug(f"Automation trace updated")
@@ -399,7 +457,9 @@ async def execute_workflow_stream(
                                     "success": False,
                                     "error": str(e),
                                     "workflow_id": workflow_id,
-                                    "execution_id": execution_id
+                                    "execution_id": execution_id,
+                                    "model": model_name,
+                                    "models_used": workflow_models if workflow_models else [model_name]
                                 }
                             )
                         

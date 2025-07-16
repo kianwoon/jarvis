@@ -696,6 +696,10 @@ Required JSON format:
         
         print(f"[DEBUG] DynamicMultiAgentSystem.execute_agent called for {agent_name}")
         print(f"[DEBUG] Agent data keys: {list(agent_data.keys()) if agent_data else 'None'}")
+        print(f"[DEBUG] Context keys: {list(context.keys()) if context else 'None'}")
+        print(f"[DEBUG] Context model: {context.get('model') if context else 'No context'}")
+        print(f"[DEBUG] Context max_tokens: {context.get('max_tokens') if context else 'No context'}")
+        print(f"[DEBUG] Context temperature: {context.get('temperature') if context else 'No context'}")
         print(f"[DEBUG] execute_agent: Starting async generator for {agent_name}")
         print(f"[DEBUG] Parameters: query_type={type(query)}, query_length={len(query) if query else 0}")
         
@@ -780,21 +784,31 @@ Required JSON format:
         agent_config = agent_data.get("config", {})
         
         # Priority: context (workflow config) > agent config > default
+        # Debug max_tokens extraction
+        logger.debug(f"[MAX_TOKENS DEBUG] context.get('max_tokens'): {context.get('max_tokens') if context else 'No context'}")
+        logger.debug(f"[MAX_TOKENS DEBUG] agent_config.get('max_tokens'): {agent_config.get('max_tokens')}")
+        
         max_tokens = (
             context.get("max_tokens") or
             agent_config.get("max_tokens") or
             4000
         )
+        logger.debug(f"[MAX_TOKENS DEBUG] Final max_tokens selected: {max_tokens}")
         temperature = (
             context.get("temperature") or
             agent_config.get("temperature") or
             0.7
         )
+        # Debug model extraction
+        logger.debug(f"[MODEL DEBUG] context.get('model'): {context.get('model') if context else 'No context'}")
+        logger.debug(f"[MODEL DEBUG] agent_config.get('model'): {agent_config.get('model')}")
+        
         model = (
             context.get("model") or
             agent_config.get("model") or
             "qwen3:30b-a3b"
         )
+        logger.debug(f"[MODEL DEBUG] Final model selected: {model}")
         
         # Dynamic timeout based on query complexity and agent type
         # Priority: context timeout (from workflow config) > agent config timeout > default
@@ -1128,12 +1142,19 @@ TASK: Provide your analysis of the query above."""
                     
                     enhanced_content, tool_results = await self._process_tool_calls(agent_name, response_text, query, context, agent_data, agent_span)
                     
+                    # Calculate usage for the event
+                    usage = {}
+                    if tracer and tracer.is_enabled():
+                        usage = tracer.estimate_token_usage(full_prompt, enhanced_content)
+                    
                     # Enhance the completion event with avatar, description, and tool results
                     enhanced_chunk = {
                         **chunk,
                         "content": enhanced_content,  # Use enhanced content with tool results
                         "avatar": self.get_agent_avatar(agent_name, agent_data.get("role", "")),
-                        "description": agent_data.get("description", "")
+                        "description": agent_data.get("description", ""),
+                        "model": model,  # Include the model used for this agent
+                        "usage": usage  # Include token usage for cost tracking
                     }
                     
                     # Add tool results if any were executed
@@ -1141,6 +1162,7 @@ TASK: Provide your analysis of the query above."""
                         enhanced_chunk["tools_used"] = tool_results
                     
                     print(f"[DEBUG] execute_agent: Agent {agent_name} yielding enhanced completion")
+                    print(f"[DEBUG] Enhanced chunk keys: {list(enhanced_chunk.keys())}, model: {enhanced_chunk.get('model', 'MISSING')}")
                     _end_agent_generation(output_text=enhanced_content, success=True, input_prompt=full_prompt)
                     yield enhanced_chunk
                 elif chunk.get("type") == "agent_error":
@@ -1163,7 +1185,8 @@ TASK: Provide your analysis of the query above."""
             yield {
                 "type": "agent_error",
                 "agent": agent_name,
-                "error": str(e)
+                "error": str(e),
+                "model": model if 'model' in locals() else "unknown"
             }
         finally:
             print(f"[DEBUG] execute_agent: Finished (finally block) for {agent_name}")
@@ -1265,7 +1288,8 @@ TASK: Provide your analysis of the query above."""
             yield {
                 "type": "agent_complete", 
                 "agent": agent_name,
-                "content": cleaned_content
+                "content": cleaned_content,
+                "model": model
             }
                 
         except asyncio.TimeoutError:
@@ -1304,7 +1328,8 @@ TASK: Provide your analysis of the query above."""
                 "agent": agent_name,
                 "content": timeout_content,
                 "timeout": True,
-                "timeout_duration": timeout
+                "timeout_duration": timeout,
+                "model": model
             }
         except Exception as e:
             print(f"[ERROR] Agent {agent_name} failed: {e}")
@@ -1315,7 +1340,8 @@ TASK: Provide your analysis of the query above."""
             yield {
                 "type": "agent_error", 
                 "agent": agent_name,
-                "error": str(e)
+                "error": str(e),
+                "model": model
             }
     
     async def _process_tool_calls(self, agent_name: str, agent_response: str, query: str, context: Dict = None, agent_data: Dict = None, parent_span = None) -> tuple[str, list]:

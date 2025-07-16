@@ -774,6 +774,27 @@ class AgentWorkflowExecutor:
                             ""
                         )
                         
+                        # Extract model from AgentNode UI data
+                        node_model = (
+                            agent_config.get("model") or
+                            node_data.get("model") or
+                            None
+                        )
+                        
+                        # Extract temperature from AgentNode UI data
+                        node_temperature = (
+                            agent_config.get("temperature") or
+                            node_data.get("temperature") or
+                            None
+                        )
+                        
+                        # Extract max_tokens from AgentNode UI data
+                        node_max_tokens = (
+                            agent_config.get("max_tokens") or
+                            node_data.get("max_tokens") or
+                            None
+                        )
+                        
                         agent_nodes.append({
                             "node_id": node.get("id"),
                             "agent_name": agent_name,
@@ -788,6 +809,9 @@ class AgentWorkflowExecutor:
                             "query": node_query,  # Add node-specific query
                             "tools": tools,
                             "context": context,
+                            "model": node_model,  # Add model from AgentNode UI
+                            "temperature": node_temperature,  # Add temperature from AgentNode UI
+                            "max_tokens": node_max_tokens,  # Add max_tokens from AgentNode UI
                             "configured_timeout": configured_timeout,
                             "position": node.get("position", {}),
                             "state_enabled": state_enabled,
@@ -1114,6 +1138,10 @@ class AgentWorkflowExecutor:
                 "custom_prompt": agent_node.get("custom_prompt", ""),
                 "query": agent_node.get("query", ""),
                 "agent_config": agent_config,  # Pass full agent config for _create_state_based_prompt
+                # Pass through model, temperature, and max_tokens from AgentNode UI
+                "model": agent_node.get("model"),
+                "temperature": agent_node.get("temperature"),
+                "max_tokens": agent_node.get("max_tokens"),
                 # Pass through the configured timeout from workflow node
                 "configured_timeout": agent_node.get("configured_timeout", 60),
                 # Enhanced state management metadata for tracing
@@ -2333,18 +2361,36 @@ Please process this request independently and provide your analysis."""
             if "config" not in agent_info:
                 agent_info["config"] = {}
             
+            # Debug logging for model extraction
+            logger.debug(f"[MODEL EXTRACTION] Agent dict keys: {list(agent.keys())}")
+            logger.debug(f"[MODEL EXTRACTION] agent.get('model'): {agent.get('model')}")
+            logger.debug(f"[MODEL EXTRACTION] workflow_node.get('model'): {workflow_node.get('model')}")
+            logger.debug(f"[MODEL EXTRACTION] agent_config_data.get('model'): {agent_config_data.get('model')}")
+            
             # Override model if specified in workflow
             workflow_model = (
+                agent.get("model") or  # Direct model from AgentNode UI
                 workflow_node.get("model") or
                 workflow_context.get("model") or 
                 agent_config_data.get("model")
             )
+            logger.debug(f"[MODEL EXTRACTION] workflow_model value: {workflow_model}")
+            logger.debug(f"[MODEL EXTRACTION] agent_info before override: {agent_info.get('config', {})}")
+            
             if workflow_model:
+                if "config" not in agent_info:
+                    agent_info["config"] = {}
                 agent_info["config"]["model"] = workflow_model
                 logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} model with workflow config: {workflow_model}")
+            else:
+                logger.warning(f"[AGENT WORKFLOW] No workflow model found for agent {agent_name}")
+            
+            # Debug: Log the final agent_info config after override
+            logger.debug(f"[AGENT WORKFLOW] Final agent_info['config'] after model override: {agent_info.get('config', {})}")
                 
             # Override temperature if specified in workflow  
             workflow_temperature = (
+                agent.get("temperature") or  # Direct temperature from AgentNode UI
                 workflow_node.get("temperature") or
                 workflow_context.get("temperature") or
                 agent_config_data.get("temperature")
@@ -2355,6 +2401,7 @@ Please process this request independently and provide your analysis."""
                 
             # Override max_tokens if specified in workflow
             workflow_max_tokens = (
+                agent.get("max_tokens") or  # Direct max_tokens from AgentNode UI
                 workflow_node.get("max_tokens") or
                 workflow_context.get("max_tokens") or
                 agent_config_data.get("max_tokens")
@@ -2389,13 +2436,24 @@ Please process this request independently and provide your analysis."""
             effective_timeout = agent.get("configured_timeout", 60)
             logger.info(f"[AGENT WORKFLOW] Using configured timeout: {effective_timeout}s for agent {agent_name}")
             
+            # Get model, temperature, and max_tokens from overridden agent_info config OR from agent dict
+            # Priority: agent dict (from UI) > agent_info config (after override) > defaults
+            model_to_use = agent.get("model") or agent_info.get("config", {}).get("model")
+            temperature_to_use = agent.get("temperature") or agent_info.get("config", {}).get("temperature", agent.get("context", {}).get("temperature", 0.7))
+            max_tokens_to_use = agent.get("max_tokens") or agent_info.get("config", {}).get("max_tokens")
+            
+            logger.debug(f"[AGENT WORKFLOW] Agent dict model: {agent.get('model')}, temp: {agent.get('temperature')}, max_tokens: {agent.get('max_tokens')}")
+            logger.debug(f"[AGENT WORKFLOW] Context model: {model_to_use}, temperature: {temperature_to_use}, max_tokens: {max_tokens_to_use}")
+            
             context = {
                 "workflow_id": workflow_id,
                 "execution_id": execution_id,
                 "agent_config": agent,
                 "tools": available_tools,
                 "available_tools": available_tools,  # Ensure tools are passed to DynamicMultiAgentSystem
-                "temperature": agent.get("context", {}).get("temperature", 0.7),
+                "model": model_to_use,  # Pass the overridden model
+                "temperature": temperature_to_use,
+                "max_tokens": max_tokens_to_use,  # Pass the overridden max_tokens
                 "timeout": effective_timeout  # Pass configured timeout to agent system
             }
             
@@ -2467,6 +2525,7 @@ Please process this request independently and provide your analysis."""
                     # Extract usage and model information for cost tracking
                     llm_usage = event.get("usage", {})
                     model_info = event.get("model", "unknown")
+                    logger.info(f"[AGENT WORKFLOW] Extracted model from event: {model_info} (event keys: {list(event.keys())})")
                     
                 elif event_type == "tool_call":
                     tool_call_info = {

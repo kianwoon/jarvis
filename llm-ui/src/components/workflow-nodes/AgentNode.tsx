@@ -237,6 +237,7 @@ const MarkdownContent: React.FC<{ content: string; sx?: any }> = ({ content, sx 
 const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO = false, onAccordionStateChange, onDropdownOpen, onDropdownClose }) => {
   const [availableAgents, setAvailableAgents] = useState<Agent[]>([]);
   const [availableTools, setAvailableTools] = useState<MCPTool[]>([]);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedAgent, setSelectedAgent] = useState('');
   const [selectedAgentData, setSelectedAgentData] = useState<Agent | null>(null);
   const [selectedTools, setSelectedTools] = useState<string[]>(data.tools || []);
@@ -575,6 +576,18 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
         } else {
           // Failed to fetch tools
         }
+
+        // Fetch available models from Ollama API
+        const modelsResponse = await fetch('http://127.0.0.1:8000/api/v1/ollama/models');
+        
+        if (modelsResponse.ok) {
+          const modelsData = await modelsResponse.json();
+          const modelNames = (modelsData.models || []).map((model: any) => model.name).filter(Boolean);
+          setAvailableModels(modelNames);
+        } else {
+          // Failed to fetch models - use fallback
+          setAvailableModels(['qwen3:30b-a3b', 'llama3.1:70b', 'llama3.1:8b']);
+        }
       } catch (error) {
         // Failed to fetch data
         // Fallback agents
@@ -599,6 +612,9 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
           }
         ];
         setAvailableAgents(fallbackAgents);
+        
+        // Fallback models
+        setAvailableModels(['qwen3:30b-a3b', 'llama3.1:70b', 'llama3.1:8b']);
       }
     };
 
@@ -1373,7 +1389,7 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
                   <FormControl size="small" sx={{ flex: 1 }}>
                       <InputLabel>Model</InputLabel>
                       <Select
-                      value={data.model || 'qwen3:30b-a3b'}
+                      value={data.model || (availableModels.length > 0 ? availableModels[0] : '')}
                       onChange={(e) => {
                         updateNodeData?.(id, { model: e.target.value });
                       }}
@@ -1412,12 +1428,17 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
                         }
                       }}
                     >
-                      <MenuItem value="qwen3:30b-a3b">Qwen3 30B</MenuItem>
-                      <MenuItem value="llama3.1:70b">Llama 3.1 70B</MenuItem>
-                      <MenuItem value="llama3.1:8b">Llama 3.1 8B</MenuItem>
-                      <MenuItem value="mistral:7b">Mistral 7B</MenuItem>
-                      <MenuItem value="codellama:7b">CodeLlama 7B</MenuItem>
-                      <MenuItem value="phi3:medium">Phi-3 Medium</MenuItem>
+                      {availableModels.length === 0 ? (
+                        <MenuItem value="" disabled>
+                          <em>Loading models...</em>
+                        </MenuItem>
+                      ) : (
+                        availableModels.map((model) => (
+                          <MenuItem key={model} value={model}>
+                            {model}
+                          </MenuItem>
+                        ))
+                      )}
                     </Select>
                   </FormControl>
                   <TextField
