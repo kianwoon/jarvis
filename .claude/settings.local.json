@@ -76,7 +76,8 @@
       "Bash(git restore:*)",
       "Bash(perl:*)",
       "Bash(npm ls:*)",
-      "Bash(npm outdated)"
+      "Bash(npm outdated)",
+      "Bash(claude config set installMethod npm-global)"
     ],
     "deny": []
   },

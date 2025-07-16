@@ -52,6 +52,8 @@ from app.core.llm_settings_cache import get_llm_settings
 from app.core.redis_client import get_redis_client_for_langgraph
 from app.llm.ollama import JarvisLLM
 import logging
+import httpx
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -272,20 +274,12 @@ class LangGraphMultiAgentSystem:
                 logger.warning(f"Agent '{agent_name}': Reduced temperature from {temperature} to {MAX_TEMP}")
                 fixed_count += 1
             
-            # Validate and set model (NEW: Support for agent-specific thinking models)
+            # Model validation - let agents use their configured model, fallback handled in LLM execution
             model = config.get('model')
-            available_models = ["qwen3:30b-a3b", "llama3.1:8b", "qwen2.5:32b", "mistral:7b"]  # Add more as needed
-            
-            if model and model not in available_models:
-                logger.warning(f"Agent '{agent_name}': Unknown model '{model}', will fallback to global model")
-                # Don't remove invalid model, let it fallback to global setting
-            elif not model:
-                # For agents that should have thinking capability, suggest qwen3:30b-a3b
-                # This is just informational, not enforced
-                if "compliance" in agent_name.lower() or "analyst" in agent_name.lower() or "research" in agent_name.lower():
-                    logger.info(f"Agent '{agent_name}': Consider setting model to 'qwen3:30b-a3b' for thinking capability")
+            if model:
+                logger.debug(f"Agent '{agent_name}': Using configured model '{model}'")
             else:
-                logger.debug(f"Agent '{agent_name}': Using model '{model}'")
+                logger.debug(f"Agent '{agent_name}': No model configured, will use second_llm fallback")
             
             # Update the agent config if changes were made
             if config != original_config:

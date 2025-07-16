@@ -13,7 +13,7 @@ from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
 from app.core.langfuse_integration import get_tracer
-from app.core.llm_settings_cache import get_llm_settings
+from app.core.llm_settings_cache import get_llm_settings, get_second_llm_full_config
 from app.core.intelligent_agent_selector import IntelligentAgentSelector
 from app.core.agent_performance_tracker import performance_tracker
 # from app.langchain.tool_executor import tool_executor  # Not needed for current implementation
@@ -460,7 +460,10 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
                     # Ensure ALL agents have thinking capability unless explicitly configured otherwise
                     agent_model = config.get('model') or "qwen3:30b-a3b"  # DEFAULT TO THINKING MODEL
                     
-                    logger.error(f"🔍 MODEL DEBUG {agent_name}: {agent_model} (agent-specific: {bool(config.get('model'))}, default: qwen3:30b-a3b, global: {system.llm_settings['model']})")
+                    # Get second_llm config for multi-agent system
+                    second_llm_config = get_second_llm_full_config()
+                    global_model = second_llm_config.get('model', 'qwen3:30b-a3b')
+                    logger.error(f"🔍 MODEL DEBUG {agent_name}: {agent_model} (agent-specific: {bool(config.get('model'))}, default: qwen3:30b-a3b, global: {global_model})")
                     
                     # Real LLM streaming call with agent-specific model
                     llm_config = LLMConfig(
@@ -995,9 +998,11 @@ Begin your synthesis now:"""
                         synthesis_model = agent_config['model']  # Use same model as agents
                         break
                 
-                # Fallback to global setting if no agent-specific models found
-                if synthesis_model == "qwen3:30b-a3b" and system.llm_settings["model"] != "qwen3:30b-a3b":
-                    synthesis_model = system.llm_settings["model"]
+                # Fallback to second_llm setting if no agent-specific models found
+                second_llm_config = get_second_llm_full_config()
+                fallback_model = second_llm_config.get('model', 'qwen3:30b-a3b')
+                if synthesis_model == "qwen3:30b-a3b" and fallback_model != "qwen3:30b-a3b":
+                    synthesis_model = fallback_model
                 
                 logger.info(f"Synthesizer using model: {synthesis_model}")
                 
