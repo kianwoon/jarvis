@@ -265,12 +265,12 @@ async def fixed_multi_agent_streaming(
                     config = agent_data.get('config', {})
                     agent_tools = agent_data.get('tools', [])
                     
-                    # CRITICAL DEBUG: Log agent configuration details 
-                    logger.error(f"🔍 AGENT DEBUG {agent_name}:")
-                    logger.error(f"  - Config: {config}")
-                    logger.error(f"  - Has model in config: {'model' in config}")
-                    logger.error(f"  - Model value: {config.get('model', 'NOT SET')}")
-                    logger.error(f"  - Full agent data keys: {list(agent_data.keys())}")
+                    # Log agent configuration details 
+                    logger.debug(f"🔍 AGENT DEBUG {agent_name}:")
+                    logger.debug(f"  - Config: {config}")
+                    logger.debug(f"  - Has model in config: {'model' in config}")
+                    logger.debug(f"  - Model value: {config.get('model', 'NOT SET')}")
+                    logger.debug(f"  - Full agent data keys: {list(agent_data.keys())}")
                     
                     # Build collaboration context
                     collaboration_context = ""
@@ -456,14 +456,31 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
 
 """
                     
-                    # CRITICAL FIX: DEFAULT TO THINKING MODEL if no agent-specific model configured
-                    # Ensure ALL agents have thinking capability unless explicitly configured otherwise
-                    agent_model = config.get('model') or "qwen3:30b-a3b"  # DEFAULT TO THINKING MODEL
-                    
-                    # Get second_llm config for multi-agent system
-                    second_llm_config = get_second_llm_full_config()
-                    global_model = second_llm_config.get('model', 'qwen3:30b-a3b')
-                    logger.error(f"🔍 MODEL DEBUG {agent_name}: {agent_model} (agent-specific: {bool(config.get('model'))}, default: qwen3:30b-a3b, global: {global_model})")
+                    # Determine model and parameters based on configuration flags
+                    if config.get('use_main_llm'):
+                        from app.core.llm_settings_cache import get_main_llm_full_config
+                        main_llm_config = get_main_llm_full_config()
+                        agent_model = main_llm_config.get('model')
+                        # Override with main_llm defaults if not specified in agent config
+                        if 'max_tokens' not in config:
+                            config['max_tokens'] = main_llm_config.get('max_tokens', 2000)
+                        if 'temperature' not in config:
+                            config['temperature'] = main_llm_config.get('temperature', 0.7)
+                        logger.info(f"🔍 {agent_name} using main_llm: {agent_model}")
+                    elif config.get('use_second_llm') or not config.get('model'):
+                        # Use second_llm explicitly or as default
+                        second_llm_config = get_second_llm_full_config()
+                        agent_model = second_llm_config.get('model')
+                        # Override with second_llm defaults if not specified
+                        if 'max_tokens' not in config:
+                            config['max_tokens'] = second_llm_config.get('max_tokens', 2000)
+                        if 'temperature' not in config:
+                            config['temperature'] = second_llm_config.get('temperature', 0.7)
+                        logger.info(f"🔍 {agent_name} using second_llm: {agent_model}")
+                    else:
+                        # Use specific model
+                        agent_model = config.get('model')
+                        logger.info(f"🔍 {agent_name} using specific model: {agent_model}")
                     
                     # Real LLM streaming call with agent-specific model
                     llm_config = LLMConfig(

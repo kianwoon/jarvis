@@ -173,6 +173,33 @@ class MultiAgentLangGraphState(TypedDict):
 class LangGraphMultiAgentSystem:
     """LangGraph-based multi-agent system with proper state management"""
     
+    def _get_agent_model_config(self, agent_config: Dict[str, Any]) -> tuple[str, int, float]:
+        """
+        Get model name and parameters based on agent configuration flags.
+        Returns: (model_name, max_tokens, temperature)
+        """
+        if agent_config.get('use_main_llm'):
+            from app.core.llm_settings_cache import get_main_llm_full_config
+            main_llm_config = get_main_llm_full_config()
+            model_name = main_llm_config.get('model')
+            # Use main_llm settings for params if not overridden in agent config
+            max_tokens = agent_config.get('max_tokens', main_llm_config.get('max_tokens', 1000))
+            temperature = agent_config.get('temperature', main_llm_config.get('temperature', 0.7))
+        elif agent_config.get('use_second_llm'):
+            from app.core.llm_settings_cache import get_second_llm_full_config
+            second_llm_config = get_second_llm_full_config()
+            model_name = second_llm_config.get('model')
+            # Use second_llm settings for params if not overridden in agent config
+            max_tokens = agent_config.get('max_tokens', second_llm_config.get('max_tokens', 1000))
+            temperature = agent_config.get('temperature', second_llm_config.get('temperature', 0.7))
+        else:
+            # Use specific model or fall back to None (will use second_llm in _efficient_llm_call)
+            model_name = agent_config.get('model')
+            max_tokens = agent_config.get('max_tokens', 1000)
+            temperature = agent_config.get('temperature', 0.7)
+        
+        return model_name, max_tokens, temperature
+
     def __init__(self, conversation_id: Optional[str] = None):
         self.conversation_id = conversation_id or str(uuid.uuid4())
         self.redis_client = get_redis_client_for_langgraph()
@@ -181,25 +208,31 @@ class LangGraphMultiAgentSystem:
             # Continue without Redis for conversation storage
             self.redis_client = None
         
-        # Initialize checkpointer for state persistence using pooled Redis connection
-        redis_for_checkpointer = get_redis_client_for_langgraph()
-        if redis_for_checkpointer:
-            try:
-                self.checkpointer = RedisSaver(redis_for_checkpointer)
-                logger.info("LangGraph checkpointer initialized with pooled Redis connection")
-            except Exception as e:
-                logger.warning(f"Failed to initialize RedisSaver: {e}")
-                self.checkpointer = None
-        else:
+        # Initialize checkpointer for state persistence
+        try:
+            from app.core.config import get_settings
+            settings = get_settings()
+            redis_host = settings.REDIS_HOST
+            redis_port = settings.REDIS_PORT
+            
+            # In development, if Redis host is localhost but we're in Docker, try 'redis' first
+            if redis_host == "localhost" and os.path.exists("/.dockerenv"):
+                redis_host = "redis"
+            
+            # RedisSaver expects a Redis URL string
+            redis_url = f"redis://{redis_host}:{redis_port}"
+            self.checkpointer = RedisSaver.from_conn_string(redis_url)
+            logger.info(f"LangGraph checkpointer initialized with Redis URL: {redis_url}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize RedisSaver: {e}")
             self.checkpointer = None
-            logger.warning("Redis not available, checkpointing disabled")
         
         # Load agents and settings
         self.agents = get_langgraph_agents()
         self.llm_settings = get_llm_settings()
         
-        # Validate and fix agent configurations
-        self._validate_and_fix_agent_configs()
+        # Use agent configurations as-is from the database - no hardcoded limits
+        logger.info(f"Loaded {len(self.agents)} agents with their configured settings")
         
         # Initialize performance metrics
         self.performance_metrics = LLMPerformanceMetrics()
@@ -214,81 +247,6 @@ class LangGraphMultiAgentSystem:
         logger.info(f"LangGraph Multi-Agent System initialized with {len(self.agents)} agents")
 
 
-    def _validate_and_fix_agent_configs(self):
-        """Validate and fix agent configurations to prevent hangs and timeouts"""
-        
-        # Define safe configuration limits (reduced for better responsiveness)
-        MAX_TOKENS_LIMIT = 2000  # Reduced maximum safe tokens
-        MAX_TIMEOUT_LIMIT = 45   # Reduced maximum safe timeout in seconds  
-        MIN_TIMEOUT = 15         # Minimum reasonable timeout
-        MIN_TEMP = 0.1           # Minimum temperature
-        MAX_TEMP = 1.0           # Maximum temperature
-        
-        # Special limits for synthesizer (needs more resources for complex synthesis)
-        SYNTHESIZER_MAX_TOKENS = 3000   # Higher token limit for synthesis
-        SYNTHESIZER_MAX_TIMEOUT = 90    # Longer timeout for synthesis
-        
-        fixed_count = 0
-        
-        for agent_name, agent_data in self.agents.items():
-            config = agent_data.get('config', {})
-            original_config = config.copy()
-            
-            # Validate and fix max_tokens (with special handling for synthesizer)
-            max_tokens = config.get('max_tokens', 1500)
-            is_synthesizer = agent_name.lower() == 'synthesizer'
-            
-            max_token_limit = SYNTHESIZER_MAX_TOKENS if is_synthesizer else MAX_TOKENS_LIMIT
-            
-            if max_tokens > max_token_limit:
-                config['max_tokens'] = max_token_limit
-                logger.warning(f"Agent '{agent_name}': Reduced max_tokens from {max_tokens} to {max_token_limit}")
-                fixed_count += 1
-            elif max_tokens < 100:
-                default_tokens = 2000 if is_synthesizer else 1000
-                config['max_tokens'] = default_tokens
-                logger.warning(f"Agent '{agent_name}': Increased max_tokens from {max_tokens} to {default_tokens}")
-                fixed_count += 1
-            
-            # Validate and fix timeout (with special handling for synthesizer)
-            timeout = config.get('timeout', 30)
-            max_timeout_limit = SYNTHESIZER_MAX_TIMEOUT if is_synthesizer else MAX_TIMEOUT_LIMIT
-            
-            if timeout > max_timeout_limit:
-                config['timeout'] = max_timeout_limit
-                logger.warning(f"Agent '{agent_name}': Reduced timeout from {timeout}s to {max_timeout_limit}s")
-                fixed_count += 1
-            elif timeout < MIN_TIMEOUT:
-                config['timeout'] = MIN_TIMEOUT
-                logger.warning(f"Agent '{agent_name}': Increased timeout from {timeout}s to {MIN_TIMEOUT}s")
-                fixed_count += 1
-            
-            # Validate and fix temperature
-            temperature = config.get('temperature', 0.7)
-            if temperature < MIN_TEMP:
-                config['temperature'] = MIN_TEMP
-                logger.warning(f"Agent '{agent_name}': Increased temperature from {temperature} to {MIN_TEMP}")
-                fixed_count += 1
-            elif temperature > MAX_TEMP:
-                config['temperature'] = MAX_TEMP
-                logger.warning(f"Agent '{agent_name}': Reduced temperature from {temperature} to {MAX_TEMP}")
-                fixed_count += 1
-            
-            # Model validation - let agents use their configured model, fallback handled in LLM execution
-            model = config.get('model')
-            if model:
-                logger.debug(f"Agent '{agent_name}': Using configured model '{model}'")
-            else:
-                logger.debug(f"Agent '{agent_name}': No model configured, will use second_llm fallback")
-            
-            # Update the agent config if changes were made
-            if config != original_config:
-                agent_data['config'] = config
-        
-        if fixed_count > 0:
-            logger.info(f"Fixed {fixed_count} configuration issues across {len(self.agents)} agents")
-        else:
-            logger.debug("All agent configurations are within safe limits")
 
     def _clean_llm_response(self, response_text: str) -> str:
         """PRESERVE ALL THINKING CONTENT - qwen3:30b-a3b is a thinking model"""
@@ -343,10 +301,16 @@ class LangGraphMultiAgentSystem:
                 timeout = min(timeout * 1.2, max_timeout)  # Scale timeout for large requests
             
             # CRITICAL FIX: Support agent-specific model configuration
-            # Use provided model_name if available, otherwise fall back to global setting
-            effective_model = model_name or self.llm_settings["model"]
+            # Use provided model_name if available, otherwise fall back to second_llm
+            if model_name:
+                effective_model = model_name
+            else:
+                # Get second_llm config as default
+                from app.core.llm_settings_cache import get_second_llm_full_config
+                second_llm_config = get_second_llm_full_config()
+                effective_model = second_llm_config.get('model', 'qwen3:1.7b')
             
-            logger.debug(f"Agent {agent_name} using model: {effective_model} (agent-specific: {bool(model_name)}, global: {self.llm_settings['model']})")
+            logger.debug(f"Agent {agent_name} using model: {effective_model} (agent-specific: {bool(model_name)})")
             
             # Create LLM config using codebase efficient pattern
             llm_config = LLMConfig(
@@ -694,10 +658,11 @@ class LangGraphMultiAgentSystem:
             try:
                 # Use agent-specific config from database with reduced limits for faster execution
                 agent_config = agent_data.get('config', {})
-                max_tokens = min(agent_config.get('max_tokens', 1000), 1500)  # Cap at 1500 for speed
-                timeout = min(agent_config.get('timeout', 30), 30)           # Cap at 30s for speed
-                temperature = agent_config.get('temperature', 0.7)
-                model_name = agent_config.get('model')  # Get agent-specific model
+                timeout = min(agent_config.get('timeout', 30), 30)  # Cap at 30s for speed
+                
+                # Get model and parameters based on configuration flags
+                model_name, max_tokens, temperature = self._get_agent_model_config(agent_config)
+                max_tokens = min(max_tokens, 1500)  # Cap at 1500 for speed in sequential execution
                 
                 logger.info(f"Executing agent {agent_name} with {max_tokens} tokens, {timeout}s timeout, model: {model_name or 'global'}")
                 
@@ -777,10 +742,10 @@ class LangGraphMultiAgentSystem:
             try:
                 # Use agent-specific config from database
                 agent_config = agent_data.get('config', {})
-                max_tokens = agent_config.get('max_tokens', 1000)
                 timeout = agent_config.get('timeout', 45)
-                temperature = agent_config.get('temperature', 0.7)
-                model_name = agent_config.get('model')  # Get agent-specific model
+                
+                # Get model and parameters based on configuration flags
+                model_name, max_tokens, temperature = self._get_agent_model_config(agent_config)
                 
                 # Use efficient LLM call for agent execution with agent-specific config including model
                 agent_response = await self._efficient_llm_call(
@@ -935,10 +900,10 @@ class LangGraphMultiAgentSystem:
             try:
                 # Use agent-specific config from database for consensus round 1
                 agent_config = agent_data.get('config', {})
-                max_tokens = agent_config.get('max_tokens', 1000)
                 timeout = agent_config.get('timeout', 45)
-                temperature = agent_config.get('temperature', 0.7)
-                model_name = agent_config.get('model')  # Get agent-specific model
+                
+                # Get model and parameters based on configuration flags
+                model_name, max_tokens, temperature = self._get_agent_model_config(agent_config)
                 
                 response = await self._efficient_llm_call(
                     agent_prompt,

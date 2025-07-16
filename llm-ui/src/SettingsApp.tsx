@@ -179,8 +179,22 @@ function SettingsApp() {
     setError(prev => ({ ...prev, [category]: '' }));
 
     try {
-      let response;
-      let data;
+      // For LangGraph agents, reload cache first when force refresh
+      if (category === 'langgraph_agents' && force) {
+        try {
+          const cacheResponse = await fetch('/api/v1/langgraph/agents/cache/reload', {
+            method: 'POST'
+          });
+          if (!cacheResponse.ok) {
+            console.error('Failed to reload agent cache');
+          }
+        } catch (error) {
+          console.error('Error reloading agent cache:', error);
+        }
+      }
+
+      let response: Response | undefined;
+      let data: any;
 
       // Handle different endpoint patterns based on category
       if (category === 'mcp') {
@@ -192,9 +206,9 @@ function SettingsApp() {
           fetch('/api/v1/settings/mcp')
         ]);
         
-        let servers = [];
-        let tools = [];
-        let settings = {};
+        let servers: any[] = [];
+        let tools: any[] = [];
+        let settings: any = {};
         
         if (serversResponse.ok) {
           servers = await serversResponse.json();
@@ -305,7 +319,7 @@ function SettingsApp() {
       
       // Extract the actual settings data
       // For MCP category, we need to preserve the servers and tools arrays
-      let settingsData;
+      let settingsData: any;
       if (category === 'mcp' && data.servers !== undefined && data.tools !== undefined) {
         // MCP has a special structure with servers, tools, and settings
         settingsData = data;

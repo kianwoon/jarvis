@@ -100,6 +100,7 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
   const [viewingRecord, setViewingRecord] = useState<any>(null);
   const [localData, setLocalData] = useState(data);
   const [availableTools, setAvailableTools] = useState<string[]>([]);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
 
   // Update local data when props change
   React.useEffect(() => {
@@ -110,6 +111,7 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
   useEffect(() => {
     if (category === 'langgraph_agents') {
       fetchAvailableTools();
+      fetchAvailableModels();
     }
   }, [category]);
 
@@ -131,6 +133,19 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
       console.error('Error fetching tools:', error);
       // Fallback to common tools if API fails
       setAvailableTools(['search', 'calculator', 'weather', 'email', 'file_manager', 'database']);
+    }
+  };
+
+  const fetchAvailableModels = async () => {
+    try {
+      const response = await fetch('/api/v1/ollama/models');
+      if (response.ok) {
+        const data = await response.json();
+        const modelNames = (data.models || []).map((model: any) => model.name).filter(Boolean);
+        setAvailableModels(modelNames);
+      }
+    } catch (error) {
+      console.error('Error fetching models:', error);
     }
   };
 
@@ -225,6 +240,21 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
       if (response.ok) {
         setEditDialog(false);
         setEditingRecord(null);
+        
+        // For LangGraph agents, explicitly reload the cache
+        if (category === 'langgraph_agents') {
+          try {
+            const cacheResponse = await fetch('/api/v1/langgraph/agents/cache/reload', {
+              method: 'POST'
+            });
+            if (!cacheResponse.ok) {
+              console.error('Failed to reload agent cache');
+            }
+          } catch (error) {
+            console.error('Error reloading agent cache:', error);
+          }
+        }
+        
         onRefresh();
       } else {
         alert('Failed to save record');
@@ -563,20 +593,184 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
                 ))}
               </Select>
             </FormControl>
-            <TextField
-              label="Configuration (JSON)"
-              value={JSON.stringify(editingRecord.config || {}, null, 2)}
-              onChange={(e) => {
-                try {
-                  const config = JSON.parse(e.target.value);
-                  setEditingRecord({...editingRecord, config});
-                } catch {}
-              }}
-              fullWidth
-              multiline
-              rows={4}
-              sx={{ fontFamily: 'monospace' }}
-            />
+            {/* Configuration Section */}
+            <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>
+                Agent Configuration
+              </Typography>
+              
+              {/* Quick Presets */}
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="caption" color="text.secondary" gutterBottom>
+                  Quick Presets
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 1 }}>
+                  <Chip
+                    label="Use Main LLM"
+                    onClick={() => setEditingRecord({
+                      ...editingRecord,
+                      config: { use_main_llm: true }
+                    })}
+                    variant="outlined"
+                    size="small"
+                    color={editingRecord.config?.use_main_llm ? "primary" : "default"}
+                  />
+                  <Chip
+                    label="Use Second LLM"
+                    onClick={() => setEditingRecord({
+                      ...editingRecord,
+                      config: { use_second_llm: true }
+                    })}
+                    variant="outlined"
+                    size="small"
+                    color={editingRecord.config?.use_second_llm ? "primary" : "default"}
+                  />
+                  <Chip
+                    label="Lightweight"
+                    onClick={() => setEditingRecord({
+                      ...editingRecord,
+                      config: { max_tokens: 1500, temperature: 0.7, timeout: 30 }
+                    })}
+                    variant="outlined"
+                    size="small"
+                  />
+                  <Chip
+                    label="Standard"
+                    onClick={() => setEditingRecord({
+                      ...editingRecord,
+                      config: { max_tokens: 2000, temperature: 0.7, timeout: 45 }
+                    })}
+                    variant="outlined"
+                    size="small"
+                  />
+                  <Chip
+                    label="Heavy Processing"
+                    onClick={() => setEditingRecord({
+                      ...editingRecord,
+                      config: { max_tokens: 3000, temperature: 0.6, timeout: 90 }
+                    })}
+                    variant="outlined"
+                    size="small"
+                  />
+                </Box>
+              </Box>
+              
+              {/* Configuration Info */}
+              {editingRecord.config?.use_main_llm && (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  This agent will use main_llm configuration as base. You can still override specific settings below.
+                </Alert>
+              )}
+              {(editingRecord.config?.use_second_llm || (!editingRecord.config?.model && !editingRecord.config?.use_main_llm)) && (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  This agent will use second_llm configuration as base. You can override specific settings below.
+                </Alert>
+              )}
+              
+              {/* Model Selection */}
+              <FormControl fullWidth sx={{ mb: 2 }}>
+                <InputLabel>Model</InputLabel>
+                <Select
+                  value={
+                    editingRecord.config?.use_main_llm ? '__use_main_llm__' : 
+                    (editingRecord.config?.use_second_llm || !editingRecord.config?.model) ? '__use_second_llm__' : 
+                    editingRecord.config.model
+                  }
+                  onChange={(e) => {
+                    if (e.target.value === '__use_main_llm__') {
+                      setEditingRecord({
+                        ...editingRecord,
+                        config: { ...editingRecord.config, use_main_llm: true, use_second_llm: undefined, model: undefined }
+                      });
+                    } else if (e.target.value === '__use_second_llm__') {
+                      setEditingRecord({
+                        ...editingRecord,
+                        config: { ...editingRecord.config, use_second_llm: true, use_main_llm: undefined, model: undefined }
+                      });
+                    } else {
+                      setEditingRecord({
+                        ...editingRecord,
+                        config: { ...editingRecord.config, model: e.target.value, use_main_llm: undefined, use_second_llm: undefined }
+                      });
+                    }
+                  }}
+                  label="Model"
+                >
+                  <MenuItem value="__use_second_llm__">
+                    <em>Use system default (second_llm)</em>
+                  </MenuItem>
+                  <MenuItem value="__use_main_llm__">
+                    <em>Use main_llm configuration</em>
+                  </MenuItem>
+                  {availableModels.map(model => (
+                    <MenuItem key={model} value={model}>
+                      {model}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              {/* Max Tokens */}
+              <TextField
+                label="Max Tokens"
+                type="number"
+                value={editingRecord.config?.max_tokens || ''}
+                onChange={(e) => setEditingRecord({
+                  ...editingRecord,
+                  config: { 
+                    ...editingRecord.config, 
+                    max_tokens: e.target.value ? parseInt(e.target.value) : undefined 
+                  }
+                })}
+                fullWidth
+                sx={{ mb: 2 }}
+                helperText="Maximum tokens (500-3000). Leave empty for default"
+                InputProps={{
+                  inputProps: { min: 100, max: 10000, step: 100 }
+                }}
+              />
+
+              {/* Temperature */}
+              <TextField
+                label="Temperature"
+                type="number"
+                value={editingRecord.config?.temperature !== undefined ? editingRecord.config.temperature : ''}
+                onChange={(e) => setEditingRecord({
+                  ...editingRecord,
+                  config: { 
+                    ...editingRecord.config, 
+                    temperature: e.target.value ? parseFloat(e.target.value) : undefined 
+                  }
+                })}
+                fullWidth
+                sx={{ mb: 2 }}
+                helperText="Creativity (0.1-1.0). Default: 0.7"
+                InputProps={{
+                  inputProps: { min: 0.1, max: 1.0, step: 0.1 }
+                }}
+              />
+
+              {/* Timeout */}
+              <TextField
+                label="Timeout (seconds)"
+                type="number"
+                value={editingRecord.config?.timeout || ''}
+                onChange={(e) => setEditingRecord({
+                  ...editingRecord,
+                  config: { 
+                    ...editingRecord.config, 
+                    timeout: e.target.value ? parseInt(e.target.value) : undefined 
+                  }
+                })}
+                fullWidth
+                sx={{ mb: 2 }}
+                helperText="Execution timeout (15-90s). Default: 30s"
+                InputProps={{
+                  inputProps: { min: 15, max: 90, step: 5 }
+                }}
+              />
+
+            </Box>
             <FormControlLabel
               control={
                 <Switch
