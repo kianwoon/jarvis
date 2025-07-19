@@ -1,6 +1,6 @@
 import httpx
 from app.llm.base import BaseLLM, LLMConfig, LLMResponse
-from typing import AsyncGenerator
+from typing import AsyncGenerator, List, Dict, Union, Optional
 import json
 from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
 
@@ -11,86 +11,169 @@ class OllamaLLM(BaseLLM):
         self.model_name = config.model_name
 
     async def generate(self, prompt: str, **kwargs) -> LLMResponse:
-        # Get context length from settings or use model-specific defaults
-        llm_settings = get_llm_settings()
-        context_length = llm_settings.get("context_length", 128000)  # Default to 128k for DeepSeek
+        """Generate using chat endpoint for better prompt handling.
         
-        payload = {
-            "model": self.model_name,
-            "prompt": prompt,
-            "stream": False,  # Important: disable streaming for single response
-            "options": {
-                "temperature": self.config.temperature,
-                "top_p": self.config.top_p,
-                "num_predict": self.config.max_tokens,
-                "num_ctx": context_length,  # Set context window size
-            }
-        }
-        async with httpx.AsyncClient(timeout=30.0) as client:  # 30 second timeout
-            response = await client.post(f"{self.base_url}/api/generate", json=payload)
-            response.raise_for_status()
-            
-            # With stream=False, Ollama returns a single JSON response
-            try:
-                data = response.json()
-                return LLMResponse(
-                    text=data.get("response", ""),
-                    metadata={"model": self.model_name, "done": data.get("done", True)}
-                )
-            except json.JSONDecodeError:
-                # Fallback: try parsing line by line if single JSON fails
-                lines = response.text.strip().splitlines()
-                full_text = ""
-                for line in lines:
-                    if line.strip():
-                        try:
-                            data = json.loads(line)
-                            if "response" in data:
-                                full_text += data["response"]
-                        except json.JSONDecodeError:
-                            continue
-                
-                return LLMResponse(
-                    text=full_text,
-                    metadata={"model": self.model_name}
-                )
+        This method now uses the chat endpoint internally to properly separate
+        system prompts from user prompts.
+        """
+        # Use chat endpoint with message format
+        return await self.chat(prompt, **kwargs)
 
     async def generate_stream(self, prompt: str, **kwargs) -> AsyncGenerator[LLMResponse, None]:
-        # Get context length from settings or use model-specific defaults
+        """Generate stream using chat endpoint for better prompt handling.
+        
+        This method now uses the chat endpoint internally to properly separate
+        system prompts from user prompts.
+        """
+        # Use chat_stream endpoint with message format
+        async for response in self.chat_stream(prompt, **kwargs):
+            yield response
+
+    async def embed(self, text: str):
+        raise NotImplementedError("Embedding is not supported for OllamaLLM.")
+    
+    def _convert_prompt_to_messages(self, prompt: str, system_prompt: Optional[str] = None) -> List[Dict[str, str]]:
+        """Convert a single prompt string to messages format.
+        
+        If system_prompt is provided, it will be used as the system message.
+        Otherwise, we'll try to extract it from the prompt if it follows certain patterns.
+        """
+        messages = []
+        
+        # Debug logging
+        print(f"[DEBUG CONVERT] Converting prompt to messages")
+        print(f"[DEBUG CONVERT] System prompt provided: {system_prompt is not None}")
+        print(f"[DEBUG CONVERT] Prompt length: {len(prompt)} chars")
+        
+        # If system prompt is explicitly provided
+        if system_prompt:
+            print(f"[DEBUG CONVERT] Using provided system prompt: {system_prompt[:100]}...")
+            messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            return messages
+        
+        # Try to detect if the prompt has a system prompt section
+        # Look for common patterns that indicate system instructions
         llm_settings = get_llm_settings()
-        context_length = llm_settings.get("context_length", 128000)  # Default to 128k for DeepSeek
+        default_system_prompt = llm_settings.get('main_llm', {}).get('system_prompt', '')
+        print(f"[DEBUG CONVERT] Default system prompt from settings: {default_system_prompt[:100] if default_system_prompt else 'None'}...")
+        
+        if default_system_prompt and prompt.startswith(default_system_prompt):
+            # Extract system prompt and remaining content
+            remaining_prompt = prompt[len(default_system_prompt):].strip()
+            print(f"[DEBUG CONVERT] Detected system prompt in prompt string, extracting...")
+            messages.append({"role": "system", "content": default_system_prompt})
+            if remaining_prompt:
+                messages.append({"role": "user", "content": remaining_prompt})
+        else:
+            # No clear separation, treat entire prompt as user message
+            print(f"[DEBUG CONVERT] No system prompt detected, treating entire prompt as user message")
+            messages.append({"role": "user", "content": prompt})
+        
+        return messages
+    
+    async def chat(self, prompt: Union[str, List[Dict[str, str]]], **kwargs) -> LLMResponse:
+        """Chat completion using Ollama's /api/chat endpoint.
+        
+        Args:
+            prompt: Either a string (will be converted to messages) or a list of message dicts
+            **kwargs: Additional arguments like system_prompt for string prompts
+        """
+        # Get context length from settings
+        llm_settings = get_llm_settings()
+        context_length = llm_settings.get("context_length", 128000)
+        
+        # Convert prompt to messages if it's a string
+        if isinstance(prompt, str):
+            system_prompt = kwargs.get('system_prompt')
+            messages = self._convert_prompt_to_messages(prompt, system_prompt)
+        else:
+            messages = prompt
         
         payload = {
             "model": self.model_name,
-            "prompt": prompt,
+            "messages": messages,
+            "stream": False,
             "options": {
                 "temperature": self.config.temperature,
                 "top_p": self.config.top_p,
                 "num_predict": self.config.max_tokens,
-                "num_ctx": context_length,  # Set context window size
-            },
-            "stream": True
+                "num_ctx": context_length,
+            }
         }
         
-        print(f"[DEBUG] Ollama payload - model: {self.model_name}, num_predict: {self.config.max_tokens}, num_ctx: {context_length}")
-        print(f"[DEBUG] Ollama URL: {self.base_url}/api/generate")
+        # Debug logging for messages
+        print(f"[DEBUG OLLAMA CHAT] Sending {len(messages)} messages to Ollama")
+        for i, msg in enumerate(messages):
+            role = msg.get('role', 'unknown')
+            content_preview = msg.get('content', '')[:200] + '...' if len(msg.get('content', '')) > 200 else msg.get('content', '')
+            print(f"[DEBUG OLLAMA CHAT] Message {i+1} - Role: {role}")
+            print(f"[DEBUG OLLAMA CHAT] Message {i+1} - Content preview: {content_preview}")
+            print(f"[DEBUG OLLAMA CHAT] Message {i+1} - Full length: {len(msg.get('content', ''))} chars")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(f"{self.base_url}/api/chat", json=payload)
+            response.raise_for_status()
+            
+            data = response.json()
+            # Chat endpoint returns message object
+            message = data.get("message", {})
+            return LLMResponse(
+                text=message.get("content", ""),
+                metadata={
+                    "model": self.model_name,
+                    "done": data.get("done", True),
+                    "role": message.get("role", "assistant")
+                }
+            )
+    
+    async def chat_stream(self, prompt: Union[str, List[Dict[str, str]]], **kwargs) -> AsyncGenerator[LLMResponse, None]:
+        """Streaming chat completion using Ollama's /api/chat endpoint."""
+        # Get context length from settings
+        llm_settings = get_llm_settings()
+        context_length = llm_settings.get("context_length", 128000)
+        
+        # Convert prompt to messages if it's a string
+        if isinstance(prompt, str):
+            system_prompt = kwargs.get('system_prompt')
+            messages = self._convert_prompt_to_messages(prompt, system_prompt)
+        else:
+            messages = prompt
+        
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": self.config.temperature,
+                "top_p": self.config.top_p,
+                "num_predict": self.config.max_tokens,
+                "num_ctx": context_length,
+            }
+        }
+        
+        print(f"[DEBUG] Ollama chat payload - model: {self.model_name}, num_predict: {self.config.max_tokens}, num_ctx: {context_length}")
+        print(f"[DEBUG] Ollama URL: {self.base_url}/api/chat")
+        
         async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("POST", f"{self.base_url}/api/generate", json=payload) as response:
+            async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
                 async for line in response.aiter_lines():
                     if not line.strip():
                         continue
                     try:
                         data_json = json.loads(line)
-                        if "response" in data_json:
+                        message = data_json.get("message", {})
+                        if message and "content" in message:
                             yield LLMResponse(
-                                text=data_json["response"],
-                                metadata={"model": self.model_name, "streaming": True}
+                                text=message["content"],
+                                metadata={
+                                    "model": self.model_name,
+                                    "streaming": True,
+                                    "role": message.get("role", "assistant")
+                                }
                             )
                     except Exception:
                         continue
-
-    async def embed(self, text: str):
-        raise NotImplementedError("Embedding is not supported for OllamaLLM.")
 
 class JarvisLLM:
     def __init__(self, mode=None, max_tokens=None, base_url: str = "http://localhost:11434"):

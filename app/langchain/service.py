@@ -89,6 +89,12 @@ def build_enhanced_system_prompt(base_prompt: str = None) -> str:
         llm_settings = get_llm_settings()
         base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
     
+    # Check if system prompt already has format instructions
+    has_format_instructions = any(phrase in base_prompt.lower() for phrase in [
+        'format at the end', 'in this format', 'opinion:', 'provide your point of view',
+        'end with', 'conclude with', 'finish with'
+    ])
+    
     # Get available MCP tools from cache
     tools_info = []
     try:
@@ -139,8 +145,8 @@ def build_enhanced_system_prompt(base_prompt: str = None) -> str:
         enhanced_prompt += "\n" + "\n".join(collections_info)
         enhanced_prompt += "\n\nYou can search these collections to find relevant information for the user's query."
     
-    # Add guidance for using tools and collections
-    if tools_info or collections_info:
+    # Add minimal guidance only if no format instructions in base prompt
+    if (tools_info or collections_info) and not has_format_instructions:
         enhanced_prompt += "\n\n**Guidelines:**"
         enhanced_prompt += "\n- Use tools for real-time data, calculations, or external information"
         enhanced_prompt += "\n- Search collections for documented knowledge and historical information"
@@ -473,6 +479,145 @@ Only use tools when they would genuinely improve your response with real-time or
     
     return final_prompt
 
+def build_messages_for_synthesis(
+    question: str,
+    query_type: str,
+    rag_context: str = "",
+    tool_context: str = "",
+    conversation_history: str = "",
+    thinking: bool = False,
+    rag_sources: list = None
+) -> tuple[list[dict[str, str]], str, str, str]:
+    """
+    Build messages array for chat-based LLM synthesis.
+    
+    Returns:
+        tuple: (messages, source_label, context_for_metadata, system_prompt)
+    """
+    # Get system prompt based on context
+    if tool_context:
+        system_prompt = build_enhanced_system_prompt()
+    else:
+        llm_settings = get_llm_settings()
+        system_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
+    
+    # Check if system prompt contains specific format instructions
+    has_format_instructions = any(phrase in system_prompt.lower() for phrase in [
+        'format at the end', 'in this format', 'opinion:', 'provide your point of view'
+    ])
+    
+    # Build user message content
+    user_content_parts = []
+    
+    # Add conversation history if available
+    if conversation_history:
+        user_content_parts.append(f"Previous conversation:\n{conversation_history}")
+    
+    # Add context sections
+    if rag_context and tool_context:
+        user_content_parts.append(f"""You have access to both internal knowledge base information and real-time tool results.
+
+📚 Internal Knowledge Base:
+{rag_context}
+
+🔧 Current Information (Web Search):
+{tool_context}""")
+    elif rag_context:
+        user_content_parts.append(f"""You have access to relevant information from our internal knowledge base.
+
+📚 Internal Knowledge Base:
+{rag_context}""")
+    elif tool_context:
+        if "google_search" in str(tool_context).lower():
+            user_content_parts.append(f"""No relevant documents were found in our internal knowledge base, so I searched the web for current information.
+
+🌐 Current Information (Web Search):
+{tool_context}""")
+        else:
+            user_content_parts.append(f"""You have executed tools to gather current, real-time information.
+
+🔧 Tool Results:
+{tool_context}""")
+    else:
+        # Pure LLM - just note the context without instructions
+        if query_type == "TOOLS":
+            user_content_parts.append("The user is asking for information that would benefit from real-time tools, but no tools were executed.")
+        elif query_type == "RAG":
+            user_content_parts.append("No specific documents were found in our knowledge base for this query.")
+    
+    # Add the actual question
+    user_content_parts.append(f"Question: {question}")
+    
+    # If system prompt has format instructions, add a subtle reminder at the end
+    if has_format_instructions:
+        # Extract potential format from system prompt
+        format_hints = []
+        if 'opinion:' in system_prompt.lower():
+            format_hints.append("Remember to include your opinion in the specified format.")
+        if 'end with' in system_prompt.lower() or 'conclude with' in system_prompt.lower():
+            format_hints.append("Remember to follow the specified ending format.")
+        if 'format at the end' in system_prompt.lower():
+            format_hints.append("Remember to use the specified format at the end of your response.")
+        
+        if format_hints:
+            user_content_parts.append("\n".join(format_hints))
+    
+    # Join all user content
+    user_content = "\n\n".join(user_content_parts)
+    
+    # Apply thinking wrapper if needed (but be more subtle if format instructions exist)
+    if thinking:
+        if has_format_instructions:
+            # More subtle thinking request that doesn't override format
+            user_content = "Show your thinking process.\n\n" + user_content
+        else:
+            user_content = "Please show your reasoning step by step before giving the final answer.\n\n" + user_content
+    
+    # Build messages array
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content}
+    ]
+    
+    # Determine source label for metadata
+    sources = []
+    if rag_context or rag_sources:
+        has_temp_docs = False
+        if rag_sources:
+            for source in rag_sources:
+                if (source.get("file", "").startswith("[TEMP]") or 
+                    source.get("is_temporary", False) or
+                    source.get("collection", "").lower() == "temp_documents" or
+                    "temp" in source.get("collection", "").lower()):
+                    has_temp_docs = True
+                    break
+        
+        if has_temp_docs:
+            sources.append("RAG_TEMP")
+        elif rag_context or rag_sources:
+            sources.append("RAG")
+    if tool_context or query_type in ["TOOLS", "HYBRID_LLM_TOOLS"]:
+        sources.append("TOOLS")
+    sources.append("LLM")
+    source_label = "+".join(sources)
+    
+    # Build context for metadata
+    full_context = ""
+    if rag_context and tool_context:
+        full_context = f"Internal Knowledge:\n{rag_context}\n\nTool Results:\n{tool_context}"
+    elif rag_context:
+        full_context = rag_context
+    elif tool_context:
+        full_context = tool_context
+    
+    print(f"[DEBUG] Messages synthesis - Source: {source_label}, Query type: {query_type}")
+    print(f"[DEBUG] Messages synthesis - Has RAG: {bool(rag_context)}, Has tools: {bool(tool_context)}")
+    print(f"[DEBUG] Messages synthesis - Has format instructions: {has_format_instructions}")
+    print(f"[DEBUG] Messages synthesis - System prompt preview: {system_prompt[:100]}...")
+    print(f"[DEBUG] Messages synthesis - Number of messages: {len(messages)}")
+    
+    return messages, source_label, full_context, system_prompt
+
 def unified_llm_synthesis(
     question: str,
     query_type: str,
@@ -486,6 +631,9 @@ def unified_llm_synthesis(
     Unified LLM synthesis function that generates responses regardless of query classification.
     All queries flow through this function for consistent, high-quality responses.
     
+    This function now internally uses the messages format but returns a single prompt
+    for backward compatibility.
+    
     Args:
         question: Original user question
         query_type: Classification result (TOOLS, RAG, LLM, etc.)
@@ -498,119 +646,27 @@ def unified_llm_synthesis(
     Returns:
         tuple: (prompt, source_label, context_for_metadata)
     """
-    # Build conversation history prompt
-    history_prompt = f"Previous conversation:\n{conversation_history}\n\n" if conversation_history else ""
+    # Use the new message builder
+    messages, source_label, full_context, system_prompt = build_messages_for_synthesis(
+        question=question,
+        query_type=query_type,
+        rag_context=rag_context,
+        tool_context=tool_context,
+        conversation_history=conversation_history,
+        thinking=thinking,
+        rag_sources=rag_sources
+    )
     
-    # Determine source label for metadata
-    sources = []
-    # Check if we have RAG context or sources (including from hybrid_context)
-    if rag_context or rag_sources:
-        # Check if any sources are from temporary documents
-        has_temp_docs = False
-        if rag_sources:
-            for source in rag_sources:
-                # Check various ways temporary documents might be marked
-                if (source.get("file", "").startswith("[TEMP]") or 
-                    source.get("is_temporary", False) or
-                    source.get("collection", "").lower() == "temp_documents" or
-                    "temp" in source.get("collection", "").lower()):
-                    has_temp_docs = True
-                    break
-        
-        if has_temp_docs:
-            sources.append("RAG_TEMP")
-        elif rag_context or rag_sources:  # Only add RAG if we actually have content/sources
-            sources.append("RAG")
-    if tool_context or query_type in ["TOOLS", "HYBRID_LLM_TOOLS"]:
-        sources.append("TOOLS")
-    sources.append("LLM")  # LLM synthesis is always involved
-    source_label = "+".join(sources)
-    
-    # Build context for metadata
-    full_context = ""
-    if rag_context and tool_context:
-        full_context = f"Internal Knowledge:\n{rag_context}\n\nTool Results:\n{tool_context}"
-    elif rag_context:
-        full_context = rag_context
-    elif tool_context:
-        full_context = tool_context
-    
-    # Build unified synthesis prompt with enhanced system context
+    # For backward compatibility, concatenate messages into a single prompt
+    # This will be passed to the generate method which now uses chat internally
     prompt_parts = []
-    
-    # Add system prompt - include tools only if we have tool context
-    if tool_context:
-        # Include tools for hybrid/tool queries
-        enhanced_system = build_enhanced_system_prompt()
-        prompt_parts.append(enhanced_system)
-    else:
-        # For RAG-only queries, use simple system prompt without tools
-        llm_settings = get_llm_settings()
-        base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
-        prompt_parts.append(base_prompt)
-    
-    # Add conversation history if available
-    if history_prompt:
-        prompt_parts.append(history_prompt)
-    
-    # Add context sections
-    if rag_context and tool_context:
-        prompt_parts.append(f"""You have access to both internal knowledge base information and real-time tool results. Synthesize these sources with your knowledge to provide a comprehensive, insightful answer.
-
-📚 Internal Knowledge Base:
-{rag_context}
-
-🔧 Current Information (Web Search):
-{tool_context}""")
-    elif rag_context:
-        prompt_parts.append(f"""You have access to relevant information from our internal knowledge base. Use this information to provide a direct, helpful answer to the user's question.
-
-📚 Internal Knowledge Base:
-{rag_context}
-
-IMPORTANT: Provide a natural language response that directly answers the user's question. Do not evaluate documents, do not return JSON format, do not assess relevance - simply answer the question using the information provided above.""")
-    elif tool_context:
-        # Check if this is from web search fallback
-        if "google_search" in str(tool_context).lower():
-            prompt_parts.append(f"""No relevant documents were found in our internal knowledge base, so I searched the web for current information. Use these search results along with your knowledge to provide a comprehensive answer.
-
-🌐 Current Information (Web Search):
-{tool_context}""")
-        else:
-            prompt_parts.append(f"""You have executed tools to gather current, real-time information. Use these results along with your knowledge to provide a comprehensive answer.
-
-🔧 Tool Results:
-{tool_context}""")
-    else:
-        # Pure LLM - enhance with general instructions
-        if query_type == "TOOLS":
-            prompt_parts.append("The user is asking for information that would benefit from real-time tools, but no tools were executed. Provide the best answer possible with your knowledge and suggest what current information might be helpful.")
-        elif query_type == "RAG":
-            prompt_parts.append("No specific documents were found in our knowledge base for this query. Provide a comprehensive answer based on your general knowledge.")
-    
-    # Add the main question
-    prompt_parts.append(f"""Question: {question}
-
-Instructions:
-- Provide a direct, helpful, and comprehensive answer
-- Synthesize information from all available sources
-- Add context, insights, and broader perspective where valuable
-- Use clear, natural language
-- If using tool results, explain and contextualize the information rather than just presenting raw data
-
-Answer:""")
+    for msg in messages:
+        if msg["role"] == "system":
+            prompt_parts.append(msg["content"])
+        elif msg["role"] == "user":
+            prompt_parts.append(msg["content"])
     
     final_prompt = "\n\n".join(prompt_parts)
-    
-    # Apply thinking wrapper if needed (unified handling)
-    if thinking:
-        final_prompt = (
-            "Please show your reasoning step by step before giving the final answer.\n\n"
-            + final_prompt
-        )
-    
-    print(f"[DEBUG] Unified synthesis - Source: {source_label}, Query type: {query_type}")
-    print(f"[DEBUG] Unified synthesis - Has RAG: {bool(rag_context)}, Has tools: {bool(tool_context)}")
     
     return final_prompt, source_label, full_context
 

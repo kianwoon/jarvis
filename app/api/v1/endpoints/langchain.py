@@ -1504,15 +1504,18 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     logger.info(f"[DIRECT HANDLER] Tool context built: {tool_context[:200]}...")
                     logger.info(f"[DIRECT HANDLER] Extracted {len(extracted_documents)} documents from tool results")
                     
-                    # Create synthesis prompt
-                    synthesis_prompt = f"""Based on the tool results below, provide a comprehensive answer to the user's question.
-
-Question: {request.question}
-
-Tool Results:
-{tool_context}
-
-Please provide a clear, direct answer based on the tool results."""
+                    # Use unified synthesis with proper message format
+                    from app.langchain.service import build_messages_for_synthesis
+                    
+                    messages, source_label, full_context, system_prompt = build_messages_for_synthesis(
+                        question=request.question,
+                        query_type="TOOLS",
+                        tool_context=tool_context,
+                        thinking=request.thinking if hasattr(request, 'thinking') else False
+                    )
+                    
+                    # For backward compatibility, create a single prompt
+                    synthesis_prompt = "\n\n".join([msg["content"] for msg in messages])
                     
                     logger.info(f"[DIRECT HANDLER] About to stream synthesis response")
                     
@@ -1534,7 +1537,7 @@ Please provide a clear, direct answer based on the tool results."""
                                 synthesis_generation_span = tracer.create_llm_generation_span(
                                     trace,
                                     model=main_llm_config.get('model'),
-                                    prompt=synthesis_prompt,
+                                    prompt=messages,  # Pass messages instead of single prompt
                                     operation="direct_tool_synthesis"
                                 )
                                 logger.info(f"[DIRECT HANDLER] Created synthesis generation span")
@@ -1561,9 +1564,13 @@ Please provide a clear, direct answer based on the tool results."""
                     
                     llm = OllamaLLM(llm_config, base_url=model_server)
                     
-                    # Stream synthesis response token by token
+                    # Stream synthesis response token by token using chat with messages
                     final_response = ""
-                    async for response_chunk in llm.generate_stream(synthesis_prompt):
+                    # Log system prompt being used
+                    logger.info(f"[DIRECT HANDLER] Using system prompt: {system_prompt[:100]}...")
+                    
+                    # Use chat_stream with messages instead of generate_stream
+                    async for response_chunk in llm.chat_stream(messages):
                         final_response += response_chunk.text
                         if response_chunk.text.strip():
                             yield json_module.dumps({
