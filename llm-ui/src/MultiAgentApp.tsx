@@ -45,7 +45,8 @@ function MultiAgentApp() {
     status: 'pending',
     progress: 0,
     description: 'Ready to start multi-agent collaboration',
-    agents_involved: []
+    agents_involved: [],
+    completed_agents: []
   });
   const [loading, setLoading] = useState(false);
 
@@ -130,7 +131,8 @@ function MultiAgentApp() {
             status: 'complete',
             progress: 100,
             description: 'Previous collaboration session',
-            agents_involved: uniqueAgents.map(agent => agent.name)
+            agents_involved: uniqueAgents.map(agent => agent.name),
+            completed_agents: uniqueAgents.map(agent => agent.name) // All agents are complete in loaded session
           });
         }
         
@@ -160,7 +162,8 @@ function MultiAgentApp() {
       status: 'pending',
       progress: 0,
       description: 'Ready to start multi-agent collaboration',
-      agents_involved: []
+      agents_involved: [],
+      completed_agents: []
     });
     
     // Clear from localStorage

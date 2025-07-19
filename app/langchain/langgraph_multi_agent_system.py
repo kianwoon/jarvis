@@ -1006,16 +1006,31 @@ class LangGraphMultiAgentSystem:
         """
         
         try:
-            # Emit synthesis start event
+            # Get synthesizer agent configuration
+            synthesizer_agent = get_agent_by_name("synthesizer")
+            if synthesizer_agent:
+                agent_config = synthesizer_agent.get('config', {})
+                # Get model and parameters based on configuration flags
+                model_name, max_tokens_config, temperature_config = self._get_agent_model_config(agent_config)
+                # Use configured values but apply synthesizer-specific limits
+                max_tokens = min(max_tokens_config, 800)  # Cap at 800 for synthesis
+                temperature = temperature_config if temperature_config else 0.6
+                timeout = min(agent_config.get('timeout', 20), 20)  # Cap timeout at 20s
+            else:
+                # Fallback if synthesizer agent not found
+                model_name = None  # Will use default second_llm
+                max_tokens = 800
+                temperature = 0.6
+                timeout = 20
             
-            # Use efficient LLM call for response synthesis - prefer thinking model for better synthesis
+            # Use efficient LLM call for response synthesis with proper configuration
             synthesized_response = await self._efficient_llm_call(
                 synthesis_prompt,
-                max_tokens=800,   # Further reduced for speed
-                temperature=0.6,  # Slightly more focused
-                timeout=20,       # Aggressive timeout for responsiveness
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout=timeout,
                 agent_name="synthesizer",
-                model_name="qwen3:30b-a3b"  # Use thinking model for synthesis if available
+                model_name=model_name  # Use configured model or None for default
             )
             state["final_response"] = synthesized_response
             

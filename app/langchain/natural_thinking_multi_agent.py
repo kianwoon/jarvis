@@ -312,10 +312,45 @@ Multi-agent collaboration results:
             
             # Synthesis with natural thinking
             try:
+                # Get synthesizer agent configuration
+                from app.core.langgraph_agents_cache import get_agent_by_name
+                synthesizer_agent = get_agent_by_name("synthesizer")
+                
+                # Determine model and parameters based on synthesizer configuration
+                if synthesizer_agent:
+                    agent_config = synthesizer_agent.get('config', {})
+                    
+                    if agent_config.get('use_main_llm'):
+                        from app.core.llm_settings_cache import get_main_llm_full_config
+                        main_llm_config = get_main_llm_full_config()
+                        model_name = main_llm_config.get('model')
+                        temperature = agent_config.get('temperature', main_llm_config.get('temperature', 0.6))
+                        max_tokens = agent_config.get('max_tokens', main_llm_config.get('max_tokens', 2500))
+                    elif agent_config.get('use_second_llm'):
+                        from app.core.llm_settings_cache import get_second_llm_full_config
+                        second_llm_config = get_second_llm_full_config()
+                        model_name = second_llm_config.get('model')
+                        temperature = agent_config.get('temperature', second_llm_config.get('temperature', 0.6))
+                        max_tokens = agent_config.get('max_tokens', second_llm_config.get('max_tokens', 2500))
+                    elif agent_config.get('model'):
+                        model_name = agent_config.get('model')
+                        temperature = agent_config.get('temperature', 0.6)
+                        max_tokens = agent_config.get('max_tokens', 2500)
+                    else:
+                        # Fall back to system settings
+                        model_name = system.llm_settings.get("model", "qwen3:30b-a3b")
+                        temperature = 0.6
+                        max_tokens = 2500
+                else:
+                    # No synthesizer agent found, use system settings
+                    model_name = system.llm_settings.get("model", "qwen3:30b-a3b")
+                    temperature = 0.6
+                    max_tokens = 2500
+                
                 synthesizer_config = LLMConfig(
-                    model_name=system.llm_settings["model"],
-                    temperature=0.6,
-                    max_tokens=2500
+                    model_name=model_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens
                 )
                 
                 synthesizer_llm = OllamaLLM(synthesizer_config, base_url=system.ollama_base_url)

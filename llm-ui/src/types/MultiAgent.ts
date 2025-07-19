@@ -130,4 +130,5 @@ export interface CollaborationPhase {
   start_time?: Date;
   end_time?: Date;
   agents_involved: string[];
+  completed_agents?: string[]; // Track which agents have completed
 }

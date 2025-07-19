@@ -203,9 +203,10 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
         setCollaborationPhase({
           phase: 'execution',
           status: 'active',
-          progress: 10,
+          progress: 0, // Start at 0% when agents are selected
           description: `Selected ${data.selected_agents?.length || 0} agents for collaboration`,
-          agents_involved: data.selected_agents || []
+          agents_involved: data.selected_agents || [],
+          completed_agents: [] // Initialize empty completed agents array
         });
         break;
 
@@ -257,9 +258,11 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
       case 'agent_token':
         // Handle streaming tokens from agents - route to individual agent windows
         //console.log('Agent token:', data.agent, data.token);
+        // Normalize agent name for synthesizer (backend sends lowercase, frontend uses uppercase)
+        const agentName = data.agent.toLowerCase() === 'synthesizer' ? 'Synthesizer' : data.agent;
         setAgentStreamingContent(prev => ({
           ...prev,
-          [data.agent]: (prev[data.agent] || '') + data.token
+          [agentName]: (prev[agentName] || '') + data.token
         }));
         break;
 
@@ -317,6 +320,30 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
           
           assistantMessage.agent_contributions.push(contribution);
         }
+        
+        // Update collaboration phase progress based on completed agents
+        setCollaborationPhase(prev => {
+          // Initialize completed_agents array if not exists
+          const completedAgents = prev.completed_agents || [];
+          
+          // Add current agent if not already in the list
+          if (!completedAgents.includes(data.agent)) {
+            completedAgents.push(data.agent);
+          }
+          
+          // Total steps = selected agents + synthesizer
+          const totalSteps = prev.agents_involved.length + 1; // +1 for synthesizer
+          
+          // Calculate progress: each completed agent is one step
+          const progressPercentage = Math.floor((completedAgents.length / totalSteps) * 100);
+          console.log(`Progress update: Agent "${data.agent}" completed. Total: ${completedAgents.length}/${totalSteps} = ${progressPercentage}%`);
+          
+          return {
+            ...prev,
+            completed_agents: completedAgents,
+            progress: progressPercentage
+          };
+        });
         break;
 
       case 'agent_communication':
@@ -357,22 +384,39 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
           }
         }));
         
-        setCollaborationPhase({
-          phase: 'synthesis',
-          status: 'active',
-          progress: 80,
-          description: 'Synthesizing agent responses',
-          agents_involved: Object.keys(agentStatuses)
+        setCollaborationPhase(prev => {
+          // When synthesis starts, all regular agents are complete
+          const totalSteps = prev.agents_involved.length + 1; // +1 for synthesizer
+          const completedSteps = prev.agents_involved.length; // All regular agents done
+          const progressPercentage = Math.floor((completedSteps / totalSteps) * 100);
+          
+          return {
+            phase: 'synthesis',
+            status: 'active',
+            progress: progressPercentage,
+            description: 'Synthesizing agent responses',
+            agents_involved: prev.agents_involved // Keep original agents list
+          };
         });
         break;
 
       case 'synthesis_progress':
         //console.log('Synthesis progress:', data);
         if (data.progress !== undefined && !isNaN(data.progress)) {
-          setCollaborationPhase(prev => ({
-            ...prev,
-            progress: 80 + (data.progress * 0.2) // Scale to 80-100%
-          }));
+          setCollaborationPhase(prev => {
+            // Calculate the base progress (all agents complete)
+            const totalSteps = prev.agents_involved.length + 1;
+            const baseProgress = Math.floor((prev.agents_involved.length / totalSteps) * 100);
+            
+            // Add synthesis progress (scaled to remaining percentage)
+            const remainingPercentage = 100 - baseProgress;
+            const synthesisProgress = (data.progress / 100) * remainingPercentage;
+            
+            return {
+              ...prev,
+              progress: Math.floor(baseProgress + synthesisProgress)
+            };
+          });
         }
         break;
 

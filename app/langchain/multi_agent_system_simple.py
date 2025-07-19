@@ -616,22 +616,45 @@ Important:
                 agent_data = get_agent_by_name(agent_name)
                 agent_config = agent_data.get("config", {}) if agent_data else {}
             
-            # Use agent config with fallbacks to thinking mode settings
-            model_config = self.llm_settings.get("thinking_mode", {})
+            # Determine model to use based on agent configuration
+            if agent_config.get('use_main_llm'):
+                from app.core.llm_settings_cache import get_main_llm_full_config
+                main_llm_config = get_main_llm_full_config()
+                model_name = main_llm_config.get('model')
+                # Use main_llm settings for params if not overridden in agent config
+                actual_max_tokens = agent_config.get('max_tokens', main_llm_config.get('max_tokens', 4000))
+                actual_temperature = agent_config.get('temperature', main_llm_config.get('temperature', temperature))
+                top_p = agent_config.get('top_p', main_llm_config.get('top_p', 0.9))
+            elif agent_config.get('use_second_llm'):
+                from app.core.llm_settings_cache import get_second_llm_full_config
+                second_llm_config = get_second_llm_full_config()
+                model_name = second_llm_config.get('model')
+                # Use second_llm settings for params if not overridden in agent config
+                actual_max_tokens = agent_config.get('max_tokens', second_llm_config.get('max_tokens', 4000))
+                actual_temperature = agent_config.get('temperature', second_llm_config.get('temperature', temperature))
+                top_p = agent_config.get('top_p', second_llm_config.get('top_p', 0.9))
+            else:
+                # Use specific model if configured, otherwise fall back to thinking mode
+                model_name = agent_config.get('model')
+                if not model_name:
+                    # Fall back to thinking mode settings
+                    model_config = self.llm_settings.get("thinking_mode", {})
+                    model_name = model_config.get("model", "qwen3:30b-a3b")
+                    top_p = model_config.get("top_p", 0.9)
+                else:
+                    top_p = agent_config.get("top_p", 0.9)
+                actual_max_tokens = agent_config.get("max_tokens", 4000)
+                actual_temperature = agent_config.get("temperature", temperature)
             
-            # Dynamic configuration based on agent settings
-            actual_temperature = agent_config.get("temperature", temperature)
             actual_timeout = agent_config.get("timeout", timeout)
-            # Ensure adequate max_tokens for agents, especially for complex tasks
-            actual_max_tokens = agent_config.get("max_tokens", model_config.get("max_tokens", 4000))
             
-            print(f"[DEBUG] {agent_name}: Using config - max_tokens={actual_max_tokens}, timeout={actual_timeout}, temp={actual_temperature}")
+            print(f"[DEBUG] {agent_name}: Using config - model={model_name}, max_tokens={actual_max_tokens}, timeout={actual_timeout}, temp={actual_temperature}")
             
             # Create LLM config
             config = LLMConfig(
-                model_name=model_config.get("model", "qwen3:30b-a3b"),
+                model_name=model_name,
                 temperature=actual_temperature,
-                top_p=model_config.get("top_p", 0.9),
+                top_p=top_p,
                 max_tokens=actual_max_tokens
             )
             
@@ -1575,13 +1598,42 @@ Now provide your synthesis:"""
             
             # Get synthesizer config
             synthesizer_config = self.agents.get("synthesizer", {}).get("config", {})
-            model_config = self.llm_settings.get("thinking_mode", {})
+            
+            # Determine model to use based on synthesizer configuration
+            if synthesizer_config.get('use_main_llm'):
+                from app.core.llm_settings_cache import get_main_llm_full_config
+                main_llm_config = get_main_llm_full_config()
+                model_name = main_llm_config.get('model')
+                # Use main_llm settings for params if not overridden in synthesizer config
+                max_tokens = synthesizer_config.get('max_tokens', main_llm_config.get('max_tokens', 8000))
+                temperature = synthesizer_config.get('temperature', main_llm_config.get('temperature', 0.3))
+                top_p = synthesizer_config.get('top_p', main_llm_config.get('top_p', 0.9))
+            elif synthesizer_config.get('use_second_llm'):
+                from app.core.llm_settings_cache import get_second_llm_full_config
+                second_llm_config = get_second_llm_full_config()
+                model_name = second_llm_config.get('model')
+                # Use second_llm settings for params if not overridden in synthesizer config
+                max_tokens = synthesizer_config.get('max_tokens', second_llm_config.get('max_tokens', 8000))
+                temperature = synthesizer_config.get('temperature', second_llm_config.get('temperature', 0.3))
+                top_p = synthesizer_config.get('top_p', second_llm_config.get('top_p', 0.9))
+            else:
+                # Use specific model if configured, otherwise fall back to thinking mode
+                model_name = synthesizer_config.get('model')
+                if not model_name:
+                    # Fall back to thinking mode settings
+                    model_config = self.llm_settings.get("thinking_mode", {})
+                    model_name = model_config.get("model", "qwen3:30b-a3b")
+                    top_p = model_config.get("top_p", 0.9)
+                else:
+                    top_p = synthesizer_config.get("top_p", 0.9)
+                max_tokens = synthesizer_config.get("max_tokens", 8000)
+                temperature = synthesizer_config.get("temperature", 0.3)
             
             config = LLMConfig(
-                model_name=model_config.get("model", "qwen3:30b-a3b"),
-                temperature=synthesizer_config.get("temperature", 0.3),
-                top_p=model_config.get("top_p", 0.9),
-                max_tokens=synthesizer_config.get("max_tokens", 8000)
+                model_name=model_name,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens
             )
             
             ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")

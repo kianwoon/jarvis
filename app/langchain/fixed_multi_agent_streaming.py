@@ -16,6 +16,7 @@ from app.core.langfuse_integration import get_tracer
 from app.core.llm_settings_cache import get_llm_settings, get_second_llm_full_config
 from app.core.intelligent_agent_selector import IntelligentAgentSelector
 from app.core.agent_performance_tracker import performance_tracker
+from app.core.langgraph_agents_cache import get_agent_by_name
 # from app.langchain.tool_executor import tool_executor  # Not needed for current implementation
 from app.langchain.service import call_mcp_tool
 import logging
@@ -1006,27 +1007,43 @@ Begin your synthesis now:"""
             
             # Synthesis streaming with thinking model preference
             try:
-                # CRITICAL FIX: Use thinking model for synthesis if any agent used one
-                # Prefer qwen3:30b-a3b for synthesis to enable comprehensive thinking
-                synthesis_model = "qwen3:30b-a3b"  # Default to thinking model for synthesis
-                for agent_name in agents_used:
-                    agent_config = available_agents[agent_name].get('config', {})
-                    if agent_config.get('model'):
-                        synthesis_model = agent_config['model']  # Use same model as agents
-                        break
+                # Get synthesizer configuration first
+                synthesizer_agent = get_agent_by_name("synthesizer")
+                synthesis_model = None
+                temperature = 0.6
+                max_tokens = 2500
                 
-                # Fallback to second_llm setting if no agent-specific models found
-                second_llm_config = get_second_llm_full_config()
-                fallback_model = second_llm_config.get('model', 'qwen3:30b-a3b')
-                if synthesis_model == "qwen3:30b-a3b" and fallback_model != "qwen3:30b-a3b":
-                    synthesis_model = fallback_model
+                if synthesizer_agent:
+                    synthesizer_config_data = synthesizer_agent.get('config', {})
+                    
+                    # Check synthesizer's LLM configuration
+                    if synthesizer_config_data.get('use_main_llm'):
+                        from app.core.llm_settings_cache import get_main_llm_full_config
+                        main_llm_config = get_main_llm_full_config()
+                        synthesis_model = main_llm_config.get('model')
+                        temperature = synthesizer_config_data.get('temperature', main_llm_config.get('temperature', 0.6))
+                        max_tokens = synthesizer_config_data.get('max_tokens', main_llm_config.get('max_tokens', 2500))
+                    elif synthesizer_config_data.get('use_second_llm'):
+                        second_llm_config = get_second_llm_full_config()
+                        synthesis_model = second_llm_config.get('model')
+                        temperature = synthesizer_config_data.get('temperature', second_llm_config.get('temperature', 0.6))
+                        max_tokens = synthesizer_config_data.get('max_tokens', second_llm_config.get('max_tokens', 2500))
+                    elif synthesizer_config_data.get('model'):
+                        synthesis_model = synthesizer_config_data.get('model')
+                        temperature = synthesizer_config_data.get('temperature', 0.6)
+                        max_tokens = synthesizer_config_data.get('max_tokens', 2500)
+                
+                # If no synthesizer config found, fall back to second_llm
+                if not synthesis_model:
+                    second_llm_config = get_second_llm_full_config()
+                    synthesis_model = second_llm_config.get('model', 'qwen3:30b-a3b')
                 
                 logger.info(f"Synthesizer using model: {synthesis_model}")
                 
                 synthesizer_config = LLMConfig(
                     model_name=synthesis_model,
-                    temperature=0.6,
-                    max_tokens=2500
+                    temperature=temperature,
+                    max_tokens=max_tokens
                 )
                 
                 # Create synthesis generation span
