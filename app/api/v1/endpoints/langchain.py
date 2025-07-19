@@ -790,6 +790,7 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
         print(f"[DEBUG] ✅ STREAM FUNCTION CALLED FOR MULTI-AGENT")
         collected_output = ""
         final_response = ""
+        agent_outputs = []  # Initialize to track agent outputs
         
         try:
             # Use streaming multi-agent function like working RAG pattern
@@ -811,6 +812,17 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                     if chunk:  # Only yield non-empty chunks
                         chunk_count += 1
                         yield chunk
+                        # Collect agent outputs from chunks
+                        try:
+                            if isinstance(chunk, str):
+                                chunk_data = json_module.loads(chunk.strip())
+                                if chunk_data.get("type") == "agent_response":
+                                    agent_outputs.append({
+                                        "agent": chunk_data.get("agent", "unknown"),
+                                        "content": chunk_data.get("response", "")
+                                    })
+                        except:
+                            pass  # Ignore parsing errors
                         # Add small delay to ensure streaming
                         import asyncio
                         await asyncio.sleep(0.01)
@@ -1073,21 +1085,7 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
                 except Exception as e:
                     print(f"[WARNING] Failed to update Langfuse trace/generation: {e}")
             
-            # End multi-agent workflow span with success
-            if workflow_span:
-                try:
-                    tracer.end_span_with_result(
-                        workflow_span,
-                        {
-                            "agent_count": len(agent_outputs),
-                            "successful_agents": len([a for a in agent_outputs if a.get("content")]),
-                            "final_response_length": len(final_response) if final_response else 0,
-                            "total_output_length": len(collected_output)
-                        },
-                        success=bool(final_response)
-                    )
-                except Exception as e:
-                    print(f"[WARNING] Failed to end multi-agent workflow span: {e}")
+            # Large generation doesn't use workflow spans - removed incorrect code
                     
         except Exception as e:
             # Update generation and trace with error
