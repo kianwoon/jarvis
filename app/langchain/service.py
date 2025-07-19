@@ -981,40 +981,57 @@ async def _llm_classify_efficient(question: str, llm_cfg) -> str:
         available_tools = get_enabled_mcp_tools()
         tool_names = list(available_tools.keys()) if available_tools else []
         
-        # Build classification prompt (keep it short!)
-        router_prompt = f"""You are a query classifier. Analyze this question and classify it into exactly ONE category:
-
-RAG: Question asks about internal company information, policies, processes, or specific corporate knowledge
-TOOLS: Question needs real-time data, calculations, or external information. Available tools: {', '.join(tool_names[:5])}
-LLM: Question can be answered with general knowledge
-
-Question: "{question}"
-
-Answer with exactly one word: RAG, TOOLS, or LLM"""
-
         # Use configurable tokens for classification (default 10 for one word response)
         classifier_config = llm_cfg.get("query_classifier", {})
         max_tokens = int(classifier_config.get("classifier_max_tokens", 10))
         
-        # Create LLM config for classification using second LLM
-        main_llm_config = get_second_llm_full_config(llm_cfg)
+        # Create LLM config for classification using query classifier
+        query_classifier_config = get_query_classifier_full_config(llm_cfg)
         llm_config = LLMConfig(
-            model_name=main_llm_config["model"],
+            model_name=query_classifier_config["model"],
             temperature=0.1,  # Low temperature for consistent classification
             top_p=0.9,
             max_tokens=max_tokens
         )
         
         # Create LLM instance
-        ollama_url = main_llm_config.get("model_server", "http://ollama:11434")
+        ollama_url = query_classifier_config.get("model_server", "http://ollama:11434")
         # If localhost, change to host.docker.internal for Docker containers
         if "localhost" in ollama_url:
             ollama_url = ollama_url.replace("localhost", "host.docker.internal")
         llm = OllamaLLM(llm_config, base_url=ollama_url)
         
-        # Get classification (collect all text)
+        # Build messages array for chat endpoint
+        # Check if query_classifier has a custom system prompt
+        query_classifier_system_prompt = query_classifier_config.get("system_prompt", "")
+        
+        # Build classification system message
+        classification_instructions = f"""You are a query classifier. Analyze questions and classify them into exactly ONE category:
+
+RAG: Question asks about internal company information, policies, processes, or specific corporate knowledge
+TOOLS: Question needs real-time data, calculations, or external information. Available tools: {', '.join(tool_names[:5])}
+LLM: Question can be answered with general knowledge
+
+Answer with exactly one word: RAG, TOOLS, or LLM"""
+
+        # Combine custom system prompt with classification instructions if present
+        if query_classifier_system_prompt:
+            system_content = f"{query_classifier_system_prompt}\n\n{classification_instructions}"
+        else:
+            system_content = classification_instructions
+            
+        # Build messages for chat endpoint
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": f'Question: "{question}"'}
+        ]
+        
+        print(f"[DEBUG] Using chat endpoint for classification with {len(messages)} messages")
+        print(f"[DEBUG] System message includes custom prompt: {bool(query_classifier_system_prompt)}")
+        
+        # Get classification using chat endpoint
         response_text = ""
-        async for chunk in llm.generate_stream(router_prompt):
+        async for chunk in llm.chat_stream(messages):
             response_text += chunk.text
         
         # Parse classification

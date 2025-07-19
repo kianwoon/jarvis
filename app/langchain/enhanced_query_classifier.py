@@ -494,21 +494,21 @@ class EnhancedQueryClassifier:
                 logger.info(f"[MAIN CLASSIFIER DEBUG] Available RAG collections count: {len(self.rag_collections)}")
                 
                 # Process template placeholders in system prompt
-                processed_prompt = system_prompt.format(
+                processed_system_prompt = system_prompt.format(
                     rag_collection=collections_info,
                     mcp_tools=tools_info
                 )
                 
-                # Assemble comprehensive prompt with query
-                prompt = f"""{processed_prompt}
-
-**Query to classify:** "{query}"
-
-Answer:"""
+                # Build messages for chat endpoint
+                messages = [
+                    {"role": "system", "content": processed_system_prompt},
+                    {"role": "user", "content": f'**Query to classify:** "{query}"\n\nAnswer:'}
+                ]
                 
-                # Debug log the prompt with structured sections
-                logger.info(f"LLM Classifier prompt length: {len(prompt)} chars")
-                logger.info(f"LLM Classifier prompt preview:\n{prompt[:300]}...")  # More context
+                # Debug log the messages
+                logger.info(f"LLM Classifier using chat endpoint with {len(messages)} messages")
+                logger.info(f"LLM Classifier system message length: {len(messages[0]['content'])} chars")
+                logger.info(f"LLM Classifier system message preview:\n{messages[0]['content'][:300]}...")  # More context
                 logger.info(f"LLM Classifier tools summary: {len(self.mcp_tool_names)} tools, {len(self.rag_collections)} collections")
                 
                 # Log tools and collections count for monitoring
@@ -559,7 +559,7 @@ Answer:"""
                     generation_span = tracer.create_llm_generation_span(
                         classification_span,
                         model=llm_config.model_name,
-                        prompt=prompt,
+                        prompt=str(messages),  # Log messages for tracing
                         operation="classification"
                     )
                 except Exception as e:
@@ -569,7 +569,7 @@ Answer:"""
             classifier_timeout = timeout_seconds + 5  # Add 5 second buffer over configured timeout
             try:
                 response = await asyncio.wait_for(
-                    llm.generate(prompt),
+                    llm.chat(messages),
                     timeout=classifier_timeout
                 )
                 response_text = response.text
@@ -580,7 +580,9 @@ Answer:"""
             # End generation span with result
             if generation_span and tracer:
                 try:
-                    usage = tracer.estimate_token_usage(prompt, response_text)
+                    # Estimate usage based on messages content
+                    messages_text = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+                    usage = tracer.estimate_token_usage(messages_text, response_text)
                     tracer.end_span_with_result(generation_span, {
                         "raw_response": response_text[:500],
                         "usage": usage
