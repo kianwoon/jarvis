@@ -368,7 +368,7 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
 
       case 'synthesis_progress':
         //console.log('Synthesis progress:', data);
-        if (data.progress) {
+        if (data.progress !== undefined && !isNaN(data.progress)) {
           setCollaborationPhase(prev => ({
             ...prev,
             progress: 80 + (data.progress * 0.2) // Scale to 80-100%
@@ -455,15 +455,15 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
   const canSendMessage = !loading && input.trim();
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Current Question Display */}
       {messages.length > 0 && (
-        <Box sx={{ mb: 2 }}>
-          <Typography variant="subtitle2" gutterBottom>
+        <Box sx={{ mb: 1 }}>
+          <Typography variant="subtitle2" gutterBottom sx={{ fontSize: '0.875rem' }}>
             Current Question:
           </Typography>
-          <Paper sx={{ p: 2, backgroundColor: 'primary.main', color: 'white' }}>
-            <Typography variant="body1">
+          <Paper sx={{ p: 1.5, backgroundColor: 'primary.main', color: 'white' }}>
+            <Typography variant="body1" sx={{ fontSize: '0.875rem' }}>
               {messages[messages.length - 1]?.role === 'user' 
                 ? messages[messages.length - 1].content
                 : messages.find(m => m.role === 'user')?.content || ''
@@ -475,9 +475,9 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
 
       {/* Collaboration Status */}
       {loading && (
-        <Box sx={{ mb: 2 }}>
-          <Alert severity="info" icon={<CircularProgress size={20} />}>
-            <Typography variant="body2">
+        <Box sx={{ mb: 1 }}>
+          <Alert severity="info" icon={<CircularProgress size={20} />} sx={{ py: 0.5 }}>
+            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
               Agents are collaborating... Check individual agent windows below for progress.
             </Typography>
           </Alert>
@@ -486,12 +486,11 @@ const MultiAgentChat: React.FC<MultiAgentChatProps> = ({
 
       {/* Input Area */}
       <Box sx={{ mt: 'auto' }}>
-        
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
           <TextField
             fullWidth
             multiline
-            maxRows={4}
+            maxRows={2}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}

@@ -271,15 +271,15 @@ function MultiAgentApp() {
         <Container maxWidth={false} sx={{ flex: 1, py: 2, overflow: 'hidden' }}>
           <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
             {/* Top Section: Input and Collaboration Status */}
-            <Box sx={{ height: '250px', mb: 2 }}>
-              <Paper sx={{ height: '100%', p: 2, display: 'flex', flexDirection: 'column' }}>
+            <Box sx={{ height: 'auto', maxHeight: '300px', mb: 2 }}>
+              <Paper sx={{ height: '100%', p: 2, display: 'flex', flexDirection: 'column', overflow: 'auto' }}>
                 <Typography variant="h6" gutterBottom>
                   Multi-Agent Collaboration
                 </Typography>
                 
                 {/* Collaboration Phase Status */}
                 {activeAgents.length > 0 && (
-                  <Box sx={{ mb: 2, maxHeight: '100px', overflow: 'auto' }}>
+                  <Box sx={{ mb: 1 }}>
                     <CollaborationWorkspace
                       agentStatuses={agentStatuses}
                       collaborationPhase={collaborationPhase}
@@ -289,18 +289,20 @@ function MultiAgentApp() {
                 )}
                 
                 {/* Input Area */}
-                <MultiAgentChat
-                  messages={messages}
-                  setMessages={setMessages}
-                  sessionId={sessionId}
-                  loading={loading}
-                  setLoading={setLoading}
-                  setAgentStatuses={setAgentStatuses}
-                  setCollaborationPhase={setCollaborationPhase}
-                  agentStatuses={agentStatuses}
-                  setAgentStreamingContent={setAgentStreamingContent}
-                  setActiveAgents={setActiveAgents}
-                />
+                <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                  <MultiAgentChat
+                    messages={messages}
+                    setMessages={setMessages}
+                    sessionId={sessionId}
+                    loading={loading}
+                    setLoading={setLoading}
+                    setAgentStatuses={setAgentStatuses}
+                    setCollaborationPhase={setCollaborationPhase}
+                    agentStatuses={agentStatuses}
+                    setAgentStreamingContent={setAgentStreamingContent}
+                    setActiveAgents={setActiveAgents}
+                  />
+                </Box>
               </Paper>
             </Box>
 
