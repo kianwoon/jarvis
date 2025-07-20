@@ -3676,7 +3676,8 @@ Please generate the requested items incorporating relevant information from the 
     print(f"[DEBUG] rag_answer: Using unified LLM synthesis approach")
     print(f"[DEBUG] rag_answer: Before synthesis - query_type={query_type}, tool_context length={len(tool_context) if tool_context else 0}")
     print(f"[DEBUG] rag_answer: Before synthesis - tool_calls count={len(tool_calls) if tool_calls else 0}")
-    prompt, source, context = unified_llm_synthesis(
+    # Use build_messages_for_synthesis directly to get messages array
+    messages, source, context, system_prompt = build_messages_for_synthesis(
         question=question,
         query_type=query_type,
         rag_context=rag_context,
@@ -3685,6 +3686,9 @@ Please generate the requested items incorporating relevant information from the 
         thinking=thinking,
         rag_sources=rag_sources
     )
+    
+    # Keep prompt for backward compatibility and logging
+    prompt = "\n\n".join([msg["content"] for msg in messages])
     
     
     # Thinking is now handled in unified_llm_synthesis function
@@ -3798,7 +3802,8 @@ Please generate the requested items incorporating relevant information from the 
             # Stream tokens exactly like multi-agent
             response_text = ""
             
-            async for response_chunk in llm.generate_stream(prompt):
+            # Use chat_stream with messages array instead of generate_stream with concatenated prompt
+            async for response_chunk in llm.chat_stream(messages):
                 response_text += response_chunk.text
                 
                 # Stream tokens in real-time
@@ -3909,6 +3914,12 @@ Please generate the requested items incorporating relevant information from the 
 
 Based on these search results, provide a comprehensive answer to the user's question: "{question}". Format the information clearly and include the most relevant findings."""
                     
+                    # Convert to messages format for proper system/user separation
+                    synthesis_messages = [
+                        {"role": "system", "content": system_prompt if 'system_prompt' in locals() else "You are a helpful AI assistant."},
+                        {"role": "user", "content": synthesis_prompt}
+                    ]
+                    
                     # Create LLM generation span for synthesis
                     synthesis_generation_span = None
                     if trace:
@@ -3927,7 +3938,8 @@ Based on these search results, provide a comprehensive answer to the user's ques
                     
                     # Generate final response with tool results
                     final_response = ""
-                    async for response_chunk in llm.generate_stream(synthesis_prompt):
+                    # Use chat_stream with messages array instead of generate_stream with concatenated prompt
+                    async for response_chunk in llm.chat_stream(synthesis_messages):
                         final_response += response_chunk.text
                         if response_chunk.text.strip():
                             yield json.dumps({
@@ -4029,7 +4041,8 @@ Based on these search results, provide a comprehensive answer to the user's ques
                 logger.warning(f"Failed to create LLM generation span: {e}")
         
         response_text = ""
-        async for response_chunk in llm.generate_stream(prompt):
+        # Use chat_stream with messages array instead of generate_stream with concatenated prompt
+        async for response_chunk in llm.chat_stream(messages):
             response_text += response_chunk.text
         
         # End LLM generation span
@@ -4084,6 +4097,12 @@ Based on these search results, provide a comprehensive answer to the user's ques
 
 Please provide a complete answer using the tool results above."""
             
+            # Convert to messages format for proper system/user separation
+            synthesis_messages = [
+                {"role": "system", "content": system_prompt if 'system_prompt' in locals() else "You are a helpful AI assistant."},
+                {"role": "user", "content": synthesis_prompt}
+            ]
+            
             # Create LLM generation span for final synthesis
             final_synthesis_span = None
             if trace:
@@ -4102,7 +4121,8 @@ Please provide a complete answer using the tool results above."""
             
             # Generate final response with tool results
             final_response = ""
-            async for response_chunk in llm.generate_stream(synthesis_prompt):
+            # Use chat_stream with messages array instead of generate_stream with concatenated prompt
+            async for response_chunk in llm.chat_stream(synthesis_messages):
                 final_response += response_chunk.text
             
             # End final synthesis span
