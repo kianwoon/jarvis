@@ -770,7 +770,7 @@ class EnhancedQueryClassifier:
         
         # Provide rich, capability-specific descriptions based on tool names
         enhanced_descriptions = {
-            'google_search': 'Search the web for current information, news, and real-time data. Use for "latest", "recent", "current", "new", or any time-sensitive queries.',
+            # 'google_search': removed to use MCP manifest description instead of hardcoded one
             'get_datetime': 'Get current date and time information. Use for queries asking "what time is it", "what\'s the date", "current time/date".',
             'send_email': 'Send emails to recipients. Use when user wants to send, compose, or email someone.',
             'read_email': 'Read and retrieve email messages. Use when user wants to check, read, or view emails.',
