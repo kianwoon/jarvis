@@ -77,7 +77,8 @@
       "Bash(perl:*)",
       "Bash(npm ls:*)",
       "Bash(npm outdated)",
-      "Bash(claude config set installMethod npm-global)"
+      "Bash(claude config set installMethod npm-global)",
+      "Bash(npm run lint)"
     ],
     "deny": []
   },

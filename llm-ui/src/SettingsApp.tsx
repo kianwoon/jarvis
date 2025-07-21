@@ -585,61 +585,70 @@ function SettingsApp() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-        {/* Header */}
-        <AppBar position="static">
-          <Toolbar>
-            <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-              Jarvis AI Assistant
-            </Typography>
+        {/* Sticky Header Container */}
+        <Box sx={{ 
+          position: 'sticky', 
+          top: 0, 
+          zIndex: 1100, 
+          bgcolor: 'background.default',
+          boxShadow: 1
+        }}>
+          {/* Header */}
+          <AppBar position="static">
+            <Toolbar>
+              <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
+                Jarvis AI Assistant
+              </Typography>
 
-            <IconButton onClick={toggleDarkMode} color="inherit">
-              {darkMode ? <LightModeIcon /> : <DarkModeIcon />}
-            </IconButton>
-          </Toolbar>
-        </AppBar>
+              <IconButton onClick={toggleDarkMode} color="inherit">
+                {darkMode ? <LightModeIcon /> : <DarkModeIcon />}
+              </IconButton>
+            </Toolbar>
+          </AppBar>
 
-        {/* Navigation Tabs */}
-        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Tabs 
-            value={3}
-            onChange={handleTabChange} 
-            aria-label="jarvis modes"
-            centered
-            sx={{
-              '& .MuiTab-root': {
-                fontSize: '1rem',
-                fontWeight: 600,
-                textTransform: 'none',
-                minWidth: 120,
-                padding: '12px 24px',
-                '&.Mui-selected': {
-                  color: 'primary.main',
-                  fontWeight: 700
+          {/* Navigation Tabs */}
+          <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
+            <Tabs 
+              value={3}
+              onChange={handleTabChange} 
+              aria-label="jarvis modes"
+              centered
+              sx={{
+                '& .MuiTab-root': {
+                  fontSize: '1rem',
+                  fontWeight: 600,
+                  textTransform: 'none',
+                  minWidth: 120,
+                  padding: '12px 24px',
+                  '&.Mui-selected': {
+                    color: 'primary.main',
+                    fontWeight: 700
+                  }
                 }
-              }
-            }}
-          >
-            <Tab 
-              label="Standard Chat" 
-              id="tab-0"
-              aria-controls="tabpanel-0"
-            />
-            <Tab 
-              label="Multi-Agent" 
-              id="tab-1"
-              aria-controls="tabpanel-1"
-            />
-            <Tab 
-              label="Workflow" 
-              id="tab-2"
-              aria-controls="tabpanel-2"
-            />
-            <Tab 
-              label="Settings" 
-              id="tab-3"
-              aria-controls="tabpanel-3"
-            />
-          </Tabs>
+              }}
+            >
+              <Tab 
+                label="Standard Chat" 
+                id="tab-0"
+                aria-controls="tabpanel-0"
+              />
+              <Tab 
+                label="Multi-Agent" 
+                id="tab-1"
+                aria-controls="tabpanel-1"
+              />
+              <Tab 
+                label="Workflow" 
+                id="tab-2"
+                aria-controls="tabpanel-2"
+              />
+              <Tab 
+                label="Settings" 
+                id="tab-3"
+                aria-controls="tabpanel-3"
+              />
+            </Tabs>
+          </Box>
         </Box>
 
         {/* Main Content with Left Nav + Modern Design */}

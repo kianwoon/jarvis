@@ -378,6 +378,12 @@
   border-bottom: 1px solid var(--jarvis-border);
   margin-bottom: var(--jarvis-spacing-lg);
   overflow-x: auto;
+  position: sticky;
+  top: 0;
+  background: var(--jarvis-surface);
+  z-index: 10;
+  padding-top: var(--jarvis-spacing-sm);
+  margin-top: calc(-1 * var(--jarvis-spacing-sm));
 }
 
 .jarvis-tab-button {

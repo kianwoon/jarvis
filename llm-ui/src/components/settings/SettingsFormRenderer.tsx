@@ -305,7 +305,17 @@ const renderMCPConfiguration = (
 
   return (
     <Box>
-      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
+      <Box sx={{ 
+        borderBottom: 1, 
+        borderColor: 'divider', 
+        mb: 2,
+        position: 'sticky',
+        top: 0,
+        bgcolor: 'background.paper',
+        zIndex: 10,
+        pt: 1,
+        mt: -1
+      }}>
         <Tabs value={mcpTab} onChange={handleTabChange} aria-label="mcp tabs">
           <Tab label="MCP Servers" />
           <Tab label="MCP Tools" />
