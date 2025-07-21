@@ -100,7 +100,7 @@ class EnhancedQueryClassifier:
                 self.config['settings'] = {}
             
             self.config['settings'].update(dynamic_settings)
-            logger.info(f"Loaded Query Classifier settings: {dynamic_settings}")
+            # logger.info(f"Loaded Query Classifier settings: {dynamic_settings}")
             
             # Check if LLM-based classification is enabled
             # Use new enable_llm_classification flag and require model to be configured
@@ -140,7 +140,7 @@ class EnhancedQueryClassifier:
             self.available_mcp_tools = get_enabled_mcp_tools()
             self.mcp_tool_names = set(self.available_mcp_tools.keys()) if self.available_mcp_tools else set()
             logger.info(f"Loaded {len(self.mcp_tool_names)} MCP tools: {list(self.mcp_tool_names)}")
-            logger.info(f"[MCP TOOLS DEBUG] Sample tool data: {list(self.available_mcp_tools.items())[:2] if self.available_mcp_tools else 'No tools available'}")
+            # logger.info(f"[MCP TOOLS DEBUG] Sample tool data: {list(self.available_mcp_tools.items())[:2] if self.available_mcp_tools else 'No tools available'}")
             
         except Exception as e:
             logger.warning(f"Failed to load MCP tools: {e}")

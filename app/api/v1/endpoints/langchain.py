@@ -1342,7 +1342,7 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
             }) + "\n"
             
             # Get the suggested tool from classification
-            logger.info(f"[DIRECT HANDLER] Full routing structure: {routing}")
+            # logger.info(f"[DIRECT HANDLER] Full routing structure: {routing}")
             suggested_tools = routing.get('suggested_tools', [])
             # Also check nested structure
             if not suggested_tools and 'routing' in routing:

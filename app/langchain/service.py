@@ -1794,7 +1794,7 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
         vector_db_cfg = get_vector_db_settings()
         print(f"[DEBUG] vector_db_cfg type: {type(vector_db_cfg)}, value: {vector_db_cfg}")
         llm_cfg = get_llm_settings()
-        print(f"[DEBUG] llm_cfg type: {type(llm_cfg)}, value: {llm_cfg}")
+        # print(f"[DEBUG] llm_cfg type: {type(llm_cfg)}, value: {llm_cfg}")
     except Exception as e:
         print(f"[ERROR] Failed to get settings: {str(e)}")
         raise
