@@ -2660,13 +2660,28 @@ def apply_reranking_to_sources(question: str, sources: list) -> list:
 def make_llm_call(prompt: str, thinking: bool, context: str, llm_cfg: dict) -> str:
     """Make a synchronous LLM API call and return the complete response"""
     llm_api_url = "http://localhost:8000/api/v1/generate_stream"
-    # CRITICAL FIX: Ensure we get main LLM config, not query classifier config
-    main_llm_settings = get_llm_settings()
-    mode_config = get_main_llm_full_config(main_llm_settings)
-    llm_cfg = main_llm_settings  # Override llm_cfg with clean main LLM settings
+    
+    # Determine which LLM config to use based on what's passed
+    if 'main_llm' in llm_cfg or 'second_llm' in llm_cfg or 'query_classifier' in llm_cfg:
+        # Full settings dict passed, need to determine which config to use
+        main_llm_settings = llm_cfg
+        # Check if caller specified which LLM to use via thinking parameter or other means
+        # For now, default to main_llm config
+        mode_config = get_main_llm_full_config(main_llm_settings)
+    else:
+        # Specific LLM config passed directly (e.g., from second_llm)
+        mode_config = llm_cfg
+    
+    # Get system_prompt if available and prepend to prompt
+    system_prompt = mode_config.get("system_prompt", "")
+    if system_prompt:
+        prompt = f"{system_prompt}\n\n{prompt}"
+        print(f"[DEBUG make_llm_call] System prompt found and prepended: {system_prompt[:100]}...")
+    else:
+        print(f"[DEBUG make_llm_call] No system prompt found in config")
     
     # Get max_tokens from config
-    max_tokens_raw = llm_cfg.get("max_tokens", 16384)
+    max_tokens_raw = mode_config.get("max_tokens", 16384)
     try:
         max_tokens = int(max_tokens_raw)
         if max_tokens > 32768:

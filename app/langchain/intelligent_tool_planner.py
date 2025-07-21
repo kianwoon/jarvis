@@ -440,6 +440,8 @@ IMPORTANT:
                 if not main_llm_config or not main_llm_config.get('model'):
                     logger.error("[TOOL PLANNER] LLM settings not properly configured")
                     raise ValueError("LLM settings not available")
+                logger.info(f"[TOOL PLANNER] Using second_llm config with model: {main_llm_config.get('model')}")
+                logger.info(f"[TOOL PLANNER] System prompt in config: {main_llm_config.get('system_prompt', 'NONE')[:100]}")
             except Exception as e:
                 logger.error(f"[TOOL PLANNER] LLM settings validation failed: {e}")
                 raise ValueError("LLM settings not available")
@@ -452,7 +454,7 @@ IMPORTANT:
                     prompt=planning_prompt,
                     thinking=False,  # Use non-thinking mode for structured planning
                     context="",  # No additional context needed
-                    llm_cfg=llm_settings
+                    llm_cfg=main_llm_config  # Pass the second_llm config directly
                 )
             )
             
