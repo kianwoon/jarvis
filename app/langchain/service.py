@@ -2871,6 +2871,26 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
             # This looks like a simple factual query, ensure no complex context bleeding
             print(f"[DEBUG] Detected simple query after potential complex task, using limited context")
     
+    # Retrieve conversation history early to enhance question for tool execution
+    enhanced_question = question
+    if conversation_id:
+        # Get conversation history limits from settings to avoid hardcoding
+        llm_settings = get_llm_settings()
+        conversation_config = llm_settings.get('conversation_settings', {})
+        max_history_messages = conversation_config.get('max_history_messages', 3)
+        
+        # Use configurable conversation history to prevent context bleeding
+        early_conversation_history = get_limited_conversation_history(
+            conversation_id, 
+            max_messages=max_history_messages,
+            current_query=question
+        )
+        
+        if early_conversation_history:
+            # Create enhanced question with conversation context
+            enhanced_question = f"Previous conversation:\n{early_conversation_history}\n\nCurrent question: {question}"
+            print(f"[DEBUG] rag_answer: Enhanced question with conversation context for tool execution")
+    
     # Temporarily disable LangGraph due to Redis initialization issues
     use_langgraph = False
     
@@ -3015,7 +3035,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                 print(f"[DEBUG] rag_answer: Checking if intelligent planning needed. search_results: {len(search_results) if search_results else 0}")
                 if not search_results:
                     print(f"[DEBUG] rag_answer: Running intelligent planning since search_results is empty")
-                    search_results, search_context = await execute_intelligent_planning(question, thinking, trace)
+                    search_results, search_context = await execute_intelligent_planning(enhanced_question, thinking, trace)
                 else:
                     print(f"[DEBUG] rag_answer: Skipping intelligent planning - direct execution already provided {len(search_results)} results")
                 if search_results and search_context:
@@ -3070,7 +3090,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                 print(f"[DEBUG] rag_answer: LLM query contains current info keywords, adding tool enhancement")
                 try:
                     # Execute search tools to get current information
-                    search_results, search_context = await execute_intelligent_planning(question, thinking, trace)
+                    search_results, search_context = await execute_intelligent_planning(enhanced_question, thinking, trace)
                     if search_results and search_context:
                         print(f"[DEBUG] rag_answer: Tool enhancement successful for LLM query")
                         tool_calls = search_results
@@ -3096,8 +3116,13 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
         elif query_type == "SYNTHESIS":
             print(f"[DEBUG] rag_answer: SYNTHESIS query detected - skipping RAG retrieval, using provided context")
             print(f"[EXECUTION TRACKER] SYNTHESIS mode: No additional RAG search needed")
-            rag_context = ""  # No additional RAG needed, context already provided in question
-            rag_sources = []
+            # Check if pre_formatted_context is provided in hybrid_context
+            if hybrid_context and 'pre_formatted_context' in hybrid_context:
+                rag_context = hybrid_context['pre_formatted_context']
+                print(f"[DEBUG] rag_answer: Using pre_formatted_context from hybrid_context, length: {len(rag_context)}")
+            else:
+                rag_context = ""  # No additional RAG needed
+            # rag_sources already extracted from hybrid_context above
         else:
             # Unknown query type, default to RAG for safety
             print(f"[DEBUG] rag_answer: Unknown query_type '{query_type}' - defaulting to RAG retrieval")
@@ -3113,7 +3138,7 @@ async def rag_answer(question: str, thinking: bool = False, stream: bool = False
                 print(f"[DEBUG] rag_answer: No relevant RAG context found, attempting web search fallback")
                 try:
                     # Execute google_search tool to get current information
-                    search_results, search_context = await execute_intelligent_planning(question, thinking, trace)
+                    search_results, search_context = await execute_intelligent_planning(enhanced_question, thinking, trace)
                     if search_results and search_context:
                         print(f"[DEBUG] rag_answer: Web search fallback successful, got {len(search_context)} chars")
                         # Keep original empty rag_context, but we'll have search_context for synthesis
@@ -3509,7 +3534,7 @@ Please generate the requested items incorporating relevant information from the 
                     
                     # Execute task with intelligent planning (pass chat_span as trace for proper nesting)
                     execution_events = await execute_task_with_intelligent_tools(
-                        task=question,
+                        task=enhanced_question,
                         context={
                             "conversation_id": conversation_id,
                             "collections": collections,
@@ -3630,7 +3655,7 @@ Please generate the requested items incorporating relevant information from the 
                     except Exception as e2:
                         print(f"[DEBUG] rag_answer: Simple tool executor also failed: {e2}, trying original method")
                         # Fallback to original method
-                        tool_calls, tool_context = await execute_intelligent_planning(question, thinking, trace)
+                        tool_calls, tool_context = await execute_intelligent_planning(enhanced_question, thinking, trace)
                         print(f"[DEBUG] rag_answer: execute_tools_first returned:")
                         print(f"  - tool_calls: {len(tool_calls) if tool_calls else 0} calls")
                         print(f"  - tool_context length: {len(tool_context) if tool_context else 0}")

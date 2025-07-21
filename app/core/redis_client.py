@@ -2,6 +2,7 @@
 Centralized Redis client with connection pooling for automation workflows
 """
 import redis
+import redis.asyncio as redis_async
 import os
 from typing import Optional
 import time
@@ -103,3 +104,37 @@ def get_redis_pool_info() -> dict:
         "available_connections": len(pool._available_connections),
         "in_use_connections": len(pool._in_use_connections)
     }
+
+async def get_async_redis_client(decode_responses: bool = True) -> Optional[redis_async.Redis]:
+    """
+    Get async Redis client for async operations
+    Used by components that require async Redis operations (e.g., conversation managers)
+    
+    Args:
+        decode_responses: Whether to decode responses to strings (default True)
+    
+    Returns:
+        Async Redis client or None if connection fails
+    """
+    from app.core.config import get_settings
+    settings = get_settings()
+    redis_host = settings.REDIS_HOST
+    redis_port = settings.REDIS_PORT
+    
+    # In development, if Redis host is localhost but we're in Docker, try 'redis' first
+    if redis_host == "localhost" and os.path.exists("/.dockerenv"):
+        redis_host = "redis"
+    
+    try:
+        # Create async Redis client with connection URL
+        redis_url = f"redis://{redis_host}:{redis_port}"
+        client = redis_async.from_url(redis_url, decode_responses=decode_responses)
+        
+        # Test connection
+        await client.ping()
+        logger.info(f"Async Redis client connected: {redis_host}:{redis_port}")
+        return client
+        
+    except Exception as e:
+        logger.error(f"Failed to create async Redis client: {e}")
+        return None

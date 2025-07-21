@@ -6,6 +6,7 @@ from app.core.langfuse_integration import get_tracer
 from app.core.query_classifier_settings_cache import get_query_classifier_settings
 from app.core.temp_document_manager import TempDocumentManager
 from app.langchain.hybrid_rag_orchestrator import HybridRAGOrchestrator
+from app.core.simple_conversation_manager import conversation_manager
 from fastapi.responses import StreamingResponse
 import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any
@@ -220,6 +221,25 @@ async def rag_endpoint(request: RAGRequest):
     async def stream():
         try:
             chunk_count = 0
+            
+            # Store user message in conversation history
+            if conversation_id:
+                await conversation_manager.add_message(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=request.question
+                )
+            
+            # Retrieve conversation history and enhance question with context
+            enhanced_question = request.question
+            if conversation_id and not request.skip_classification:
+                # Get last 3 exchanges (6 messages: 3 user + 3 assistant)
+                history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
+                if history:
+                    # Format history for LLM context
+                    enhanced_question = conversation_manager.format_history_for_prompt(history, request.question)
+                    logger.info(f"[CONVERSATION] Retrieved {len(history)} messages for conversation {conversation_id}")
+            
             # Add classification metadata to first chunk if available
             if not request.skip_classification and routing:
                 classification_chunk = json_module.dumps({
@@ -256,7 +276,7 @@ async def rag_endpoint(request: RAGRequest):
                 print(f"[DEBUG] API endpoint - About to pass query_type='{simple_query_type}' to rag_answer")
             
             # Handle hybrid RAG mode or traditional temp document integration
-            enhanced_question = request.question
+            # enhanced_question already set above with conversation context
             hybrid_context = None
             
             if conversation_id and request.use_hybrid_rag:
@@ -394,9 +414,10 @@ Please answer the user's question using the information from the uploaded docume
                     
                     documents_text = "\n\n".join(document_contexts)
                     
+                    # Include conversation history in synthesis prompt
                     synthesis_prompt = f"""Based on the search results below, provide a comprehensive answer to the user's question.
 
-User Question: {request.question}
+{enhanced_question}
 
 📚 Internal Knowledge Base Results:
 {documents_text}
@@ -407,8 +428,16 @@ Please provide a detailed, helpful response based on the information found in th
                     from app.langchain.service import rag_answer
                     
                     # Use rag_answer in direct synthesis mode (skip tool planning)
+                    # Pass the original enhanced_question (which already has conversation history)
+                    # and include the documents in hybrid_context
+                    synthesis_context = {
+                        "sources": extracted_documents,
+                        "strategy": "unified_search",
+                        "pre_formatted_context": documents_text
+                    }
+                    
                     rag_stream = await rag_answer(
-                        synthesis_prompt,
+                        enhanced_question,  # Use enhanced_question to maintain conversation context
                         thinking=request.thinking, 
                         stream=True,
                         conversation_id=conversation_id,
@@ -417,7 +446,7 @@ Please provide a detailed, helpful response based on the information found in th
                         collection_strategy="all",  # Use available collections but we won't search
                         query_type="SYNTHESIS",  # Custom type to skip tool planning
                         trace=rag_span or trace,
-                        hybrid_context=hybrid_context
+                        hybrid_context=synthesis_context  # Pass document context via hybrid_context
                     )
                     
                     print(f"[DEBUG] API endpoint - Got synthesis stream: {type(rag_stream)}")
@@ -610,6 +639,16 @@ Please provide a detailed, helpful response based on the information found in th
                             pass  # Continue streaming even if parsing fails
                 
                 yield chunk
+            
+            # Save assistant response to conversation history
+            if conversation_id and final_answer:
+                await conversation_manager.add_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=final_answer,
+                    metadata={"source": source_info or "rag-chat"}
+                )
+                logger.info(f"[CONVERSATION] Saved assistant response to conversation {conversation_id}")
             
             # Update Langfuse generation and trace with the final output
             logger.info(f"[TRACE DEBUG] Stream completed, updating trace. Final answer length: {len(final_answer) if final_answer else 0}")
@@ -1325,13 +1364,33 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
 
 def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
     """Handle confident tool classifications with direct execution"""
-    logger.info(f"[DIRECT HANDLER DEBUG] Function called! routing: {routing}")
+    # logger.info(f"[DIRECT HANDLER DEBUG] Function called! routing: {routing}")  # Commented out to avoid logging entire routing object
     logger.info(f"[DIRECT HANDLER] handle_direct_tool_query called for tool query")
     conversation_id = request.conversation_id or request.session_id
     
     async def stream():
         logger.info(f"[DIRECT HANDLER] stream() function started")
+        # Initialize enhanced_question early to avoid UnboundLocalError
+        enhanced_question = request.question
+        
         try:
+            # Store user message in conversation history
+            if conversation_id:
+                await conversation_manager.add_message(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=request.question
+                )
+            
+            # Retrieve conversation history and enhance question with context
+            if conversation_id:
+                # Get last 3 exchanges (6 messages: 3 user + 3 assistant)
+                history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
+                if history:
+                    # Format history for LLM context
+                    enhanced_question = conversation_manager.format_history_for_prompt(history, request.question)
+                    logger.info(f"[DIRECT HANDLER] Retrieved {len(history)} messages for conversation {conversation_id}")
+                    logger.info(f"[DIRECT HANDLER] Enhanced question with conversation context")
             logger.info(f"[DIRECT HANDLER] About to send classification info")
             # Send classification info
             yield json_module.dumps({
@@ -1358,7 +1417,7 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                 
                 from app.langchain.service import rag_answer
                 rag_stream = await rag_answer(
-                    request.question,
+                    enhanced_question,  # Use enhanced_question which includes conversation history
                     thinking=request.thinking,
                     stream=True,
                     conversation_id=conversation_id,
@@ -1412,7 +1471,7 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                         
                         # Use simple parameter mapping for common patterns
                         if "query" in required_params:
-                            parameters["query"] = request.question
+                            parameters["query"] = enhanced_question
                         
                         # For complex tools with multiple required params, use intelligent planning
                         if len(required_params) > 1 or ("query" not in required_params and required_params):
@@ -1420,8 +1479,8 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                             planner = get_tool_planner()
                             
                             execution_plan = await planner.plan_tool_execution(
-                                task=request.question,
-                                context={"user_query": request.question},
+                                task=enhanced_question,
+                                context={"user_query": enhanced_question},
                                 mode="standard"
                             )
                             
@@ -1506,7 +1565,7 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     from app.langchain.service import build_messages_for_synthesis
                     
                     messages, source_label, full_context, system_prompt = build_messages_for_synthesis(
-                        question=request.question,
+                        question=enhanced_question,
                         query_type="TOOLS",
                         tool_context=tool_context,
                         thinking=request.thinking if hasattr(request, 'thinking') else False
@@ -1618,6 +1677,15 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     
                     logger.info(f"[DIRECT HANDLER] Final answer sent to frontend")
                     
+                    # Save assistant response to conversation history
+                    if conversation_id and final_response:
+                        await conversation_manager.add_message(
+                            conversation_id=conversation_id,
+                            role="assistant",
+                            content=final_response,
+                            metadata={"source": "DIRECT_TOOL_EXECUTION", "tools_executed": [tr['tool'] for tr in tool_results if tr.get('success')]}
+                        )
+                    
                 except Exception as synthesis_error:
                     logger.error(f"[DIRECT HANDLER] Synthesis failed: {synthesis_error}")
                     yield json_module.dumps({
@@ -1642,7 +1710,7 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
             # Fallback to regular rag_answer
             from app.langchain.service import rag_answer
             rag_stream = await rag_answer(
-                request.question,
+                enhanced_question,
                 thinking=request.thinking,
                 stream=True,
                 conversation_id=conversation_id,
@@ -1774,8 +1842,26 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
     """Handle hybrid queries that require multiple components (Tools + RAG + LLM)"""
     conversation_id = request.conversation_id or request.session_id
     
-    def stream():
+    async def stream():
         try:
+            # Store user message in conversation history
+            if conversation_id:
+                await conversation_manager.add_message(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=request.question
+                )
+            
+            # Retrieve conversation history and enhance question with context
+            enhanced_question = request.question
+            if conversation_id:
+                # Get last 3 exchanges (6 messages: 3 user + 3 assistant)
+                history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
+                if history:
+                    # Format history for LLM context
+                    enhanced_question = conversation_manager.format_history_for_prompt(history, request.question)
+                    logger.info(f"[HYBRID HANDLER] Enhanced question with conversation context")
+            
             # Send classification info
             yield json_module.dumps({
                 "type": "classification",
@@ -1877,22 +1963,52 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
             }) + "\n"
             
             # Build enhanced prompt with all component results
-            enhanced_prompt = build_hybrid_prompt(request.question, results, components)
+            enhanced_prompt = build_hybrid_prompt(enhanced_question, results, components)
             
             # Stream the final synthesized answer using rag_answer
             from app.langchain.service import rag_answer
             
-            # Use rag_answer with the enhanced prompt as a custom context
-            for chunk in rag_answer(
-                enhanced_prompt,
+            # Create hybrid context with the results
+            hybrid_synthesis_context = {
+                "sources": [],
+                "strategy": "hybrid_synthesis",
+                "pre_formatted_context": enhanced_prompt,
+                "component_results": results
+            }
+            
+            # Use rag_answer with the enhanced question and pass context via hybrid_context
+            final_answer = ""
+            async for chunk in rag_answer(
+                enhanced_question,  # Pass enhanced_question to maintain conversation context
                 thinking=request.thinking,
                 stream=True,
                 conversation_id=conversation_id,
                 use_langgraph=False,  # Direct LLM for synthesis
                 collections=request.collections,
-                collection_strategy="none"  # We already have context
+                collection_strategy="none",  # We already have context
+                query_type="SYNTHESIS",  # Use SYNTHESIS mode to skip additional searches
+                hybrid_context=hybrid_synthesis_context
             ):
+                # Extract token from chunk for accumulation
+                if isinstance(chunk, str):
+                    try:
+                        data = json_module.loads(chunk.strip())
+                        if data.get("token"):
+                            final_answer += data["token"]
+                        elif data.get("answer"):
+                            final_answer = data["answer"]
+                    except:
+                        pass
                 yield chunk
+            
+            # Save assistant response to conversation history
+            if conversation_id and final_answer:
+                await conversation_manager.add_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=final_answer,
+                    metadata={"source": "hybrid_handler", "components": components}
+                )
                 
         except Exception as e:
             logger.error(f"Hybrid handler error: {e}")
