@@ -61,6 +61,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [messages, setMessages] = useState<Message[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [loading, setLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string>('');
   const [conversationId] = useState(() => {
     const storageKey = `jarvis-conversation-id-${title.toLowerCase().replace(/\s+/g, '-')}`;
     const saved = localStorage.getItem(storageKey);
@@ -127,6 +128,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const sendMessage = async () => {
     const currentInput = inputRef.current?.value.trim() || '';
     if (!currentInput || loading) return;
+    
     const userMessage: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -137,6 +139,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setMessages(prev => [...prev, userMessage]);
     if (inputRef.current) inputRef.current.value = '';
     setLoading(true);
+
+    // Add timeout protection for loading state
+    const loadingTimeout = setTimeout(() => {
+      console.warn('⚠️ Request taking longer than expected, but keeping loading state...');
+    }, 30000); // 30 second warning
+
+    const emergencyTimeout = setTimeout(() => {
+      console.error('❌ Emergency timeout - releasing loading state after 2 minutes');
+      setLoading(false);
+    }, 120000); // 2 minute emergency release
 
     try {
       const requestBody = {
@@ -191,7 +203,23 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           try {
             const data = JSON.parse(line);
             
-            if (data.token) {
+            // Handle status messages for user feedback
+            if (data.type === 'status' && data.message) {
+              setStatusMessage(data.message);
+              // Clear status message after 3 seconds unless it's replaced
+              setTimeout(() => {
+                setStatusMessage(prev => prev === data.message ? '' : prev);
+              }, 3000);
+            } else if (data.type === 'classification' && data.routing) {
+              // Show classification info briefly
+              const classificationMsg = `Query classified as: ${data.routing.primary_type} (${(data.routing.confidence * 100).toFixed(0)}% confidence)`;
+              setStatusMessage(classificationMsg);
+              setTimeout(() => {
+                setStatusMessage(prev => prev === classificationMsg ? '' : prev);
+              }, 2000);
+            } else if (data.token) {
+              // Clear status message when actual content starts
+              setStatusMessage('');
               assistantMessage.content += data.token;
               if (data.source) assistantMessage.source = data.source;
               if (data.metadata) {
@@ -236,21 +264,81 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         }
       }
     } catch (error) {
-      const errorMessage: Message = {
-        id: `error-${Date.now()}`,
-        role: 'assistant',
-        content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      console.error('Chat request failed:', error);
+      
+      // Check if we have a partial assistant message to preserve
+      const existingAssistantMessage = messages.find(msg => msg.id === assistantMessage?.id);
+      
+      if (existingAssistantMessage && existingAssistantMessage.content.trim()) {
+        // Update existing message with error indicator but preserve content
+        setMessages(prev => 
+          prev.map(msg => 
+            msg.id === existingAssistantMessage.id 
+              ? { 
+                  ...msg, 
+                  content: msg.content + '\n\n⚠️ *Response interrupted due to connection error*',
+                  source: 'PARTIAL_RESPONSE'
+                }
+              : msg
+          )
+        );
+      } else {
+        // No partial content, show full error message
+        const errorMessage: Message = {
+          id: `error-${Date.now()}`,
+          role: 'assistant',
+          content: `❌ **Connection Error**\n\n${error instanceof Error ? error.message : 'Unknown error occurred'}\n\nPlease try your request again.`,
+          timestamp: new Date(),
+          source: 'ERROR'
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      }
     } finally {
+      // Clear the timeout protection
+      clearTimeout(loadingTimeout);
+      clearTimeout(emergencyTimeout);
       setLoading(false);
     }
   };
 
-  const clearChat = () => {
-    setMessages([]);
-    localStorage.removeItem(storageKey);
+  const clearChat = async () => {
+    try {
+      console.log('🧹 Starting chat clear...', { conversationId });
+      
+      // Clear conversation history from Redis if conversation ID exists
+      if (conversationId && conversationId.trim()) {
+        try {
+          const response = await fetch(`/api/v1/langchain/conversation/${conversationId}`, {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          });
+          
+          if (response.ok) {
+            console.log('✅ Redis conversation history cleared');
+          } else {
+            console.warn('⚠️ Redis clear failed, but continuing with frontend clear');
+          }
+        } catch (apiError) {
+          console.error('❌ API call failed:', apiError);
+          // Continue with frontend clearing even if API fails
+        }
+      }
+      
+      // Clear frontend state and localStorage
+      setMessages([]);
+      localStorage.removeItem(storageKey);
+      // Note: We don't remove conversation ID as it's persistent for the session
+      
+      console.log('✅ Chat cleared successfully');
+      
+    } catch (error) {
+      console.error('❌ Error during chat clear:', error);
+      // Fallback: Still clear frontend even if something fails
+      setMessages([]);
+      localStorage.removeItem(storageKey);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -283,6 +371,22 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             setDocumentCount(activeCount);
           }}
         />
+      )}
+
+      {/* Status Message */}
+      {statusMessage && (
+        <Alert 
+          severity="info" 
+          sx={{ 
+            mb: 1, 
+            backgroundColor: 'action.hover',
+            '& .MuiAlert-icon': {
+              color: 'primary.main'
+            }
+          }}
+        >
+          {statusMessage}
+        </Alert>
       )}
 
       {/* Messages */}
