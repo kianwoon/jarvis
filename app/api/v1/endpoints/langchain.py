@@ -1471,7 +1471,7 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                         
                         # Use simple parameter mapping for common patterns
                         if "query" in required_params:
-                            parameters["query"] = enhanced_question
+                            parameters["query"] = request.question
                         
                         # For complex tools with multiple required params, use intelligent planning
                         if len(required_params) > 1 or ("query" not in required_params and required_params):
@@ -1479,8 +1479,8 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                             planner = get_tool_planner()
                             
                             execution_plan = await planner.plan_tool_execution(
-                                task=enhanced_question,
-                                context={"user_query": enhanced_question},
+                                task=request.question,
+                                context={"user_query": request.question},
                                 mode="standard"
                             )
                             
@@ -2118,4 +2118,14 @@ async def update_temp_document_preferences(
             raise HTTPException(status_code=404, detail="Document not found")
     except Exception as e:
         logger.error(f"Failed to update preferences: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/conversation/{conversation_id}")
+async def clear_conversation_history(conversation_id: str):
+    """Clear conversation history from Redis for a specific conversation ID."""
+    try:
+        await conversation_manager.clear_conversation(conversation_id)
+        return {"success": True, "message": f"Conversation {conversation_id} cleared successfully"}
+    except Exception as e:
+        logger.error(f"Failed to clear conversation {conversation_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear conversation: {str(e)}") 

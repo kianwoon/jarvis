@@ -1047,12 +1047,12 @@ class EnhancedQueryClassifier:
             return []
         
         try:
-            from app.core.llm_settings_cache import get_llm_settings, get_query_classifier_full_config
+            from app.core.llm_settings_cache import get_llm_settings, get_second_llm_full_config
             from app.core.query_classifier_settings_cache import get_query_classifier_settings
             
-            # Get full query classifier configuration from LLM cache
+            # Use second_llm for tool suggestion instead of query classifier LLM
             main_llm_settings = get_llm_settings()
-            classifier_config = get_query_classifier_full_config(main_llm_settings)
+            second_llm_config = get_second_llm_full_config(main_llm_settings)
             classifier_specific_settings = get_query_classifier_settings()
             
             # Create enhanced prompt with tool descriptions for better selection
@@ -1072,31 +1072,40 @@ class EnhancedQueryClassifier:
                 tool_info=tool_info
             )
             
-            # Use same LLM configuration as Query Classifier
+            # Use second_llm configuration instead of query classifier config
             from app.llm.ollama import OllamaLLM
             from app.llm.base import LLMConfig
             
             llm_config = LLMConfig(
-                model_name=classifier_config.get('model', ''),
+                model_name=second_llm_config.get('model', ''),
                 temperature=0.0,  # Use temperature 0 for deterministic tool selection
-                max_tokens=int(classifier_config.get('max_tokens', 100)),  # Use LLM cache max_tokens
+                max_tokens=int(second_llm_config.get('max_tokens', 4000)),  # Use second_llm max_tokens
                 top_p=0.95
             )
             
-            # Use same model server detection as main classifier
+            # Use same model server detection as main system
             import os
             model_server = os.environ.get("OLLAMA_BASE_URL")
             if not model_server:
-                model_server = main_llm_settings.get('model_server', '').strip()
+                model_server = second_llm_config.get('model_server', '').strip()
                 if not model_server:
-                    model_server = "http://ollama:11434"
+                    model_server = main_llm_settings.get('model_server', '').strip()
+                    if not model_server:
+                        model_server = "http://ollama:11434"
+            
+            # Handle localhost to docker container URL conversion
+            if "localhost" in model_server:
+                model_server = model_server.replace("localhost", "host.docker.internal")
             
             llm = OllamaLLM(llm_config, base_url=model_server)
+            
+            # Get system prompt from second_llm config
+            system_prompt = second_llm_config.get('system_prompt', '').strip()
             
             # Add timeout wrapper for LLM tool suggestion
             try:
                 response = await asyncio.wait_for(
-                    llm.generate(prompt),
+                    llm.generate(prompt, system_prompt=system_prompt) if system_prompt else llm.generate(prompt),
                     timeout=10.0  # Shorter timeout for tool suggestions
                 )
                 response_text = response.text.strip()

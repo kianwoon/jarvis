@@ -1252,11 +1252,38 @@ function App() {
             {tabValue === 0 && (
               <Button
                 variant="outlined"
-                onClick={() => {
-                  // Clear standard chat messages - use same key pattern as ChatInterface
-                  const storageKey = 'jarvis-chat-standard-chat';
-                  localStorage.removeItem(storageKey);
-                  window.location.reload();
+                onClick={async () => {
+                  try {
+                    // Get current conversation ID for standard chat
+                    const conversationIdKey = 'jarvis-conversation-id-standard-chat';
+                    const currentConversationId = localStorage.getItem(conversationIdKey);
+                    
+                    // Clear conversation history from Redis if conversation ID exists
+                    if (currentConversationId) {
+                      await fetch(`/api/v1/langchain/conversation/${currentConversationId}`, {
+                        method: 'DELETE',
+                        headers: {
+                          'Content-Type': 'application/json'
+                        }
+                      });
+                    }
+                    
+                    // Clear localStorage for standard chat
+                    const messageStorageKey = 'jarvis-chat-standard-chat';
+                    localStorage.removeItem(messageStorageKey);
+                    localStorage.removeItem(conversationIdKey);
+                    
+                    // Reload page to reset state
+                    window.location.reload();
+                  } catch (error) {
+                    console.error('Error clearing session:', error);
+                    // Still reload even if API call fails to at least clear frontend
+                    const messageStorageKey = 'jarvis-chat-standard-chat';
+                    const conversationIdKey = 'jarvis-conversation-id-standard-chat';
+                    localStorage.removeItem(messageStorageKey);
+                    localStorage.removeItem(conversationIdKey);
+                    window.location.reload();
+                  }
                 }}
                 sx={{ mr: 2, color: 'white', borderColor: 'white' }}
               >
