@@ -1256,28 +1256,57 @@ function App() {
                   try {
                     // Get current conversation ID for standard chat
                     const conversationIdKey = 'jarvis-conversation-id-standard-chat';
+                    const messageStorageKey = 'jarvis-chat-standard-chat';
                     const currentConversationId = localStorage.getItem(conversationIdKey);
                     
+                    console.log('🔄 Starting new session cleanup...', { conversationId: currentConversationId });
+                    
                     // Clear conversation history from Redis if conversation ID exists
-                    if (currentConversationId) {
-                      await fetch(`/api/v1/langchain/conversation/${currentConversationId}`, {
-                        method: 'DELETE',
-                        headers: {
-                          'Content-Type': 'application/json'
+                    if (currentConversationId && currentConversationId.trim()) {
+                      try {
+                        const response = await fetch(`/api/v1/langchain/conversation/${currentConversationId}`, {
+                          method: 'DELETE',
+                          headers: {
+                            'Content-Type': 'application/json'
+                          }
+                        });
+                        
+                        if (response.ok) {
+                          console.log('✅ Redis conversation history cleared successfully');
+                        } else {
+                          console.warn('⚠️ Redis clear failed, but continuing with frontend clear');
                         }
-                      });
+                      } catch (apiError) {
+                        console.error('❌ API call failed:', apiError);
+                        // Continue with frontend clearing even if API fails
+                      }
                     }
                     
-                    // Clear localStorage for standard chat
-                    const messageStorageKey = 'jarvis-chat-standard-chat';
+                    // Clear localStorage for standard chat - force clean slate
                     localStorage.removeItem(messageStorageKey);
                     localStorage.removeItem(conversationIdKey);
                     
-                    // Reload page to reset state
+                    // Verify clearing worked
+                    const verifyMessages = localStorage.getItem(messageStorageKey);
+                    const verifyConversationId = localStorage.getItem(conversationIdKey);
+                    
+                    if (!verifyMessages && !verifyConversationId) {
+                      console.log('✅ localStorage cleared successfully');
+                    } else {
+                      console.error('❌ localStorage clearing incomplete');
+                    }
+                    
+                    // Small delay to ensure any pending requests complete
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    
+                    // Reload page to reset state and generate new conversation ID
+                    console.log('🔄 Reloading page to complete new session...');
                     window.location.reload();
+                    
                   } catch (error) {
-                    console.error('Error clearing session:', error);
-                    // Still reload even if API call fails to at least clear frontend
+                    console.error('❌ Error during new session cleanup:', error);
+                    
+                    // Fallback: Still clear frontend data and reload even if something fails
                     const messageStorageKey = 'jarvis-chat-standard-chat';
                     const conversationIdKey = 'jarvis-conversation-id-standard-chat';
                     localStorage.removeItem(messageStorageKey);

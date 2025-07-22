@@ -18,7 +18,14 @@ import {
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import ClearIcon from '@mui/icons-material/Clear';
-import { ExpandMore as ExpandMoreIcon, Description as DocumentIcon } from '@mui/icons-material';
+import { 
+  ExpandMore as ExpandMoreIcon, 
+  Description as DocumentIcon,
+  Search as SearchIcon,
+  Public as WebIcon,
+  AccessTime as TimeIcon,
+  Build as ToolIcon
+} from '@mui/icons-material';
 import TempDocumentPanel from './temp-documents/TempDocumentPanel';
 import FileUploadComponent from './shared/FileUploadComponent';
 import { MessageContent } from './shared/MessageContent';
@@ -30,6 +37,7 @@ interface Message {
   timestamp: Date;
   source?: string;
   metadata?: any;
+  toolsUsed?: string[];
   context?: Array<{
     content: string;
     source: string;
@@ -59,7 +67,19 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     if (saved) {
       return saved;
     }
-    const newId = `chat-${title.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+    
+    // Generate a more robust unique ID using crypto.randomUUID() if available
+    let uniqueId;
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      uniqueId = crypto.randomUUID();
+    } else {
+      // Fallback: enhanced timestamp with random component
+      const timestamp = Date.now();
+      const randomComponent = Math.random().toString(36).substring(2, 8);
+      uniqueId = `${timestamp}-${randomComponent}`;
+    }
+    
+    const newId = `chat-${title.toLowerCase().replace(/\s+/g, '-')}-${uniqueId}`;
     localStorage.setItem(storageKey, newId);
     return newId;
   });
@@ -174,7 +194,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             if (data.token) {
               assistantMessage.content += data.token;
               if (data.source) assistantMessage.source = data.source;
-              if (data.metadata) assistantMessage.metadata = data.metadata;
+              if (data.metadata) {
+                assistantMessage.metadata = data.metadata;
+                // Extract tools used from metadata
+                if (data.metadata.tools_executed) {
+                  assistantMessage.toolsUsed = data.metadata.tools_executed;
+                }
+              }
               setMessages(prev => 
                 prev.map(msg => 
                   msg.id === assistantMessage.id ? assistantMessage : msg
@@ -184,6 +210,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               assistantMessage.content = data.answer;
               assistantMessage.source = data.source;
               assistantMessage.metadata = data.metadata;
+              
+              // Extract tools used from metadata
+              if (data.metadata && data.metadata.tools_executed) {
+                assistantMessage.toolsUsed = data.metadata.tools_executed;
+              }
+              
               if (data.context_documents || data.retrieved_docs || data.documents) {
                 assistantMessage.context = (data.context_documents || data.retrieved_docs || data.documents).map((doc: any) => ({
                   content: doc.content || doc.text || '',
@@ -285,6 +317,50 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               {message.source && (
                 <Box sx={{ mt: 1 }}>
                   <Chip label={message.source} size="small" variant="outlined" />
+                </Box>
+              )}
+
+              {/* Tools used */}
+              {message.toolsUsed && message.toolsUsed.length > 0 && (
+                <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                  {message.toolsUsed.map((tool, index) => {
+                    // Get appropriate icon for each tool
+                    const getToolIcon = (toolName: string) => {
+                      if (toolName.includes('google_search') || toolName.includes('search')) {
+                        return <WebIcon fontSize="small" />;
+                      } else if (toolName.includes('rag_knowledge_search') || toolName.includes('knowledge')) {
+                        return <SearchIcon fontSize="small" />;
+                      } else if (toolName.includes('datetime') || toolName.includes('time')) {
+                        return <TimeIcon fontSize="small" />;
+                      } else {
+                        return <ToolIcon fontSize="small" />;
+                      }
+                    };
+
+                    // Clean tool name for display
+                    const getToolDisplayName = (toolName: string) => {
+                      if (toolName.includes('google_search')) return 'Web Search';
+                      if (toolName.includes('rag_knowledge_search')) return 'Knowledge Base';
+                      if (toolName.includes('get_datetime')) return 'Current Time';
+                      return toolName.replace(/_/g, ' ').replace(/([A-Z])/g, ' $1').trim();
+                    };
+
+                    return (
+                      <Chip
+                        key={index}
+                        icon={getToolIcon(tool)}
+                        label={getToolDisplayName(tool)}
+                        size="small"
+                        variant="outlined"
+                        sx={{
+                          fontSize: '0.75rem',
+                          height: '24px',
+                          backgroundColor: message.role === 'user' ? 'rgba(255,255,255,0.1)' : 'action.hover',
+                          color: message.role === 'user' ? 'inherit' : 'text.secondary'
+                        }}
+                      />
+                    );
+                  })}
                 </Box>
               )}
             </Box>

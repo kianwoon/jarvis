@@ -19,19 +19,31 @@ interface ContentPart {
   text: string;
 }
 
+function filterToolSyntax(content: string): string {
+  // Remove tool execution syntax from content
+  const toolRegex = /<tool>[^<]*<\/tool>/g;
+  return content.replace(toolRegex, '').trim();
+}
+
 function parseContentWithThinking(content: string): ContentPart[] {
+  // First filter out tool syntax from the entire content
+  const filteredContent = filterToolSyntax(content);
+  
   const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
   const parts: ContentPart[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = thinkRegex.exec(content)) !== null) {
+  while ((match = thinkRegex.exec(filteredContent)) !== null) {
     // Add content before the <think> tag
     if (match.index > lastIndex) {
-      parts.push({
-        type: 'content',
-        text: content.substring(lastIndex, match.index)
-      });
+      const contentText = filteredContent.substring(lastIndex, match.index).trim();
+      if (contentText) {
+        parts.push({
+          type: 'content',
+          text: contentText
+        });
+      }
     }
     
     // Add the thinking content
@@ -44,13 +56,24 @@ function parseContentWithThinking(content: string): ContentPart[] {
   }
   
   // Add remaining content after the last <think> tag
-  if (lastIndex < content.length) {
+  if (lastIndex < filteredContent.length) {
+    const remainingText = filteredContent.substring(lastIndex).trim();
+    if (remainingText) {
+      parts.push({
+        type: 'content',
+        text: remainingText
+      });
+    }
+  }
+
+  // If no thinking tags were found, just return the filtered content
+  if (parts.length === 0 && filteredContent.trim()) {
     parts.push({
       type: 'content',
-      text: content.substring(lastIndex)
+      text: filteredContent.trim()
     });
   }
-  
+
   return parts;
 }
 

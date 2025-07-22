@@ -139,7 +139,7 @@ async def rag_endpoint(request: RAGRequest):
         max_docs = doc_settings.get('max_documents_mcp', 8)
         
         tool_parameters = {
-            "query": enhanced_question,
+            "query": request.question,  # Use original question for document search, not conversation history
             "include_content": True,
             "max_documents": max_docs
         }
