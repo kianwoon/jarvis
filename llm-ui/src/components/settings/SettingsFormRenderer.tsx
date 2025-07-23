@@ -193,6 +193,11 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
     );
   }
 
+  // Special handling for timeout configuration
+  if (category === 'timeout') {
+    return <TimeoutConfiguration data={data} onChange={onChange} onShowSuccess={onShowSuccess} />;
+  }
+
   // Default form rendering for regular settings
   return renderStandardForm(data, onChange, category, activeTab, setActiveTab, passwordVisibility, setPasswordVisibility, icebergPasswordVisibility, setIcebergPasswordVisibility, onShowSuccess);
 };
@@ -2951,6 +2956,231 @@ const renderStandardForm = (
         </div>
       ))}
     </div>
+  );
+};
+
+const TimeoutConfiguration: React.FC<{
+  data: any,
+  onChange: (field: string, value: any) => void,
+  onShowSuccess?: (message?: string) => void
+}> = ({ data, onChange, onShowSuccess }) => {
+  const [activeTimeoutTab, setActiveTimeoutTab] = React.useState('api_network');
+
+  const timeoutCategories = {
+    api_network: { 
+      title: 'API & Network', 
+      description: 'HTTP requests, database connections, and network operations',
+      fields: {} 
+    },
+    llm_ai: { 
+      title: 'LLM & AI Processing', 
+      description: 'Language model inference, classification, and AI operations',
+      fields: {} 
+    },
+    document_processing: { 
+      title: 'Document & RAG', 
+      description: 'Document retrieval, vector search, and RAG processing',
+      fields: {} 
+    },
+    mcp_tools: { 
+      title: 'MCP Tools', 
+      description: 'Tool execution, server communication, and integrations',
+      fields: {} 
+    },
+    workflow_automation: { 
+      title: 'Workflow & Automation', 
+      description: 'Agent workflows, task execution, and large generation',
+      fields: {} 
+    },
+    session_cache: { 
+      title: 'Session & Cache', 
+      description: 'Redis TTL, conversation memory, and cache expiration',
+      fields: {} 
+    }
+  };
+
+  // Organize timeout data into categories
+  Object.entries(data || {}).forEach(([categoryKey, categoryData]) => {
+    if (timeoutCategories[categoryKey] && typeof categoryData === 'object') {
+      timeoutCategories[categoryKey].fields = categoryData;
+    }
+  });
+
+  const renderTimeoutField = (key: string, value: any, categoryKey: string) => {
+    const formatLabel = (str: string) => {
+      return str
+        .split('_')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+    };
+
+    const getHelpText = (fieldKey: string) => {
+      const helpTexts = {
+        // API & Network
+        'http_request_timeout': 'Timeout for HTTP API requests (seconds)',
+        'http_streaming_timeout': 'Timeout for streaming HTTP responses (seconds)',
+        'http_upload_timeout': 'Timeout for file upload operations (seconds)',
+        'database_connection_timeout': 'Database connection establishment timeout (seconds)',
+        'database_query_timeout': 'Database query execution timeout (seconds)',
+        'redis_operation_timeout': 'Redis operations timeout (seconds)',
+        'redis_connection_timeout': 'Redis connection timeout (seconds)',
+        
+        // LLM & AI
+        'llm_inference_timeout': 'LLM model inference timeout (seconds)',
+        'llm_streaming_timeout': 'LLM streaming response timeout (seconds)',
+        'query_classification_timeout': 'Query classification timeout (seconds)',
+        'multi_agent_timeout': 'Multi-agent coordination timeout (seconds)',
+        'agent_processing_timeout': 'Individual agent processing timeout (seconds)',
+        'agent_coordination_timeout': 'Agent-to-agent coordination timeout (seconds)',
+        'thinking_mode_timeout': 'Extended thinking mode timeout (seconds)',
+        
+        // Document Processing
+        'rag_retrieval_timeout': 'RAG document retrieval timeout (seconds)',
+        'rag_processing_timeout': 'RAG processing pipeline timeout (seconds)',
+        'vector_search_timeout': 'Vector database search timeout (seconds)',
+        'embedding_generation_timeout': 'Text embedding generation timeout (seconds)',
+        'document_processing_timeout': 'Document processing timeout (seconds)',
+        'collection_search_timeout': 'Collection search timeout (seconds)',
+        'bm25_processing_timeout': 'BM25 text processing timeout (seconds)',
+        
+        // MCP Tools
+        'tool_execution_timeout': 'Tool execution timeout (seconds)',
+        'tool_initialization_timeout': 'Tool initialization timeout (seconds)',
+        'manifest_fetch_timeout': 'MCP manifest fetch timeout (seconds)',
+        'server_communication_timeout': 'MCP server communication timeout (seconds)',
+        'server_startup_timeout': 'MCP server startup timeout (seconds)',
+        'stdio_bridge_timeout': 'STDIO bridge communication timeout (seconds)',
+        
+        // Workflow & Automation
+        'workflow_execution_timeout': 'Workflow execution timeout (seconds)',
+        'workflow_step_timeout': 'Individual workflow step timeout (seconds)',
+        'task_timeout': 'General task execution timeout (seconds)',
+        'agent_task_timeout': 'Agent task execution timeout (seconds)',
+        'large_generation_timeout': 'Large content generation timeout (seconds)',
+        'chunk_generation_timeout': 'Content chunk generation timeout (seconds)',
+        
+        // Session & Cache
+        'redis_ttl_seconds': 'Redis cache TTL (seconds)',
+        'conversation_cache_ttl': 'Conversation cache TTL (seconds)',
+        'result_cache_ttl': 'Result cache TTL (seconds)',
+        'temp_data_ttl': 'Temporary data TTL (seconds)',
+        'session_cleanup_interval': 'Session cleanup interval (seconds)',
+        'cache_cleanup_interval': 'Cache cleanup interval (seconds)'
+      };
+      
+      return helpTexts[fieldKey] || null;
+    };
+
+    const helpText = getHelpText(key);
+    const numValue = typeof value === 'number' ? value : parseInt(value) || 0;
+
+    // Determine reasonable min/max values based on category
+    let minValue = 1;
+    let maxValue = 600; // 10 minutes default
+    
+    if (categoryKey === 'session_cache') {
+      maxValue = 604800; // 7 days for cache TTL
+    } else if (categoryKey === 'workflow_automation') {
+      maxValue = 1800; // 30 minutes for workflows
+    }
+
+    return (
+      <Box key={key} sx={{ mb: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+          <Typography variant="body2" fontWeight="medium">
+            {formatLabel(key)}
+          </Typography>
+          {helpText && (
+            <Tooltip title={helpText} arrow>
+              <HelpOutlineIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+            </Tooltip>
+          )}
+        </Box>
+        <TextField
+          type="number"
+          value={numValue}
+          onChange={(e) => {
+            const newValue = parseInt(e.target.value) || 0;
+            const clampedValue = Math.max(minValue, Math.min(maxValue, newValue));
+            onChange(`${categoryKey}.${key}`, clampedValue);
+          }}
+          inputProps={{ 
+            min: minValue, 
+            max: maxValue,
+            step: 1
+          }}
+          size="small"
+          fullWidth
+          helperText={numValue !== Math.max(minValue, Math.min(maxValue, numValue)) 
+            ? `Value will be clamped to range ${minValue}-${maxValue}` 
+            : `Range: ${minValue}-${maxValue} seconds`}
+          error={numValue < minValue || numValue > maxValue}
+        />
+      </Box>
+    );
+  };
+
+  return (
+    <Box>
+      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+        <Tabs 
+          value={activeTimeoutTab} 
+          onChange={(_, newValue) => setActiveTimeoutTab(newValue)}
+          variant="scrollable"
+          scrollButtons="auto"
+        >
+          {Object.entries(timeoutCategories).map(([key, category]) => (
+            <Tab 
+              key={key}
+              label={category.title} 
+              value={key} 
+            />
+          ))}
+        </Tabs>
+      </Box>
+
+      {Object.entries(timeoutCategories).map(([categoryKey, categoryData]) => (
+        activeTimeoutTab === categoryKey && (
+          <Box key={categoryKey}>
+            <Box sx={{ mb: 3 }}>
+              <Typography variant="h6" gutterBottom>
+                {categoryData.title} Timeouts
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                {categoryData.description}
+              </Typography>
+            </Box>
+
+            <Card variant="outlined">
+              <CardContent>
+                {Object.keys(categoryData.fields || {}).length === 0 ? (
+                  <Alert severity="info">
+                    No timeout settings available for this category.
+                  </Alert>
+                ) : (
+                  <Grid container spacing={3}>
+                    {Object.entries(categoryData.fields || {}).map(([fieldKey, fieldValue]) => (
+                      <Grid item xs={12} sm={6} md={4} key={fieldKey}>
+                        {renderTimeoutField(fieldKey, fieldValue, categoryKey)}
+                      </Grid>
+                    ))}
+                  </Grid>
+                )}
+              </CardContent>
+            </Card>
+
+            <Box sx={{ mt: 2 }}>
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                <Typography variant="body2">
+                  <strong>Important:</strong> Timeout changes require a system restart to take full effect. 
+                  Very low values may cause system instability, while very high values may cause poor user experience.
+                </Typography>
+              </Alert>
+            </Box>
+          </Box>
+        )
+      ))}
+    </Box>
   );
 };
 

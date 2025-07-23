@@ -1382,15 +1382,8 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     content=request.question
                 )
             
-            # Retrieve conversation history and enhance question with context
-            if conversation_id:
-                # Get last 3 exchanges (6 messages: 3 user + 3 assistant)
-                history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
-                if history:
-                    # Format history for LLM context
-                    enhanced_question = conversation_manager.format_history_for_prompt(history, request.question)
-                    logger.info(f"[DIRECT HANDLER] Retrieved {len(history)} messages for conversation {conversation_id}")
-                    logger.info(f"[DIRECT HANDLER] Enhanced question with conversation context")
+            # Initialize enhanced_question 
+            enhanced_question = request.question
             logger.info(f"[DIRECT HANDLER] About to send classification info")
             # Send classification info
             yield json_module.dumps({
@@ -1407,6 +1400,29 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
             if not suggested_tools and 'routing' in routing:
                 suggested_tools = routing['routing'].get('suggested_tools', [])
             logger.info(f"[DIRECT HANDLER] Suggested tools: {suggested_tools}")
+            
+            # Skip conversation history for real-time/current data queries to avoid contamination
+            tools_for_current_data = ['get_datetime', 'get_current_time', 'current_time', 'datetime', 'now']  
+            is_current_data_query = any(tool in suggested_tools for tool in tools_for_current_data)
+            
+            logger.info(f"[DIRECT HANDLER] Tools for current data: {tools_for_current_data}")
+            logger.info(f"[DIRECT HANDLER] Is current data query: {is_current_data_query}")
+            
+            # Retrieve conversation history and enhance question with context
+            if conversation_id and not is_current_data_query:
+                # Get last 3 exchanges (6 messages: 3 user + 3 assistant)
+                history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
+                if history:
+                    # Format history for LLM context
+                    enhanced_question = conversation_manager.format_history_for_prompt(history, request.question)
+                    logger.info(f"[DIRECT HANDLER] Retrieved {len(history)} messages for conversation {conversation_id}")
+                    logger.info(f"[DIRECT HANDLER] Enhanced question with conversation context")
+            elif is_current_data_query:
+                logger.info(f"[DIRECT HANDLER] Skipping conversation history for current data query to avoid contamination")
+                # enhanced_question already set to request.question above
+            else:
+                logger.info(f"[DIRECT HANDLER] No conversation ID, using original question")
+                # enhanced_question already set to request.question above
             if not suggested_tools:
                 # Fallback to rag_answer if no tools suggested  
                 logger.info(f"[DIRECT HANDLER] No suggested tools found, falling back to regular rag_answer flow")
@@ -1531,6 +1547,8 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
             
             # Generate final response with tool results
             logger.info(f"[DIRECT HANDLER] Processing {len(tool_results)} tool results")
+            logger.info(f"[DEBUG TOOL_RESULTS] Tool results structure: {tool_results}")
+            logger.info(f"[DEBUG TOOL_RESULTS] Success check: tool_results={bool(tool_results)}, any_success={any(r.get('success') for r in tool_results) if tool_results else False}")
             if tool_results and any(r.get('success') for r in tool_results):
                 try:
                     # Send progress update before synthesis
@@ -1545,7 +1563,23 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     
                     for tr in tool_results:
                         if tr.get('success'):
-                            tool_context += f"\n{tr['tool']}: {tr['result']}\n"
+                            # Extract readable text from tool result
+                            tool_name = tr['tool']
+                            raw_result = tr['result']
+                            
+                            # Format tool result in a readable way
+                            if isinstance(raw_result, dict) and 'content' in raw_result:
+                                # Extract text from content array
+                                content_parts = []
+                                for item in raw_result['content']:
+                                    if isinstance(item, dict) and item.get('type') == 'text':
+                                        content_parts.append(item.get('text', ''))
+                                readable_result = ' '.join(content_parts) if content_parts else str(raw_result)
+                            else:
+                                readable_result = str(raw_result)
+                            
+                            tool_context += f"\n{tool_name}: {readable_result}\n"
+                            logger.info(f"[DIRECT HANDLER] Formatted {tool_name} result: {readable_result}")
                             
                             # Extract documents from RAG search results
                             # Import is_rag_tool function for flexible tool name matching
@@ -1564,12 +1598,19 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     # Use unified synthesis with proper message format
                     from app.langchain.service import build_messages_for_synthesis
                     
-                    messages, source_label, full_context, system_prompt = build_messages_for_synthesis(
-                        question=enhanced_question,
-                        query_type="TOOLS",
-                        tool_context=tool_context,
-                        thinking=request.thinking if hasattr(request, 'thinking') else False
-                    )
+                    logger.info(f"[DEBUG CALL] About to call build_messages_for_synthesis with question='{enhanced_question[:100]}...', tool_context='{tool_context[:100]}...'")
+                    
+                    try:
+                        messages, source_label, full_context, system_prompt = build_messages_for_synthesis(
+                            question=enhanced_question,
+                            query_type="TOOLS",
+                            tool_context=tool_context,
+                            thinking=request.thinking if hasattr(request, 'thinking') else False
+                        )
+                        logger.info(f"[DEBUG CALL] build_messages_for_synthesis returned successfully, messages count: {len(messages)}")
+                    except Exception as e:
+                        logger.error(f"[DEBUG CALL] build_messages_for_synthesis failed with error: {e}")
+                        raise
                     
                     # For backward compatibility, create a single prompt
                     synthesis_prompt = "\n\n".join([msg["content"] for msg in messages])
@@ -1625,6 +1666,12 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     final_response = ""
                     # Log system prompt being used
                     logger.info(f"[DIRECT HANDLER] Using system prompt: {system_prompt[:100]}...")
+                    logger.info(f"[DIRECT HANDLER] Full system prompt length: {len(system_prompt)}")
+                    logger.info(f"[DIRECT HANDLER] Messages array length: {len(messages)}")
+                    for i, msg in enumerate(messages):
+                        logger.info(f"[DIRECT HANDLER] Message {i} - Role: {msg.get('role')}, Content length: {len(msg.get('content', ''))}")
+                        if msg.get('role') == 'system':
+                            logger.info(f"[DIRECT HANDLER] System message preview: {msg.get('content', '')[:200]}...")
                     
                     # Use chat_stream with messages instead of generate_stream
                     async for response_chunk in llm.chat_stream(messages):

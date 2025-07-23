@@ -460,25 +460,31 @@ class EnhancedQueryClassifier:
             from app.core.llm_settings_cache import get_llm_settings, get_query_classifier_full_config
             from app.core.query_classifier_settings_cache import get_query_classifier_settings
             
-            # Get full query classifier configuration from LLM cache
-            llm_settings = get_llm_settings()
-            classifier_config = get_query_classifier_full_config(llm_settings)
-            
-            # Get additional classifier-specific settings from query classifier cache
+            # Get query classifier specific settings - DO NOT use general LLM settings
+            from app.core.timeout_settings_cache import get_query_classification_timeout
             classifier_specific_settings = get_query_classifier_settings()
             
-            # Use LLM cache config for model parameters
-            max_tokens = int(classifier_config.get('max_tokens', 100))  # Use LLM cache max_tokens
-            llm_model = classifier_config.get('model', '')
-            temperature = float(classifier_config.get('temperature', 0.1))
+            # Use query classifier specific model configuration
+            llm_model = classifier_specific_settings.get('model', '').strip()
+            max_tokens = int(classifier_specific_settings.get('max_tokens', 10))
+            temperature = float(classifier_specific_settings.get('temperature', 0.1))
+            
+            # Debug logging for configuration values
+            logger.info(f"LLM Classifier using model: {llm_model}")
+            logger.info(f"LLM Classifier config - max_tokens: {max_tokens}, temperature: {temperature}")
+            
+            # Validate that model is configured
+            if not llm_model:
+                logger.error("Query classifier model is not configured - check query_classifier.model setting")
+                return "TOOL", 0.5, "No model configured for query classifier"
             
             # Use classifier-specific settings for classification behavior
             min_confidence = float(classifier_specific_settings.get('min_confidence_threshold', 0.1))
             max_classifications = int(classifier_specific_settings.get('max_classifications', 3))
-            timeout_seconds = int(classifier_specific_settings.get('llm_timeout_seconds', 5))
+            timeout_seconds = get_query_classification_timeout()  # Use centralized timeout config
             
             # Get system prompt from classifier-specific settings
-            system_prompt = classifier_config.get('system_prompt')
+            system_prompt = classifier_specific_settings.get('system_prompt', '').strip()
             
             if system_prompt:
                 # Build detailed tool and collection information
@@ -537,15 +543,18 @@ class EnhancedQueryClassifier:
                 top_p=0.95  # Use default top_p for classification
             )
             
-            # Use same approach as main system - check env var first, then settings, then default
+            # Use query classifier specific model server configuration
             import os
             model_server = os.environ.get("OLLAMA_BASE_URL")
             if not model_server:
-                # Try main LLM settings if env var not set
-                model_server = main_llm_settings.get('model_server', '').strip()
+                # Try query classifier specific settings first
+                model_server = classifier_specific_settings.get('model_server', '').strip()
                 if not model_server:
-                    # Use same default as main system
-                    model_server = "http://ollama:11434"
+                    # Fallback to main LLM settings
+                    model_server = main_llm_settings.get('model_server', '').strip()
+                    if not model_server:
+                        # Use localhost as default
+                        model_server = "http://localhost:11434"
             
             logger.info(f"LLM Classifier using model server: {model_server}")
             logger.info(f"LLM Classifier using model: {llm_config.model_name}")
@@ -565,16 +574,15 @@ class EnhancedQueryClassifier:
                 except Exception as e:
                     logger.warning(f"Failed to create classification generation span: {e}")
             
-            # Add timeout wrapper for LLM classification using Query Classifier settings
-            classifier_timeout = timeout_seconds + 5  # Add 5 second buffer over configured timeout
+            # Add timeout wrapper for LLM classification using centralized timeout config
             try:
                 response = await asyncio.wait_for(
                     llm.chat(messages),
-                    timeout=classifier_timeout
+                    timeout=timeout_seconds
                 )
                 response_text = response.text
             except asyncio.TimeoutError:
-                logger.error(f"LLM classification timed out after {classifier_timeout} seconds")
+                logger.error(f"LLM classification timed out after {timeout_seconds} seconds")
                 return await self._retry_llm_classification(query, "llm_timeout")
             
             # End generation span with result
@@ -1102,15 +1110,17 @@ class EnhancedQueryClassifier:
             # Get system prompt from second_llm config
             system_prompt = second_llm_config.get('system_prompt', '').strip()
             
-            # Add timeout wrapper for LLM tool suggestion
+            # Add timeout wrapper for LLM tool suggestion using centralized timeout config
+            from app.core.timeout_settings_cache import get_timeout_value
+            tool_suggestion_timeout = get_timeout_value("llm_ai", "agent_processing_timeout", 30)
             try:
                 response = await asyncio.wait_for(
                     llm.generate(prompt, system_prompt=system_prompt) if system_prompt else llm.generate(prompt),
-                    timeout=10.0  # Shorter timeout for tool suggestions
+                    timeout=tool_suggestion_timeout
                 )
                 response_text = response.text.strip()
             except asyncio.TimeoutError:
-                logger.error("LLM tool suggestion timed out after 10 seconds")
+                logger.error(f"LLM tool suggestion timed out after {tool_suggestion_timeout} seconds")
                 return []
             
             # Clean the response - remove any thinking tags, explanations, etc.

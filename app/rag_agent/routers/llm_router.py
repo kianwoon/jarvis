@@ -133,7 +133,11 @@ class LLMRouter:
             model_server = llm_settings.get("model_server", "http://localhost:11434").strip()
             llm_endpoint = f"{model_server}/v1/chat/completions"
             
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # Use centralized timeout configuration
+            from app.core.timeout_settings_cache import get_timeout_value
+            http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+            
+            async with httpx.AsyncClient(timeout=http_timeout) as client:
                 response = await client.post(
                     llm_endpoint,
                     json=payload,

@@ -33,7 +33,8 @@ import {
   Speed as PerformanceIcon,
   Computer as SystemIcon,
   Save as SaveIcon,
-  Refresh as RefreshIcon
+  Refresh as RefreshIcon,
+  AccessTime as AccessTimeIcon
 } from '@mui/icons-material';
 import SettingsFormRenderer from './components/settings/SettingsFormRenderer';
 import './styles/settings-theme.css';
@@ -115,6 +116,12 @@ const settingsCategories: SettingsCategory[] = [
     name: 'Environment & Runtime',
     icon: <SystemIcon />,
     description: 'Environment variables, runtime configuration, and system overrides'
+  },
+  {
+    id: 'timeout',
+    name: 'Timeouts & Performance',
+    icon: <AccessTimeIcon />,
+    description: 'Configure timeout settings for APIs, LLMs, tools, and system operations'
   }
 ];
 

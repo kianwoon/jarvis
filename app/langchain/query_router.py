@@ -338,6 +338,8 @@ Synthesize the information from all sources to provide a comprehensive answer.""
     
     async def _stream_llm_response(self, prompt: str, thinking: bool = False) -> AsyncGenerator[str, None]:
         """Stream response from LLM"""
+        from app.core.timeout_settings_cache import get_timeout_value
+        
         llm_api_url = "http://localhost:8000/api/v1/generate_stream"
         
         mode_key = "thinking_mode" if thinking else "non_thinking_mode"
@@ -351,7 +353,10 @@ Synthesize the information from all sources to provide a comprehensive answer.""
             "top_p": self.llm_cfg.get("top_p", 0.9)
         }
         
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        # Use centralized timeout configuration
+        http_timeout = get_timeout_value("api_network", "http_streaming_timeout", 120)
+        
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             async with client.stream("POST", llm_api_url, json=payload) as response:
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):

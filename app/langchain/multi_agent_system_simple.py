@@ -863,7 +863,11 @@ Important: Only use agent names that exist in the available agents list above.""
                 print(f"[WARNING] Failed to create router generation: {e}")
         
         try:
-            async for chunk in self._call_llm_stream(routing_prompt, "router", temperature=0.3, timeout=8):
+            # Use centralized timeout configuration for router
+            from app.core.timeout_settings_cache import get_timeout_value
+            router_timeout = get_timeout_value("llm_ai", "agent_processing_timeout", 90)
+            
+            async for chunk in self._call_llm_stream(routing_prompt, "router", temperature=0.3, timeout=router_timeout):
                 if chunk.get("type") == "agent_complete":
                     response_text = chunk.get("content", "")
                     # Parse JSON response
@@ -3609,7 +3613,11 @@ Now provide your synthesis:"""
                 follow_up_event_count = 0
                 
                 print(f"[DEBUG] Agent {agent_name} starting follow-up LLM call for tool result analysis...")
-                async for event in self._call_llm_stream(follow_up_prompt, agent_name, temperature=0.8, timeout=60, agent_config=pipeline_agent_config):
+                # Use centralized timeout configuration for follow-up processing
+                from app.core.timeout_settings_cache import get_timeout_value
+                followup_timeout = get_timeout_value("llm_ai", "agent_processing_timeout", 90)
+                
+                async for event in self._call_llm_stream(follow_up_prompt, agent_name, temperature=0.8, timeout=followup_timeout, agent_config=pipeline_agent_config):
                     follow_up_event_count += 1
                     if event.get("type") == "agent_token":
                         follow_up_response += event.get("token", "")

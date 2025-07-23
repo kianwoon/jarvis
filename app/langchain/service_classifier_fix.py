@@ -105,7 +105,11 @@ Answer with exactly one word: RAG, TOOLS, or LLM"""
         }
         
         text = ""
-        with httpx.Client(timeout=30.0) as client:
+        # Use centralized timeout configuration
+        from app.core.timeout_settings_cache import get_timeout_value
+        http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+        
+        with httpx.Client(timeout=http_timeout) as client:
             with client.stream("POST", llm_api_url, json=payload) as response:
                 for line in response.iter_lines():
                     if not line:

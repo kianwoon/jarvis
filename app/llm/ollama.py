@@ -111,7 +111,11 @@ class OllamaLLM(BaseLLM):
             print(f"[DEBUG OLLAMA CHAT] Message {i+1} - Content preview: {content_preview}")
             print(f"[DEBUG OLLAMA CHAT] Message {i+1} - Full length: {len(msg.get('content', ''))} chars")
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # Use centralized timeout configuration
+        from app.core.timeout_settings_cache import get_timeout_value
+        http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+        
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             response = await client.post(f"{self.base_url}/api/chat", json=payload)
             response.raise_for_status()
             

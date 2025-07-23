@@ -133,7 +133,11 @@ Provide a concise summary that retains all information relevant to answering the
         }
         
         text = ""
-        with httpx.Client(timeout=60) as client:
+        # Use centralized timeout configuration
+        from app.core.timeout_settings_cache import get_timeout_value
+        http_timeout = get_timeout_value("api_network", "http_streaming_timeout", 120)
+        
+        with httpx.Client(timeout=http_timeout) as client:
             with client.stream("POST", self.llm_api_url, json=payload) as response:
                 for line in response.iter_lines():
                     if not line:
@@ -164,7 +168,11 @@ Provide a compressed version that retains all critical information for answering
         }
         
         compressed = ""
-        with httpx.Client(timeout=60) as client:
+        # Use centralized timeout configuration
+        from app.core.timeout_settings_cache import get_timeout_value
+        http_timeout = get_timeout_value("api_network", "http_streaming_timeout", 120)
+        
+        with httpx.Client(timeout=http_timeout) as client:
             with client.stream("POST", self.llm_api_url, json=payload) as response:
                 for line in response.iter_lines():
                     if not line:

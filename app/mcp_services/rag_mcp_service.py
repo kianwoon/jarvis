@@ -258,17 +258,20 @@ class RAGMCPService:
             # Fallback to simple selection based on description overlap
             return self._simple_collection_selection(query)
         
-        # TEMPORARY: Add quick timeout check to prevent hanging
+        # Add timeout check to prevent hanging using centralized timeout config
         import asyncio
+        from app.core.timeout_settings_cache import get_timeout_value
+        
         try:
-            # Use asyncio.wait_for to enforce a hard timeout
+            # Use centralized timeout configuration
+            llm_timeout = get_timeout_value("llm_ai", "llm_inference_timeout", 60)
             result = await asyncio.wait_for(
                 self._try_llm_selection(query, selection_settings),
-                timeout=10.0  # 10 second hard timeout for LLM selection
+                timeout=llm_timeout
             )
             return result
         except asyncio.TimeoutError:
-            logger.warning("RAG MCP: LLM selection timed out after 10s, using simple fallback")
+            logger.warning(f"RAG MCP: LLM selection timed out after {llm_timeout}s, using simple fallback")
             return self._simple_collection_selection(query)
     
     async def _try_llm_selection(self, query: str, selection_settings: Dict) -> List[str]:

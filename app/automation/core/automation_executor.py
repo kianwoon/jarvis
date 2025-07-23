@@ -805,7 +805,11 @@ class AutomationExecutor:
                 "system_message": parameters.get("system_message", "")
             }
             
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            # Use centralized timeout configuration
+            from app.core.timeout_settings_cache import get_timeout_value
+            http_timeout = get_timeout_value("api_network", "http_streaming_timeout", 120)
+            
+            async with httpx.AsyncClient(timeout=http_timeout) as client:
                 response = await client.post(llm_api_url, json=payload)
                 
                 if response.status_code == 200:
@@ -920,7 +924,11 @@ class AutomationExecutor:
         query_params = params.get("params", {})
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # Use centralized timeout configuration
+            from app.core.timeout_settings_cache import get_timeout_value
+            http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+            
+            async with httpx.AsyncClient(timeout=http_timeout) as client:
                 if method == "GET":
                     response = await client.get(url, params=query_params, headers=headers)
                 elif method == "POST":

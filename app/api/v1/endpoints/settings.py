@@ -9,6 +9,7 @@ from app.core.mcp_tools_cache import reload_enabled_mcp_tools
 from app.core.large_generation_settings_cache import reload_large_generation_settings, validate_large_generation_config, merge_with_defaults
 from app.core.rag_settings_cache import reload_rag_settings
 from app.core.query_classifier_settings_cache import reload_query_classifier_settings
+from app.core.timeout_settings_cache import reload_timeout_settings
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
 import requests
@@ -52,6 +53,21 @@ def reload_query_classifier_cache():
     except Exception as e:
         logger.error(f"Failed to reload Query Classifier cache: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload Query Classifier cache: {str(e)}")
+
+@router.post("/timeout/cache/reload")
+def reload_timeout_cache():
+    """Force reload timeout settings cache from database and initialize with defaults if needed"""
+    try:
+        settings = reload_timeout_settings()
+        return {
+            "success": True, 
+            "message": "Timeout settings cache reloaded successfully",
+            "settings": settings,
+            "cache_size": len(str(settings))
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload timeout cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload timeout cache: {str(e)}")
 
 # Dependency to get DB session
 def get_db():
@@ -289,6 +305,10 @@ def get_settings(category: str, db: Session = Depends(get_db)):
                     }
                 }
                 return {"category": category, "settings": default_query_patterns}
+        elif category == 'timeout':
+            # Return default timeout settings
+            from app.core.timeout_settings_cache import DEFAULT_TIMEOUT_SETTINGS
+            return {"category": category, "settings": DEFAULT_TIMEOUT_SETTINGS}
         raise HTTPException(status_code=404, detail="Settings not found")
     
     # Special handling for large_generation to flatten nested structure for UI
@@ -548,6 +568,34 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         # Reload cache with nested structure
         reload_large_generation_settings()
         logger.info("Large generation settings validated and cache reloaded")
+    
+    # If updating timeout settings, validate and reload cache
+    if category == 'timeout':
+        from app.core.timeout_settings_cache import validate_timeout_settings, reload_timeout_settings
+        
+        # Validate timeout settings
+        validated_settings = validate_timeout_settings(settings_for_db)
+        
+        # Update database with validated settings
+        settings_row = db.query(SettingsModel).filter(SettingsModel.category == category).first()
+        if settings_row:
+            settings_row.settings = validated_settings
+        else:
+            settings_row = SettingsModel(category=category, settings=validated_settings)
+            db.add(settings_row)
+        
+        try:
+            db.commit()
+            db.refresh(settings_row)
+            logger.info("Timeout settings validated and saved to database")
+        except Exception as e:
+            logger.error(f"Error saving validated timeout settings: {str(e)}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to save timeout settings: {str(e)}")
+        
+        # Reload cache
+        reload_timeout_settings()
+        logger.info("Timeout settings validated and cache reloaded")
     
     # If updating self_reflection settings, save as YAML structure and update database settings
     if category == 'self_reflection':

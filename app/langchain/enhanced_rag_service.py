@@ -354,6 +354,8 @@ def _handle_direct_llm_route(
 
 def _stream_llm_response(prompt: str, thinking: bool, stream: bool):
     """Stream response from LLM"""
+    from app.core.timeout_settings_cache import get_timeout_value
+    
     llm_cfg = get_llm_settings()
     
     # Select model based on thinking mode
@@ -372,9 +374,12 @@ def _stream_llm_response(prompt: str, thinking: bool, stream: bool):
         "top_p": llm_cfg.get("top_p", 0.9)
     }
     
+    # Use centralized timeout configuration
+    http_timeout = get_timeout_value("api_network", "http_streaming_timeout", 120)
+    
     if stream:
         # Stream tokens
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(timeout=http_timeout) as client:
             with client.stream("POST", llm_api_url, json=payload) as response:
                 for line in response.iter_lines():
                     if line.startswith("data: "):
@@ -391,7 +396,7 @@ def _stream_llm_response(prompt: str, thinking: bool, stream: bool):
     else:
         # Non-streaming response
         text = ""
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(timeout=http_timeout) as client:
             with client.stream("POST", llm_api_url, json=payload) as response:
                 for line in response.iter_lines():
                     if line.startswith("data: "):

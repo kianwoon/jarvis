@@ -84,21 +84,27 @@ def get_redis_conversation_client():
 def build_enhanced_system_prompt(base_prompt: str = None) -> str:
     """Build system prompt with real MCP tools and RAG collections from Redis cache"""
     
+    logger.info(f"[DEBUG] build_enhanced_system_prompt called")
+    
     # Get base system prompt from settings if not provided
     if not base_prompt:
         llm_settings = get_llm_settings()
         base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
+    
+    logger.info(f"[DEBUG] Base prompt length: {len(base_prompt)}")
     
     # Check if system prompt already has format instructions
     has_format_instructions = any(phrase in base_prompt.lower() for phrase in [
         'format at the end', 'in this format', 'opinion:', 'provide your point of view',
         'end with', 'conclude with', 'finish with'
     ])
+    logger.info(f"[DEBUG] Has format instructions: {has_format_instructions}")
     
     # Get available MCP tools from cache
     tools_info = []
     try:
         mcp_tools = get_enabled_mcp_tools()
+        logger.info(f"[DEBUG] MCP tools loaded: {len(mcp_tools) if mcp_tools else 0} tools")
         if mcp_tools:
             tools_info.append("\n**Available Tools:**")
             for tool_name, tool_info in mcp_tools.items():
@@ -112,8 +118,9 @@ def build_enhanced_system_prompt(base_prompt: str = None) -> str:
                                 description = tool_def.get('description', description)
                                 break
                 tools_info.append(f"- **{tool_name}**: {description}")
+            logger.info(f"[DEBUG] Tools info sections: {len(tools_info)}")
     except Exception as e:
-        print(f"[DEBUG] Failed to load MCP tools for prompt: {e}")
+        logger.error(f"[DEBUG] Failed to load MCP tools for prompt: {e}")
     
     # Get available RAG collections from cache
     collections_info = []
@@ -197,6 +204,11 @@ def build_enhanced_system_prompt(base_prompt: str = None) -> str:
             enhanced_prompt += "\n- <tool>get_datetime()</tool>"
         
         enhanced_prompt += "\n\nIMPORTANT: Use ONLY the exact tool names listed above. Actually include these tool calls in your response when needed, don't just describe what you would do."
+    
+    logger.info(f"[DEBUG] Enhanced prompt final length: {len(enhanced_prompt)}")
+    logger.info(f"[DEBUG] Enhanced prompt contains guidelines: {'**Guidelines:**' in enhanced_prompt}")
+    logger.info(f"[DEBUG] Enhanced prompt contains tool instructions: {'**Tool Usage Format:**' in enhanced_prompt}")
+    logger.info(f"[DEBUG] Enhanced prompt preview: {enhanced_prompt[:200]}...")
     
     return enhanced_prompt
 
@@ -494,10 +506,17 @@ def build_messages_for_synthesis(
     Returns:
         tuple: (messages, source_label, context_for_metadata, system_prompt)
     """
+    # Debug logging for function entry
+    logger.info(f"[DEBUG] Messages synthesis - Source: {query_type}+LLM, Query type: {query_type}")
+    logger.info(f"[DEBUG] Messages synthesis - Has RAG: {bool(rag_context)}, Has tools: {bool(tool_context)}")
+    
     # Get system prompt based on context
     if tool_context:
+        logger.info(f"[DEBUG] Messages synthesis - Tool context exists, calling build_enhanced_system_prompt()")
         system_prompt = build_enhanced_system_prompt()
+        logger.info(f"[DEBUG] Messages synthesis - Enhanced system prompt length: {len(system_prompt)}")
     else:
+        logger.info(f"[DEBUG] Messages synthesis - No tool context, using basic system prompt")
         llm_settings = get_llm_settings()
         system_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
     
@@ -505,6 +524,9 @@ def build_messages_for_synthesis(
     has_format_instructions = any(phrase in system_prompt.lower() for phrase in [
         'format at the end', 'in this format', 'opinion:', 'provide your point of view'
     ])
+    logger.info(f"[DEBUG] Messages synthesis - Has format instructions: {has_format_instructions}")
+    logger.info(f"[DEBUG] Messages synthesis - System prompt preview: {system_prompt[:100]}...")
+    logger.info(f"[DEBUG] Messages synthesis - Number of messages: 2")
     
     # Build user message content
     user_content_parts = []
@@ -537,7 +559,9 @@ def build_messages_for_synthesis(
             user_content_parts.append(f"""You have executed tools to gather current, real-time information.
 
 🔧 Tool Results:
-{tool_context}""")
+{tool_context}
+
+IMPORTANT: Use ONLY the tool results above for current/real-time information. Ignore any outdated data from conversation history.""")
     else:
         # Pure LLM - just note the context without instructions
         if query_type == "TOOLS":
@@ -564,6 +588,12 @@ def build_messages_for_synthesis(
     
     # Join all user content
     user_content = "\n\n".join(user_content_parts)
+    
+    # Debug log the actual user content
+    logger.info(f"[DEBUG] User message content preview: {user_content[:500]}...")
+    logger.info(f"[DEBUG] User message contains tool context: {'🔧 Tool Results:' in user_content}")
+    if tool_context:
+        logger.info(f"[DEBUG] Raw tool context: {tool_context[:300]}...")
     
     # Apply thinking wrapper if needed (but be more subtle if format instructions exist)
     if thinking:
@@ -1139,7 +1169,11 @@ Answer with exactly one word: RAG, TOOLS, or LLM"""
     }
     
     text = ""
-    with httpx.Client(timeout=30.0) as client:  # Add timeout to prevent hanging
+    # Use centralized timeout configuration
+    from app.core.timeout_settings_cache import get_timeout_value
+    http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+    
+    with httpx.Client(timeout=http_timeout) as client:
         with client.stream("POST", llm_api_url, json=payload) as response:
             for line in response.iter_lines():
                 if not line:
@@ -1334,7 +1368,11 @@ Output the tool call now:"""
     }
     
     tool_selection_text = ""
-    with httpx.Client(timeout=30.0) as client:  # Add timeout to prevent hanging
+    # Use centralized timeout configuration
+    from app.core.timeout_settings_cache import get_timeout_value
+    http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+    
+    with httpx.Client(timeout=http_timeout) as client:
         with client.stream("POST", llm_api_url, json=payload) as response:
             for line in response.iter_lines():
                 if not line:
@@ -1427,7 +1465,11 @@ Provide ONLY the 2 alternatives, one per line, no numbering or explanations."""
         
         try:
             text = ""
-            with httpx.Client(timeout=10) as client:
+            # Use centralized timeout configuration
+            from app.core.timeout_settings_cache import get_timeout_value
+            http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+            
+            with httpx.Client(timeout=http_timeout) as client:
                 with client.stream("POST", llm_api_url, json=payload) as response:
                     for line in response.iter_lines():
                         if not line:
@@ -2391,7 +2433,11 @@ Documents to score:
                 print(f"[DEBUG] LLM reranking using model: {model_name} at {llm_api_url}")
                 
                 scores_text = ""
-                with httpx.Client(timeout=30) as client:  # Increased timeout for non-streaming
+                # Use centralized timeout configuration
+                from app.core.timeout_settings_cache import get_timeout_value
+                http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+                
+                with httpx.Client(timeout=http_timeout) as client:
                     response = client.post(llm_api_url, json=payload)
                     if response.status_code == 200:
                         result = response.json()
@@ -2699,7 +2745,11 @@ def make_llm_call(prompt: str, thinking: bool, context: str, llm_cfg: dict) -> s
     # Make synchronous request and collect all tokens
     text = ""
     try:
-        with httpx.Client(timeout=60.0) as client:
+        # Use centralized timeout configuration  
+        from app.core.timeout_settings_cache import get_timeout_value
+        http_timeout = get_timeout_value("api_network", "http_streaming_timeout", 120)
+        
+        with httpx.Client(timeout=http_timeout) as client:
             with client.stream("POST", llm_api_url, json=payload) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():
@@ -2744,7 +2794,11 @@ def streaming_llm_call(prompt: str, thinking: bool, context: str, conversation_i
     def token_stream():
         text = ""
         try:
-            with httpx.Client(timeout=60.0) as client:
+            # Use centralized timeout configuration  
+            from app.core.timeout_settings_cache import get_timeout_value
+            http_timeout = get_timeout_value("api_network", "http_streaming_timeout", 120)
+            
+            with httpx.Client(timeout=http_timeout) as client:
                 with client.stream("POST", llm_api_url, json=payload) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():
