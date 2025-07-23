@@ -78,7 +78,9 @@
       "Bash(npm ls:*)",
       "Bash(npm outdated)",
       "Bash(claude config set installMethod npm-global)",
-      "Bash(npm run lint)"
+      "Bash(npm run lint)",
+      "Bash(open http://localhost:3000/settings.html)",
+      "Bash(npm run dev:*)"
     ],
     "deny": []
   },

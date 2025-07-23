@@ -61,6 +61,18 @@ def reload_llm_settings():
                 except Exception as e:
                     print(f"Warning: Failed to merge query classifier settings: {e}")
                 
+                # Merge in search optimization settings with defaults
+                try:
+                    search_config = get_search_optimization_config(settings)
+                    settings['search_optimization'] = search_config
+                    
+                    # Save updated settings back to database if new search optimization was added
+                    row.settings = settings
+                    db.commit()
+                    print("Updated LLM settings with search optimization defaults")
+                except Exception as e:
+                    print(f"Warning: Failed to merge search optimization settings: {e}")
+                
                 # Try to cache in Redis
                 redis_client = _get_redis_client()
                 if redis_client:
@@ -138,4 +150,44 @@ def get_second_llm_full_config(settings=None):
     full_config = second_llm.copy()
     full_config.update(mode_params)
     
-    return full_config 
+    return full_config
+
+def get_search_optimization_config(settings=None):
+    """Get search query optimization configuration with defaults"""
+    if settings is None:
+        settings = get_llm_settings()
+    
+    # Default search optimization settings
+    default_config = {
+        'enable_search_optimization': True,
+        'optimization_timeout': 12,
+        'optimization_prompt': '''Transform the user's conversational question into an optimized search query for better results.
+
+Current context: It's 2025, so add year context when asking about recent/current information.
+
+User Question: {query}
+
+## Optimization Guidelines:
+1. Remove conversational words (please, can you, I want to know, etc.)
+2. Add temporal context when needed (2025, current, latest, recent)
+3. Use specific keywords instead of general terms
+4. Keep the core intent and meaning intact
+5. Make it concise but comprehensive
+6. Add relevant context for better search results
+
+## Examples:
+- "Can you tell me about the latest AI developments?" → "latest AI developments 2025 current trends"
+- "What's the weather like today?" → "weather today current conditions"
+- "I want to know about Python vs JavaScript" → "Python vs JavaScript comparison 2025"
+
+Return ONLY the optimized search query, no explanations.'''
+    }
+    
+    # Get user-defined settings or defaults
+    search_config = settings.get('search_optimization', default_config)
+    
+    # Merge with defaults to ensure all fields are present
+    merged_config = default_config.copy()
+    merged_config.update(search_config)
+    
+    return merged_config 

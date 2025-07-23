@@ -4500,7 +4500,45 @@ def _map_tool_parameters_service(tool_name: str, params: dict) -> tuple[str, dic
         logger.info(f"[TOOL CORRECTION] Mapped '{original_tool_name}' -> '{corrected_name}'")
         tool_name = corrected_name
     
+    # Apply search query optimization for search tools if enabled
+    if _is_search_tool(tool_name) and 'query' in mapped_params:
+        try:
+            from app.langchain.search_query_optimizer import optimize_search_query
+            import asyncio
+            import concurrent.futures
+            import threading
+            
+            original_query = mapped_params['query']
+            
+            def run_optimization():
+                """Run optimization in a new thread with its own event loop"""
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(optimize_search_query(original_query))
+                finally:
+                    loop.close()
+            
+            # Run optimization in thread pool to avoid event loop conflicts
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_optimization)
+                optimized_query = future.result(timeout=15)  # 15 second timeout
+            
+            if optimized_query and optimized_query != original_query:
+                mapped_params['query'] = optimized_query
+                logger.info(f"[SEARCH OPTIMIZATION] '{tool_name}' query optimized: '{original_query}' → '{optimized_query}'")
+            
+        except Exception as e:
+            logger.warning(f"[SEARCH OPTIMIZATION] Failed for '{tool_name}': {e}")
+    
     return tool_name, mapped_params
+
+
+def _is_search_tool(tool_name: str) -> bool:
+    """Check if a tool is a search tool that would benefit from query optimization"""
+    search_keywords = ['search', 'google', 'web', 'tavily', 'find', 'lookup']
+    tool_lower = tool_name.lower()
+    return any(keyword in tool_lower for keyword in search_keywords)
 
 def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> dict:
     """Handle calls to internal services"""
@@ -4570,7 +4608,10 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
     import logging
     logger = logging.getLogger(__name__)
     
-    # Create tool span if trace is provided and span creation is not skipped
+    # Apply parameter mapping for common mismatches FIRST (including search optimization)
+    tool_name, parameters = _map_tool_parameters_service(tool_name, parameters)
+    
+    # Create tool span AFTER optimization so Langfuse shows optimized parameters
     tool_span = None
     tracer = None
     if trace and not _skip_span_creation:
@@ -4579,7 +4620,7 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
             tracer = get_tracer()
             logger.info(f"[TOOL SPAN DEBUG] Tracer enabled: {tracer.is_enabled()}, Tool: {tool_name}, Trace: {trace is not None}")
             if tracer.is_enabled():
-                # Sanitize parameters for Langfuse
+                # Sanitize parameters for Langfuse (now using optimized parameters)
                 safe_parameters = {}
                 if isinstance(parameters, dict):
                     for key, value in parameters.items():
@@ -4597,9 +4638,6 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
             tracer = None
     else:
         logger.info(f"[TOOL SPAN DEBUG] Skipping span creation - trace: {trace is not None}, skip: {_skip_span_creation}, tool: {tool_name}")
-    
-    # Apply parameter mapping for common mismatches
-    tool_name, parameters = _map_tool_parameters_service(tool_name, parameters)
     
     try:
         from app.core.mcp_tools_cache import get_enabled_mcp_tools

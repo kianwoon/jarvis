@@ -497,19 +497,28 @@ async def intelligent_routing(question: str) -> Dict[str, Any]:
 async def execute_online_search_fallback(question: str) -> Dict[str, Any]:
     """Execute online search when confidence is low or routing fails"""
     try:
+        # Optimize search query using LLM-based optimization
+        optimized_query = question
+        try:
+            from app.langchain.search_query_optimizer import optimize_search_query
+            optimized_query = await optimize_search_query(question)
+            logger.info(f"Query optimized for search: '{question}' → '{optimized_query}'")
+        except Exception as e:
+            logger.warning(f"Search query optimization failed, using original query: {e}")
+        
         # Check available search tools from cache
         tools = get_enabled_mcp_tools()
         search_tools = [name for name in tools.keys() if 'search' in name.lower()]
         
         if 'google_search' in search_tools:
-            result = await execute_mcp_tool('google_search', {'query': question})
-            return {"route": "online_search", "tool": "google_search", "result": result}
+            result = await execute_mcp_tool('google_search', {'query': optimized_query})
+            return {"route": "online_search", "tool": "google_search", "result": result, "original_query": question, "optimized_query": optimized_query}
         elif 'web_search' in search_tools:
-            result = await execute_mcp_tool('web_search', {'query': question})
-            return {"route": "online_search", "tool": "web_search", "result": result}
+            result = await execute_mcp_tool('web_search', {'query': optimized_query})
+            return {"route": "online_search", "tool": "web_search", "result": result, "original_query": question, "optimized_query": optimized_query}
         elif 'tavily' in search_tools:
-            result = await execute_mcp_tool('tavily', {'query': question})
-            return {"route": "online_search", "tool": "tavily", "result": result}
+            result = await execute_mcp_tool('tavily', {'query': optimized_query})
+            return {"route": "online_search", "tool": "tavily", "result": result, "original_query": question, "optimized_query": optimized_query}
         else:
             # No search tools available, return indication for basic LLM response
             return {"route": "basic_llm", "message": "No search tools available"}

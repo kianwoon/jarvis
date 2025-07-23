@@ -1402,7 +1402,8 @@ const renderStandardForm = (
         settings: { title: 'Main LLM', fields: {} },
         second_llm: { title: 'Second LLM', fields: {} },
         classifier: { title: 'Query Classifier', fields: {} },
-        thinking: { title: 'Thinking Mode', fields: {} }
+        thinking: { title: 'Thinking Mode', fields: {} },
+        search_optimization: { title: 'Search Optimization', fields: {} }
       };
     } else {
       // Default single-tab structure for other categories (monitoring, mcp, etc.)
@@ -1593,8 +1594,12 @@ const renderStandardForm = (
         }
       } else if (category === 'llm') {
         // LLM-specific field categorization
+        // Search Optimization Tab - All search_optimization-related settings
+        if (lowerKey.includes('search_optimization') || key === 'search_optimization') {
+          categories.search_optimization.fields[key] = value;
+        }
         // Second LLM Tab - All second_llm-related settings
-        if (lowerKey.includes('second_llm')) {
+        else if (lowerKey.includes('second_llm')) {
           categories.second_llm.fields[key] = value;
         }
         // Query Classifier Tab - All classifier-related settings
@@ -2025,6 +2030,72 @@ const renderStandardForm = (
     return null;
   };
 
+  const getLLMHelpText = (key: string): string | null => {
+    const helpTexts: Record<string, string> = {
+      // Search Optimization
+      'enable_search_optimization': 'Enable AI-powered search query optimization to improve search results by transforming user queries into better search terms.',
+      'optimization_timeout': 'Maximum time in seconds to wait for query optimization. Lower values = faster response but may timeout on complex queries. Recommended: 8-15 seconds.',
+      'optimization_prompt': 'Template prompt used by the LLM to optimize search queries. Includes guidelines and examples for query transformation.',
+      'search_optimization.enable_search_optimization': 'Enable AI-powered search query optimization to improve search results by transforming user queries into better search terms.',
+      'search_optimization.optimization_timeout': 'Maximum time in seconds to wait for query optimization. Lower values = faster response but may timeout on complex queries. Recommended: 8-15 seconds.',
+      'search_optimization.optimization_prompt': 'Template prompt used by the LLM to optimize search queries. Includes guidelines and examples for query transformation.',
+      
+      // Main LLM Settings
+      'main_llm.model': 'Primary LLM model used for main chat responses and reasoning tasks.',
+      'main_llm.max_tokens': 'Maximum number of tokens the main LLM can generate in a single response.',
+      'main_llm.context_length': 'Maximum context window size for the main LLM in tokens.',
+      'main_llm.system_prompt': 'System prompt that defines the behavior and personality of the main LLM.',
+      'main_llm.model_server': 'Server endpoint URL for the main LLM model.',
+      'main_llm.repeat_penalty': 'Penalty applied to repeated tokens to encourage diverse responses. Higher values reduce repetition.',
+      
+      // Second LLM Settings
+      'second_llm.model': 'Secondary LLM model used for specialized tasks or fallback scenarios.',
+      'second_llm.max_tokens': 'Maximum number of tokens the second LLM can generate in a single response.',
+      'second_llm.context_length': 'Maximum context window size for the second LLM in tokens.',
+      'second_llm.system_prompt': 'System prompt that defines the behavior and personality of the second LLM.',
+      'second_llm.model_server': 'Server endpoint URL for the second LLM model.',
+      'second_llm.repeat_penalty': 'Penalty applied to repeated tokens to encourage diverse responses. Higher values reduce repetition.',
+      
+      // Query Classifier Settings
+      'query_classifier.model': 'LLM model used for query classification and routing decisions.',
+      'query_classifier.max_tokens': 'Maximum number of tokens the query classifier can use for analysis.',
+      'query_classifier.system_prompt': 'System prompt that guides the query classifier in making routing decisions.',
+      'query_classifier.min_confidence_threshold': 'Minimum confidence score required for classification decisions. Lower values = more permissive.',
+      'query_classifier.enable_llm_classification': 'Use LLM-based classification in addition to pattern-based classification for better accuracy.',
+      'query_classifier.llm_direct_threshold': 'Confidence threshold for routing queries directly to LLM without additional processing.',
+      'query_classifier.multi_agent_threshold': 'Confidence threshold for routing queries to multi-agent workflows.',
+      'query_classifier.direct_execution_threshold': 'Confidence threshold for direct tool execution without additional validation.',
+      
+      // Thinking Mode Parameters
+      'thinking_mode_params.temperature': 'Controls randomness in thinking mode responses. Higher values = more creative but less predictable.',
+      'thinking_mode_params.top_p': 'Controls diversity via nucleus sampling in thinking mode. Lower values = more focused responses.',
+      'thinking_mode_params.top_k': 'Limits vocabulary to top K tokens in thinking mode. Lower values = more constrained responses.',
+      'thinking_mode_params.min_p': 'Minimum probability threshold for token selection in thinking mode.',
+      
+      // Non-Thinking Mode Parameters
+      'non_thinking_mode_params.temperature': 'Controls randomness in non-thinking mode responses. Higher values = more creative but less predictable.',
+      'non_thinking_mode_params.top_p': 'Controls diversity via nucleus sampling in non-thinking mode. Lower values = more focused responses.',
+      'non_thinking_mode_params.top_k': 'Limits vocabulary to top K tokens in non-thinking mode. Lower values = more constrained responses.',
+      'non_thinking_mode_params.min_p': 'Minimum probability threshold for token selection in non-thinking mode.'
+    };
+    
+    const lowerKey = key.toLowerCase();
+    
+    // Try exact match first
+    if (helpTexts[lowerKey]) {
+      return helpTexts[lowerKey];
+    }
+    
+    // Try partial matches
+    for (const [helpKey, helpText] of Object.entries(helpTexts)) {
+      if (lowerKey.includes(helpKey.toLowerCase()) || helpKey.toLowerCase().includes(lowerKey)) {
+        return helpText;
+      }
+    }
+    
+    return null;
+  };
+
   const renderField = (key: string, value: any, depth: number = 0, customOnChange?: (field: string, value: any) => void, fieldCategory?: string, onShowSuccessCallback?: (message?: string) => void) => {
     const formatLabel = (str: string) => {
       // Remove redundant "settings." prefix if present
@@ -2077,7 +2148,15 @@ const renderStandardForm = (
         'query_classifier.llm_timeout_seconds': 'LLM Timeout (seconds)',
         'query_classifier.llm_system_prompt': 'LLM System Prompt',
         'query_classifier.fallback_to_patterns': 'Fallback to Patterns',
-        'query_classifier.llm_classification_priority': 'Use LLM First (vs Patterns First)'
+        'query_classifier.llm_classification_priority': 'Use LLM First (vs Patterns First)',
+        
+        // Search Optimization fields
+        'search_optimization.enable_search_optimization': 'Enable Search Optimization',
+        'search_optimization.optimization_timeout': 'Optimization Timeout (seconds)',
+        'search_optimization.optimization_prompt': 'Optimization Prompt Template',
+        'enable_search_optimization': 'Enable Search Optimization',
+        'optimization_timeout': 'Optimization Timeout (seconds)',
+        'optimization_prompt': 'Optimization Prompt Template'
       };
       
       // Check for custom label first
@@ -2155,7 +2234,7 @@ const renderStandardForm = (
     };
     
     if (typeof value === 'boolean') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">
@@ -2173,7 +2252,7 @@ const renderStandardForm = (
     }
 
     if (typeof value === 'number') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : null;
       
       // Check if this looks like a slider parameter (temperature, top_p, etc.)
       const isSliderParam = key.toLowerCase().includes('temperature') || 
@@ -2259,7 +2338,7 @@ const renderStandardForm = (
 
     if (typeof value === 'string') {
       const lowerKey = key.toLowerCase();
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : null;
       
       // Always use textarea for prompt fields to prevent height changes while typing
       const isLongText = value.length > 100 || lowerKey.includes('prompt') || lowerKey.includes('system');
@@ -2364,7 +2443,7 @@ const renderStandardForm = (
     }
 
     if (Array.isArray(value)) {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">{renderLabelWithHelp(formatLabel(key), helpText)}</label>
