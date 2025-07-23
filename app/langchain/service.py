@@ -543,7 +543,9 @@ def build_messages_for_synthesis(
 {rag_context}
 
 🔧 Current Information (Web Search):
-{tool_context}""")
+{tool_context}
+
+IMPORTANT: Use ONLY the tool results above for current/real-time information. Ignore any outdated data from conversation history.""")
     elif rag_context:
         user_content_parts.append(f"""You have access to relevant information from our internal knowledge base.
 
@@ -554,7 +556,9 @@ def build_messages_for_synthesis(
             user_content_parts.append(f"""No relevant documents were found in our internal knowledge base, so I searched the web for current information.
 
 🌐 Current Information (Web Search):
-{tool_context}""")
+{tool_context}
+
+IMPORTANT: Use ONLY the tool results above for current/real-time information. Ignore any outdated data from conversation history.""")
         else:
             user_content_parts.append(f"""You have executed tools to gather current, real-time information.
 
