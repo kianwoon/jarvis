@@ -1,6 +1,4 @@
 ---
-description: 
-globs: 
 alwaysApply: true
 ---
 ## 1. No Hardcoding, No .env, read codebase
