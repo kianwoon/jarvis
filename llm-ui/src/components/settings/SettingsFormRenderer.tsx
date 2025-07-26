@@ -74,6 +74,8 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   const [passwordVisibility, setPasswordVisibility] = React.useState<Record<string, boolean>>({});
   const [icebergPasswordVisibility, setIcebergPasswordVisibility] = React.useState<Record<string, boolean>>({});
   const [mcpTab, setMcpTab] = React.useState(0);
+  const [testingConnection, setTestingConnection] = React.useState(false);
+  const [connectionTestResult, setConnectionTestResult] = React.useState<{success: boolean, message?: string, error?: string} | null>(null);
   
   // Update activeTab when category changes
   React.useEffect(() => {
@@ -81,6 +83,36 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
     else if (category === 'storage') setActiveTab('vector');
     else setActiveTab('settings');
   }, [category]);
+
+  // Test Neo4j connection
+  const testNeo4jConnection = async () => {
+    setTestingConnection(true);
+    setConnectionTestResult(null);
+    
+    try {
+      const response = await fetch('/api/v1/settings/knowledge-graph/test-connection', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      const result = await response.json();
+      setConnectionTestResult(result);
+      
+      if (result.success && onShowSuccess) {
+        onShowSuccess('Neo4j connection test successful');
+      }
+    } catch (error) {
+      console.error('Neo4j connection test failed:', error);
+      setConnectionTestResult({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      });
+    } finally {
+      setTestingConnection(false);
+    }
+  };
 
   // Special handling for YAML-based configurations
   if (isYamlBased || category === 'self_reflection' || category === 'query_patterns') {
@@ -199,7 +231,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   }
 
   // Default form rendering for regular settings
-  return renderStandardForm(data, onChange, category, activeTab, setActiveTab, passwordVisibility, setPasswordVisibility, icebergPasswordVisibility, setIcebergPasswordVisibility, onShowSuccess);
+  return renderStandardForm(data, onChange, category, activeTab, setActiveTab, passwordVisibility, setPasswordVisibility, icebergPasswordVisibility, setIcebergPasswordVisibility, onShowSuccess, testNeo4jConnection, testingConnection, connectionTestResult);
 };
 
 const renderEnvironmentEditor = (data: any, onChange: (field: string, value: any) => void) => {
@@ -1360,7 +1392,10 @@ const renderStandardForm = (
   setPasswordVisibility: React.Dispatch<React.SetStateAction<Record<string, boolean>>>,
   icebergPasswordVisibility: Record<string, boolean>,
   setIcebergPasswordVisibility: React.Dispatch<React.SetStateAction<Record<string, boolean>>>,
-  onShowSuccess?: (message?: string) => void
+  onShowSuccess?: (message?: string) => void,
+  testNeo4jConnection?: () => Promise<void>,
+  testingConnection?: boolean,
+  connectionTestResult?: {success: boolean, message?: string, error?: string} | null
 ) => {
 
   // Flatten nested objects and categorize fields into domain-intelligent tabs
@@ -2080,6 +2115,26 @@ const renderStandardForm = (
       'knowledge_graph.relationship_types': 'List of relationship types to identify (e.g., works_for, located_in, part_of).',
       'knowledge_graph.max_entities_per_chunk': 'Maximum number of entities to extract from each text chunk.',
       'knowledge_graph.enable_coreference_resolution': 'Enable coreference resolution to link pronouns and references to entities.',
+      
+      // Knowledge Graph Neo4j Database Settings
+      'knowledge_graph.neo4j.enabled': 'Enable or disable Neo4j knowledge graph database connection.',
+      'knowledge_graph.neo4j.host': 'Neo4j database server hostname or IP address.',
+      'knowledge_graph.neo4j.port': 'Neo4j Bolt protocol port (default: 7687).',
+      'knowledge_graph.neo4j.http_port': 'Neo4j HTTP interface port for browser access (default: 7474).',
+      'knowledge_graph.neo4j.database': 'Neo4j database name to connect to.',
+      'knowledge_graph.neo4j.username': 'Username for Neo4j database authentication.',
+      'knowledge_graph.neo4j.password': 'Password for Neo4j database authentication.',
+      'knowledge_graph.neo4j.uri': 'Complete Neo4j connection URI (bolt://host:port).',
+      'knowledge_graph.neo4j.connection_pool.max_connections': 'Maximum number of concurrent connections to Neo4j.',
+      'knowledge_graph.neo4j.connection_pool.connection_timeout': 'Connection timeout in seconds.',
+      'knowledge_graph.neo4j.connection_pool.max_transaction_retry_time': 'Maximum time to retry failed transactions.',
+      'knowledge_graph.neo4j.memory_config.heap_initial': 'Initial heap size for Neo4j (e.g., 512m).',
+      'knowledge_graph.neo4j.memory_config.heap_max': 'Maximum heap size for Neo4j (e.g., 2g).',
+      'knowledge_graph.neo4j.memory_config.pagecache': 'Page cache size for Neo4j (e.g., 1g).',
+      'knowledge_graph.neo4j.plugins.apoc_enabled': 'Enable APOC (Awesome Procedures On Cypher) plugin for advanced graph operations.',
+      'knowledge_graph.neo4j.plugins.gds_enabled': 'Enable Graph Data Science plugin for graph algorithms and analytics.',
+      'knowledge_graph.neo4j.security.encrypted': 'Enable SSL/TLS encryption for Neo4j connections.',
+      'knowledge_graph.neo4j.security.trust_strategy': 'SSL certificate trust strategy (TRUST_ALL_CERTIFICATES, TRUST_SYSTEM_CA_SIGNED_CERTIFICATES).',
       
       // Query Classifier Settings
       'query_classifier.model': 'LLM model used for query classification and routing decisions.',
@@ -2962,6 +3017,55 @@ const renderStandardForm = (
                           />
                         </RadioGroup>
                       </FormControl>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Test Connection Button for Knowledge Graph */}
+                {category === 'llm' && categoryKey === 'knowledge_graph' && (
+                  <Card variant="outlined" sx={{ mb: 3 }}>
+                    <CardHeader 
+                      title="Neo4j Connection Test"
+                      subheader="Test the connection to your Neo4j knowledge graph database"
+                    />
+                    <CardContent>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
+                        <Button
+                          variant="contained"
+                          onClick={testNeo4jConnection}
+                          disabled={testingConnection || !testNeo4jConnection}
+                          startIcon={testingConnection ? <CircularProgress size={16} /> : <CheckCircleIcon />}
+                        >
+                          {testingConnection ? 'Testing...' : 'Test Connection'}
+                        </Button>
+                      </Box>
+                      
+                      {connectionTestResult && (
+                        <Alert 
+                          severity={connectionTestResult.success ? 'success' : 'error'} 
+                          sx={{ mt: 2 }}
+                        >
+                          <Typography variant="body2">
+                            {connectionTestResult.success 
+                              ? connectionTestResult.message || 'Connection successful!'
+                              : connectionTestResult.error || 'Connection failed'
+                            }
+                          </Typography>
+                          {connectionTestResult.success && (connectionTestResult as any).database_info && (
+                            <Box sx={{ mt: 1 }}>
+                              <Typography variant="caption" component="div">
+                                Database: {(connectionTestResult as any).database_info.database_name || 'neo4j'}
+                              </Typography>
+                              <Typography variant="caption" component="div">
+                                Nodes: {(connectionTestResult as any).database_info.node_count || 0}
+                              </Typography>
+                              <Typography variant="caption" component="div">
+                                Relationships: {(connectionTestResult as any).database_info.relationship_count || 0}
+                              </Typography>
+                            </Box>
+                          )}
+                        </Alert>
+                      )}
                     </CardContent>
                   </Card>
                 )}

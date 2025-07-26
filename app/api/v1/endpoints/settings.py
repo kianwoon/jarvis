@@ -10,6 +10,8 @@ from app.core.large_generation_settings_cache import reload_large_generation_set
 from app.core.rag_settings_cache import reload_rag_settings
 from app.core.query_classifier_settings_cache import reload_query_classifier_settings
 from app.core.timeout_settings_cache import reload_timeout_settings
+from app.core.knowledge_graph_settings_cache import reload_knowledge_graph_settings
+from app.services.neo4j_service import test_neo4j_connection
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
 import requests
@@ -1402,4 +1404,36 @@ def insert_test_mcp_data(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error inserting test data: {str(e)}")
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to insert test data: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Failed to insert test data: {str(e)}")
+
+@router.post("/knowledge-graph/test-connection")
+def test_knowledge_graph_connection():
+    """Test Neo4j knowledge graph database connection"""
+    try:
+        # Force reload knowledge graph settings from database
+        reload_knowledge_graph_settings()
+        
+        # Test the connection using current settings
+        result = test_neo4j_connection()
+        
+        if result['success']:
+            return {
+                "success": True,
+                "message": "Neo4j connection test successful",
+                "database_info": result.get('database_info', {}),
+                "config": result.get('config', {})
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get('error', 'Unknown error'),
+                "config": result.get('config', {})
+            }
+            
+    except Exception as e:
+        logger.error(f"Neo4j connection test failed: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Connection test failed: {str(e)}",
+            "config": {}
+        } 
