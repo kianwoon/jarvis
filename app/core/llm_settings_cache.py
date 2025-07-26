@@ -111,6 +111,26 @@ def get_main_llm_full_config(settings=None):
     
     return full_config
 
+def get_knowledge_graph_full_config(settings=None):
+    """Construct full knowledge_graph configuration by merging base config with mode parameters"""
+    if settings is None:
+        settings = get_llm_settings()
+    
+    knowledge_graph = settings.get('knowledge_graph', {})
+    mode = knowledge_graph.get('mode', 'thinking')
+    
+    # Get the appropriate mode parameters
+    if mode == 'thinking':
+        mode_params = settings.get('thinking_mode_params', {})
+    else:
+        mode_params = settings.get('non_thinking_mode_params', {})
+    
+    # Merge base config with mode parameters
+    full_config = knowledge_graph.copy()
+    full_config.update(mode_params)
+    
+    return full_config
+
 def get_query_classifier_full_config(settings=None):
     """Construct full query_classifier configuration by merging base config with mode parameters"""
     if settings is None:

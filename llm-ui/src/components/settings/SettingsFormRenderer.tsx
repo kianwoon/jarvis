@@ -659,6 +659,11 @@ const ModelSelector: React.FC<{
                       onChangeHandler('second_llm.context_length', contextLength);
                       const suggestedMaxTokens = Math.floor(contextLength * 0.75);
                       onChangeHandler('second_llm.max_tokens', suggestedMaxTokens);
+                    } else if (fieldKey === 'knowledge_graph.model') {
+                      // Knowledge Graph tab
+                      onChangeHandler('knowledge_graph.context_length', contextLength);
+                      const suggestedMaxTokens = Math.floor(contextLength * 0.75);
+                      onChangeHandler('knowledge_graph.max_tokens', suggestedMaxTokens);
                     } else if (fieldKey === 'query_classifier.llm_model') {
                       // Query Classifier tab - exactly same as Settings tab
                       onChangeHandler('query_classifier.context_length', contextLength);
@@ -1364,6 +1369,7 @@ const renderStandardForm = (
     'main_llm',
     'second_llm',
     'query_classifier',
+    'knowledge_graph',
     'thinking_mode',
     'agent_config',
     'conversation_memory',
@@ -1401,6 +1407,7 @@ const renderStandardForm = (
       categories = {
         settings: { title: 'Main LLM', fields: {} },
         second_llm: { title: 'Second LLM', fields: {} },
+        knowledge_graph: { title: 'Knowledge Graph', fields: {} },
         classifier: { title: 'Query Classifier', fields: {} },
         thinking: { title: 'Thinking Mode', fields: {} },
         search_optimization: { title: 'Search Optimization', fields: {} }
@@ -1601,6 +1608,10 @@ const renderStandardForm = (
         // Second LLM Tab - All second_llm-related settings
         else if (lowerKey.includes('second_llm')) {
           categories.second_llm.fields[key] = value;
+        }
+        // Knowledge Graph Tab - All knowledge_graph-related settings
+        else if (lowerKey.includes('knowledge_graph')) {
+          categories.knowledge_graph.fields[key] = value;
         }
         // Query Classifier Tab - All classifier-related settings
         else if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {
@@ -2056,6 +2067,20 @@ const renderStandardForm = (
       'second_llm.model_server': 'Server endpoint URL for the second LLM model.',
       'second_llm.repeat_penalty': 'Penalty applied to repeated tokens to encourage diverse responses. Higher values reduce repetition.',
       
+      // Knowledge Graph Settings
+      'knowledge_graph.model': 'LLM model used for knowledge graph entity and relationship extraction.',
+      'knowledge_graph.max_tokens': 'Maximum number of tokens the knowledge graph LLM can generate for extraction tasks.',
+      'knowledge_graph.context_length': 'Maximum context window size for the knowledge graph LLM in tokens.',
+      'knowledge_graph.system_prompt': 'System prompt that defines the behavior for knowledge graph extraction tasks.',
+      'knowledge_graph.model_server': 'Server endpoint URL for the knowledge graph LLM model.',
+      'knowledge_graph.repeat_penalty': 'Penalty applied to repeated tokens during knowledge graph extraction.',
+      'knowledge_graph.temperature': 'Temperature setting for knowledge graph extraction. Lower values = more deterministic extraction.',
+      'knowledge_graph.extraction_prompt': 'Template prompt used for extracting entities and relationships from text.',
+      'knowledge_graph.entity_types': 'List of entity types to extract (e.g., Person, Organization, Location, Event).',
+      'knowledge_graph.relationship_types': 'List of relationship types to identify (e.g., works_for, located_in, part_of).',
+      'knowledge_graph.max_entities_per_chunk': 'Maximum number of entities to extract from each text chunk.',
+      'knowledge_graph.enable_coreference_resolution': 'Enable coreference resolution to link pronouns and references to entities.',
+      
       // Query Classifier Settings
       'query_classifier.model': 'LLM model used for query classification and routing decisions.',
       'query_classifier.max_tokens': 'Maximum number of tokens the query classifier can use for analysis.',
@@ -2351,7 +2376,7 @@ const renderStandardForm = (
       // Special handling for model field in LLM category
       console.log('[DEBUG] Checking model field:', { fieldCategory, key, value, fullKey: key, customOnChange: !!customOnChange });
       // Check for both 'model' and 'settings.model' due to potential nesting, including llm_model and second_llm.model
-      if (fieldCategory === 'llm' && (key === 'model' || key === 'settings.model' || key.endsWith('.model') || key.endsWith('.llm_model') || key === 'llm_model' || key === 'main_llm.model' || key === 'second_llm.model')) {
+      if (fieldCategory === 'llm' && (key === 'model' || key === 'settings.model' || key.endsWith('.model') || key.endsWith('.llm_model') || key === 'llm_model' || key === 'main_llm.model' || key === 'second_llm.model' || key === 'knowledge_graph.model')) {
         console.log('[DEBUG] Rendering model selector for LLM, using onChangeHandler:', onChangeHandler.toString().substring(0, 100));
         return (
           <ModelSelector
@@ -2626,9 +2651,9 @@ const renderStandardForm = (
       );
     }
     
-    // Handle nested objects - but flatten query_classifier, main_llm, and second_llm to work like Settings
+    // Handle nested objects - but flatten query_classifier, main_llm, second_llm, and knowledge_graph to work like Settings
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      if (key === 'query_classifier' || key === 'main_llm' || key === 'second_llm') {
+      if (key === 'query_classifier' || key === 'main_llm' || key === 'second_llm' || key === 'knowledge_graph') {
         // Flatten these fields to work like Settings fields, but skip mode fields and apply ordering
         const getFieldOrder = (fieldKey: string): number => {
           const lowerKey = fieldKey.toLowerCase();
@@ -2849,17 +2874,19 @@ const renderStandardForm = (
               /* Regular form rendering for other tabs */
               <div style={{ width: '100%', maxWidth: 'none' }}>
                 {/* Mode Selection for Settings and Query Classifier tabs */}
-                {category === 'llm' && (categoryKey === 'settings' || categoryKey === 'second_llm' || categoryKey === 'classifier') && (
+                {category === 'llm' && (categoryKey === 'settings' || categoryKey === 'second_llm' || categoryKey === 'knowledge_graph' || categoryKey === 'classifier') && (
                   <Card variant="outlined" sx={{ mb: 3 }}>
                     <CardHeader 
                       title={
                         categoryKey === 'settings' ? "LLM Mode Selection" : 
                         categoryKey === 'second_llm' ? "Second LLM Mode Selection" : 
+                        categoryKey === 'knowledge_graph' ? "Knowledge Graph Mode Selection" :
                         "Query Classifier Mode Selection"
                       }
                       subheader={
                         categoryKey === 'settings' ? "Select between thinking and non-thinking modes" : 
                         categoryKey === 'second_llm' ? "Select mode for the second LLM" : 
+                        categoryKey === 'knowledge_graph' ? "Select mode for knowledge graph extraction" :
                         "Select mode for query classification"
                       }
                     />
@@ -2871,6 +2898,8 @@ const renderStandardForm = (
                               ? data.main_llm?.mode || 'thinking'
                               : categoryKey === 'second_llm'
                               ? data.second_llm?.mode || 'thinking'
+                              : categoryKey === 'knowledge_graph'
+                              ? data.knowledge_graph?.mode || 'thinking'
                               : data.query_classifier?.mode || 'non-thinking'
                           }
                           onChange={(e) => {
@@ -2880,6 +2909,9 @@ const renderStandardForm = (
                             } else if (categoryKey === 'second_llm') {
                               const updatedSecondLlm = { ...data.second_llm, mode: e.target.value };
                               onChange('second_llm', updatedSecondLlm);
+                            } else if (categoryKey === 'knowledge_graph') {
+                              const updatedKnowledgeGraph = { ...data.knowledge_graph, mode: e.target.value };
+                              onChange('knowledge_graph', updatedKnowledgeGraph);
                             } else {
                               const updatedQueryClassifier = { ...data.query_classifier, mode: e.target.value };
                               onChange('query_classifier', updatedQueryClassifier);
@@ -2899,6 +2931,8 @@ const renderStandardForm = (
                                     ? "Enable step-by-step reasoning with <think> tags"
                                     : categoryKey === 'second_llm'
                                     ? "Enable step-by-step reasoning with <think> tags"
+                                    : categoryKey === 'knowledge_graph'
+                                    ? "Enable step-by-step reasoning for entity and relationship extraction"
                                     : "Use thinking mode parameters for classification"
                                   }
                                 </Typography>
@@ -2918,6 +2952,8 @@ const renderStandardForm = (
                                     ? "Direct responses without explicit reasoning steps"
                                     : categoryKey === 'second_llm'
                                     ? "Direct responses without explicit reasoning steps"
+                                    : categoryKey === 'knowledge_graph'
+                                    ? "Direct extraction without explicit reasoning steps"
                                     : "Use non-thinking mode parameters for classification"
                                   }
                                 </Typography>
@@ -2930,7 +2966,7 @@ const renderStandardForm = (
                   </Card>
                 )}
                 
-                <div className={category === 'rag' || category === 'large_generation' || category === 'langfuse' || category === 'environment' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'settings') ? 'single-column' : ''}`}>
+                <div className={category === 'rag' || category === 'large_generation' || category === 'langfuse' || category === 'environment' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'knowledge_graph' || categoryKey === 'settings') ? 'single-column' : ''}`}>
                 {(() => {
                   // Deduplicate fields before rendering
                   const fieldEntries = Object.entries(categories[categoryKey].fields);
@@ -2939,7 +2975,7 @@ const renderStandardForm = (
                   fieldEntries.forEach(([fieldKey, fieldValue]) => {
                     // Skip mode fields since we handle them with radio buttons
                     if (fieldKey === 'mode' || fieldKey.endsWith('.mode') || 
-                        fieldKey === 'main_llm.mode' || fieldKey === 'second_llm.mode' || fieldKey === 'query_classifier.mode') {
+                        fieldKey === 'main_llm.mode' || fieldKey === 'second_llm.mode' || fieldKey === 'knowledge_graph.mode' || fieldKey === 'query_classifier.mode') {
                       return;
                     }
                     
