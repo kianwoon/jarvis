@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import document, document_upload_fix, document_multi, document_multi_progress, document_preview, document_classify, document_intelligent
+from app.api.v1.endpoints import document, document_upload_fix, document_multi, document_multi_progress, document_preview, document_classify, document_intelligent, document_progress
 from app.api.routes import llm
 from app.api.v1.endpoints import settings
 from app.api.v1.endpoints import mcp_tools
@@ -16,6 +16,7 @@ from app.api.v1.endpoints import agent_templates
 from app.api.v1.endpoints import agent_recommendations
 from app.api.v1.endpoints import automation
 from app.api.v1.endpoints import temp_documents
+from app.api.v1.endpoints import knowledge_graph
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,12 @@ api_router = APIRouter()
 
 api_router.include_router(
     document.router,
+    prefix="/documents",
+    tags=["documents"]
+)
+
+api_router.include_router(
+    document_progress.router,
     prefix="/documents",
     tags=["documents"]
 )
@@ -166,6 +173,12 @@ api_router.include_router(
     temp_documents.router,
     prefix="/temp-documents",
     tags=["temp-documents"]
+)
+
+api_router.include_router(
+    knowledge_graph.router,
+    prefix="/knowledge-graph",
+    tags=["knowledge-graph"]
 )
 
  

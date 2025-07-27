@@ -23,6 +23,7 @@ class DocumentUploadRequest(BaseModel):
     ttl_hours: int = Field(default=2, ge=1, le=24, description="Time-to-live in hours")
     auto_include: bool = Field(default=True, description="Auto-include in chat context")
     enable_in_memory_rag: bool = Field(default=True, description="Enable in-memory RAG processing")
+    enable_knowledge_graph: bool = Field(default=False, description="Enable knowledge graph processing")
 
 class DocumentUploadResponse(BaseModel):
     success: bool
@@ -74,7 +75,8 @@ async def upload_temp_document(
     conversation_id: str = Form(...),
     ttl_hours: int = Form(default=2),
     auto_include: bool = Form(default=True),
-    enable_in_memory_rag: bool = Form(default=True)
+    enable_in_memory_rag: bool = Form(default=True),
+    enable_knowledge_graph: bool = Form(default=False)
 ):
     """
     Upload a temporary document for conversation-scoped processing.
@@ -84,6 +86,7 @@ async def upload_temp_document(
     - **ttl_hours**: Time-to-live in hours (1-24)
     - **auto_include**: Auto-include in chat context
     - **enable_in_memory_rag**: Enable in-memory RAG processing
+    - **enable_knowledge_graph**: Enable knowledge graph processing
     """
     try:
         # Validate file
@@ -121,7 +124,8 @@ async def upload_temp_document(
             conversation_id=conversation_id,
             ttl_hours=ttl_hours,
             auto_include=auto_include,
-            enable_in_memory_rag=enable_in_memory_rag
+            enable_in_memory_rag=enable_in_memory_rag,
+            enable_knowledge_graph=enable_knowledge_graph
         )
         
         if result['success']:
@@ -357,7 +361,8 @@ async def upload_temp_document_with_progress(
     conversation_id: str = Form(...),
     ttl_hours: int = Form(default=2),
     auto_include: bool = Form(default=True),
-    enable_in_memory_rag: bool = Form(default=True)
+    enable_in_memory_rag: bool = Form(default=True),
+    enable_knowledge_graph: bool = Form(default=False)
 ):
     """
     Upload a temporary document with real-time progress updates via SSE.
@@ -367,6 +372,7 @@ async def upload_temp_document_with_progress(
     - **ttl_hours**: Time-to-live in hours
     - **auto_include**: Auto-include in chat context
     - **enable_in_memory_rag**: Enable in-memory RAG processing
+    - **enable_knowledge_graph**: Enable knowledge graph processing
     """
     
     # Read file content before starting streaming response
@@ -394,11 +400,21 @@ async def upload_temp_document_with_progress(
                 conversation_id=conversation_id,
                 ttl_hours=ttl_hours,
                 auto_include=auto_include,
-                enable_in_memory_rag=enable_in_memory_rag
+                enable_in_memory_rag=enable_in_memory_rag,
+                enable_knowledge_graph=enable_knowledge_graph
             )
             
             if result['success']:
-                yield f"data: {json.dumps({'progress': 80, 'step': 'Adding to in-memory RAG', 'status': 'processing'})}\n\n"
+                # Update progress message based on what processing was enabled
+                processing_steps = []
+                if enable_in_memory_rag:
+                    processing_steps.append("in-memory RAG")
+                if enable_knowledge_graph:
+                    processing_steps.append("knowledge graph")
+                
+                if processing_steps:
+                    step_message = f"Adding to {' and '.join(processing_steps)}"
+                    yield f"data: {json.dumps({'progress': 80, 'step': step_message, 'status': 'processing'})}\n\n"
                 
                 # Final result
                 yield f"data: {json.dumps({'progress': 100, 'step': 'Complete', 'status': 'success', 'result': result})}\n\n"

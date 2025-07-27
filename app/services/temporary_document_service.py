@@ -13,6 +13,8 @@ from app.core.temp_document_manager import TempDocumentManager
 from app.langchain.in_memory_rag_service import get_in_memory_rag_service, InMemoryRAGService
 from app.core.in_memory_rag_settings import get_in_memory_rag_settings
 from app.document_handlers.base import ExtractedChunk
+from app.document_handlers.graph_processor import get_graph_document_processor
+from app.core.knowledge_graph_settings_cache import get_knowledge_graph_settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,8 @@ class TemporaryDocumentService:
     def __init__(self):
         self.temp_doc_manager = TempDocumentManager()
         self.config = get_in_memory_rag_settings()
+        self.kg_config = get_knowledge_graph_settings()
+        self.graph_processor = get_graph_document_processor()
     
     async def upload_and_process_document(
         self,
@@ -33,10 +37,11 @@ class TemporaryDocumentService:
         conversation_id: str,
         ttl_hours: int = 2,
         auto_include: bool = True,
-        enable_in_memory_rag: bool = True
+        enable_in_memory_rag: bool = True,
+        enable_knowledge_graph: bool = False
     ) -> Dict[str, Any]:
         """
-        Upload and process a document for both existing temp system and in-memory RAG.
+        Upload and process a document for temp system, in-memory RAG, and knowledge graph.
         
         Args:
             file_content: Raw file bytes
@@ -45,6 +50,7 @@ class TemporaryDocumentService:
             ttl_hours: Time-to-live in hours
             auto_include: Whether to automatically include in chat context
             enable_in_memory_rag: Whether to also add to in-memory RAG service
+            enable_knowledge_graph: Whether to also process for knowledge graph
             
         Returns:
             Processing result with temp_doc_id and metadata
@@ -87,6 +93,31 @@ class TemporaryDocumentService:
                     result['metadata']['in_memory_rag_error'] = str(e)
             else:
                 result['metadata']['in_memory_rag_enabled'] = False
+            
+            # If knowledge graph processing is enabled, also process for graph
+            if enable_knowledge_graph and auto_include:
+                try:
+                    kg_success = await self._add_to_knowledge_graph(
+                        result['temp_doc_id'], 
+                        filename,
+                        file_content
+                    )
+                    
+                    # Add knowledge graph status to result
+                    result['metadata']['knowledge_graph_enabled'] = kg_success.get('success', False)
+                    result['metadata']['knowledge_graph_stats'] = kg_success
+                    
+                    if kg_success.get('success'):
+                        logger.info(f"Successfully processed {filename} for knowledge graph: {kg_success.get('total_entities', 0)} entities, {kg_success.get('total_relationships', 0)} relationships")
+                    else:
+                        logger.warning(f"Failed to process {filename} for knowledge graph: {kg_success.get('error', 'Unknown error')}")
+                        
+                except Exception as e:
+                    logger.error(f"Knowledge graph processing failed for {filename}: {e}")
+                    result['metadata']['knowledge_graph_enabled'] = False
+                    result['metadata']['knowledge_graph_error'] = str(e)
+            else:
+                result['metadata']['knowledge_graph_enabled'] = False
             
             return result
             
@@ -498,6 +529,69 @@ class TemporaryDocumentService:
                 'conversation_id': conversation_id,
                 'error': str(e),
                 'timestamp': datetime.now().isoformat()
+            }
+    
+    async def _add_to_knowledge_graph(
+        self,
+        temp_doc_id: str,
+        filename: str,
+        file_content: bytes
+    ) -> Dict[str, Any]:
+        """Add document to knowledge graph processing."""
+        try:
+            # Extract chunks from the file content
+            import tempfile
+            import os
+            
+            # Get file extension
+            file_ext = filename.lower().split('.')[-1] if '.' in filename else ''
+            
+            # Create temporary file for processing
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_ext}") as tmp_file:
+                tmp_file.write(file_content)
+                temp_file_path = tmp_file.name
+            
+            try:
+                # Extract chunks using existing document handlers
+                chunks = await self.temp_doc_manager._extract_document_content(temp_file_path, filename)
+                
+                if not chunks:
+                    return {
+                        'success': False,
+                        'error': 'No content could be extracted from document',
+                        'total_entities': 0,
+                        'total_relationships': 0
+                    }
+                
+                # Process chunks for knowledge graph
+                graph_result = await self.graph_processor.process_document_for_graph(
+                    chunks=chunks,
+                    document_id=temp_doc_id,
+                    store_in_neo4j=self.kg_config.get('neo4j', {}).get('enabled', False)
+                )
+                
+                return {
+                    'success': graph_result.success,
+                    'total_entities': graph_result.total_entities,
+                    'total_relationships': graph_result.total_relationships,
+                    'processing_time_ms': graph_result.processing_time_ms,
+                    'errors': graph_result.errors
+                }
+                
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(temp_file_path)
+                except:
+                    pass
+            
+        except Exception as e:
+            logger.error(f"Failed to add document to knowledge graph: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'total_entities': 0,
+                'total_relationships': 0
             }
 
 # Global service instance

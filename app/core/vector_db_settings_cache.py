@@ -12,10 +12,18 @@ def get_vector_db_settings():
         cached = cache.get(VECTOR_DB_SETTINGS_KEY)
         if cached:
             # Ensure settings are in the new format
-            return migrate_vector_db_settings(cached)
+            try:
+                return migrate_vector_db_settings(cached)
+            except Exception as migrate_error:
+                print(f"[ERROR] Failed to migrate cached vector DB settings: {str(migrate_error)}")
+                # Clear bad cache and reload
+                cache.delete(VECTOR_DB_SETTINGS_KEY)
+        
         return reload_vector_db_settings()
     except Exception as e:
         print(f"[ERROR] Failed to get vector DB settings from cache: {str(e)}")
+        import traceback
+        print(f"[ERROR] Full traceback: {traceback.format_exc()}")
         # Return default settings in new format if cache fails
         return {
             "active": "milvus",
@@ -46,9 +54,13 @@ def reload_vector_db_settings():
             row = db.query(SettingsModel).filter(SettingsModel.category == 'storage').first()
             if row and 'vector_db' in row.settings:
                 # Migrate to new format if needed
-                migrated = migrate_vector_db_settings(row.settings['vector_db'])
-                cache.set(VECTOR_DB_SETTINGS_KEY, migrated)
-                return migrated
+                try:
+                    migrated = migrate_vector_db_settings(row.settings['vector_db'])
+                    cache.set(VECTOR_DB_SETTINGS_KEY, migrated)
+                    return migrated
+                except Exception as migrate_error:
+                    print(f"[ERROR] Failed to migrate vector DB settings from database: {str(migrate_error)}")
+                    # Fall through to return defaults
             else:
                 # Default settings in new format
                 default = {

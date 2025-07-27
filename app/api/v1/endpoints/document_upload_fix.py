@@ -31,7 +31,7 @@ async def upload_pdf_alternative(file: UploadFile = File(...)):
         
         # Now we can use the regular upload_pdf_progress logic
         # by creating a mock file object from the saved file
-        from app.api.v1.endpoints.document import progress_generator, UploadProgress
+        from app.api.v1.endpoints.document_progress import progress_generator, UploadProgress
         
         # Create a mock UploadFile from the saved file
         class MockUploadFile:

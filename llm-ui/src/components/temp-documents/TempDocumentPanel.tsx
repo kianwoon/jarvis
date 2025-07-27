@@ -20,6 +20,7 @@ import {
   Refresh as RefreshIcon,
   Description as DocumentIcon
 } from '@mui/icons-material';
+import { FormControlLabel, Switch } from '@mui/material';
 
 import { useDocumentState } from '../../hooks/useDocumentState';
 import { useRAGMode } from '../../hooks/useRAGMode';
@@ -44,6 +45,7 @@ const TempDocumentPanel: React.FC<TempDocumentPanelProps> = ({
 }) => {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [enableKnowledgeGraph, setEnableKnowledgeGraph] = useState(false);
 
   // Use custom hooks for state management
   const {
@@ -90,7 +92,8 @@ const TempDocumentPanel: React.FC<TempDocumentPanelProps> = ({
       const result = await uploadDocument(file, {
         ttlHours: 2,
         autoInclude: true,
-        enableInMemoryRag: true
+        enableInMemoryRag: true,
+        enableKnowledgeGraph: enableKnowledgeGraph
       });
 
       if (result) {
@@ -321,6 +324,31 @@ const TempDocumentPanel: React.FC<TempDocumentPanelProps> = ({
               <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 'bold' }}>
                 Upload Documents
               </Typography>
+              
+              {/* Knowledge Graph Toggle */}
+              <Box sx={{ mb: 2 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={enableKnowledgeGraph}
+                      onChange={(e) => setEnableKnowledgeGraph(e.target.checked)}
+                      color="primary"
+                      disabled={disabled}
+                    />
+                  }
+                  label={
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                        Enable Knowledge Graph Extraction
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Extract entities and relationships for Neo4j knowledge graph
+                      </Typography>
+                    </Box>
+                  }
+                  sx={{ mb: 1 }}
+                />
+              </Box>
               
               <Box sx={{ 
                 border: '2px dashed', 

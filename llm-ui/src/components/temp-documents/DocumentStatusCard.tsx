@@ -29,7 +29,8 @@ import {
   Error as ErrorIcon,
   CloudUpload as UploadIcon,
   Memory as MemoryIcon,
-  Storage as StorageIcon
+  Storage as StorageIcon,
+  AccountTree as GraphIcon
 } from '@mui/icons-material';
 
 interface DocumentMetadata {
@@ -37,6 +38,14 @@ interface DocumentMetadata {
   file_size?: number;
   chunk_count?: number;
   in_memory_rag_enabled?: boolean;
+  knowledge_graph_enabled?: boolean;
+  knowledge_graph_stats?: {
+    success?: boolean;
+    total_entities?: number;
+    total_relationships?: number;
+    processing_time_ms?: number;
+    errors?: string[];
+  };
   [key: string]: any;
 }
 
@@ -208,6 +217,18 @@ const DocumentStatusCard: React.FC<DocumentStatusCardProps> = ({
                 variant="outlined"
               />
             )}
+            {metadata.knowledge_graph_enabled && (
+              <Chip 
+                icon={<GraphIcon />}
+                label={metadata.knowledge_graph_stats?.success 
+                  ? `Graph: ${metadata.knowledge_graph_stats.total_entities || 0}E ${metadata.knowledge_graph_stats.total_relationships || 0}R`
+                  : "Graph"
+                } 
+                size="small" 
+                color={metadata.knowledge_graph_stats?.success ? "success" : "warning"}
+                variant="outlined"
+              />
+            )}
           </Box>
         </Box>
 
@@ -280,6 +301,21 @@ const DocumentStatusCard: React.FC<DocumentStatusCardProps> = ({
                       label="In-Memory RAG" 
                       size="small" 
                       color="info"
+                      variant="outlined"
+                    />
+                  </Tooltip>
+                )}
+                
+                {metadata.knowledge_graph_enabled && (
+                  <Tooltip title={`Knowledge graph: ${metadata.knowledge_graph_stats?.total_entities || 0} entities, ${metadata.knowledge_graph_stats?.total_relationships || 0} relationships`}>
+                    <Chip 
+                      icon={<GraphIcon />}
+                      label={metadata.knowledge_graph_stats?.success 
+                        ? `Knowledge Graph (${metadata.knowledge_graph_stats.total_entities || 0}E, ${metadata.knowledge_graph_stats.total_relationships || 0}R)`
+                        : "Knowledge Graph"
+                      } 
+                      size="small" 
+                      color={metadata.knowledge_graph_stats?.success ? "success" : "warning"}
                       variant="outlined"
                     />
                   </Tooltip>

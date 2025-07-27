@@ -146,17 +146,19 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
   useEffect(() => {
     const loadCollections = async () => {
       try {
-        //console.log('🔄 Loading collections...');
+        console.log('🔄 Loading collections...');
         const response = await fetch('/api/v1/collections/');
         if (response.ok) {
           const data = await response.json();
-          //console.log('✅ Collections loaded:', data.length, 'collections');
+          console.log('✅ Collections loaded:', data.length, 'collections');
           setCollections(data);
         } else {
-          //console.log('❌ Failed to load collections:', response.status);
+          console.log('❌ Failed to load collections:', response.status, response.statusText);
+          const errorText = await response.text();
+          console.log('❌ Response body:', errorText);
         }
       } catch (error) {
-        //console.error('❌ Error loading collections:', error);
+        console.error('❌ Error loading collections:', error);
       }
     };
     loadCollections();
@@ -373,27 +375,97 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
       // Route to appropriate endpoint based on file type
       const fileExt = file.name.toLowerCase().split('.').pop();
       const endpoint = fileExt === 'pdf' 
-        ? '/api/v1/documents/upload_pdf_progress' 
+        ? '/api/v1/documents/upload_pdf_simple' 
         : '/api/v1/documents/upload-multi-progress';
 
-      //console.log('📡 Making request to:', endpoint);
-      //console.log('📦 FormData collection:', finalCollection);
-      //console.log('📄 File type:', fileExt);
+      console.log('📡 Making request to:', endpoint);
+      console.log('📦 FormData collection:', finalCollection);
+      console.log('📄 File type:', fileExt);
+      
+      // Add timeout to prevent hanging
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.log('⏰ Upload timeout reached, aborting request');
+        controller.abort();
+      }, 10 * 60 * 1000); // 10 minutes timeout
+      
+      // Check if we're using the simple endpoint (non-streaming)
+      const isSimpleEndpoint = endpoint.includes('upload_pdf_simple');
       
       const response = await fetch(endpoint, {
         method: 'POST',
-        body: formData
+        body: formData,
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
 
-      //console.log('📡 Response status:', response.status);
-      //console.log('📡 Response headers:', Array.from(response.headers.entries()));
+      console.log('📡 Response status:', response.status);
+      console.log('📡 Response headers:', Array.from(response.headers.entries()));
 
       if (!response.ok) {
         const errorData = await response.json();
-        //console.log('❌ Error response:', errorData);
+        console.log('❌ Error response:', errorData);
         throw new Error(errorData.detail || `Upload failed: ${response.statusText}`);
       }
 
+      if (isSimpleEndpoint) {
+        // Handle simple JSON response
+        const result = await response.json();
+        console.log('📡 Simple upload result:', result);
+        
+        // Simulate progress updates for UI
+        setUploadState(prev => ({
+          ...prev,
+          currentStep: 1,
+          totalSteps: 7,
+          stepName: 'Processing file...',
+          progress: 25
+        }));
+        
+        // Small delay to show progress
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        setUploadState(prev => ({
+          ...prev,
+          currentStep: 7,
+          totalSteps: 7,
+          stepName: 'Upload complete!',
+          progress: 100,
+          details: { status: 'success', collection: result.collection },
+          status: 'success',
+          message: `Upload completed successfully!`
+        }));
+
+        // Create enhanced result for success callback
+        const enhancedResult = {
+          status: 'success',
+          filename: file.name,
+          file_type: file.name.toLowerCase().split('.').pop() || 'unknown',
+          collection: result.collection
+        };
+        
+        onUploadSuccess?.(enhancedResult);
+        onUploadProgress?.(100);
+        
+        // Keep modal open for 3 seconds to show success
+        setTimeout(() => {
+          setUploadState(prev => ({
+            ...prev,
+            status: 'idle',
+            file: null,
+            progress: 0,
+            currentStep: 0,
+            totalSteps: 0,
+            stepName: '',
+            details: undefined
+          }));
+        }, 3000);
+        
+        return; // End simple endpoint handling
+      }
+
+      // Handle SSE streaming for other endpoints
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -402,36 +474,26 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
         throw new Error('No response body reader available');
       }
 
-      //console.log('📡 Starting to read SSE stream...');
+      console.log('📡 Starting to read SSE stream...');
       let chunkCount = 0;
       
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
-          //console.log('📡 SSE stream finished, total chunks:', chunkCount);
+          console.log('📡 SSE stream finished, total chunks:', chunkCount);
           break;
         }
 
         chunkCount++;
-        //console.log('📡 Received chunk', chunkCount, 'size:', value.length);
         
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
-
-        //console.log('📡 Processing', lines.length, 'lines from chunk', chunkCount);
         
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.substring(6));
-              
-              //console.log('📊 Progress update received:', data);
-              //console.log('📈 Current step:', data.current_step, 'of', data.total_steps);
-              //console.log('🔄 Step name:', data.step_name);
-              //console.log('📊 Progress:', data.progress_percent + '%');
-              //console.log('🔍 Details:', data.details);
-              //console.log('⏰ Timestamp:', new Date().toLocaleTimeString());
               
               if (data.error) {
                 throw new Error(data.error);
@@ -451,7 +513,6 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
 
               if (data.progress_percent === 100) {
                 const result = data.details;
-                // Add file information to result for success display
                 const enhancedResult = {
                   ...result,
                   filename: file.name,
@@ -466,7 +527,6 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
                 }));
                 onUploadSuccess?.(enhancedResult);
                 
-                // Keep modal open for 3 seconds to show success
                 setTimeout(() => {
                   setUploadState(prev => ({
                     ...prev,
@@ -482,14 +542,22 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
                 return;
               }
             } catch (parseError) {
-              //console.warn('Failed to parse progress data:', parseError);
+              console.warn('Failed to parse progress data:', parseError);
             }
           }
         }
       }
 
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+      let errorMessage = 'Upload failed';
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = 'Upload timed out after 10 minutes. Please try again or contact support if the file is very large.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      console.error('❌ Upload error:', error);
       setUploadState({
         file,
         progress: 0,
@@ -711,26 +779,34 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
               onChange={(e) => setSelectedCollection(e.target.value)}
               label="Collection"
             >
-              {collections.map((coll) => (
-                <MenuItem key={coll.id} value={coll.collection_name}>
-                  <Box>
-                    <Typography variant="body2" fontWeight="bold">
-                      {coll.collection_name}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {coll.description}
-                    </Typography>
-                    {coll.access_config.restricted && (
-                      <Chip 
-                        label="Restricted" 
-                        size="small" 
-                        color="warning" 
-                        sx={{ ml: 1 }}
-                      />
-                    )}
-                  </Box>
+              {collections.length === 0 ? (
+                <MenuItem disabled>
+                  <Typography variant="body2" color="text.secondary">
+                    No collections available
+                  </Typography>
                 </MenuItem>
-              ))}
+              ) : (
+                collections.map((coll) => (
+                  <MenuItem key={coll.id} value={coll.collection_name}>
+                    <Box>
+                      <Typography variant="body2" fontWeight="bold">
+                        {coll.collection_name}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {coll.description}
+                      </Typography>
+                      {coll.access_config.restricted && (
+                        <Chip 
+                          label="Restricted" 
+                          size="small" 
+                          color="warning" 
+                          sx={{ ml: 1 }}
+                        />
+                      )}
+                    </Box>
+                  </MenuItem>
+                ))
+              )}
             </Select>
           </FormControl>
         </DialogContent>

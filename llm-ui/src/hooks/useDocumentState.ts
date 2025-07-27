@@ -10,6 +10,8 @@ interface DocumentState {
     file_size?: number;
     chunk_count?: number;
     in_memory_rag_enabled?: boolean;
+    knowledge_graph_enabled?: boolean;
+    knowledge_graph_stats?: any;
     [key: string]: any;
   };
   uploadProgress?: number;
@@ -33,6 +35,7 @@ interface UploadOptions {
   ttlHours?: number;
   autoInclude?: boolean;
   enableInMemoryRag?: boolean;
+  enableKnowledgeGraph?: boolean;
 }
 
 export const useDocumentState = (conversationId: string): DocumentStateHook => {
@@ -89,7 +92,8 @@ export const useDocumentState = (conversationId: string): DocumentStateHook => {
     const {
       ttlHours = 2,
       autoInclude = true,
-      enableInMemoryRag = true
+      enableInMemoryRag = true,
+      enableKnowledgeGraph = false
     } = options;
 
     try {
@@ -105,7 +109,8 @@ export const useDocumentState = (conversationId: string): DocumentStateHook => {
         metadata: {
           file_size: file.size,
           upload_timestamp: new Date().toISOString(),
-          in_memory_rag_enabled: enableInMemoryRag
+          in_memory_rag_enabled: enableInMemoryRag,
+          knowledge_graph_enabled: enableKnowledgeGraph
         },
         uploadProgress: 0
       };
@@ -120,6 +125,7 @@ export const useDocumentState = (conversationId: string): DocumentStateHook => {
       formData.append('ttl_hours', ttlHours.toString());
       formData.append('auto_include', autoInclude.toString());
       formData.append('enable_in_memory_rag', enableInMemoryRag.toString());
+      formData.append('enable_knowledge_graph', enableKnowledgeGraph.toString());
 
       // Upload with progress tracking
       const response = await fetch('/api/v1/temp-documents/upload-with-progress', {

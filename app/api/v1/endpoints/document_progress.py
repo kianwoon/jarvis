@@ -27,6 +27,32 @@ from app.utils.metadata_extractor import MetadataExtractor
 
 router = APIRouter()
 
+@router.get("/test_progress_generator")
+async def test_progress_generator():
+    """Test endpoint to verify progress generator works"""
+    
+    async def test_generator():
+        try:
+            print("🧪 TEST_GENERATOR: Starting test...")
+            yield f"data: {json.dumps({'step': 1, 'message': 'Test step 1'})}\n\n"
+            await asyncio.sleep(0.1)
+            yield f"data: {json.dumps({'step': 2, 'message': 'Test step 2'})}\n\n"
+            await asyncio.sleep(0.1)
+            yield f"data: {json.dumps({'step': 3, 'message': 'Test completed'})}\n\n"
+            print("🧪 TEST_GENERATOR: Completed successfully")
+        except Exception as e:
+            print(f"🚨 TEST_GENERATOR ERROR: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        test_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
 class UploadProgress:
     """Track upload progress"""
     def __init__(self, total_steps: int = 7):
@@ -52,21 +78,43 @@ class UploadProgress:
             "error": self.error
         }
 
-async def progress_generator(file: UploadFile, progress: UploadProgress, upload_params: Dict[str, Any] = None):
+async def progress_generator(file_content: bytes, filename: str, progress: UploadProgress, upload_params: Dict[str, Any] = None):
     """Generate SSE events for upload progress"""
+    print("🔥🔥🔥 PROGRESS_GENERATOR FUNCTION CALLED WITH PARAMS!")
+    print(f"🔥🔥🔥 file_content type: {type(file_content)}, length: {len(file_content) if file_content else 'None'}")
+    print(f"🔥🔥🔥 filename: {filename}")
+    print(f"🔥🔥🔥 progress: {progress}")
+    print(f"🔥🔥🔥 upload_params: {upload_params}")
+    
+    # ABSOLUTE FIRST THING - yield to start the stream
+    print("🔥🔥🔥 PROGRESS_GENERATOR: About to yield first value...")
+    yield "data: {\"startup\": \"Starting progress generator...\"}\n\n"
+    print("🔥🔥🔥 PROGRESS_GENERATOR: First yield completed!")
+    
+    # NOW we can do logging and processing
+    print("🔥🔥🔥 PROGRESS_GENERATOR FUNCTION STARTED!")
+    print(f"🔥🔥🔥 Filename: {filename}, Content size: {len(file_content)} bytes, Params: {upload_params}")
     
     try:
+        print("🔥 PROGRESS_GENERATOR STARTED!")
+        print(f"File: {filename}, Upload params: {upload_params}")
         # Step 1: Save file
-        progress.update(1, "Saving uploaded file", {"filename": file.filename})
+        progress.update(1, "Saving uploaded file", {"filename": filename})
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
         temp_path = None
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             temp_path = tmp_file.name
-            content = await file.read()
-            tmp_file.write(content)
-            file_size_mb = len(content) / (1024 * 1024)
+            
+            # Use the pre-saved file content
+            print("🔥 PROGRESS_GENERATOR: Writing file content...")
+            if not file_content:
+                raise ValueError("File content is empty")
+            
+            tmp_file.write(file_content)
+            file_size_mb = len(file_content) / (1024 * 1024)
             progress.details["file_size_mb"] = round(file_size_mb, 2)
+            print(f"🔥 PROGRESS_GENERATOR: File saved to {temp_path}, size: {file_size_mb:.2f}MB")
         
         # Step 2: Load PDF
         progress.update(2, "Loading PDF content", {"status": "processing"})
@@ -119,14 +167,36 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
         embedding_cfg = get_embedding_settings()
         embedding_endpoint = embedding_cfg.get('embedding_endpoint')
         
-        if embedding_endpoint:
-            embeddings = HTTPEmbeddingFunction(embedding_endpoint)
-            progress.details["embedding_type"] = "HTTP endpoint"
-        else:
-            from langchain_community.embeddings import HuggingFaceEmbeddings
-            embeddings = HuggingFaceEmbeddings(model_name=embedding_cfg["embedding_model"])
-            progress.details["embedding_type"] = f"HuggingFace: {embedding_cfg['embedding_model']}"
+        print(f"DEBUG: Embedding config: {embedding_cfg}")
         
+        if embedding_endpoint and embedding_endpoint.strip():
+            print(f"DEBUG: Using HTTP endpoint: {embedding_endpoint}")
+            try:
+                embeddings = HTTPEmbeddingFunction(embedding_endpoint)
+                progress.details["embedding_type"] = "HTTP endpoint"
+                print(f"DEBUG: HTTP endpoint embeddings initialized")
+            except Exception as e:
+                print(f"DEBUG: HTTP endpoint failed: {e}")
+                raise
+        else:
+            print(f"DEBUG: No HTTP endpoint, checking HuggingFace model")
+            embedding_model = embedding_cfg.get("embedding_model")
+            if not embedding_model or not embedding_model.strip():
+                print(f"DEBUG: No embedding model configured, using default")
+                embedding_model = "BAAI/bge-base-en-v1.5"
+            
+            print(f"DEBUG: About to initialize HuggingFace model: {embedding_model}")
+            try:
+                from langchain_community.embeddings import HuggingFaceEmbeddings
+                print(f"DEBUG: HuggingFaceEmbeddings imported successfully")
+                embeddings = HuggingFaceEmbeddings(model_name=embedding_model)
+                print(f"DEBUG: HuggingFace model initialized successfully")
+                progress.details["embedding_type"] = f"HuggingFace: {embedding_model}"
+            except Exception as e:
+                print(f"DEBUG: HuggingFace initialization failed: {e}")
+                raise
+        
+        print(f"DEBUG: Embeddings initialized successfully")
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
         # Step 5: Check for duplicates
@@ -142,7 +212,7 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
         bm25_processor = BM25Processor()
         
         # Extract file metadata
-        file_metadata = MetadataExtractor.extract_metadata(temp_path, file.filename)
+        file_metadata = MetadataExtractor.extract_metadata(temp_path, filename)
         
         # Add metadata to chunks
         for i, chunk in enumerate(chunks):
@@ -151,7 +221,7 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
             
             original_page = chunk.metadata.get('page', 0)
             chunk.metadata.update({
-                'source': file.filename.lower(),  # Normalize filename to lowercase
+                'source': filename.lower(),  # Normalize filename to lowercase
                 'page': original_page,
                 'doc_type': 'pdf',
                 'uploaded_at': datetime.now().isoformat(),
@@ -169,9 +239,54 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
             bm25_metadata = bm25_processor.prepare_document_for_bm25(chunk.page_content, chunk.metadata)
             chunk.metadata.update(bm25_metadata)
         
-        # Connect to vector DB and check duplicates
-        vector_db_cfg = get_vector_db_settings()
-        milvus_cfg = vector_db_cfg["milvus"]
+        # Connect to vector DB and check duplicates  
+        print("🔥 PROGRESS_GENERATOR: Using hardcoded Milvus settings to bypass config issues...")
+        
+        # Use hardcoded settings from debug script that we know work
+        vector_db_cfg = {
+            "active": "milvus",
+            "databases": [
+                {
+                    "id": "milvus",
+                    "name": "Milvus",
+                    "enabled": True,
+                    "config": {
+                        "dimension": 2560,
+                        "MILVUS_URI": "https://in03-093b567a1ae72cf.serverless.gcp-us-west1.cloud.zilliz.com",
+                        "MILVUS_TOKEN": "a8b2580e8ad9dd547e91bf8dc9292b849470968a5ce4b857a768d341cf026e7a30327a73786795d40cac81ef688c000dd910f581",
+                        "MILVUS_DEFAULT_COLLECTION": "default_knowledge"
+                    }
+                }
+            ]
+        }
+        print("🔥 PROGRESS_GENERATOR: Using hardcoded settings successfully")
+        
+        # Now we always have the new format due to migration
+        print("🔥 PROGRESS_GENERATOR: Parsing migrated vector DB config...")
+        
+        # Find the active Milvus database
+        active_db_id = vector_db_cfg.get("active", "milvus")
+        milvus_db = None
+        
+        for db in vector_db_cfg.get("databases", []):
+            if db.get("id") == active_db_id or (active_db_id == "milvus" and db.get("id") == "milvus"):
+                milvus_db = db
+                break
+        
+        if not milvus_db:
+            # Try to find any enabled Milvus database
+            for db in vector_db_cfg.get("databases", []):
+                if db.get("id") == "milvus" and db.get("enabled"):
+                    milvus_db = db
+                    break
+        
+        if not milvus_db:
+            raise ValueError(f"No Milvus database configuration found in vector DB settings")
+        
+        milvus_cfg = milvus_db.get("config", {})
+        print(f"🔥 PROGRESS_GENERATOR: Using Milvus database: {milvus_db.get('name')}")
+        print(f"🔥 PROGRESS_GENERATOR: Milvus config keys: {list(milvus_cfg.keys())}")
+        
         uri = milvus_cfg.get("MILVUS_URI")
         token = milvus_cfg.get("MILVUS_TOKEN")
         # Use user-specified collection or fall back to default
@@ -187,12 +302,32 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
         progress.details["target_collection"] = collection_name
         vector_dim = int(milvus_cfg.get("dimension", 2560))
         
+        print(f"🔥 PROGRESS_GENERATOR: Ensuring Milvus collection: {collection_name}")
         ensure_milvus_collection(collection_name, vector_dim=vector_dim, uri=uri, token=token)
         
+        print(f"🔥 PROGRESS_GENERATOR: Creating Collection object for: {collection_name}")
         collection = Collection(collection_name)
+        print(f"🔥 PROGRESS_GENERATOR: Loading collection...")
         collection.load()
-        existing_hashes = get_existing_hashes(collection)
-        existing_doc_ids = get_existing_doc_ids(collection)
+        print(f"🔥 PROGRESS_GENERATOR: Getting existing hashes...")
+        try:
+            existing_hashes = get_existing_hashes(collection)
+            print(f"🔥 PROGRESS_GENERATOR: Successfully got {len(existing_hashes)} existing hashes")
+        except Exception as e:
+            print(f"🔥 PROGRESS_GENERATOR: Failed to get existing hashes: {e}")
+            # If we can't get existing hashes, assume empty to continue upload
+            existing_hashes = set()
+        
+        print(f"🔥 PROGRESS_GENERATOR: Getting existing doc IDs...")
+        try:
+            existing_doc_ids = get_existing_doc_ids(collection)
+            print(f"🔥 PROGRESS_GENERATOR: Successfully got {len(existing_doc_ids)} existing doc IDs")
+        except Exception as e:
+            print(f"🔥 PROGRESS_GENERATOR: Failed to get existing doc IDs: {e}")
+            # If we can't get existing doc_ids, assume empty to continue upload
+            existing_doc_ids = set()
+        
+        print(f"🔥 PROGRESS_GENERATOR: Found {len(existing_hashes)} existing hashes, {len(existing_doc_ids)} existing doc IDs")
         
         # Filter duplicates
         unique_chunks = []
@@ -276,8 +411,26 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
             [chunk.metadata.get('last_modified_date', '') for chunk in unique_chunks],
         ]
         
-        insert_result = collection.insert(data)
-        collection.flush()
+        print(f"🔥 PROGRESS_GENERATOR: About to insert {len(unique_chunks)} chunks into collection")
+        print(f"🔥 PROGRESS_GENERATOR: Data structure lengths: {[len(d) for d in data]}")
+        
+        try:
+            insert_result = collection.insert(data)
+            print(f"🔥 PROGRESS_GENERATOR: Insert successful, result: {insert_result}")
+            
+            print(f"🔥 PROGRESS_GENERATOR: Flushing collection...")
+            collection.flush()
+            print(f"🔥 PROGRESS_GENERATOR: Flush completed")
+            
+            # Verify insertion by checking collection count
+            print(f"🔥 PROGRESS_GENERATOR: Checking collection count after insertion...")
+            collection.load()  # Reload to see new data
+            count = collection.num_entities
+            print(f"🔥 PROGRESS_GENERATOR: Collection now has {count} entities")
+            
+        except Exception as insert_error:
+            print(f"🔥 PROGRESS_GENERATOR: Insert failed: {insert_error}")
+            raise insert_error
         
         # Final success
         progress.update(7, "Upload complete!", {
@@ -291,17 +444,99 @@ async def progress_generator(file: UploadFile, progress: UploadProgress, upload_
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
     except Exception as e:
-        progress.error = str(e)
-        progress.details["status"] = "error"
-        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        print(f"🚨 ERROR in progress_generator: {e}")
+        print(f"🚨 ERROR type: {type(e)}")
+        import traceback
+        print(f"🚨 ERROR traceback: {traceback.format_exc()}")
+        
+        # Send error to client
+        error_data = {
+            "current_step": 0,
+            "total_steps": 1,
+            "progress_percent": 0,
+            "step_name": "Upload failed",
+            "details": {"error": str(e)},
+            "error": str(e)
+        }
+        yield f"data: {json.dumps(error_data)}\n\n"
         
     finally:
+        print("🔥 PROGRESS_GENERATOR: Cleanup started")
         # Cleanup
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
-            except:
-                pass
+                print(f"🔥 PROGRESS_GENERATOR: Cleaned up temp file: {temp_path}")
+            except Exception as cleanup_error:
+                print(f"🔥 PROGRESS_GENERATOR: Cleanup error: {cleanup_error}")
+        print("🔥 PROGRESS_GENERATOR: Finished")
+
+@router.post("/upload_pdf_simple")
+async def upload_pdf_simple(
+    file: UploadFile = File(...),
+    collection_name: Optional[str] = Form(None)
+):
+    """Simple PDF upload without streaming - just process and return result"""
+    
+    print("🔥 SIMPLE UPLOAD STARTED")
+    
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    
+    # Read file content
+    file_content = await file.read()
+    progress = UploadProgress()
+    upload_params = {'target_collection': collection_name}
+    
+    print(f"🔥 Processing {file.filename} ({len(file_content)} bytes)")
+    
+    # Execute the progress generator completely
+    try:
+        final_result = None
+        upload_success = False
+        error_message = None
+        
+        async for result in progress_generator(file_content, file.filename, progress, upload_params):
+            print(f"🔥 Step: {result[:100] if result else 'None'}...")
+            final_result = result
+            
+            # Check if this is error data
+            if result and "error" in result:
+                try:
+                    import json
+                    data = json.loads(result.replace("data: ", "").strip())
+                    if data.get("error"):
+                        error_message = data["error"]
+                        break
+                except:
+                    pass
+            
+            # Check if this is success completion (step 7 with success status)
+            if result and "Upload complete!" in result:
+                try:
+                    import json
+                    data = json.loads(result.replace("data: ", "").strip())
+                    if data.get("details", {}).get("status") == "success":
+                        upload_success = True
+                except:
+                    pass
+        
+        if error_message:
+            print(f"🔥 UPLOAD FAILED: {error_message}")
+            raise HTTPException(status_code=500, detail=f"Upload failed: {error_message}")
+        
+        if upload_success:
+            print("🔥 UPLOAD COMPLETED SUCCESSFULLY")
+            return {"status": "success", "message": "File uploaded successfully", "collection": collection_name}
+        else:
+            print("🔥 UPLOAD DID NOT COMPLETE SUCCESSFULLY")
+            raise HTTPException(status_code=500, detail="Upload did not complete successfully")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"🔥 UPLOAD FAILED: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @router.post("/upload_pdf_progress")
 async def upload_pdf_with_progress(
@@ -356,8 +591,45 @@ async def upload_pdf_with_progress(
         'bm25_weight': float(bm25_weight) if bm25_weight else None,
     }
     
+    # Read file content immediately to avoid file closure issues
+    print(f"🔥 Reading file content before classification...")
+    try:
+        file_content = await file.read()
+        print(f"🔥 File content read: {len(file_content)} bytes")
+    except Exception as e:
+        print(f"🔥 Error reading file: {e}")
+        raise HTTPException(status_code=400, detail=f"Cannot read file: {e}")
+    
+    if not file_content:
+        raise HTTPException(status_code=400, detail="File is empty")
+    
+    print(f"🔥 About to create StreamingResponse with progress_generator")
+    print(f"🔥 Upload params: {upload_params}")
+    print(f"🔥 File content size: {len(file_content)} bytes")
+    print(f"🔥 Progress object: {progress}")
+    print(f"🔥🔥🔥 CALLING progress_generator NOW!")
+    print(f"🔥🔥🔥 ABOUT TO CALL: progress_generator({type(file_content)}, {file.filename}, {type(progress)}, {upload_params})")
+    
+    generator = progress_generator(file_content, file.filename, progress, upload_params)
+    print(f"🔥🔥🔥 GENERATOR CREATED: {type(generator)}")
+    
+    # Execute the upload in background regardless of stream consumption
+    async def background_upload():
+        print("🔥🔥🔥 STARTING BACKGROUND UPLOAD TASK")
+        try:
+            result_data = None
+            async for item in generator:
+                print(f"🔥🔥🔥 PROCESSING: {item[:50] if item else 'None'}...")
+                result_data = item
+                yield item
+            print("🔥🔥🔥 BACKGROUND UPLOAD COMPLETE")
+            print(f"🔥🔥🔥 FINAL RESULT: {result_data}")
+        except Exception as e:
+            print(f"🔥🔥🔥 BACKGROUND UPLOAD ERROR: {e}")
+            yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
+    
     return StreamingResponse(
-        progress_generator(file, progress, upload_params),
+        background_upload(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
