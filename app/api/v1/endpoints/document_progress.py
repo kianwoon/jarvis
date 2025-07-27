@@ -24,6 +24,16 @@ from app.api.v1.endpoints.document import HTTPEmbeddingFunction, ensure_milvus_c
 from utils.deduplication import hash_text, get_existing_hashes, get_existing_doc_ids
 from app.rag.bm25_processor import BM25Processor
 from app.utils.metadata_extractor import MetadataExtractor
+# Knowledge graph imports with error handling
+try:
+    from app.services.knowledge_graph_service import get_knowledge_graph_service
+    from app.document_handlers.graph_processor import get_graph_document_processor
+    from app.core.temp_document_manager import TempDocumentManager
+    from app.document_handlers.base import ExtractedChunk
+    KG_IMPORTS_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Knowledge graph dependencies not available: {e}")
+    KG_IMPORTS_AVAILABLE = False
 
 router = APIRouter()
 
@@ -55,7 +65,7 @@ async def test_progress_generator():
 
 class UploadProgress:
     """Track upload progress"""
-    def __init__(self, total_steps: int = 7):
+    def __init__(self, total_steps: int = 8):  # Updated to 8 steps to include KG processing
         self.total_steps = total_steps
         self.current_step = 0
         self.current_step_name = ""
@@ -86,10 +96,11 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
     print(f"🔥🔥🔥 progress: {progress}")
     print(f"🔥🔥🔥 upload_params: {upload_params}")
     
-    # ABSOLUTE FIRST THING - yield to start the stream
-    print("🔥🔥🔥 PROGRESS_GENERATOR: About to yield first value...")
-    yield "data: {\"startup\": \"Starting progress generator...\"}\n\n"
-    print("🔥🔥🔥 PROGRESS_GENERATOR: First yield completed!")
+    # Initialize progress immediately with Step 1 instead of startup message
+    print("🔥🔥🔥 PROGRESS_GENERATOR: About to yield first progress step...")
+    progress.update(1, "Initializing upload", {"status": "starting"})
+    yield f"data: {json.dumps(progress.to_dict())}\n\n"
+    print("🔥🔥🔥 PROGRESS_GENERATOR: First progress step yielded!")
     
     # NOW we can do logging and processing
     print("🔥🔥🔥 PROGRESS_GENERATOR FUNCTION STARTED!")
@@ -101,6 +112,7 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
         # Step 1: Save file
         progress.update(1, "Saving uploaded file", {"filename": filename})
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        await asyncio.sleep(0.2)  # Allow frontend to display step
         
         temp_path = None
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
@@ -119,6 +131,7 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
         # Step 2: Load PDF
         progress.update(2, "Loading PDF content", {"status": "processing"})
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        await asyncio.sleep(0.2)  # Allow frontend to display step
         
         loader = PyPDFLoader(temp_path)
         docs = loader.load()
@@ -130,6 +143,7 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
             "total_characters": total_chars
         })
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        await asyncio.sleep(0.2)  # Allow frontend to display step
         
         # Check if OCR is needed
         if all(not doc.page_content.strip() for doc in docs):
@@ -147,6 +161,7 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
         # Step 3: Split into chunks
         progress.update(3, "Splitting into chunks", {"chunking": "in_progress"})
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        await asyncio.sleep(0.2)  # Allow frontend to display step
         
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=1500,
@@ -159,10 +174,12 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
         chunks = splitter.split_documents(docs)
         progress.details["total_chunks"] = len(chunks)
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        await asyncio.sleep(0.2)  # Allow frontend to display step
         
         # Step 4: Prepare embeddings
         progress.update(4, "Preparing embeddings", {"embedding_setup": "initializing"})
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        await asyncio.sleep(0.2)  # Allow frontend to display step
         
         embedding_cfg = get_embedding_settings()
         embedding_endpoint = embedding_cfg.get('embedding_endpoint')
@@ -198,10 +215,12 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
         
         print(f"DEBUG: Embeddings initialized successfully")
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        await asyncio.sleep(0.2)  # Allow frontend to display step
         
         # Step 5: Check for duplicates
         progress.update(5, "Checking for duplicates", {"deduplication": "in_progress"})
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        await asyncio.sleep(0.2)  # Allow frontend to display step
         
         # Compute file hash
         with open(temp_path, "rb") as f:
@@ -349,9 +368,17 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
         if not unique_chunks:
-            progress.update(7, "Complete - All chunks are duplicates", {
-                "status": "skipped",
-                "reason": "All chunks already exist in database"
+            # Skip to final step since no new chunks to process
+            progress.update(8, "Upload complete - All chunks are duplicates", {
+                "status": "success",
+                "total_chunks": len(chunks),
+                "unique_chunks_inserted": 0,
+                "duplicates_filtered": len(chunks),
+                "collection": collection_name,
+                "file_id": file_id,
+                "reason": "All chunks already exist in database",
+                "kg_processing_skipped": True,
+                "kg_skip_reason": "No new chunks to process for knowledge graph"
             })
             yield f"data: {json.dumps(progress.to_dict())}\n\n"
             return
@@ -432,15 +459,109 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
             print(f"🔥 PROGRESS_GENERATOR: Insert failed: {insert_error}")
             raise insert_error
         
-        # Final success
-        progress.update(7, "Upload complete!", {
-            "status": "success",
-            "total_chunks": len(chunks),
-            "unique_chunks_inserted": len(unique_chunks),
-            "duplicates_filtered": duplicate_count,
-            "collection": collection_name,
-            "file_id": file_id
+        # Step 8: Process knowledge graph
+        progress.update(8, "Processing knowledge graph", {
+            "kg_processing": "in_progress",
+            "entities_extracted": 0,
+            "relationships_extracted": 0
         })
+        yield f"data: {json.dumps(progress.to_dict())}\n\n"
+        
+        # Check if knowledge graph dependencies are available
+        if not KG_IMPORTS_AVAILABLE:
+            print("🔥 PROGRESS_GENERATOR: KG dependencies not available, skipping knowledge graph processing")
+            progress.update(8, "Upload complete (KG processing skipped)", {
+                "status": "success",
+                "total_chunks": len(chunks),
+                "unique_chunks_inserted": len(unique_chunks),
+                "duplicates_filtered": duplicate_count,
+                "collection": collection_name,
+                "file_id": file_id,
+                "kg_processing_skipped": True,
+                "kg_skip_reason": "Knowledge graph dependencies not available"
+            })
+            yield f"data: {json.dumps(progress.to_dict())}\n\n"
+            return
+        
+        try:
+            # Convert chunks to ExtractedChunk format for knowledge graph processing
+            extracted_chunks = []
+            for i, chunk in enumerate(chunks):
+                # ExtractedChunk only accepts (content, metadata, quality_score)
+                extracted_chunk = ExtractedChunk(
+                    content=chunk.page_content,
+                    metadata={
+                        **chunk.metadata,
+                        'source': filename,
+                        'page_number': chunk.metadata.get('page', 0),
+                        'section': f"chunk_{i}"
+                    }
+                )
+                extracted_chunks.append(extracted_chunk)
+            
+            # Get knowledge graph processor
+            graph_processor = get_graph_document_processor()
+            
+            # Process all chunks for knowledge graph at once (more efficient)
+            print(f"🔥 PROGRESS_GENERATOR: Processing {len(extracted_chunks)} chunks for knowledge graph")
+            
+            try:
+                # Use the correct method: process_document_for_graph
+                result = await graph_processor.process_document_for_graph(
+                    chunks=extracted_chunks,
+                    document_id=file_id,
+                    store_in_neo4j=True
+                )
+                
+                total_entities = result.total_entities if result and result.success else 0
+                total_relationships = result.total_relationships if result and result.success else 0
+                
+                print(f"🔥 PROGRESS_GENERATOR: KG processing result - entities: {total_entities}, relationships: {total_relationships}")
+                
+                # Update progress with final results
+                progress.details.update({
+                    "kg_chunks_processed": len(extracted_chunks),
+                    "kg_total_chunks": len(extracted_chunks),
+                    "entities_extracted": total_entities,
+                    "relationships_extracted": total_relationships
+                })
+                yield f"data: {json.dumps(progress.to_dict())}\n\n"
+                
+            except Exception as kg_batch_error:
+                print(f"🔥 KG batch processing error: {kg_batch_error}")
+                # Set totals to 0 if processing fails
+                total_entities = 0
+                total_relationships = 0
+            
+            print(f"🔥 PROGRESS_GENERATOR: KG processing completed - {total_entities} entities, {total_relationships} relationships")
+            
+            # Final success with knowledge graph stats
+            progress.update(8, "Upload complete!", {
+                "status": "success",
+                "total_chunks": len(chunks),
+                "unique_chunks_inserted": len(unique_chunks),
+                "duplicates_filtered": duplicate_count,
+                "collection": collection_name,
+                "file_id": file_id,
+                "kg_entities_extracted": total_entities,
+                "kg_relationships_extracted": total_relationships,
+                "kg_processing_completed": True
+            })
+            
+        except Exception as kg_error:
+            print(f"🔥 PROGRESS_GENERATOR: KG processing failed: {kg_error}")
+            # Still mark as success but note KG failure
+            progress.update(8, "Upload complete (KG processing failed)", {
+                "status": "success",
+                "total_chunks": len(chunks),
+                "unique_chunks_inserted": len(unique_chunks),
+                "duplicates_filtered": duplicate_count,
+                "collection": collection_name,
+                "file_id": file_id,
+                "kg_processing_error": str(kg_error),
+                "kg_processing_completed": False
+            })
+        
         yield f"data: {json.dumps(progress.to_dict())}\n\n"
         
     except Exception as e:
@@ -485,7 +606,7 @@ async def upload_pdf_simple(
     
     # Read file content
     file_content = await file.read()
-    progress = UploadProgress()
+    progress = UploadProgress(total_steps=8)  # Use 8 steps to include KG processing
     upload_params = {'target_collection': collection_name}
     
     print(f"🔥 Processing {file.filename} ({len(file_content)} bytes)")
@@ -569,7 +690,7 @@ async def upload_pdf_with_progress(
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
-    progress = UploadProgress()
+    progress = UploadProgress(total_steps=8)  # Use 8 steps to include KG processing
     
     # Determine target collection
     target_collection = None

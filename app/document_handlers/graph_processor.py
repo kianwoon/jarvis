@@ -81,7 +81,7 @@ class GraphDocumentProcessor:
         store_in_neo4j: bool = True
     ) -> GraphProcessingResult:
         """
-        Process document chunks for knowledge graph extraction and optionally store in Neo4j.
+        Process document chunks for knowledge graph extraction with multi-chunk overlap detection.
         
         Args:
             chunks: List of extracted chunks from document handlers
@@ -96,6 +96,109 @@ class GraphDocumentProcessor:
         try:
             logger.info(f"Processing {len(chunks)} chunks for knowledge graph extraction (doc: {document_id})")
             
+            # Check if multi-chunk processing is enabled
+            enable_multi_chunk = self.config.get('extraction', {}).get('enable_multi_chunk_relationships', True)
+            
+            if enable_multi_chunk and len(chunks) > 1:
+                # Use multi-chunk processor for better cross-boundary relationship detection
+                return await self._process_with_multi_chunk_overlap(chunks, document_id, store_in_neo4j)
+            else:
+                # Use standard single-chunk processing
+                return await self._process_chunks_individually(chunks, document_id, store_in_neo4j)
+                
+        except Exception as e:
+            logger.error(f"Graph processing failed for document {document_id}: {e}")
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            return GraphProcessingResult(
+                document_id=document_id,
+                total_chunks=len(chunks),
+                processed_chunks=0,
+                total_entities=0,
+                total_relationships=0,
+                processing_time_ms=processing_time,
+                success=False,
+                errors=[f"Processing failed: {str(e)}"]
+            )
+    
+    async def _process_with_multi_chunk_overlap(self, chunks: List[ExtractedChunk], 
+                                              document_id: str, store_in_neo4j: bool) -> GraphProcessingResult:
+        """Process chunks with overlap detection for cross-boundary relationships"""
+        start_time = datetime.now()
+        
+        try:
+            from app.services.multi_chunk_processor import get_multi_chunk_processor
+            multi_chunk_processor = get_multi_chunk_processor()
+            
+            # Filter chunks suitable for graph processing
+            suitable_chunks = self._filter_suitable_chunks(chunks)
+            
+            if not suitable_chunks:
+                logger.warning("No suitable chunks found for graph processing")
+                return self._create_empty_result(document_id, len(chunks))
+            
+            # Process with multi-chunk overlap detection
+            multi_result = await multi_chunk_processor.process_document_with_overlap(
+                suitable_chunks, document_id
+            )
+            
+            # Combine all results
+            all_extraction_results = multi_result.individual_results.copy()
+            
+            # Create synthetic results for cross-chunk extractions
+            if multi_result.cross_chunk_entities or multi_result.cross_chunk_relationships:
+                cross_chunk_result = GraphExtractionResult(
+                    chunk_id=f"{document_id}_cross_chunk",
+                    entities=multi_result.cross_chunk_entities,
+                    relationships=multi_result.cross_chunk_relationships,
+                    processing_time_ms=multi_result.total_processing_time_ms * 0.3,  # Portion of time
+                    source_metadata={'type': 'cross_chunk_synthesis'},
+                    warnings=[]
+                )
+                all_extraction_results.append(cross_chunk_result)
+            
+            # Store in Neo4j if requested
+            storage_results = []
+            if store_in_neo4j:
+                storage_results = await self._store_results_in_neo4j(all_extraction_results, document_id)
+            
+            # Calculate totals
+            total_entities = sum(len(result.entities) for result in all_extraction_results)
+            total_relationships = sum(len(result.relationships) for result in all_extraction_results)
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            # Check for errors
+            errors = []
+            for result in all_extraction_results:
+                errors.extend(result.warnings)
+            
+            success = len(errors) == 0 and total_entities > 0
+            
+            logger.info(f"🔄 MULTI-CHUNK COMPLETE: {total_entities} entities, {total_relationships} relationships (quality: {multi_result.quality_metrics})")
+            
+            return GraphProcessingResult(
+                document_id=document_id,
+                total_chunks=len(chunks),
+                processed_chunks=len(suitable_chunks),
+                total_entities=total_entities,
+                total_relationships=total_relationships,
+                processing_time_ms=processing_time,
+                success=success,
+                errors=errors,
+                graph_data=all_extraction_results
+            )
+            
+        except Exception as e:
+            logger.error(f"Multi-chunk processing failed: {e}")
+            # Fallback to individual processing
+            return await self._process_chunks_individually(chunks, document_id, store_in_neo4j)
+    
+    async def _process_chunks_individually(self, chunks: List[ExtractedChunk], 
+                                         document_id: str, store_in_neo4j: bool) -> GraphProcessingResult:
+        """Standard individual chunk processing"""
+        start_time = datetime.now()
+        
+        try:
             # Filter chunks suitable for graph processing
             suitable_chunks = self._filter_chunks_for_graph_processing(chunks)
             logger.info(f"Filtered to {len(suitable_chunks)} suitable chunks for graph extraction")

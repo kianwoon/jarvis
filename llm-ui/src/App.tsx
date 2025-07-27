@@ -1215,6 +1215,11 @@ function App() {
       window.location.href = '/settings.html';
       return;
     }
+    if (newValue === 4) {
+      // Redirect to knowledge graph page
+      window.location.href = '/knowledge-graph.html';
+      return;
+    }
     setTabValue(newValue);
     // Update URL parameter
     const url = new URL(window.location.href);
@@ -1367,6 +1372,11 @@ function App() {
               label="Settings" 
               id="tab-3"
               aria-controls="tabpanel-3"
+            />
+            <Tab 
+              label="Knowledge Graph" 
+              id="tab-4"
+              aria-controls="tabpanel-4"
             />
           </Tabs>
         </Box>

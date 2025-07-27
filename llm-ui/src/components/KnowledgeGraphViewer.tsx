@@ -1,5 +1,21 @@
 import React, { useState, useEffect, useRef, ErrorInfo, Component } from 'react';
 import * as d3 from 'd3';
+import {
+  Box,
+  AppBar,
+  Toolbar,
+  Typography,
+  IconButton,
+  ThemeProvider,
+  createTheme,
+  CssBaseline,
+  Tabs,
+  Tab
+} from '@mui/material';
+import {
+  LightMode as LightModeIcon,
+  DarkMode as DarkModeIcon
+} from '@mui/icons-material';
 
 // Error boundary for D3 visualization
 class VisualizationErrorBoundary extends Component<
@@ -95,7 +111,19 @@ const KnowledgeGraphViewer: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   
   const svgRef = useRef<SVGSVGElement>(null);
-  const [dimensions] = useState({ width: 800, height: 600 });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: window.innerWidth, height: window.innerHeight - 200 });
+  const [isStatsCollapsed, setIsStatsCollapsed] = useState(false);
+  const [zoomTransform, setZoomTransform] = useState(d3.zoomIdentity);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [notification, setNotification] = useState<{type: 'success' | 'error', message: string} | null>(null);
+  
+  // Theme state
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const saved = localStorage.getItem('jarvis-dark-mode');
+    return saved ? JSON.parse(saved) : false;
+  });
 
   // Color scheme for different entity types
   const entityColors: Record<string, string> = {
@@ -106,6 +134,32 @@ const KnowledgeGraphViewer: React.FC = () => {
     'PRODUCT': '#9467bd',
     'default': '#7f7f7f'
   };
+
+  // Theme-aware colors
+  const getThemeColors = () => ({
+    background: isDarkMode ? '#121212' : '#fafafa',
+    surface: isDarkMode ? '#1e1e1e' : '#ffffff',
+    text: isDarkMode ? '#ffffff' : '#333333',
+    secondaryText: isDarkMode ? '#b3b3b3' : '#666666',
+    border: isDarkMode ? '#424242' : '#e0e0e0',
+    linkColor: isDarkMode ? '#999999' : '#666666',
+    linkLabelColor: isDarkMode ? '#ffffff' : '#333333',
+    nodeLabelColor: isDarkMode ? '#ffffff' : '#222222'
+  });
+
+  // Listen for theme changes from localStorage
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'jarvis-dark-mode' && e.newValue) {
+        const newDarkMode = JSON.parse(e.newValue);
+        setIsDarkMode(newDarkMode);
+        document.body.setAttribute('data-theme', newDarkMode ? 'dark' : 'light');
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
 
   // Fetch available document IDs
   const fetchAvailableDocuments = async () => {
@@ -221,15 +275,67 @@ const KnowledgeGraphViewer: React.FC = () => {
         return node;
       });
 
-      // Filter relationships to only include those with valid source/target entities
+      // Create entity lookup maps for both ID and name matching
       const entityIds = new Set(nodes.map(n => n.id));
+      const entityNames = new Set(nodes.map(n => n.name));
+      const nameToIdMap = new Map(nodes.map(n => [n.name.toLowerCase(), n.id]));
+      const idToNameMap = new Map(nodes.map(n => [n.id, n.name]));
+      
+      console.log('🔗 Entity IDs available:', Array.from(entityIds));
+      console.log('🔗 Entity names available:', Array.from(entityNames));
+      console.log('🔗 Raw relationships received:', relationships);
+      
+      // Enhanced relationship filtering with fallback logic
       const validRelationships = relationships.filter(rel => {
-        const sourceValid = entityIds.has(rel.source_entity);
-        const targetValid = entityIds.has(rel.target_entity);
-        if (!sourceValid || !targetValid) {
-          console.warn('Invalid relationship:', rel, 'Available entities:', Array.from(entityIds));
+        let sourceId = rel.source_entity;
+        let targetId = rel.target_entity;
+        
+        // If source_entity is not a valid ID, try to map from name
+        if (!entityIds.has(sourceId)) {
+          const sourceFromName = nameToIdMap.get(sourceId.toLowerCase()) || nameToIdMap.get(rel.source_name?.toLowerCase());
+          if (sourceFromName) {
+            sourceId = sourceFromName;
+            console.log(`🔗 Mapped source "${rel.source_entity}" -> "${sourceId}"`);
+          }
         }
-        return sourceValid && targetValid;
+        
+        // If target_entity is not a valid ID, try to map from name
+        if (!entityIds.has(targetId)) {
+          const targetFromName = nameToIdMap.get(targetId.toLowerCase()) || nameToIdMap.get(rel.target_name?.toLowerCase());
+          if (targetFromName) {
+            targetId = targetFromName;
+            console.log(`🔗 Mapped target "${rel.target_entity}" -> "${targetId}"`);
+          }
+        }
+        
+        const sourceValid = entityIds.has(sourceId);
+        const targetValid = entityIds.has(targetId);
+        
+        if (!sourceValid || !targetValid) {
+          console.warn('❌ Invalid relationship:', {
+            original: rel,
+            mappedSource: sourceId,
+            mappedTarget: targetId,
+            sourceValid,
+            targetValid,
+            availableEntityIds: Array.from(entityIds)
+          });
+          return false;
+        }
+        
+        // Update the relationship with proper IDs
+        rel.source_entity = sourceId;
+        rel.target_entity = targetId;
+        
+        console.log('✅ Valid relationship:', {
+          source: sourceId,
+          target: targetId,
+          type: rel.relationship_type,
+          sourceName: idToNameMap.get(sourceId),
+          targetName: idToNameMap.get(targetId)
+        });
+        
+        return true;
       });
 
       const links: GraphLink[] = validRelationships.map((rel, index) => {
@@ -243,82 +349,149 @@ const KnowledgeGraphViewer: React.FC = () => {
         return link;
       });
       
-      console.log('Processed nodes:', nodes.length);
-      console.log('Processed links:', links.length);
+      console.log('📊 RELATIONSHIP PROCESSING SUMMARY:');
+      console.log(`   • Raw relationships received: ${relationships.length}`);
+      console.log(`   • Valid relationships after filtering: ${validRelationships.length}`);
+      console.log(`   • Final D3 links created: ${links.length}`);
+      console.log(`   • Entities available: ${nodes.length}`);
+      
+      if (relationships.length > 0 && validRelationships.length === 0) {
+        console.error('🚨 CRITICAL: All relationships were filtered out!');
+        console.error('This usually means entity IDs don\'t match between entities and relationships');
+        setError(`No valid relationships found. Expected entity IDs but got mismatched data. Check backend API consistency.`);
+      } else if (validRelationships.length > 0) {
+        console.log(`✅ Successfully processed ${validRelationships.length} relationships`);
+      }
 
       // Set up SVG with safe dimensions
       const width = Math.max(400, dimensions.width);
       const height = Math.max(300, dimensions.height);
+      const themeColors = getThemeColors();
       
       svg
         .attr('width', width)
         .attr('height', height)
         .attr('viewBox', `0 0 ${width} ${height}`)
-        .style('background', 'white');
+        .style('background', themeColors.background)
+        .style('cursor', 'grab');
 
-      // Create simulation with error handling
+      // Create main container group for zoom/pan transforms
+      const mainGroup = svg.append('g').attr('class', 'main-group');
+
+      // Set up zoom behavior
+      const zoom = d3.zoom<SVGSVGElement, unknown>()
+        .scaleExtent([0.1, 10])
+        .on('zoom', (event) => {
+          const transform = event.transform;
+          setZoomTransform(transform);
+          mainGroup.attr('transform', transform.toString());
+        });
+
+      // Apply zoom behavior to SVG and store reference
+      svg.call(zoom);
+      zoomBehaviorRef.current = zoom;
+
+      // Create simulation with better force configuration
       const simulation = d3.forceSimulation<GraphNode>(nodes)
         .force('link', d3.forceLink<GraphNode, GraphLink>(links)
           .id(d => d.id)
-          .distance(80)
-          .strength(0.5)
+          .distance(120)  // Increased distance for better visibility
+          .strength(0.8)  // Stronger links to keep connected nodes together
         )
-        .force('charge', d3.forceManyBody().strength(-200))
+        .force('charge', d3.forceManyBody().strength(-400))  // Stronger repulsion for better spread
         .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('collision', d3.forceCollide().radius(20));
+        .force('collision', d3.forceCollide().radius(30))  // Larger collision radius to prevent overlap
+        .force('x', d3.forceX(width / 2).strength(0.1))    // Gentle centering force
+        .force('y', d3.forceY(height / 2).strength(0.1));  // Gentle centering force
 
-      // Create links group
-      const linkGroup = svg.append('g').attr('class', 'links');
+      // Create links group (child of mainGroup for zoom/pan)
+      const linkGroup = mainGroup.append('g').attr('class', 'links');
       const link = linkGroup
         .selectAll('line')
         .data(links)
         .join('line')
-        .attr('stroke', '#999')
-        .attr('stroke-opacity', 0.6)
-        .attr('stroke-width', d => Math.max(1, d.confidence * 3));
+        .attr('stroke', themeColors.linkColor)
+        .attr('stroke-opacity', 0.8)
+        .attr('stroke-width', d => Math.max(2, d.confidence * 4))
+        .attr('stroke-dasharray', d => d.confidence < 0.7 ? '5,5' : 'none')  // Dashed lines for lower confidence
+        .style('cursor', 'pointer');
 
       // Create link labels group
-      const linkLabelGroup = svg.append('g').attr('class', 'link-labels');
+      const linkLabelGroup = mainGroup.append('g').attr('class', 'link-labels');
       const linkLabels = linkLabelGroup
         .selectAll('text')
         .data(links)
         .join('text')
         .attr('text-anchor', 'middle')
-        .attr('dy', -5)
-        .attr('font-size', '10px')
-        .attr('fill', '#666')
+        .attr('dy', -8)
+        .attr('font-size', '11px')
+        .attr('font-weight', '500')
+        .attr('fill', themeColors.linkLabelColor)
+        .attr('stroke', themeColors.surface)
+        .attr('stroke-width', '3')
+        .attr('paint-order', 'stroke')
         .style('pointer-events', 'none')
-        .text(d => d.relationship_type);
+        .text(d => d.relationship_type.toUpperCase());
 
       // Create nodes group
-      const nodeGroup = svg.append('g').attr('class', 'nodes');
+      const nodeGroup = mainGroup.append('g').attr('class', 'nodes');
       const node = nodeGroup
         .selectAll('circle')
         .data(nodes)
         .join('circle')
-        .attr('r', d => 8 + (d.confidence * 12))
+        .attr('r', d => 12 + (d.confidence * 8))  // Larger nodes for better visibility
         .attr('fill', d => entityColors[d.type] || entityColors.default)
         .attr('stroke', '#fff')
-        .attr('stroke-width', 2)
-        .style('cursor', 'pointer');
+        .attr('stroke-width', 3)
+        .style('cursor', 'pointer')
+        .style('filter', 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))')  // Add shadow for depth
+        .on('mouseenter', function(event, d) {
+          d3.select(this)
+            .transition()
+            .duration(200)
+            .attr('r', (12 + (d.confidence * 8)) * 1.2)
+            .attr('stroke-width', 4);
+        })
+        .on('mouseleave', function(event, d) {
+          d3.select(this)
+            .transition()
+            .duration(200)
+            .attr('r', 12 + (d.confidence * 8))
+            .attr('stroke-width', 3);
+        });
 
       // Create node labels group
-      const nodeLabelGroup = svg.append('g').attr('class', 'node-labels');
+      const nodeLabelGroup = mainGroup.append('g').attr('class', 'node-labels');
       const nodeLabels = nodeLabelGroup
         .selectAll('text')
         .data(nodes)
         .join('text')
         .attr('text-anchor', 'middle')
-        .attr('dy', 4)
-        .attr('font-size', '11px')
-        .attr('font-weight', 'bold')
-        .attr('fill', '#333')
+        .attr('dy', 5)
+        .attr('font-size', '12px')
+        .attr('font-weight', '600')
+        .attr('fill', themeColors.nodeLabelColor)
+        .attr('stroke', themeColors.surface)
+        .attr('stroke-width', '2')
+        .attr('paint-order', 'stroke')
         .style('pointer-events', 'none')
-        .text(d => d.name.length > 12 ? d.name.slice(0, 12) + '...' : d.name);
+        .text(d => d.name.length > 15 ? d.name.slice(0, 15) + '...' : d.name);
 
-      // Add tooltips
+      // Add tooltips for nodes
       node.append('title')
         .text(d => `${d.name}\nType: ${d.type}\nConfidence: ${(d.confidence * 100).toFixed(1)}%`);
+
+      // Add tooltips for links with better entity name display
+      link.append('title')
+        .text(d => {
+          const sourceName = typeof d.source === 'string' ? 
+            (idToNameMap.get(d.source) || d.source) : 
+            (d.source as GraphNode).name;
+          const targetName = typeof d.target === 'string' ? 
+            (idToNameMap.get(d.target) || d.target) : 
+            (d.target as GraphNode).name;
+          return `${d.relationship_type}\nFrom: ${sourceName}\nTo: ${targetName}\nConfidence: ${(d.confidence * 100).toFixed(1)}%`;
+        });
 
       // Add drag behavior with error handling
       const dragHandler = d3.drag<SVGCircleElement, GraphNode>()
@@ -364,11 +537,12 @@ const KnowledgeGraphViewer: React.FC = () => {
         }
       });
 
-      // Stop simulation after a reasonable time
+      // Run simulation longer for better layout
       setTimeout(() => {
         simulation.stop();
-        console.log('Simulation stopped');
-      }, 5000);
+        console.log('Simulation stopped after 8 seconds');
+        console.log(`Final layout: ${nodes.length} nodes, ${links.length} links`);
+      }, 8000);
       
       console.log('=== Visualization created successfully ===');
       
@@ -391,6 +565,36 @@ const KnowledgeGraphViewer: React.FC = () => {
     }
   };
 
+  // Dynamic sizing and window resize handler
+  useEffect(() => {
+    const updateDimensions = () => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        setDimensions({
+          width: rect.width,
+          height: rect.height
+        });
+      } else {
+        // Fallback to window dimensions
+        const headerHeight = isStatsCollapsed ? 60 : 200;
+        setDimensions({
+          width: window.innerWidth,
+          height: window.innerHeight - headerHeight
+        });
+      }
+    };
+
+    // Set initial dimensions
+    updateDimensions();
+
+    // Add resize listener
+    window.addEventListener('resize', updateDimensions);
+    
+    return () => {
+      window.removeEventListener('resize', updateDimensions);
+    };
+  }, [isStatsCollapsed]);
+
   // Initial load
   useEffect(() => {
     fetchStats();
@@ -402,7 +606,111 @@ const KnowledgeGraphViewer: React.FC = () => {
     if (entities.length > 0) {
       createVisualization();
     }
-  }, [entities, relationships, dimensions]);
+  }, [entities, relationships, dimensions, isDarkMode]);
+
+  // Keyboard shortcuts for zoom controls
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (entities.length === 0) return;
+      
+      switch (event.key) {
+        case '+':
+        case '=':
+          event.preventDefault();
+          zoomIn();
+          break;
+        case '-':
+        case '_':
+          event.preventDefault();
+          zoomOut();
+          break;
+        case 'r':
+        case 'R':
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            resetZoom();
+          }
+          break;
+        case 'f':
+        case 'F':
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            fitToView();
+          }
+          break;
+        case 'Delete':
+        case 'Backspace':
+          if ((event.ctrlKey || event.metaKey) && selectedDocument) {
+            event.preventDefault();
+            handleDeleteClick();
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [entities.length]);
+
+  // Store zoom behavior reference
+  const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+
+  // Zoom control functions
+  const zoomIn = () => {
+    if (svgRef.current && zoomBehaviorRef.current) {
+      const svg = d3.select(svgRef.current);
+      svg.transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 1.5);
+    }
+  };
+
+  const zoomOut = () => {
+    if (svgRef.current && zoomBehaviorRef.current) {
+      const svg = d3.select(svgRef.current);
+      svg.transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 0.67);
+    }
+  };
+
+  const resetZoom = () => {
+    if (svgRef.current && zoomBehaviorRef.current) {
+      const svg = d3.select(svgRef.current);
+      svg.transition().duration(500).call(zoomBehaviorRef.current.transform, d3.zoomIdentity);
+    }
+  };
+
+  const fitToView = () => {
+    if (svgRef.current && entities.length > 0 && zoomBehaviorRef.current) {
+      const svg = d3.select(svgRef.current);
+      // Calculate bounds of all nodes
+      const nodes = svg.selectAll('.nodes circle').nodes() as SVGCircleElement[];
+      if (nodes.length === 0) return;
+      
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      nodes.forEach(node => {
+        const x = parseFloat(node.getAttribute('cx') || '0');
+        const y = parseFloat(node.getAttribute('cy') || '0');
+        const r = parseFloat(node.getAttribute('r') || '0');
+        minX = Math.min(minX, x - r);
+        minY = Math.min(minY, y - r);
+        maxX = Math.max(maxX, x + r);
+        maxY = Math.max(maxY, y + r);
+      });
+      
+      const width = maxX - minX;
+      const height = maxY - minY;
+      const padding = 50;
+      
+      const scale = Math.min(
+        (dimensions.width - padding * 2) / width,
+        (dimensions.height - padding * 2) / height
+      );
+      
+      const translateX = (dimensions.width - width * scale) / 2 - minX * scale;
+      const translateY = (dimensions.height - height * scale) / 2 - minY * scale;
+      
+      const transform = d3.zoomIdentity.translate(translateX, translateY).scale(scale);
+      svg.transition().duration(750).call(zoomBehaviorRef.current.transform, transform);
+    }
+  };
 
   // Handle document selection
   const handleDocumentSubmit = (e: React.FormEvent) => {
@@ -413,41 +721,266 @@ const KnowledgeGraphViewer: React.FC = () => {
     }
   };
 
-  return (
-    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-      <h2>Knowledge Graph Viewer</h2>
+  // Delete document from knowledge graph
+  const deleteDocument = async (documentId: string) => {
+    if (!documentId) return;
+    
+    setDeleteLoading(true);
+    try {
+      const response = await fetch(`/api/v1/knowledge-graph/document/${documentId}`, {
+        method: 'DELETE'
+      });
       
-      {/* Stats Section */}
-      {stats && (
-        <div style={{ 
-          background: '#f5f5f5', 
-          padding: '15px', 
-          borderRadius: '8px', 
-          marginBottom: '20px' 
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Document deleted successfully:', result);
+        
+        // Clear current data if we deleted the selected document
+        if (documentId === selectedDocument) {
+          setEntities([]);
+          setRelationships([]);
+          setSelectedDocument('');
+        }
+        
+        // Refresh available documents list
+        fetchAvailableDocuments();
+        fetchStats();
+        
+        // Show success notification
+        setError(null);
+        setNotification({
+          type: 'success',
+          message: `Document "${documentId}" has been successfully deleted from the knowledge graph.`
+        });
+        
+        // Auto-hide notification after 5 seconds
+        setTimeout(() => setNotification(null), 5000);
+      } else {
+        const errorData = await response.json();
+        setError(`Failed to delete document: ${errorData.detail || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error('Delete error:', err);
+      setError(`Error deleting document: ${err instanceof Error ? err.message : 'Network error'}`);
+    } finally {
+      setDeleteLoading(false);
+      setShowDeleteConfirm(false);
+    }
+  };
+
+  // Handle delete button click with confirmation
+  const handleDeleteClick = () => {
+    if (!selectedDocument) return;
+    setShowDeleteConfirm(true);
+  };
+
+  // Navigation button styling
+  const getButtonStyle = (bgColor?: string) => ({
+    padding: '8px 12px',
+    border: `1px solid ${themeColors.border}`,
+    borderRadius: '4px',
+    background: bgColor || themeColors.surface,
+    color: bgColor ? 'white' : themeColors.text,
+    cursor: 'pointer',
+    fontSize: '14px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    transition: 'all 0.2s ease'
+  });
+
+  const toggleDarkMode = () => {
+    const newDarkMode = !isDarkMode;
+    setIsDarkMode(newDarkMode);
+    localStorage.setItem('jarvis-dark-mode', JSON.stringify(newDarkMode));
+    document.body.setAttribute('data-theme', newDarkMode ? 'dark' : 'light');
+  };
+
+  const themeColors = getThemeColors();
+
+  // Create Material-UI theme
+  const theme = createTheme({
+    palette: {
+      mode: isDarkMode ? 'dark' : 'light',
+      primary: {
+        main: '#2196f3',
+      },
+      background: {
+        default: isDarkMode ? '#121212' : '#f5f5f5',
+        paper: isDarkMode ? '#1e1e1e' : '#ffffff',
+      },
+    },
+  });
+
+  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
+    switch (newValue) {
+      case 0:
+        window.location.href = '/';
+        break;
+      case 1:
+        window.location.href = '/multi-agent.html';
+        break;
+      case 2:
+        window.location.href = '/workflow.html';
+        break;
+      case 3:
+        window.location.href = '/settings.html';
+        break;
+      case 4:
+        // Already on knowledge graph page
+        break;
+    }
+  };
+
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+        {/* Header */}
+        <AppBar position="static">
+          <Toolbar>
+            <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
+              Jarvis AI Assistant
+            </Typography>
+
+            <IconButton onClick={toggleDarkMode} color="inherit">
+              {isDarkMode ? <LightModeIcon /> : <DarkModeIcon />}
+            </IconButton>
+          </Toolbar>
+        </AppBar>
+
+        {/* Navigation Tabs */}
+        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+          <Tabs 
+            value={4}
+            onChange={handleTabChange} 
+            aria-label="jarvis modes"
+            centered
+            sx={{
+              '& .MuiTab-root': {
+                fontSize: '1rem',
+                fontWeight: 600,
+                textTransform: 'none',
+                minWidth: 120,
+                padding: '12px 24px',
+                '&.Mui-selected': {
+                  color: 'primary.main',
+                  fontWeight: 700
+                }
+              }
+            }}
+          >
+            <Tab 
+              label="Standard Chat" 
+              id="tab-0"
+              aria-controls="tabpanel-0"
+            />
+            <Tab 
+              label="Multi-Agent" 
+              id="tab-1"
+              aria-controls="tabpanel-1"
+            />
+            <Tab 
+              label="Workflow" 
+              id="tab-2"
+              aria-controls="tabpanel-2"
+            />
+            <Tab 
+              label="Settings" 
+              id="tab-3"
+              aria-controls="tabpanel-3"
+            />
+            <Tab 
+              label="Knowledge Graph" 
+              id="tab-4"
+              aria-controls="tabpanel-4"
+            />
+          </Tabs>
+        </Box>
+
+        {/* Knowledge Graph controls */}
+        <Box sx={{ 
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          p: 2,
+          bgcolor: 'background.paper',
+          borderBottom: 1,
+          borderColor: 'divider'
         }}>
-          <h3>Graph Statistics</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
-            <div><strong>Total Entities:</strong> {stats.total_entities}</div>
-            <div><strong>Total Relationships:</strong> {stats.total_relationships}</div>
-            <div><strong>Documents Processed:</strong> {stats.documents_processed}</div>
-            <div><strong>Last Updated:</strong> {new Date(stats.last_updated).toLocaleString()}</div>
+          <Typography variant="h5" component="h2">Knowledge Graph Viewer</Typography>
+          <button
+            onClick={() => setIsStatsCollapsed(!isStatsCollapsed)}
+            style={{
+              background: isDarkMode ? '#424242' : '#e0e0e0',
+              border: 'none',
+              color: isDarkMode ? '#ffffff' : '#333333',
+              padding: '8px 12px',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px'
+            }}
+          >
+            {isStatsCollapsed ? '📊 Show Stats' : '📊 Hide Stats'}
+          </button>
+        </Box>
+
+        {/* Collapsible Stats Section */}
+        {!isStatsCollapsed && stats && (
+          <Box sx={{ 
+            bgcolor: 'background.paper', 
+            p: 2,
+            borderBottom: 1,
+            borderColor: 'divider',
+            flexShrink: 0
+          }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', marginBottom: '15px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '20px' }}>🔗</span>
+              <div>
+                <Typography variant="caption" color="text.secondary">Total Entities</Typography>
+                <Typography variant="h6" fontWeight="bold">{stats.total_entities}</Typography>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '20px' }}>🔄</span>
+              <div>
+                <Typography variant="caption" color="text.secondary">Total Relationships</Typography>
+                <Typography variant="h6" fontWeight="bold">{stats.total_relationships}</Typography>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '20px' }}>📄</span>
+              <div>
+                <Typography variant="caption" color="text.secondary">Documents Processed</Typography>
+                <Typography variant="h6" fontWeight="bold">{stats.documents_processed}</Typography>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '20px' }}>⏰</span>
+              <div>
+                <Typography variant="caption" color="text.secondary">Last Updated</Typography>
+                <Typography variant="body2" fontWeight="bold">{new Date(stats.last_updated).toLocaleString()}</Typography>
+              </div>
+            </div>
           </div>
           
           {Object.keys(stats.entity_types).length > 0 && (
-            <div style={{ marginTop: '10px' }}>
-              <strong>Entity Types:</strong>
-              <div style={{ marginTop: '5px' }}>
+            <div>
+              <Typography variant="subtitle2" fontWeight="600" sx={{ mb: 1 }}>Entity Types:</Typography>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                 {Object.entries(stats.entity_types).map(([type, count]) => (
                   <span 
                     key={type} 
                     style={{ 
-                      display: 'inline-block',
-                      margin: '2px 5px',
-                      padding: '2px 8px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      padding: '4px 10px',
                       background: entityColors[type] || entityColors.default,
                       color: 'white',
-                      borderRadius: '12px',
-                      fontSize: '12px'
+                      borderRadius: '16px',
+                      fontSize: '12px',
+                      fontWeight: '500'
                     }}
                   >
                     {type}: {count}
@@ -456,49 +989,42 @@ const KnowledgeGraphViewer: React.FC = () => {
               </div>
             </div>
           )}
-        </div>
-      )}
+          </Box>
+        )}
 
-      {/* Available Documents */}
-      {availableDocuments.length > 0 && (
-        <div style={{ marginBottom: '20px', background: '#e8f4f8', padding: '15px', borderRadius: '8px' }}>
-          <h4 style={{ margin: '0 0 10px 0' }}>Available Documents:</h4>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-            {availableDocuments.map(docId => (
-              <button
-                key={docId}
-                onClick={() => setSelectedDocument(docId)}
-                style={{
-                  padding: '6px 12px',
-                  background: selectedDocument === docId ? '#007bff' : '#fff',
-                  color: selectedDocument === docId ? 'white' : '#007bff',
-                  border: '1px solid #007bff',
-                  borderRadius: '20px',
-                  cursor: 'pointer',
-                  fontSize: '12px'
-                }}
-              >
-                {docId}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Document Selection */}
-      <form onSubmit={handleDocumentSubmit} style={{ marginBottom: '20px' }}>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <label htmlFor="documentId">Document ID:</label>
+      {/* Control Toolbar */}
+      <div style={{ 
+        background: themeColors.surface, 
+        padding: '12px 20px',
+        borderBottom: `1px solid ${themeColors.border}`,
+        display: 'flex',
+        alignItems: 'center',
+        gap: '15px',
+        flexWrap: 'wrap',
+        flexShrink: 0
+      }}>
+        {/* Document Selection */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <label htmlFor="documentId" style={{ fontSize: '14px', fontWeight: '500', color: themeColors.text }}>Document:</label>
           {availableDocuments.length > 0 ? (
             <select
               id="documentId"
               value={selectedDocument}
-              onChange={(e) => setSelectedDocument(e.target.value)}
+              onChange={(e) => {
+                setSelectedDocument(e.target.value);
+                if (e.target.value.trim()) {
+                  fetchEntities(e.target.value.trim());
+                  fetchRelationships(e.target.value.trim());
+                }
+              }}
               style={{ 
-                padding: '8px 12px', 
-                border: '1px solid #ddd', 
+                padding: '6px 10px', 
+                border: `1px solid ${themeColors.border}`, 
                 borderRadius: '4px',
-                minWidth: '250px'
+                minWidth: '200px',
+                fontSize: '14px',
+                background: themeColors.surface,
+                color: themeColors.text
               }}
             >
               <option value="">Select a document...</option>
@@ -512,109 +1038,367 @@ const KnowledgeGraphViewer: React.FC = () => {
               type="text"
               value={selectedDocument}
               onChange={(e) => setSelectedDocument(e.target.value)}
-              placeholder="Enter document ID to view its knowledge graph"
+              onKeyPress={(e) => {
+                if (e.key === 'Enter' && selectedDocument.trim()) {
+                  fetchEntities(selectedDocument.trim());
+                  fetchRelationships(selectedDocument.trim());
+                }
+              }}
+              placeholder="Enter document ID"
               style={{ 
-                padding: '8px 12px', 
-                border: '1px solid #ddd', 
+                padding: '6px 10px', 
+                border: `1px solid ${themeColors.border}`, 
                 borderRadius: '4px',
-                minWidth: '300px'
+                minWidth: '200px',
+                fontSize: '14px',
+                background: themeColors.surface,
+                color: themeColors.text
               }}
             />
           )}
-          <button 
-            type="submit"
-            disabled={loading || !selectedDocument.trim()}
-            style={{
-              padding: '8px 16px',
-              background: '#007bff',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: loading ? 'not-allowed' : 'pointer'
-            }}
-          >
-            {loading ? 'Loading...' : 'Load Graph'}
-          </button>
-          <button 
-            type="button"
-            onClick={() => {
-              fetchAvailableDocuments();
-              fetchStats();
-            }}
-            style={{
-              padding: '8px 16px',
-              background: '#28a745',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer'
-            }}
-          >
-            Refresh
-          </button>
         </div>
-      </form>
+
+        {/* Navigation Controls */}
+        {entities.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
+            <div style={{ fontSize: '14px', color: themeColors.secondaryText, marginRight: '10px' }}>
+              Zoom: {Math.round(zoomTransform.k * 100)}%
+            </div>
+            <button onClick={zoomIn} style={getButtonStyle()} title="Zoom In (+ key)">🔍+</button>
+            <button onClick={zoomOut} style={getButtonStyle()} title="Zoom Out (- key)">🔍-</button>
+            <button onClick={resetZoom} style={getButtonStyle()} title="Reset Zoom (Ctrl+R)">🔄</button>
+            <button onClick={fitToView} style={getButtonStyle()} title="Fit to View (Ctrl+F)">📐</button>
+            <button 
+              onClick={() => {
+                fetchAvailableDocuments();
+                fetchStats();
+              }}
+              style={getButtonStyle('#28a745')}
+              title="Refresh Data"
+            >
+              ♻️
+            </button>
+            <button 
+              onClick={() => {
+                if (selectedDocument) {
+                  fetch(`/api/v1/knowledge-graph/debug/${selectedDocument}`)
+                    .then(res => res.json())
+                    .then(data => {
+                      console.log('🔍 NEO4J DEBUG DATA:', data);
+                      alert(`Debug data logged to console. Summary: ${data.summary.total_entities_in_neo4j} entities, ${data.summary.total_relationships_in_neo4j} relationships in Neo4j`);
+                    })
+                    .catch(err => {
+                      console.error('Debug fetch error:', err);
+                      alert('Failed to fetch debug data - check console');
+                    });
+                }
+              }}
+              style={getButtonStyle('#17a2b8')}
+              title="Debug Neo4j Data"
+            >
+              🔍
+            </button>
+            <button 
+              onClick={handleDeleteClick}
+              disabled={!selectedDocument || deleteLoading}
+              style={{
+                ...getButtonStyle(selectedDocument && !deleteLoading ? '#dc3545' : '#6c757d'),
+                opacity: selectedDocument && !deleteLoading ? 1 : 0.6,
+                cursor: selectedDocument && !deleteLoading ? 'pointer' : 'not-allowed'
+              }}
+              title={selectedDocument ? `Delete document "${selectedDocument}" from knowledge graph (Ctrl+Delete)` : "Select a document to delete"}
+            >
+              {deleteLoading ? '⏳' : '🗑️'}
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Error Display */}
       {error && (
         <div style={{ 
           background: '#f8d7da', 
           color: '#721c24', 
-          padding: '10px', 
+          padding: '10px 15px', 
           borderRadius: '4px',
-          marginBottom: '20px'
+          margin: '0 20px 20px 20px',
+          border: '1px solid #f5c6cb'
         }}>
-          Error: {error}
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+
+      {/* Success/Error Notification */}
+      {notification && (
+        <div style={{ 
+          background: notification.type === 'success' ? '#d4edda' : '#f8d7da',
+          color: notification.type === 'success' ? '#155724' : '#721c24',
+          border: notification.type === 'success' ? '1px solid #c3e6cb' : '1px solid #f5c6cb',
+          padding: '12px 15px', 
+          borderRadius: '4px',
+          margin: '0 20px 20px 20px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span>{notification.type === 'success' ? '✅' : '❌'}</span>
+            <span>{notification.message}</span>
+          </div>
+          <button
+            onClick={() => setNotification(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: notification.type === 'success' ? '#155724' : '#721c24',
+              cursor: 'pointer',
+              fontSize: '16px',
+              padding: '0',
+              lineHeight: '1'
+            }}
+            title="Dismiss"
+          >
+            ×
+          </button>
         </div>
       )}
 
       {/* Graph Visualization */}
       {entities.length > 0 ? (
         <VisualizationErrorBoundary onError={setError}>
-          <div style={{ border: '1px solid #ddd', borderRadius: '8px', overflow: 'hidden' }}>
-            <h3 style={{ margin: '0', padding: '10px', background: '#f8f9fa' }}>
-              Knowledge Graph for Document: {selectedDocument}
-            </h3>
-            <svg ref={svgRef} style={{ display: 'block' }}></svg>
+          <div 
+            ref={containerRef}
+            style={{ 
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              background: themeColors.surface,
+              border: `1px solid ${themeColors.border}`,
+              borderRadius: '8px',
+              overflow: 'hidden'
+            }}
+          >
+            <div style={{ 
+              padding: '10px 15px', 
+              background: themeColors.surface, 
+              borderBottom: `1px solid ${themeColors.border}`,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <h3 style={{ margin: '0', fontSize: '16px', fontWeight: '600' }}>
+                Knowledge Graph for Document: {selectedDocument}
+              </h3>
+              <div style={{ fontSize: '12px', color: themeColors.secondaryText }}>
+                {entities.length} entities • {relationships.length} relationships
+                {relationships.length > 0 && (
+                  <span style={{ 
+                    marginLeft: '10px', 
+                    padding: '2px 6px', 
+                    borderRadius: '3px',
+                    background: relationships.length > 0 ? '#d4edda' : '#f8d7da',
+                    color: relationships.length > 0 ? '#155724' : '#721c24',
+                    fontSize: '11px'
+                  }}>
+                    {relationships.length === 0 ? 'No connections' : `${relationships.length} connections found`}
+                  </span>
+                )}
+              </div>
+            </div>
+            
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+              <svg 
+                ref={svgRef} 
+                style={{ 
+                  width: '100%', 
+                  height: '100%', 
+                  display: 'block',
+                  background: themeColors.background
+                }}
+              />
+            </div>
           
             {/* Legend */}
-            <div style={{ padding: '10px', background: '#f8f9fa', borderTop: '1px solid #ddd' }}>
-              <strong>Legend:</strong>
+            <div style={{ 
+              padding: '10px 15px', 
+              background: themeColors.surface, 
+              borderTop: `1px solid ${themeColors.border}`,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '15px',
+              flexWrap: 'wrap'
+            }}>
+              <strong style={{ fontSize: '12px', color: themeColors.text }}>Legend:</strong>
               {Object.entries(entityColors).filter(([type]) => type !== 'default').map(([type, color]) => (
                 <span 
                   key={type}
                   style={{ 
-                    display: 'inline-block',
-                    margin: '0 10px 0 0',
-                    fontSize: '12px'
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontSize: '11px',
+                    color: themeColors.text
                   }}
                 >
                   <span 
                     style={{ 
-                      display: 'inline-block',
-                      width: '12px',
-                      height: '12px',
+                      width: '10px',
+                      height: '10px',
                       background: color,
                       borderRadius: '50%',
-                      marginRight: '4px',
-                      verticalAlign: 'middle'
+                      border: '1px solid white',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
                     }}
-                  ></span>
+                  />
                   {type}
                 </span>
               ))}
             </div>
+            
+            {/* Special message for entities without relationships */}
+            {entities.length > 0 && relationships.length === 0 && (
+              <div style={{ 
+                padding: '15px', 
+                background: '#fff3cd', 
+                border: '1px solid #ffeaa7',
+                borderTop: 'none',
+                borderBottomLeftRadius: '8px',
+                borderBottomRightRadius: '8px',
+                fontSize: '14px',
+                color: '#856404'
+              }}>
+                <strong>⚠️ No relationships found</strong> - Entities are displayed but no connections between them were extracted or stored. 
+                This could mean the document contains isolated entities or relationship extraction needs to be enabled during upload.
+              </div>
+            )}
           </div>
         </VisualizationErrorBoundary>
       ) : selectedDocument && !loading && (
         <div style={{ 
           textAlign: 'center', 
           padding: '40px', 
-          color: '#666',
-          border: '2px dashed #ddd',
-          borderRadius: '8px'
+          color: themeColors.secondaryText,
+          border: `2px dashed ${themeColors.border}`,
+          borderRadius: '8px',
+          margin: '20px',
+          background: themeColors.surface
         }}>
-          No entities found for this document. Try ingesting the document first or check the document ID.
+          <h3 style={{ color: themeColors.text, marginBottom: '15px' }}>No Knowledge Graph Data Found</h3>
+          <p>No entities found for document: <strong>{selectedDocument}</strong></p>
+          <div style={{ fontSize: '14px', lineHeight: '1.6', maxWidth: '500px', margin: '0 auto' }}>
+            <p><strong>Possible causes:</strong></p>
+            <ul style={{ textAlign: 'left', display: 'inline-block' }}>
+              <li>Document hasn't been processed for knowledge graph extraction</li>
+              <li>Document ID doesn't exist in Neo4j database</li>
+              <li>Entity extraction failed during document processing</li>
+              <li>Neo4j service is not connected or configured properly</li>
+            </ul>
+            <p style={{ marginTop: '15px' }}>
+              <strong>Next steps:</strong> Upload the document through the main interface with knowledge graph processing enabled.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: themeColors.surface,
+            borderRadius: '8px',
+            padding: '24px',
+            maxWidth: '500px',
+            width: '90%',
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
+            color: themeColors.text
+          }}>
+            <h3 style={{
+              margin: '0 0 16px 0',
+              color: '#dc3545',
+              fontSize: '18px',
+              fontWeight: '600'
+            }}>
+              ⚠️ Delete Document from Knowledge Graph
+            </h3>
+            
+            <p style={{
+              margin: '0 0 20px 0',
+              lineHeight: '1.5',
+              color: themeColors.text
+            }}>
+              Are you sure you want to delete document <strong>"{selectedDocument}"</strong> from the knowledge graph?
+            </p>
+            
+            <div style={{
+              background: '#fff3cd',
+              border: '1px solid #ffeaa7',
+              borderRadius: '4px',
+              padding: '12px',
+              marginBottom: '20px',
+              fontSize: '14px',
+              color: '#856404'
+            }}>
+              <strong>⚠️ Warning:</strong> This action will permanently remove:
+              <ul style={{ margin: '8px 0 0 0', paddingLeft: '20px' }}>
+                <li>All entities extracted from this document</li>
+                <li>All relationships between those entities</li>
+                <li>All knowledge graph data for this document</li>
+              </ul>
+              <div style={{ marginTop: '8px', fontWeight: '600' }}>
+                This action cannot be undone.
+              </div>
+            </div>
+
+            <div style={{
+              display: 'flex',
+              gap: '12px',
+              justifyContent: 'flex-end'
+            }}>
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={deleteLoading}
+                style={{
+                  padding: '8px 16px',
+                  border: `1px solid ${themeColors.border}`,
+                  borderRadius: '4px',
+                  background: themeColors.surface,
+                  color: themeColors.text,
+                  cursor: deleteLoading ? 'not-allowed' : 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteDocument(selectedDocument)}
+                disabled={deleteLoading}
+                style={{
+                  padding: '8px 16px',
+                  border: 'none',
+                  borderRadius: '4px',
+                  background: deleteLoading ? '#6c757d' : '#dc3545',
+                  color: 'white',
+                  cursor: deleteLoading ? 'not-allowed' : 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}
+              >
+                {deleteLoading ? '⏳ Deleting...' : '🗑️ Delete Document'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -622,9 +1406,10 @@ const KnowledgeGraphViewer: React.FC = () => {
         <div style={{ 
           textAlign: 'center', 
           padding: '40px', 
-          color: '#666',
-          border: '2px dashed #ddd',
-          borderRadius: '8px'
+          color: themeColors.secondaryText,
+          border: `2px dashed ${themeColors.border}`,
+          borderRadius: '8px',
+          background: themeColors.surface
         }}>
           {availableDocuments.length === 0 ? (
             <div>
@@ -647,7 +1432,8 @@ const KnowledgeGraphViewer: React.FC = () => {
           )}
         </div>
       )}
-    </div>
+      </Box>
+    </ThemeProvider>
   );
 };
 

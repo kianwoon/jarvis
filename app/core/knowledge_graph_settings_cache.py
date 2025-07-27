@@ -105,6 +105,24 @@ def get_default_knowledge_graph_settings() -> Dict[str, Any]:
         'relationship_types': ['works_for', 'located_in', 'part_of', 'related_to', 'causes'],
         'max_entities_per_chunk': 20,
         'enable_coreference_resolution': True,
+        'extraction': {
+            'min_entity_confidence': 0.7,
+            'min_relationship_confidence': 0.3,
+            'enable_entity_deduplication': True,
+            'enable_relationship_deduplication': True,
+            'entity_merge_strategy': 'merge_by_canonical_name_and_type',
+            'confidence_merge_strategy': 'highest',
+            'enable_flexible_entity_matching': True,
+            'enable_semantic_relationship_inference': True,
+            'prioritize_pattern_relationships': True,
+            'max_proximity_distance': 30,
+            'enable_relationship_priority_deduplication': True,
+            'relationship_quality_threshold': 0.4,
+            'enable_llm_enhancement': True,
+            'llm_confidence_threshold': 0.6,
+            'enable_cross_document_linking': True,
+            'enable_multi_chunk_relationships': True
+        },
         'neo4j': get_default_neo4j_config()
     }
 

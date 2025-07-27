@@ -82,16 +82,16 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 // Define the dynamic process steps - backend may use 6, 7, or 8 steps
 const getProcessSteps = (totalSteps: number) => {
   if (totalSteps === 8) {
-    // PDF processing with 8 steps (current backend)
+    // PDF processing with 8 steps (current backend with KG processing)
     return [
       { id: 1, name: 'Saving uploaded file', icon: '📁', description: 'Saving file to temporary location' },
       { id: 2, name: 'Loading PDF content', icon: '📄', description: 'Reading PDF content and structure' },
       { id: 3, name: 'Splitting into chunks', icon: '✂️', description: 'Breaking content into manageable pieces' },
       { id: 4, name: 'Preparing embeddings', icon: '🔧', description: 'Setting up embedding generation' },
-      { id: 5, name: 'Determining collection', icon: '🎯', description: 'Selecting target collection' },
-      { id: 6, name: 'Checking for duplicates', icon: '🔄', description: 'Identifying duplicate content' },
-      { id: 7, name: 'Generating embeddings', icon: '🔮', description: 'Creating AI embeddings for content' },
-      { id: 8, name: 'Inserting into database', icon: '💾', description: 'Storing processed content' }
+      { id: 5, name: 'Checking for duplicates', icon: '🔄', description: 'Identifying duplicate content' },
+      { id: 6, name: 'Generating embeddings', icon: '🔮', description: 'Creating AI embeddings for content' },
+      { id: 7, name: 'Inserting into database', icon: '💾', description: 'Storing processed content in vector database' },
+      { id: 8, name: 'Processing knowledge graph', icon: '🕸️', description: 'Extracting entities and relationships for knowledge graph' }
     ];
   } else if (totalSteps === 7) {
     // PDF processing with 7 steps
@@ -262,7 +262,7 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
       status: 'uploading',
       message: 'Initializing upload...',
       currentStep: 0,
-      totalSteps: 7  // Will be updated when backend sends actual total_steps
+      totalSteps: 8  // Will be updated when backend sends actual total_steps
     });
 
     onUploadStart?.(file);
@@ -375,7 +375,7 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
       // Route to appropriate endpoint based on file type
       const fileExt = file.name.toLowerCase().split('.').pop();
       const endpoint = fileExt === 'pdf' 
-        ? '/api/v1/documents/upload_pdf_simple' 
+        ? '/api/v1/documents/upload_pdf_progress' 
         : '/api/v1/documents/upload-multi-progress';
 
       console.log('📡 Making request to:', endpoint);
@@ -390,7 +390,7 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
       }, 10 * 60 * 1000); // 10 minutes timeout
       
       // Check if we're using the simple endpoint (non-streaming)
-      const isSimpleEndpoint = endpoint.includes('upload_pdf_simple');
+      const isSimpleEndpoint = false; // Always use streaming for progress tracking
       
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -494,6 +494,15 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.substring(6));
+              
+              // Debug logging for SSE events
+              console.log('📡 SSE Event Received:', {
+                step: data.current_step,
+                totalSteps: data.total_steps,
+                progress: data.progress_percent,
+                stepName: data.step_name,
+                hasDetails: !!data.details
+              });
               
               if (data.error) {
                 throw new Error(data.error);
@@ -982,6 +991,43 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
               </Box>
             )}
 
+            {/* Knowledge Graph Processing Progress */}
+            {uploadState.details?.kg_chunks_processed && uploadState.details?.kg_total_chunks && (
+              <Box sx={{ mb: 4 }}>
+                <Typography variant="h6" sx={{ mb: 2, color: 'text.primary', fontWeight: 'bold' }}>
+                  🕸️ Knowledge Graph Processing
+                </Typography>
+                <Box sx={{ mb: 2 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                    <Typography variant="body2" sx={{ color: 'primary.main', fontWeight: 'bold' }}>
+                      Extracting entities and relationships
+                    </Typography>
+                    <Typography variant="body2" sx={{ color: 'text.primary' }}>
+                      {uploadState.details.kg_chunks_processed}/{uploadState.details.kg_total_chunks} chunks
+                    </Typography>
+                  </Box>
+                  <LinearProgress 
+                    variant="determinate" 
+                    value={(uploadState.details.kg_chunks_processed / uploadState.details.kg_total_chunks) * 100}
+                    sx={{ 
+                      height: 10, 
+                      borderRadius: 5,
+                      backgroundColor: 'action.hover',
+                      '& .MuiLinearProgress-bar': {
+                        backgroundColor: 'success.main',
+                      }
+                    }}
+                  />
+                  <Typography variant="caption" sx={{ color: 'text.secondary', mt: 1, display: 'block' }}>
+                    {Math.round((uploadState.details.kg_chunks_processed / uploadState.details.kg_total_chunks) * 100)}% complete
+                    {uploadState.details.entities_extracted > 0 && (
+                      <span> • {uploadState.details.entities_extracted} entities • {uploadState.details.relationships_extracted} relationships</span>
+                    )}
+                  </Typography>
+                </Box>
+              </Box>
+            )}
+
             {/* Detailed Progress Info */}
             {uploadState.details && (
               <Box sx={{ 
@@ -1008,9 +1054,20 @@ const FileUploadComponent: React.FC<FileUploadProps> = ({
                     {uploadState.details.duplicates && <Typography component="span" sx={{ color: 'warning.main' }}> ({uploadState.details.duplicates} duplicates filtered)</Typography>}
                   </Typography>
                 )}
+                {uploadState.details.kg_entities_extracted && (
+                  <Typography variant="body1" sx={{ color: 'text.primary', mb: 1 }} display="block">
+                    🕸️ Knowledge Graph: <Typography component="span" sx={{ color: 'success.main', fontWeight: 'bold' }}>{uploadState.details.kg_entities_extracted} entities</Typography>
+                    {uploadState.details.kg_relationships_extracted && <Typography component="span" sx={{ color: 'success.main', fontWeight: 'bold' }}>, {uploadState.details.kg_relationships_extracted} relationships</Typography>}
+                  </Typography>
+                )}
                 {uploadState.details.status === 'success' && (
                   <Typography variant="body1" sx={{ color: 'success.main', mt: 2, fontWeight: 'bold' }} display="block">
                     ✅ <strong>{uploadState.details.unique_chunks_inserted} chunks inserted successfully!</strong>
+                    {uploadState.details.kg_processing_completed && (
+                      <Typography component="span" sx={{ color: 'success.main', display: 'block' }}>
+                        🕸️ <strong>Knowledge graph processing completed!</strong>
+                      </Typography>
+                    )}
                   </Typography>
                 )}
               </Box>

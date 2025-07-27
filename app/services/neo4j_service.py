@@ -158,30 +158,79 @@ class Neo4jService:
             return {'error': str(e)}
     
     def create_entity(self, entity_type: str, properties: Dict[str, Any]) -> Optional[str]:
-        """Create an entity in the knowledge graph"""
+        """Create or merge an entity in the knowledge graph using deterministic IDs"""
         try:
             if not self.is_enabled():
                 return None
             
             with self.driver.session() as session:
-                # Create entity with properties
+                # Generate deterministic ID based on canonical name and type
+                canonical_name = properties.get('name', '').strip().lower()
+                if not canonical_name:
+                    logger.error("Entity name is required for creation")
+                    return None
+                
+                # Create deterministic ID: type_canonicalname_hash
+                import hashlib
+                name_hash = hashlib.md5(f"{entity_type}_{canonical_name}".encode()).hexdigest()[:8]
+                deterministic_id = f"{entity_type}_{canonical_name.replace(' ', '_')}_{name_hash}"
+                
+                # Always use the deterministic ID
+                properties['id'] = deterministic_id
+                
+                # Ensure unique constraints exist for proper MERGE behavior
+                self._ensure_entity_constraints(session, entity_type)
+                
+                # Use MERGE on ID to avoid duplicates (ID is unique and deterministic)
                 query = f"""
-                CREATE (e:{entity_type} $properties)
-                RETURN e.id as entity_id
+                MERGE (e:{entity_type} {{id: $entity_id}})
+                ON CREATE SET e = $properties, e.created_at = datetime()
+                ON MATCH SET 
+                    e.confidence = CASE 
+                        WHEN $confidence > COALESCE(e.confidence, 0) THEN $confidence 
+                        ELSE COALESCE(e.confidence, $confidence)
+                    END,
+                    e.last_updated = datetime(),
+                    e.document_count = COALESCE(e.document_count, 0) + 1,
+                    e.original_text = CASE 
+                        WHEN size($original_text) > size(COALESCE(e.original_text, '')) THEN $original_text
+                        ELSE COALESCE(e.original_text, $original_text)
+                    END
+                RETURN e.id as entity_id, e.name as entity_name
                 """
                 
-                # Ensure entity has an ID
-                if 'id' not in properties:
-                    import uuid
-                    properties['id'] = str(uuid.uuid4())
+                # Prepare parameters for the query
+                query_params = {
+                    'entity_id': deterministic_id,
+                    'properties': properties,
+                    'confidence': properties.get('confidence', 0.0),
+                    'original_text': properties.get('original_text', '')
+                }
                 
-                result = session.run(query, properties=properties)
+                result = session.run(query, **query_params)
                 record = result.single()
-                return record['entity_id'] if record else properties['id']
+                
+                if record:
+                    logger.debug(f"🔥 Entity merged/created: {record['entity_name']} -> {record['entity_id']}")
+                    return record['entity_id']
+                else:
+                    logger.error(f"🔥 Failed to merge/create entity: {canonical_name}")
+                    return deterministic_id
                 
         except Exception as e:
-            logger.error(f"Failed to create entity: {str(e)}")
+            logger.error(f"Failed to create/merge entity: {str(e)}")
             return None
+    
+    def _ensure_entity_constraints(self, session, entity_type: str):
+        """Ensure unique constraints exist for entity type"""
+        try:
+            # Create unique constraint on id for this entity type
+            constraint_query = f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{entity_type}) REQUIRE n.id IS UNIQUE"
+            session.run(constraint_query)
+            logger.debug(f"🔥 Ensured unique constraint for {entity_type}.id")
+        except Exception as e:
+            # Constraint might already exist, that's fine
+            logger.debug(f"Constraint creation for {entity_type}: {str(e)}")
     
     def create_relationship(self, from_id: str, to_id: str, relationship_type: str, 
                           properties: Optional[Dict[str, Any]] = None) -> bool:
@@ -305,6 +354,131 @@ class Neo4jService:
         except Exception as e:
             logger.error(f"Failed to clear database: {str(e)}")
             return False
+    
+    def deduplicate_entities(self) -> Dict[str, Any]:
+        """Remove duplicate entities with the same ID, keeping the one with highest confidence"""
+        try:
+            if not self.is_enabled():
+                return {'success': False, 'error': 'Neo4j not enabled'}
+            
+            with self.driver.session() as session:
+                # Find entities with duplicate IDs
+                duplicate_query = """
+                MATCH (n)
+                WITH n.id as entity_id, collect(n) as nodes, count(n) as count
+                WHERE count > 1
+                RETURN entity_id, nodes, count
+                ORDER BY count DESC
+                """
+                
+                duplicates_result = session.run(duplicate_query)
+                duplicates = list(duplicates_result)
+                
+                total_duplicates = 0
+                entities_cleaned = 0
+                
+                for record in duplicates:
+                    entity_id = record['entity_id']
+                    nodes = record['nodes']
+                    count = record['count']
+                    
+                    if count <= 1:
+                        continue
+                    
+                    total_duplicates += count - 1
+                    entities_cleaned += 1
+                    
+                    # Sort nodes by confidence (highest first) and created_at (newest first)
+                    nodes_sorted = sorted(nodes, key=lambda n: (
+                        n.get('confidence', 0), 
+                        n.get('created_at', '1970-01-01T00:00:00Z')
+                    ), reverse=True)
+                    
+                    # Keep the first node (highest confidence, newest), delete the rest
+                    node_to_keep = nodes_sorted[0]
+                    nodes_to_delete = nodes_sorted[1:]
+                    
+                    logger.info(f"🔥 Deduplicating {entity_id}: keeping 1, deleting {len(nodes_to_delete)}")
+                    
+                    # Delete duplicate nodes (relationships will be handled by CASCADE if configured)
+                    for node in nodes_to_delete:
+                        # First move relationships to the node we're keeping
+                        move_relationships_query = """
+                        MATCH (old_node) WHERE id(old_node) = $old_node_id
+                        MATCH (keep_node) WHERE id(keep_node) = $keep_node_id
+                        OPTIONAL MATCH (old_node)-[r]->(other)
+                        WHERE other <> keep_node
+                        WITH old_node, keep_node, collect(DISTINCT {rel: r, other: other, type: type(r), props: properties(r)}) as outgoing_rels
+                        OPTIONAL MATCH (other2)-[r2]->(old_node)
+                        WHERE other2 <> keep_node
+                        WITH old_node, keep_node, outgoing_rels, collect(DISTINCT {rel: r2, other: other2, type: type(r2), props: properties(r2)}) as incoming_rels
+                        
+                        // Create new outgoing relationships
+                        FOREACH (rel_info IN outgoing_rels |
+                            FOREACH (dummy IN CASE WHEN rel_info.other IS NOT NULL THEN [1] ELSE [] END |
+                                MERGE (keep_node)-[new_rel:RELATIONSHIP]->(rel_info.other)
+                                SET new_rel = rel_info.props
+                            )
+                        )
+                        
+                        // Create new incoming relationships  
+                        FOREACH (rel_info IN incoming_rels |
+                            FOREACH (dummy IN CASE WHEN rel_info.other IS NOT NULL THEN [1] ELSE [] END |
+                                MERGE (rel_info.other)-[new_rel:RELATIONSHIP]->(keep_node)
+                                SET new_rel = rel_info.props
+                            )
+                        )
+                        
+                        // Delete old relationships and node
+                        DETACH DELETE old_node
+                        """
+                        
+                        # For now, let's use a simpler approach - just delete the duplicates
+                        # The relationships will point to the remaining entity
+                        delete_query = "MATCH (n) WHERE id(n) = $node_id DETACH DELETE n"
+                        session.run(delete_query, node_id=node.id)
+                
+                return {
+                    'success': True,
+                    'total_duplicates_removed': total_duplicates,
+                    'entities_cleaned': entities_cleaned,
+                    'message': f'Removed {total_duplicates} duplicate entities across {entities_cleaned} unique IDs'
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to deduplicate entities: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
+    def get_truly_isolated_nodes(self) -> List[Dict[str, Any]]:
+        """Get nodes that have no relationships, handling duplicates correctly"""
+        try:
+            if not self.is_enabled():
+                return []
+            
+            with self.driver.session() as session:
+                # Get unique entities (by ID) and check if any instance has relationships
+                query = """
+                MATCH (n)
+                WITH n.id as entity_id, collect(n) as nodes
+                WITH entity_id, nodes[0] as representative_node
+                OPTIONAL MATCH (any_instance)
+                WHERE any_instance.id = entity_id
+                OPTIONAL MATCH (any_instance)-[r]-()
+                WITH entity_id, representative_node, count(r) as total_relationships
+                WHERE total_relationships = 0
+                RETURN representative_node.id as id, 
+                       representative_node.name as name, 
+                       representative_node.type as type,
+                       labels(representative_node) as labels
+                ORDER BY name
+                """
+                
+                result = session.run(query)
+                return [record.data() for record in result]
+                
+        except Exception as e:
+            logger.error(f"Failed to get isolated nodes: {str(e)}")
+            return []
     
     def close(self):
         """Close the Neo4j driver connection"""

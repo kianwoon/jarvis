@@ -343,12 +343,15 @@ async def get_document_relationships(document_id: str, limit: int = 100):
             raise HTTPException(status_code=503, detail="Neo4j service is not available")
         
         # Use custom query to get relationships for the document
+        # Return both IDs and names for proper frontend linking
         cypher_query = """
         MATCH (a)-[r]->(b)
         WHERE r.document_id = $document_id
-        RETURN a.name as source_name, type(r) as relationship_type, b.name as target_name,
+        RETURN a.id as source_entity_id, a.name as source_name, 
+               type(r) as relationship_type, 
+               b.id as target_entity_id, b.name as target_name,
                r.confidence as confidence, r.context as context, r.chunk_id as chunk_id,
-               r.created_at as created_at
+               r.created_at as created_at, r.document_id as document_id
         LIMIT $limit
         """
         
@@ -357,17 +360,21 @@ async def get_document_relationships(document_id: str, limit: int = 100):
             {'document_id': document_id, 'limit': limit}
         )
         
-        # Format relationships for response
+        # Format relationships for response using entity IDs for proper frontend linking
         formatted_relationships = []
         for result in results:
             formatted_relationships.append({
-                'source_entity': result.get('source_name', 'unknown'),
-                'target_entity': result.get('target_name', 'unknown'),
+                'id': f"{result.get('source_entity_id', 'unknown')}_{result.get('target_entity_id', 'unknown')}_{result.get('relationship_type', 'unknown')}",
+                'source_entity': result.get('source_entity_id', result.get('source_name', 'unknown')),  # Use ID, fallback to name
+                'target_entity': result.get('target_entity_id', result.get('target_name', 'unknown')),  # Use ID, fallback to name
+                'source_name': result.get('source_name', 'unknown'),  # Keep names for display
+                'target_name': result.get('target_name', 'unknown'),  # Keep names for display
                 'relationship_type': result.get('relationship_type', 'unknown'),
                 'confidence': result.get('confidence', 0.0),
                 'context': result.get('context', ''),
                 'chunk_id': result.get('chunk_id', ''),
-                'created_at': result.get('created_at', '')
+                'created_at': result.get('created_at', ''),
+                'document_id': result.get('document_id', document_id)
             })
         
         return {
@@ -510,6 +517,312 @@ async def delete_document_from_graph(document_id: str):
         logger.error(f"Failed to delete document {document_id} from graph: {e}")
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
+@router.get("/debug/{document_id}")
+async def debug_document_data(document_id: str):
+    """Debug endpoint to inspect raw Neo4j data for a specific document"""
+    try:
+        neo4j_service = get_neo4j_service()
+        
+        if not neo4j_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        # Get raw entity data
+        entities_query = """
+        MATCH (n) 
+        WHERE n.document_id = $document_id
+        RETURN n.id as id, n.name as name, n.type as type, n.confidence as confidence,
+               n.original_text as original_text, n.chunk_id as chunk_id, labels(n) as labels
+        """
+        raw_entities = neo4j_service.execute_cypher(entities_query, {'document_id': document_id})
+        
+        # Get raw relationship data
+        relationships_query = """
+        MATCH (a)-[r]->(b)
+        WHERE r.document_id = $document_id
+        RETURN a.id as source_id, a.name as source_name, 
+               type(r) as relationship_type,
+               b.id as target_id, b.name as target_name,
+               r.confidence as confidence, r.context as context,
+               r.chunk_id as chunk_id, r.document_id as document_id
+        """
+        raw_relationships = neo4j_service.execute_cypher(relationships_query, {'document_id': document_id})
+        
+        # Check for orphaned entities (entities without relationships)
+        orphaned_query = """
+        MATCH (n)
+        WHERE n.document_id = $document_id 
+        AND NOT (n)-[]-()
+        RETURN n.id as id, n.name as name, n.type as type
+        """
+        orphaned_entities = neo4j_service.execute_cypher(orphaned_query, {'document_id': document_id})
+        
+        # Get document statistics
+        stats_query = """
+        MATCH (n)
+        WHERE n.document_id = $document_id
+        RETURN count(n) as total_entities
+        """
+        entity_stats = neo4j_service.execute_cypher(stats_query, {'document_id': document_id})
+        total_entities = entity_stats[0]['total_entities'] if entity_stats else 0
+        
+        rel_stats_query = """
+        MATCH ()-[r]->()
+        WHERE r.document_id = $document_id
+        RETURN count(r) as total_relationships
+        """
+        rel_stats = neo4j_service.execute_cypher(rel_stats_query, {'document_id': document_id})
+        total_relationships = rel_stats[0]['total_relationships'] if rel_stats else 0
+        
+        return {
+            'document_id': document_id,
+            'summary': {
+                'total_entities_in_neo4j': total_entities,
+                'total_relationships_in_neo4j': total_relationships,
+                'orphaned_entities': len(orphaned_entities),
+                'data_exists': total_entities > 0
+            },
+            'raw_entities': raw_entities,
+            'raw_relationships': raw_relationships,
+            'orphaned_entities': orphaned_entities,
+            'analysis': {
+                'has_entities': len(raw_entities) > 0,
+                'has_relationships': len(raw_relationships) > 0,
+                'entities_without_connections': len(orphaned_entities),
+                'relationship_coverage': f"{len(raw_relationships)}/{len(raw_entities)} entities have relationships" if raw_entities else "No entities found"
+            }
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to debug document {document_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Debug failed: {str(e)}")
+
+@router.post("/deduplicate")
+async def deduplicate_entities():
+    """Remove duplicate entities with the same ID, keeping the highest confidence one."""
+    try:
+        neo4j_service = get_neo4j_service()
+        
+        if not neo4j_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        result = neo4j_service.deduplicate_entities()
+        
+        if result['success']:
+            return {
+                'success': True,
+                'message': result['message'],
+                'total_duplicates_removed': result['total_duplicates_removed'],
+                'entities_cleaned': result['entities_cleaned']
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result['error'])
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to deduplicate entities: {e}")
+        raise HTTPException(status_code=500, detail=f"Deduplication failed: {str(e)}")
+
+@router.get("/isolated-nodes")
+async def get_isolated_nodes():
+    """Get truly isolated nodes (handling duplicates correctly)."""
+    try:
+        neo4j_service = get_neo4j_service()
+        
+        if not neo4j_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        isolated_nodes = neo4j_service.get_truly_isolated_nodes()
+        
+        return {
+            'isolated_nodes': isolated_nodes,
+            'total_count': len(isolated_nodes),
+            'message': f'Found {len(isolated_nodes)} truly isolated entities'
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get isolated nodes: {e}")
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+@router.get("/connectivity-analysis")
+async def analyze_graph_connectivity():
+    """Analyze knowledge graph connectivity and component structure."""
+    try:
+        neo4j_service = get_neo4j_service()
+        
+        if not neo4j_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        # Get basic graph stats
+        basic_stats_query = """
+        MATCH (n) 
+        RETURN count(n) as total_nodes
+        """
+        basic_result = neo4j_service.execute_cypher(basic_stats_query)
+        total_nodes = basic_result[0]['total_nodes'] if basic_result else 0
+        
+        # Get relationship stats
+        rel_stats_query = """
+        MATCH ()-[r]->()
+        RETURN count(r) as total_relationships
+        """
+        rel_result = neo4j_service.execute_cypher(rel_stats_query)
+        total_relationships = rel_result[0]['total_relationships'] if rel_result else 0
+        
+        # Find weakly connected components (treating relationships as undirected)
+        components_query = """
+        CALL gds.graph.project('connectivity-graph', '*', '*', {undirectedRelationshipTypes: ['*']})
+        YIELD graphName, nodeCount, relationshipCount
+        CALL gds.wcc.stream('connectivity-graph')
+        YIELD nodeId, componentId
+        WITH gds.util.asNode(nodeId) as node, componentId
+        WITH componentId, collect({id: node.id, name: node.name, type: node.type}) as nodes
+        WITH componentId, nodes, size(nodes) as componentSize
+        ORDER BY componentSize DESC
+        RETURN componentId, componentSize, nodes[0..5] as sampleNodes
+        """
+        
+        # Try using built-in graph algorithms if available, otherwise use custom logic
+        try:
+            components_result = neo4j_service.execute_cypher(components_query)
+            
+            # Clean up the projected graph
+            cleanup_query = "CALL gds.graph.drop('connectivity-graph') YIELD graphName"
+            neo4j_service.execute_cypher(cleanup_query)
+            
+        except Exception as e:
+            logger.warning(f"GDS not available, using custom connectivity analysis: {e}")
+            # Fallback to custom connectivity analysis
+            components_result = []
+        
+        # If GDS failed, use simple connectivity analysis
+        if not components_result:
+            # Find nodes with most connections (hub analysis)
+            hub_analysis_query = """
+            MATCH (n)
+            OPTIONAL MATCH (n)-[r]-()
+            WITH n, count(r) as degree
+            WHERE degree > 0
+            RETURN n.id as id, n.name as name, n.type as type, degree
+            ORDER BY degree DESC
+            LIMIT 10
+            """
+            hub_nodes = neo4j_service.execute_cypher(hub_analysis_query)
+            
+            # Count isolated nodes
+            isolated_query = """
+            MATCH (n)
+            WHERE NOT (n)-[]-()
+            RETURN count(n) as isolated_count
+            """
+            isolated_result = neo4j_service.execute_cypher(isolated_query)
+            isolated_count = isolated_result[0]['isolated_count'] if isolated_result else 0
+            
+            # Relationship type distribution
+            rel_type_query = """
+            MATCH ()-[r]->()
+            RETURN type(r) as relationship_type, count(r) as count
+            ORDER BY count DESC
+            """
+            rel_types = neo4j_service.execute_cypher(rel_type_query)
+            
+            return {
+                'total_nodes': total_nodes,
+                'total_relationships': total_relationships,
+                'isolated_nodes': isolated_count,
+                'connected_nodes': total_nodes - isolated_count,
+                'connectivity_ratio': (total_nodes - isolated_count) / total_nodes if total_nodes > 0 else 0,
+                'average_degree': (total_relationships * 2) / total_nodes if total_nodes > 0 else 0,
+                'hub_nodes': hub_nodes,
+                'relationship_types': rel_types,
+                'components_analysis': 'GDS not available - using basic connectivity metrics',
+                'recommendations': [
+                    f"Graph has {isolated_count} isolated nodes ({isolated_count/total_nodes*100:.1f}%)" if total_nodes > 0 else "No nodes in graph",
+                    f"Average node degree: {(total_relationships * 2) / total_nodes:.2f}" if total_nodes > 0 else "No relationships",
+                    "Consider improving relationship extraction for better connectivity" if isolated_count > total_nodes * 0.3 else "Good connectivity"
+                ]
+            }
+        
+        # If GDS worked, process component results
+        total_components = len(components_result)
+        largest_component = components_result[0] if components_result else None
+        small_components = [c for c in components_result if c['componentSize'] <= 3]
+        
+        return {
+            'total_nodes': total_nodes,
+            'total_relationships': total_relationships,
+            'total_components': total_components,
+            'largest_component_size': largest_component['componentSize'] if largest_component else 0,
+            'small_components': len(small_components),
+            'connectivity_ratio': 1 - (len(small_components) / total_nodes) if total_nodes > 0 else 0,
+            'average_component_size': total_nodes / total_components if total_components > 0 else 0,
+            'components_summary': components_result[:5],  # Top 5 largest components
+            'recommendations': [
+                f"Graph has {total_components} connected components",
+                f"Largest component contains {largest_component['componentSize'] if largest_component else 0} nodes",
+                f"{len(small_components)} small components (≤3 nodes) may need better relationships",
+                "Good connectivity" if total_components < total_nodes * 0.1 else "Consider improving relationship extraction"
+            ]
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to analyze graph connectivity: {e}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+@router.get("/quality-assessment")
+async def assess_knowledge_graph_quality():
+    """Comprehensive quality assessment of the knowledge graph."""
+    try:
+        from app.services.quality_assessment_service import get_quality_assessment_service
+        quality_service = get_quality_assessment_service()
+        
+        metrics = await quality_service.assess_graph_quality()
+        
+        return {
+            "overall_quality_score": metrics.overall_quality_score,
+            "component_scores": {
+                "connectivity": metrics.connectivity_score,
+                "relationship_quality": metrics.relationship_quality_score,
+                "entity_quality": metrics.entity_quality_score
+            },
+            "basic_metrics": {
+                "total_entities": metrics.total_entities,
+                "total_relationships": metrics.total_relationships,
+                "isolated_entities": metrics.isolated_entities,
+                "connectivity_ratio": metrics.connectivity_ratio,
+                "average_degree": metrics.average_degree
+            },
+            "relationship_quality": {
+                "generic_ratio": metrics.generic_relationship_ratio,
+                "semantic_ratio": metrics.semantic_relationship_ratio,
+                "high_confidence_count": metrics.high_confidence_relationships,
+                "low_confidence_count": metrics.low_confidence_relationships
+            },
+            "entity_metrics": {
+                "type_distribution": metrics.entity_type_distribution,
+                "entities_with_attributes": metrics.entities_with_attributes,
+                "cross_document_entities": metrics.cross_document_entities
+            },
+            "quality_issues": {
+                "naming_issues": metrics.potential_naming_issues,
+                "questionable_relationships": metrics.questionable_relationships,
+                "classification_errors": metrics.classification_errors
+            },
+            "assessment_timestamp": datetime.now().isoformat()
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Quality assessment failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Assessment failed: {str(e)}")
+
 @router.get("/health")
 async def knowledge_graph_health():
     """Health check for knowledge graph services."""
@@ -531,7 +844,10 @@ async def knowledge_graph_health():
             },
             "config": {
                 "neo4j_enabled": config.get('neo4j', {}).get('enabled', False),
-                "extraction_enabled": config.get('extraction', {}).get('enabled', True)
+                "extraction_enabled": config.get('extraction', {}).get('enabled', True),
+                "llm_enhancement_enabled": config.get('extraction', {}).get('enable_llm_enhancement', False),
+                "cross_document_linking": config.get('extraction', {}).get('enable_cross_document_linking', False),
+                "multi_chunk_processing": config.get('extraction', {}).get('enable_multi_chunk_relationships', False)
             },
             "neo4j_info": neo4j_status.get('database_info', {}) if neo4j_status['success'] else None
         }

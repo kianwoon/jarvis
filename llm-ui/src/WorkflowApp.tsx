@@ -85,6 +85,9 @@ function WorkflowApp() {
       case 3:
         window.location.href = '/settings.html';
         break;
+      case 4:
+        window.location.href = '/knowledge-graph.html';
+        break;
     }
   };
 
@@ -209,6 +212,11 @@ function WorkflowApp() {
               label="Settings" 
               id="tab-3"
               aria-controls="tabpanel-3"
+            />
+            <Tab 
+              label="Knowledge Graph" 
+              id="tab-4"
+              aria-controls="tabpanel-4"
             />
           </Tabs>
         </Box>

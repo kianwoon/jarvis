@@ -34,7 +34,8 @@ import {
   Computer as SystemIcon,
   Save as SaveIcon,
   Refresh as RefreshIcon,
-  AccessTime as AccessTimeIcon
+  AccessTime as AccessTimeIcon,
+  DeviceHub as KnowledgeGraphIcon
 } from '@mui/icons-material';
 import SettingsFormRenderer from './components/settings/SettingsFormRenderer';
 import './styles/settings-theme.css';
@@ -122,6 +123,12 @@ const settingsCategories: SettingsCategory[] = [
     name: 'Timeouts & Performance',
     icon: <AccessTimeIcon />,
     description: 'Configure timeout settings for APIs, LLMs, tools, and system operations'
+  },
+  {
+    id: 'knowledge_graph',
+    name: 'Knowledge Graph',
+    icon: <KnowledgeGraphIcon />,
+    description: 'Entity extraction, Neo4j configuration, and knowledge graph deduplication settings'
   }
 ];
 
@@ -175,6 +182,9 @@ function SettingsApp() {
         break;
       case 3:
         // Already on settings page
+        break;
+      case 4:
+        window.location.href = '/knowledge-graph.html';
         break;
     }
   };
@@ -273,6 +283,15 @@ function SettingsApp() {
           data = await response.json();
         } else {
           data = { environment_variables: {} };
+        }
+      } else if (category === 'knowledge_graph') {
+        // Knowledge graph settings are nested under llm category
+        response = await fetch('/api/v1/settings/llm');
+        if (response.ok) {
+          const llmData = await response.json();
+          data = { settings: llmData.settings?.knowledge_graph || {} };
+        } else {
+          data = { settings: {} };
         }
       } else {
         // Standard settings endpoint
@@ -391,6 +410,43 @@ function SettingsApp() {
           console.log('[DEBUG] MCP save - no settings object found in data');
         }
         console.log('[DEBUG] MCP save - final cleanData:', cleanData);
+      }
+
+      // Special handling for knowledge_graph category - save to llm.knowledge_graph
+      if (category === 'knowledge_graph') {
+        console.log('[DEBUG] Knowledge Graph save - saving to llm.knowledge_graph');
+        const response = await fetch('/api/v1/settings/llm');
+        const llmData = await response.json();
+        
+        // Update the knowledge_graph section within llm settings
+        const updatedLlmSettings = {
+          ...llmData.settings,
+          knowledge_graph: cleanData
+        };
+        
+        const llmResponse = await fetch('/api/v1/settings/llm', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            settings: updatedLlmSettings,
+            persist_to_db: true,
+            reload_cache: true
+          }),
+        });
+
+        if (!llmResponse.ok) {
+          throw new Error(`Failed to save knowledge graph settings: ${llmResponse.statusText}`);
+        }
+
+        setSuccess(prev => ({ ...prev, [category]: true }));
+        setSuccessMessage(prev => ({ ...prev, [category]: 'Knowledge Graph settings saved successfully!' }));
+        setTimeout(() => {
+          setSuccess(prev => ({ ...prev, [category]: false }));
+        }, 3000);
+        
+        return; // Exit early since we handled the save differently
       }
 
       const response = await fetch(`/api/v1/settings/${category}`, {
@@ -653,6 +709,11 @@ function SettingsApp() {
                 label="Settings" 
                 id="tab-3"
                 aria-controls="tabpanel-3"
+              />
+              <Tab 
+                label="Knowledge Graph" 
+                id="tab-4"
+                aria-controls="tabpanel-4"
               />
             </Tabs>
           </Box>

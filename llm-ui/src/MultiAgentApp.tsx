@@ -184,6 +184,11 @@ function MultiAgentApp() {
     window.location.href = '/settings.html';
   };
 
+  const goToKnowledgeGraph = () => {
+    // Navigate to knowledge graph page
+    window.location.href = '/knowledge-graph.html';
+  };
+
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     switch (newValue) {
       case 0:
@@ -197,6 +202,9 @@ function MultiAgentApp() {
         break;
       case 3:
         goToSettings();
+        break;
+      case 4:
+        goToKnowledgeGraph();
         break;
     }
   };
@@ -266,6 +274,11 @@ function MultiAgentApp() {
               label="Settings" 
               id="tab-3"
               aria-controls="tabpanel-3"
+            />
+            <Tab 
+              label="Knowledge Graph" 
+              id="tab-4"
+              aria-controls="tabpanel-4"
             />
           </Tabs>
         </Box>
