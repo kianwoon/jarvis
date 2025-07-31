@@ -418,44 +418,76 @@ function LegacyChatInterface({ endpoint, title }: { endpoint: string, title: str
             else if (data.answer) {
               //console.log('Processing answer field:', data.answer);
               
-              // Check if answer is a JSON string that needs parsing
+              // Dynamic response format processing - handles multiple response types
               let answerContent = data.answer;
+              let responseFormat = 'text'; // Default format
+              
+              // First, check for thinking tags and remove them
+              if (typeof answerContent === 'string' && answerContent.includes('<think>')) {
+                // Remove thinking tags from response
+                answerContent = answerContent.replace(/<think>.*?<\/think>/gis, '').trim();
+                responseFormat = 'thinking';
+                console.log('Removed thinking tags from response');
+              }
+              
+              // Then try JSON parsing for structured responses
               try {
                 const parsedAnswer = JSON.parse(data.answer);
-                //console.log('Parsed answer JSON:', parsedAnswer);
+                console.log('Detected JSON response format:', parsedAnswer);
+                responseFormat = 'json';
                 
-                // Handle the parsed answer content (like tool responses)
+                // Handle different JSON response structures
                 if (parsedAnswer.content && Array.isArray(parsedAnswer.content)) {
+                  // Standard tool response format
                   const textContent = parsedAnswer.content
                     .filter((item: any) => item.type === 'text')
                     .map((item: any) => item.text)
                     .join(' ');
                   
-                  //console.log('Extracted text from parsed answer:', textContent);
-                  
                   if (textContent) {
-                    // Format datetime responses
-                    if (textContent.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)) {
-                      const date = new Date(textContent);
-                      answerContent = `The current date and time is: ${date.toLocaleString('en-US', {
-                        weekday: 'long',
-                        year: 'numeric',
-                        month: 'long',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        second: '2-digit',
-                        timeZoneName: 'short'
-                      })}`;
-                    } else {
-                      answerContent = textContent;
-                    }
+                    answerContent = textContent;
                   }
+                } else if (parsedAnswer.jarvis_opinion) {
+                  // instruct-2507 model format with jarvis_opinion field
+                  answerContent = parsedAnswer.jarvis_opinion;
+                  responseFormat = 'instruct_json';
+                } else if (parsedAnswer.comment) {
+                  // instruct-2507 model format with comment field
+                  answerContent = parsedAnswer.comment;
+                  responseFormat = 'instruct_json';
+                } else if (parsedAnswer.answer) {
+                  // Generic answer field
+                  answerContent = parsedAnswer.answer;
+                } else if (typeof parsedAnswer === 'string') {
+                  // JSON string content
+                  answerContent = parsedAnswer;
+                } else {
+                  // Fallback: convert object to readable text
+                  answerContent = JSON.stringify(parsedAnswer, null, 2);
                 }
+                
               } catch (e) {
-                // If not JSON, use the answer as-is
-                //console.log('Answer is not JSON, using as-is');
+                // Not JSON, use the processed answer as-is
+                console.log(`Response format: ${responseFormat}, using text content`);
               }
+              
+              // Final format datetime responses if detected
+              if (typeof answerContent === 'string' && answerContent.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)) {
+                const date = new Date(answerContent);
+                answerContent = `The current date and time is: ${date.toLocaleString('en-US', {
+                  weekday: 'long',
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit',
+                  timeZoneName: 'short'
+                })}`;
+              }
+              
+              // Log response processing for debugging
+              console.log(`Response processing - Format: ${responseFormat}, Length: ${answerContent?.length || 0}`);
               
               assistantMessage.content = answerContent;
               assistantMessage.source = data.source;

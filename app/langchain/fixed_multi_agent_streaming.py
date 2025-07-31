@@ -36,20 +36,44 @@ async def fixed_multi_agent_streaming(
     """
     
     async def stream_fixed_multi_agent():
+        logger.info(f"[MULTI-AGENT] Starting fixed multi-agent streaming for question: {question[:100]}...")
+        logger.info(f"[MULTI-AGENT] Conversation ID: {conversation_id}")
+        logger.info(f"[MULTI-AGENT] Trace provided: {bool(trace)}")
         # Initialize Langfuse tracing
         tracer = get_tracer()
         main_trace = trace  # Use provided trace or create new one
         workflow_span = None
         
-        # Initialize system with LLM settings
-        get_llm_settings()  # Ensure settings are loaded
+        # Initialize system with LLM settings (with error handling)
+        try:
+            get_llm_settings()  # Ensure settings are loaded
+            logger.info("LLM settings loaded successfully for multi-agent system")
+        except Exception as settings_error:
+            logger.error(f"Failed to load LLM settings: {settings_error}")
+            # Continue with multi-agent system - failsafe should handle individual agent calls
+            yield json.dumps({"type": "warning", "message": f"⚠️ Settings loading issue: {settings_error}"}) + "\n"
         
         try:
             yield json.dumps({"type": "status", "message": "🎯 Starting advanced multi-agent collaboration..."}) + "\n"
             await asyncio.sleep(0.3)
             
-            # Initialize system
-            system = LangGraphMultiAgentSystem(conversation_id)
+            # Initialize system with dependency check
+            try:
+                system = LangGraphMultiAgentSystem(conversation_id)
+                logger.info("Multi-agent system initialized successfully")
+            except ImportError as import_error:
+                logger.error(f"Multi-agent system dependency missing: {import_error}")
+                yield json.dumps({
+                    "type": "error",
+                    "error": "Multi-agent system dependency missing", 
+                    "message": "❌ Multi-agent system requires additional dependencies. Please install LangGraph: pip install langgraph",
+                    "details": {
+                        "missing_dependency": "langgraph",
+                        "install_command": "pip install langgraph",
+                        "error_details": str(import_error)
+                    }
+                }) + "\n"
+                return
             
             # Create multi-agent workflow span if tracing is enabled
             if main_trace and tracer.is_enabled():
@@ -469,15 +493,34 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
                             config['temperature'] = main_llm_config.get('temperature', 0.7)
                         logger.info(f"🔍 {agent_name} using main_llm: {agent_model}")
                     elif config.get('use_second_llm') or not config.get('model'):
-                        # Use second_llm explicitly or as default
-                        second_llm_config = get_second_llm_full_config()
+                        # Use second_llm with dynamic detection
+                        from app.core.llm_settings_cache import get_llm_settings
+                        settings = get_llm_settings()
+                        
+                        # Apply dynamic detection for second_llm (same logic as main_llm)
+                        second_llm_base = settings.get('second_llm', {})
+                        model_name = second_llm_base.get('model', '')
+                        
+                        # Check for problematic model and apply dynamic detection
+                        detected_mode = None
+                        if 'qwen3:30b-a3b-instruct-2507-q4_K_M' in model_name:
+                            # Apply heuristic detection for instruct models
+                            detected_mode = 'non-thinking'
+                            logger.info(f"🔍 {agent_name} applying dynamic detection: {model_name} -> {detected_mode}")
+                        
+                        second_llm_config = get_second_llm_full_config(settings, override_mode=detected_mode)
                         agent_model = second_llm_config.get('model')
+                        
                         # Override with second_llm defaults if not specified
                         if 'max_tokens' not in config:
                             config['max_tokens'] = second_llm_config.get('max_tokens', 2000)
                         if 'temperature' not in config:
                             config['temperature'] = second_llm_config.get('temperature', 0.7)
+                        
+                        # Log effective configuration
                         logger.info(f"🔍 {agent_name} using second_llm: {agent_model}")
+                        logger.info(f"🔍 {agent_name} effective mode: {second_llm_config.get('effective_mode', 'unknown')}")
+                        logger.info(f"🔍 {agent_name} temp: {config['temperature']}, max_tokens: {config['max_tokens']}")
                     else:
                         # Use specific model
                         agent_model = config.get('model')
@@ -1123,7 +1166,31 @@ Begin your synthesis now:"""
                     
                     await asyncio.sleep(0.02)
                 
-                final_answer = system._clean_llm_response(final_response)
+                # Apply dynamic response processing for second_llm synthesis
+                final_answer = final_response
+                try:
+                    from app.llm.response_analyzer import detect_model_thinking_behavior
+                    
+                    # Detect model behavior for synthesis response processing
+                    synthesis_model = synthesizer_config.model_name
+                    is_thinking, confidence = detect_model_thinking_behavior(final_response, synthesis_model)
+                    
+                    logger.info(f"[SYNTHESIS DETECTION] Model: {synthesis_model}")
+                    logger.info(f"[SYNTHESIS DETECTION] Detected thinking behavior: {is_thinking} (confidence: {confidence:.2f})")
+                    
+                    if is_thinking and confidence > 0.8:
+                        # Remove thinking tags for thinking models in final answer
+                        final_answer = re.sub(r'<think>.*?</think>', '', final_response, flags=re.DOTALL | re.IGNORECASE).strip()
+                        logger.info(f"[SYNTHESIS PROCESSING] Removed thinking tags from {synthesis_model} response")
+                    else:
+                        # Non-thinking model or low confidence - use minimal cleaning
+                        final_answer = system._clean_llm_response(final_response)
+                        logger.info(f"[SYNTHESIS PROCESSING] Using minimal cleaning for {synthesis_model} (thinking: {is_thinking})")
+                    
+                except Exception as e:
+                    logger.warning(f"[SYNTHESIS PROCESSING] Dynamic detection failed: {e}, using fallback")
+                    final_answer = system._clean_llm_response(final_response)
+                
                 print(f"[DEBUG] Synthesis complete - final_response length: {len(final_response)}, final_answer length: {len(final_answer)}")
                 
                 # Synthesis completion: 100% with all steps completed

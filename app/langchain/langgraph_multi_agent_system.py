@@ -43,8 +43,26 @@ import uuid
 import time
 from typing import Dict, List, Any, Optional, TypedDict, Annotated, Literal
 from datetime import datetime
-from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.redis import RedisSaver
+# Handle optional langgraph dependency gracefully
+try:
+    from langgraph.graph import StateGraph, END
+    from langgraph.checkpoint.redis import RedisSaver
+    LANGGRAPH_AVAILABLE = True
+except ImportError as e:
+    print(f"[WARNING] LangGraph not available: {e}")
+    print("[WARNING] Multi-agent system will use fallback mode")
+    LANGGRAPH_AVAILABLE = False
+    
+    # Create mock classes to prevent import errors
+    class StateGraph:
+        def __init__(self, *args, **kwargs):
+            pass
+    
+    class RedisSaver:
+        def __init__(self, *args, **kwargs):
+            pass
+    
+    END = "END"
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from app.core.langgraph_agents_cache import get_langgraph_agents, get_agent_by_name
 from app.core.mcp_tools_cache import get_enabled_mcp_tools
@@ -201,6 +219,11 @@ class LangGraphMultiAgentSystem:
         return model_name, max_tokens, temperature
 
     def __init__(self, conversation_id: Optional[str] = None):
+        # Check if LangGraph is available
+        if not LANGGRAPH_AVAILABLE:
+            logger.error("LangGraph is not available. Multi-agent system cannot function properly.")
+            raise ImportError("LangGraph dependency is required for multi-agent system. Please install with: pip install langgraph")
+        
         self.conversation_id = conversation_id or str(uuid.uuid4())
         self.redis_client = get_redis_client_for_langgraph()
         if not self.redis_client:

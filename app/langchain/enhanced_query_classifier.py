@@ -600,13 +600,46 @@ class EnhancedQueryClassifier:
             
             logger.info(f"LLM Classifier raw response: '{response_text}'")
             
-            # Clean response - remove thinking tags and extract classification
-            import re
-            clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
-            logger.info(f"[CLASSIFIER DEBUG] Raw response length: {len(response_text)}")
-            logger.info(f"[CLASSIFIER DEBUG] Response after cleaning: '{clean_response}'")
+            # Dynamic model behavior detection and response processing
+            clean_response = response_text
+            try:
+                from app.llm.response_analyzer import detect_model_thinking_behavior
+                
+                # Detect model behavior from the response (for caching and future use)
+                is_thinking, detection_confidence = detect_model_thinking_behavior(response_text, llm_model)
+                logger.info(f"[CLASSIFIER DETECTION] Model: {llm_model}")
+                logger.info(f"[CLASSIFIER DETECTION] Detected thinking behavior: {is_thinking} (confidence: {detection_confidence:.2f})")
+                
+                # Process response based on detected behavior
+                if is_thinking and detection_confidence > 0.8:
+                    # Remove thinking tags for thinking models
+                    import re
+                    clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                    logger.info(f"[CLASSIFIER PROCESSING] Removed thinking tags from response")
+                    
+                    # Log recommendation for configuration
+                    logger.info(f"[CLASSIFIER RECOMMENDATION] Model {llm_model} appears to be a thinking model. Consider setting query_classifier.mode to 'non-thinking' for better classification performance.")
+                else:
+                    # Non-thinking model or low confidence - use response as-is
+                    clean_response = response_text.strip()
+                    logger.info(f"[CLASSIFIER PROCESSING] Using response as-is (non-thinking model)")
+                
+                # Store behavior profile for future use (the analyzer handles caching)
+                logger.info(f"[CLASSIFIER CACHING] Behavior profile cached for model: {llm_model}")
+                
+            except Exception as e:
+                logger.warning(f"[CLASSIFIER PROCESSING] Dynamic detection failed: {e}, using fallback processing")
+                # Fallback: try to remove thinking tags anyway
+                import re
+                clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
             
-            # Parse LLM response - require TYPE|CONFIDENCE format
+            logger.info(f"[CLASSIFIER DEBUG] Raw response length: {len(response_text)}")
+            logger.info(f"[CLASSIFIER DEBUG] Response after processing: '{clean_response}'")
+            
+            # Enhanced parsing for TYPE|CONFIDENCE format with model-specific handling
+            classification_found = False
+            
+            # Try primary parsing: look for TYPE|CONFIDENCE format
             if '|' in clean_response:
                 parts = clean_response.strip().split('|')
                 query_type_str = parts[0].strip().upper()
@@ -620,12 +653,31 @@ class EnhancedQueryClassifier:
                     # Clamp confidence to valid range
                     confidence = max(0.0, min(1.0, confidence))
                     logger.info(f"Parsed confidence: '{parts[1].strip()}' -> {confidence}")
+                    classification_found = True
                 except (ValueError, IndexError) as e:
                     logger.error(f"LLM provided invalid confidence in response: '{clean_response}', error: {e}")
-                    return await self._retry_llm_classification(query, "invalid_confidence")
-            else:
-                logger.error(f"LLM did not follow required TYPE|CONFIDENCE format: '{clean_response}', no '|' found")
-                return await self._retry_llm_classification(query, "missing_confidence")
+            
+            # Fallback parsing: look for just the classification type on first line
+            if not classification_found:
+                logger.warning(f"Standard TYPE|CONFIDENCE format not found, trying fallback parsing")
+                
+                # Try to extract classification from first line or word
+                first_line = clean_response.split('\n')[0].strip().upper()
+                
+                # Check if first line contains a valid classification type
+                valid_types = ['TOOL', 'TOOLS', 'LLM', 'WEB_SEARCH', 'MULTI_AGENT', 'SIMPLE_ANSWER']
+                for valid_type in valid_types:
+                    if valid_type in first_line:
+                        query_type_str = valid_type
+                        confidence = 0.7  # Default confidence for fallback parsing
+                        classification_found = True
+                        logger.info(f"Fallback parsing found: {query_type_str} with default confidence {confidence}")
+                        break
+            
+            # If still no classification found, return error
+            if not classification_found:
+                logger.error(f"Could not parse classification from response: '{clean_response}'")
+                return await self._retry_llm_classification(query, "unparseable_response")
             
             # Handle combinations (e.g., "TOOLS+WEB_SEARCH")
             if '+' in query_type_str:

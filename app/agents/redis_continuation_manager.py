@@ -541,8 +541,34 @@ Generate items {chunk.start_index} to {chunk.end_index}:"""
                 async for response_chunk in llm.generate_stream(prompt):
                     response_text += response_chunk.text
             
-            # Clean the response text
-            cleaned_response = self._clean_chunk_response(response_text)
+            # Apply dynamic response processing for thinking tag removal
+            cleaned_response = response_text
+            try:
+                from app.llm.response_analyzer import detect_model_thinking_behavior
+                
+                # Get model name from the LLM config - need to find it in the scope
+                # This is a bit tricky since we need the model name, let me get it from settings
+                from app.core.llm_settings_cache import get_llm_settings, get_second_llm_full_config
+                settings = get_llm_settings()
+                model_config = get_second_llm_full_config(settings)
+                model_name = model_config.get('model', 'unknown')
+                
+                # Detect model behavior and process response accordingly
+                is_thinking, confidence = detect_model_thinking_behavior(response_text, model_name)
+                
+                if is_thinking and confidence > 0.8:
+                    # Remove thinking tags from response
+                    import re
+                    cleaned_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                    print(f"[CONTINUATION] Removed thinking tags from {model_name} response (confidence: {confidence:.2f})")
+                else:
+                    # Non-thinking model or low confidence - use original cleaning method
+                    cleaned_response = self._clean_chunk_response(response_text)
+                    print(f"[CONTINUATION] Using original cleaning for {model_name} (thinking: {is_thinking}, confidence: {confidence:.2f})")
+                
+            except Exception as e:
+                print(f"[CONTINUATION] Dynamic detection failed: {e}, using fallback cleaning")
+                cleaned_response = self._clean_chunk_response(response_text)
             
             yield {
                 "type": "chunk_completed", 

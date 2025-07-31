@@ -1623,7 +1623,49 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
                     
                     llm_settings = get_llm_settings()
-                    main_llm_config = get_main_llm_full_config(llm_settings)
+                    
+                    # Apply dynamic detection and model fallback for main LLM configuration
+                    main_llm_base = llm_settings.get('main_llm', {})
+                    model_name = main_llm_base.get('model', '')
+                    
+                    # Disable automatic fallback to investigate the real issue
+                    model_fallback_applied = False
+                    original_model = model_name
+                    
+                    # DISABLED FALLBACK - Let's find the real issue
+                    # if 'qwen3:30b-a3b-instruct-2507-q4_K_M' in model_name:
+                    #     fallback_model = 'qwen3:30b-a3b-q4_K_M'
+                    #     logger.warning(f"[MAIN LLM FALLBACK] Detected problematic model {model_name}, switching to {fallback_model}")
+                    #     # ... fallback logic disabled
+                    
+                    if True:  # Always use original model now
+                        # Try to get cached behavior or use model name heuristics for other models
+                        detected_mode = None
+                        try:
+                            from app.llm.response_analyzer import response_analyzer
+                            cached_profile = response_analyzer._get_cached_behavior(model_name)
+                            if cached_profile and cached_profile.confidence > 0.7:
+                                detected_mode = 'thinking' if cached_profile.is_thinking_model else 'non-thinking'
+                                logger.info(f"[MAIN LLM DETECTION] Using cached behavior for {model_name}: {detected_mode} (confidence: {cached_profile.confidence:.2f})")
+                            else:
+                                # Use model name heuristics for instruct models
+                                if 'instruct' in model_name.lower() and '2507' in model_name:
+                                    detected_mode = 'non-thinking'
+                                    logger.info(f"[MAIN LLM DETECTION] Using heuristic detection for {model_name}: {detected_mode}")
+                        except Exception as e:
+                            logger.warning(f"[MAIN LLM DETECTION] Failed to apply dynamic detection: {e}")
+                        
+                        main_llm_config = get_main_llm_full_config(llm_settings, override_mode=detected_mode)
+                    
+                    # Log effective configuration
+                    logger.info(f"[MAIN LLM CONFIG] Original model: {original_model}")
+                    logger.info(f"[MAIN LLM CONFIG] Final model: {main_llm_config.get('model')}")
+                    logger.info(f"[MAIN LLM CONFIG] Model fallback applied: {model_fallback_applied}")
+                    logger.info(f"[MAIN LLM CONFIG] Effective mode: {main_llm_config.get('effective_mode', 'unknown')}")
+                    logger.info(f"[MAIN LLM CONFIG] Mode overridden: {main_llm_config.get('mode_overridden', False)}")
+                    logger.info(f"[MAIN LLM CONFIG] Temperature: {main_llm_config.get('temperature', 'not_set')}")
+                    logger.info(f"[MAIN LLM CONFIG] Top-p: {main_llm_config.get('top_p', 'not_set')}")
+                    logger.info(f"[MAIN LLM CONFIG] Max tokens: {main_llm_config.get('max_tokens', 'not_set')}")
                     
                     # Create synthesis generation span for Langfuse tracing
                     synthesis_generation_span = None
@@ -1674,14 +1716,63 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                             logger.info(f"[DIRECT HANDLER] System message preview: {msg.get('content', '')[:200]}...")
                     
                     # Use chat_stream with messages instead of generate_stream
+                    # Track response for dynamic behavior detection
+                    response_tokens = []
+                    first_analysis_done = False
+                    chunk_count = 0
+                    
+                    logger.info(f"[SYNTHESIS DEBUG] Starting LLM streaming with model: {main_llm_config.get('model')}")
+                    logger.info(f"[SYNTHESIS DEBUG] LLM config - temp: {main_llm_config.get('temperature')}, top_p: {main_llm_config.get('top_p')}, max_tokens: {main_llm_config.get('max_tokens')}")
+                    
                     async for response_chunk in llm.chat_stream(messages):
-                        final_response += response_chunk.text
+                        chunk_count += 1
+                        chunk_text = response_chunk.text
+                        final_response += chunk_text
+                        response_tokens.append(chunk_text)
+                        
+                        # Log first few chunks for debugging
+                        if chunk_count <= 5:
+                            logger.info(f"[SYNTHESIS DEBUG] Chunk {chunk_count}: '{chunk_text}' (length: {len(chunk_text)})")
+                        
+                        # Log every 100 chunks to track progress
+                        if chunk_count % 100 == 0:
+                            logger.info(f"[SYNTHESIS DEBUG] Processed {chunk_count} chunks, total length: {len(final_response)}")
+                        
+                        # Early termination detection
+                        if chunk_count > 10 and len(final_response) < 200:
+                            logger.warning(f"[SYNTHESIS DEBUG] Potential early termination detected at chunk {chunk_count} with only {len(final_response)} characters")
+                        
+                        # Analyze first 10 tokens for thinking behavior detection
+                        if not first_analysis_done and len(response_tokens) >= 10:
+                            first_analysis_done = True
+                            try:
+                                from app.llm.response_analyzer import detect_model_thinking_behavior
+                                sample_text = ''.join(response_tokens[:20])  # First 20 tokens
+                                model_name = main_llm_config.get('model', 'unknown')
+                                is_thinking, confidence = detect_model_thinking_behavior(sample_text, model_name)
+                                
+                                logger.info(f"[DYNAMIC DETECTION] Model: {model_name}")
+                                logger.info(f"[DYNAMIC DETECTION] Detected thinking behavior: {is_thinking} (confidence: {confidence:.2f})")
+                                logger.info(f"[DYNAMIC DETECTION] Sample analyzed: {sample_text[:100]}...")
+                                
+                                # Log if detection differs from configured mode
+                                configured_mode = main_llm_config.get('mode', 'thinking')
+                                expected_thinking = configured_mode == 'thinking'
+                                if is_thinking != expected_thinking and confidence > 0.7:
+                                    logger.warning(f"[DYNAMIC DETECTION] Mode mismatch! Configured: {configured_mode}, Detected: {'thinking' if is_thinking else 'non-thinking'}")
+                                    
+                            except Exception as e:
+                                logger.warning(f"[DYNAMIC DETECTION] Analysis failed: {e}")
+                        
                         if response_chunk.text.strip():
                             yield json_module.dumps({
                                 "token": response_chunk.text
                             }) + "\n"
                     
                     logger.info(f"[DIRECT HANDLER] Synthesis completed, response length: {len(final_response)}")
+                    logger.info(f"[SYNTHESIS DEBUG] Final stats - Total chunks: {chunk_count}, Final response length: {len(final_response)}")
+                    logger.info(f"[SYNTHESIS DEBUG] Response preview: {final_response[:300]}...")
+                    logger.info(f"[SYNTHESIS DEBUG] Response ends with: ...{final_response[-100:] if len(final_response) > 100 else final_response}")
                     
                     # End synthesis generation span with output
                     if synthesis_generation_span:
@@ -1702,9 +1793,29 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                         except Exception as e:
                             logger.warning(f"Failed to end synthesis generation span: {e}")
                     
+                    # Process final response based on detected model behavior
+                    processed_response = final_response
+                    try:
+                        from app.llm.response_analyzer import detect_model_thinking_behavior
+                        model_name = main_llm_config.get('model', 'unknown')
+                        is_thinking, confidence = detect_model_thinking_behavior(final_response, model_name)
+                        
+                        if is_thinking and confidence > 0.8:
+                            # Remove thinking tags from response
+                            import re
+                            processed_response = re.sub(r'<think>.*?</think>', '', final_response, flags=re.DOTALL | re.IGNORECASE)
+                            processed_response = processed_response.strip()
+                            
+                            logger.info(f"[RESPONSE PROCESSING] Removed thinking tags from response")
+                            logger.info(f"[RESPONSE PROCESSING] Original length: {len(final_response)}, Processed length: {len(processed_response)}")
+                        
+                    except Exception as e:
+                        logger.warning(f"[RESPONSE PROCESSING] Failed to process thinking tags: {e}")
+                        processed_response = final_response
+                    
                     # Send final answer with documents
                     response_data = {
-                        "answer": final_response,
+                        "answer": processed_response,
                         "source": "DIRECT_TOOL_EXECUTION", 
                         "context": tool_context,
                         "query_type": "TOOLS",
@@ -1724,12 +1835,12 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     
                     logger.info(f"[DIRECT HANDLER] Final answer sent to frontend")
                     
-                    # Save assistant response to conversation history
-                    if conversation_id and final_response:
+                    # Save assistant response to conversation history (use processed response)
+                    if conversation_id and processed_response:
                         await conversation_manager.add_message(
                             conversation_id=conversation_id,
                             role="assistant",
-                            content=final_response,
+                            content=processed_response,
                             metadata={"source": "DIRECT_TOOL_EXECUTION", "tools_executed": [tr['tool'] for tr in tool_results if tr.get('success')]}
                         )
                     

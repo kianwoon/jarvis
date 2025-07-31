@@ -261,7 +261,28 @@ Focus on understanding what type of content needs to be generated and how to mai
             async for response_chunk in llm.generate_stream(prompt):
                 response_text += response_chunk.text
                 
-            return response_text
+            # Apply dynamic response processing for thinking tag removal
+            processed_response = response_text
+            try:
+                from app.llm.response_analyzer import detect_model_thinking_behavior
+                
+                # Detect model behavior and process response accordingly
+                model_name = model_config.get("model", "unknown")
+                is_thinking, confidence = detect_model_thinking_behavior(response_text, model_name)
+                
+                if is_thinking and confidence > 0.8:
+                    # Remove thinking tags from response
+                    import re
+                    processed_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                    print(f"[DECOMPOSER] Removed thinking tags from {model_name} response (confidence: {confidence:.2f})")
+                else:
+                    print(f"[DECOMPOSER] Using response as-is from {model_name} (thinking: {is_thinking}, confidence: {confidence:.2f})")
+                
+            except Exception as e:
+                print(f"[DECOMPOSER] Dynamic detection failed: {e}, using original response")
+                processed_response = response_text
+                
+            return processed_response
             
         except Exception as e:
             print(f"[DECOMPOSER] LLM call failed: {e}")
