@@ -17,6 +17,8 @@ from app.api.v1.endpoints import agent_recommendations
 from app.api.v1.endpoints import automation
 from app.api.v1.endpoints import temp_documents
 from app.api.v1.endpoints import knowledge_graph
+from app.api.v1.endpoints import knowledge_graph_schema
+from app.api.v1.endpoints import prompt_management
 import logging
 
 logger = logging.getLogger(__name__)
@@ -181,4 +183,14 @@ api_router.include_router(
     tags=["knowledge-graph"]
 )
 
- 
+api_router.include_router(
+    knowledge_graph_schema.router,
+    prefix="/knowledge-graph",
+    tags=["knowledge-graph-schema"]
+)
+
+api_router.include_router(
+    prompt_management.router,
+    prefix="/prompts",
+    tags=["prompts"]
+)

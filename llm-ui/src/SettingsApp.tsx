@@ -124,12 +124,6 @@ const settingsCategories: SettingsCategory[] = [
     icon: <AccessTimeIcon />,
     description: 'Configure timeout settings for APIs, LLMs, tools, and system operations'
   },
-  {
-    id: 'knowledge_graph',
-    name: 'Knowledge Graph',
-    icon: <KnowledgeGraphIcon />,
-    description: 'Entity extraction, Neo4j configuration, and knowledge graph deduplication settings'
-  }
 ];
 
 function SettingsApp() {
@@ -235,6 +229,11 @@ function SettingsApp() {
         
         if (toolsResponse.ok) {
           tools = await toolsResponse.json();
+          console.log('[SettingsApp] Raw tools response:', tools);
+          const ragTool = tools.find((tool: any) => tool.name === 'rag_knowledge_search');
+          if (ragTool) {
+            console.log('[SettingsApp] rag_knowledge_search in raw response:', ragTool);
+          }
         } else {
           //console.error(`Failed to load MCP tools: ${toolsResponse.status} ${toolsResponse.statusText}`);
         }
@@ -361,6 +360,15 @@ function SettingsApp() {
         console.log('[SettingsApp] MCP cleanedData after cleaning:', cleanedData);
         console.log('[SettingsApp] MCP cleanedData.servers:', cleanedData.servers);
         console.log('[SettingsApp] MCP cleanedData.tools:', cleanedData.tools);
+        
+        // Specific check for rag_knowledge_search tool
+        const ragTool = cleanedData.tools?.find((tool: any) => tool.name === 'rag_knowledge_search');
+        if (ragTool) {
+          console.log('[SettingsApp] rag_knowledge_search after cleaning:', ragTool);
+          console.log('[SettingsApp] rag_knowledge_search ID after cleaning:', ragTool.id, typeof ragTool.id);
+        } else {
+          console.log('[SettingsApp] rag_knowledge_search NOT FOUND after cleaning');
+        }
       }
       
       // Debug log for storage category after cleaning

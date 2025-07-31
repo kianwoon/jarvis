@@ -66,6 +66,8 @@ interface MCPTool {
   server_id?: number;
   server_name?: string;
   manifest_id?: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface MCPServer {
@@ -86,6 +88,16 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
   onChange,
   onRefresh
 }) => {
+  // Debug: Log data when component receives it
+  React.useEffect(() => {
+    console.log('[MCPToolManager] Received data:', data);
+    const ragTool = data.find(tool => tool.name === 'rag_knowledge_search');
+    if (ragTool) {
+      console.log('[MCPToolManager] rag_knowledge_search tool data:', ragTool);
+    } else {
+      console.log('[MCPToolManager] rag_knowledge_search not found in data');
+    }
+  }, [data]);
   const [editDialog, setEditDialog] = useState(false);
   const [editingTool, setEditingTool] = useState<MCPTool | null>(null);
   const [viewDialog, setViewDialog] = useState(false);
@@ -123,6 +135,14 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
   };
 
   const handleEdit = (tool: MCPTool) => {
+    console.log('handleEdit called with tool:', tool);
+    console.log('Tool ID check:', { id: tool.id, type: typeof tool.id, hasId: !!tool.id });
+    
+    if (tool.id === undefined || tool.id === null) {
+      showNotification(`Cannot edit tool "${tool.name}": Missing ID (current: ${tool.id})`, 'error');
+      return;
+    }
+    
     setEditingTool({ ...tool });
     setEditDialog(true);
   };
@@ -300,7 +320,9 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
     handleCloseActionMenu();
   };
 
-  const renderToolTable = () => (
+  const renderToolTable = () => {
+    console.log('[MCPToolManager] Rendering table with tools:', filteredTools.length);
+    return (
     <TableContainer component={Paper}>
       <Table sx={{ tableLayout: 'fixed' }}>
         <TableHead>
@@ -327,7 +349,20 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
           </TableRow>
         </TableHead>
         <TableBody>
-          {filteredTools.map((tool, index) => (
+          {filteredTools.map((tool, index) => {
+            // Debug logging for internal tools and rag_knowledge_search specifically
+            if (tool.endpoint.startsWith('internal://') || tool.name === 'rag_knowledge_search') {
+              console.log(`Rendering tool: ${tool.name}`, {
+                name: tool.name,
+                id: tool.id,
+                endpoint: tool.endpoint,
+                is_manual: tool.is_manual,
+                hasId: !!tool.id,
+                idType: typeof tool.id,
+                allFields: Object.keys(tool)
+              });
+            }
+            return (
             <TableRow key={tool.id || index}>
               <TableCell padding="checkbox">
                 <Checkbox
@@ -410,25 +445,47 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
                 />
               </TableCell>
               <TableCell>
-                <IconButton size="small" onClick={() => handleEdit(tool)}>
+                <IconButton 
+                  size="small" 
+                  onClick={() => {
+                    console.log('Edit button clicked for tool:', tool);
+                    if (tool.name === 'rag_knowledge_search') {
+                      console.log(`RAG tool debug: ID=${tool.id}, hasId=${!!tool.id}, idType=${typeof tool.id}`);
+                    }
+                    handleEdit(tool);
+                  }}
+                  title={`Edit ${tool.name}${!tool.id ? ' (No ID)' : ` (ID: ${tool.id})`}`}
+                  sx={{ 
+                    mr: 1,
+                    opacity: (tool.id !== undefined && tool.id !== null) ? 1 : 0.5,
+                    '&:hover': {
+                      backgroundColor: 'action.hover'
+                    }
+                  }}
+                  disabled={tool.id === undefined || tool.id === null}
+                >
                   <EditIcon />
                 </IconButton>
                 <IconButton 
                   size="small" 
                   onClick={(e) => {
+                    console.log('Action menu clicked for tool:', tool);
                     setActionMenuAnchor(e.currentTarget);
                     setActionMenuTool(tool);
                   }}
+                  title="More actions"
                 >
                   <MoreVertIcon />
                 </IconButton>
               </TableCell>
             </TableRow>
-          ))}
+            );
+          })}
         </TableBody>
       </Table>
     </TableContainer>
-  );
+    );
+  };
 
   const renderEditForm = () => {
     if (!editingTool) return null;
@@ -439,6 +496,14 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
 
     return (
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: '70vh', overflow: 'auto' }}>
+        {editingTool.endpoint?.startsWith('internal://') && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            <Typography variant="body2">
+              This is an internal system tool. Some fields are read-only to maintain system integrity. 
+              You can modify the description, parameters, and status.
+            </Typography>
+          </Alert>
+        )}
         <Card>
           <CardHeader title="Basic Configuration" />
           <CardContent>
@@ -483,6 +548,12 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
                   onChange={(e) => updateTool({ endpoint: e.target.value })}
                   fullWidth
                   required
+                  disabled={editingTool.endpoint?.startsWith('internal://')}
+                  helperText={
+                    editingTool.endpoint?.startsWith('internal://') 
+                      ? "Internal tool endpoints cannot be modified" 
+                      : "The URL where this tool can be accessed"
+                  }
                 />
               </Grid>
               <Grid item xs={12}>
@@ -545,8 +616,17 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
 
   return (
     <Box>
+      <Alert severity="info" sx={{ mb: 2 }}>
+        MCPToolManager is rendering - if you see this message, the component is working
+      </Alert>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-        <Typography variant="h6">MCP Tool Management</Typography>
+        <Box>
+          <Typography variant="h6">MCP Tool Management</Typography>
+          <Typography variant="caption" color="text.secondary">
+            Total: {data.length} tools | Internal: {data.filter(t => t.endpoint.startsWith('internal://')).length} | 
+            Without ID: {data.filter(t => !t.id).length}
+          </Typography>
+        </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Button 
             onClick={handleExportTools} 
@@ -631,6 +711,25 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
         )}
       </Box>
 
+      {/* Debug Information */}
+      {data.filter(t => !t.id).length > 0 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            <strong>Tools without IDs detected:</strong>
+          </Typography>
+          {data.filter(t => !t.id).slice(0, 3).map((tool, index) => (
+            <Typography key={index} variant="caption" component="div" sx={{ fontFamily: 'monospace' }}>
+              • {tool.name} ({tool.endpoint}) - Manual: {tool.is_manual ? 'Yes' : 'No'}
+            </Typography>
+          ))}
+          {data.filter(t => !t.id).length > 3 && (
+            <Typography variant="caption" color="text.secondary">
+              ... and {data.filter(t => !t.id).length - 3} more
+            </Typography>
+          )}
+        </Alert>
+      )}
+
       {data.length === 0 ? (
         <Alert severity="info">No MCP tools found. Add servers to discover tools automatically.</Alert>
       ) : filteredTools.length === 0 ? (
@@ -642,7 +741,18 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
       {/* Edit Dialog */}
       <Dialog open={editDialog} onClose={() => setEditDialog(false)} maxWidth="lg" fullWidth>
         <DialogTitle>
-          {editingTool?.id ? 'Edit MCP Tool' : 'Add MCP Tool'}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <span>{editingTool?.id ? 'Edit MCP Tool' : 'Add MCP Tool'}</span>
+            {editingTool?.endpoint?.startsWith('internal://') && (
+              <Chip label="Internal Tool" size="small" color="primary" />
+            )}
+            {editingTool?.is_manual && !editingTool?.endpoint?.startsWith('internal://') && (
+              <Chip label="Manual Tool" size="small" color="warning" />
+            )}
+            {editingTool?.server_name && (
+              <Chip label={editingTool.server_name} size="small" color="info" />
+            )}
+          </Box>
         </DialogTitle>
         <DialogContent>
           {renderEditForm()}
@@ -693,6 +803,26 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
         open={Boolean(actionMenuAnchor)}
         onClose={handleCloseActionMenu}
       >
+        <MuiMenuItem 
+          onClick={() => {
+            handleCloseActionMenu();
+            if (actionMenuTool) handleEdit(actionMenuTool);
+          }}
+          disabled={actionMenuTool?.id === undefined || actionMenuTool?.id === null}
+        >
+          <EditIcon sx={{ mr: 1 }} fontSize="small" />
+          Edit Tool
+          {(actionMenuTool?.id === undefined || actionMenuTool?.id === null) ? (
+            <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+              (No ID)
+            </Typography>
+          ) : (
+            <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+              (ID: {actionMenuTool?.id})
+            </Typography>
+          )}
+        </MuiMenuItem>
+        <Divider />
         <MuiMenuItem onClick={() => handleMenuAction('view')}>
           <ViewIcon sx={{ mr: 1 }} fontSize="small" />
           View Details
@@ -702,9 +832,15 @@ const MCPToolManager: React.FC<MCPToolManagerProps> = ({
           {actionMenuTool?.is_active ? 'Disable Tool' : 'Enable Tool'}
         </MuiMenuItem>
         <Divider />
-        <MuiMenuItem onClick={() => handleMenuAction('delete')}>
+        <MuiMenuItem 
+          onClick={() => handleMenuAction('delete')}
+          disabled={!actionMenuTool?.is_manual}
+        >
           <DeleteIcon sx={{ mr: 1 }} fontSize="small" color="error" />
-          <Typography color="error">Delete Tool</Typography>
+          <Typography color={actionMenuTool?.is_manual ? "error" : "text.disabled"}>
+            Delete Tool
+            {!actionMenuTool?.is_manual && " (System tool)"}
+          </Typography>
         </MuiMenuItem>
       </Menu>
 

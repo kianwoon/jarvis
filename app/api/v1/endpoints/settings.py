@@ -1436,4 +1436,4 @@ def test_knowledge_graph_connection():
             "success": False,
             "error": f"Connection test failed: {str(e)}",
             "config": {}
-        } 
+        }

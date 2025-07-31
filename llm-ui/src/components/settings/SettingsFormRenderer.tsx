@@ -46,6 +46,7 @@ import DatabaseTableManager from './DatabaseTableManager';
 import MCPServerManager from './MCPServerManager';
 import MCPToolManager from './MCPToolManager';
 import VectorDatabaseManager from './VectorDatabaseManager';
+import KnowledgeGraphSettings from './KnowledgeGraphSettings';
 
 interface SettingsFormRendererProps {
   category: string;
@@ -229,6 +230,8 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   if (category === 'timeout') {
     return <TimeoutConfiguration data={data} onChange={onChange} onShowSuccess={onShowSuccess} />;
   }
+
+  // Knowledge graph settings are now consolidated under LLM category
 
   // Default form rendering for regular settings
   return renderStandardForm(data, onChange, category, activeTab, setActiveTab, passwordVisibility, setPasswordVisibility, icebergPasswordVisibility, setIcebergPasswordVisibility, onShowSuccess, testNeo4jConnection, testingConnection, connectionTestResult);
@@ -696,11 +699,11 @@ const ModelSelector: React.FC<{
                       onChangeHandler('knowledge_graph.context_length', contextLength);
                       const suggestedMaxTokens = Math.floor(contextLength * 0.75);
                       onChangeHandler('knowledge_graph.max_tokens', suggestedMaxTokens);
-                    } else if (fieldKey === 'query_classifier.llm_model') {
+                    } else if (fieldKey === 'query_classifier.model') {
                       // Query Classifier tab - exactly same as Settings tab
                       onChangeHandler('query_classifier.context_length', contextLength);
-                      const suggestedLlmMaxTokens = Math.floor(contextLength * 0.75);
-                      onChangeHandler('query_classifier.llm_max_tokens', suggestedLlmMaxTokens);
+                      const suggestedMaxTokens = Math.floor(contextLength * 0.75);
+                      onChangeHandler('query_classifier.max_tokens', suggestedMaxTokens);
                     }
                   }
                 }
@@ -1644,9 +1647,10 @@ const renderStandardForm = (
         else if (lowerKey.includes('second_llm')) {
           categories.second_llm.fields[key] = value;
         }
-        // Knowledge Graph Tab - All knowledge_graph-related settings
+        // Knowledge Graph Tab - Use KnowledgeGraphSettings component for enhanced UI
         else if (lowerKey.includes('knowledge_graph')) {
           categories.knowledge_graph.fields[key] = value;
+          categories.knowledge_graph.customComponent = 'KnowledgeGraphSettings';
         }
         // Query Classifier Tab - All classifier-related settings
         else if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {

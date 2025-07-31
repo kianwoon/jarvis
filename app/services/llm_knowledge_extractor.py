@@ -16,6 +16,7 @@ from datetime import datetime
 from app.core.knowledge_graph_settings_cache import get_knowledge_graph_settings
 from app.core.llm_settings_cache import get_llm_settings
 from app.services.knowledge_graph_service import ExtractedEntity, ExtractedRelationship
+from app.services.dynamic_schema_manager import dynamic_schema_manager
 
 logger = logging.getLogger(__name__)
 
@@ -37,41 +38,6 @@ class LLMKnowledgeExtractor:
         self.kg_settings = get_knowledge_graph_settings()
         self.llm_settings = get_llm_settings()
         self.model_config = self._get_extraction_model_config()
-        
-        # Enhanced entity types with hierarchical structure
-        self.hierarchical_entity_types = {
-            'PERSON': {
-                'subtypes': ['EXECUTIVE', 'RESEARCHER', 'POLITICIAN', 'ARTIST', 'ENTREPRENEUR'],
-                'attributes': ['role', 'organization', 'expertise', 'nationality']
-            },
-            'ORGANIZATION': {
-                'subtypes': ['COMPANY', 'UNIVERSITY', 'GOVERNMENT', 'NONPROFIT', 'STARTUP'],
-                'attributes': ['industry', 'size', 'location', 'founded_year']
-            },
-            'CONCEPT': {
-                'subtypes': ['TECHNOLOGY', 'METHODOLOGY', 'THEORY', 'PRODUCT', 'SERVICE'],
-                'attributes': ['domain', 'complexity', 'maturity', 'application']
-            },
-            'LOCATION': {
-                'subtypes': ['COUNTRY', 'CITY', 'REGION', 'FACILITY', 'VIRTUAL'],
-                'attributes': ['type', 'population', 'coordinates', 'significance']
-            },
-            'EVENT': {
-                'subtypes': ['MEETING', 'LAUNCH', 'ACQUISITION', 'RESEARCH', 'PUBLICATION'],
-                'attributes': ['date', 'participants', 'outcome', 'significance']
-            }
-        }
-        
-        # Sophisticated relationship taxonomy
-        self.relationship_taxonomy = {
-            'EMPLOYMENT': ['WORKS_FOR', 'LEADS', 'MANAGES', 'REPORTS_TO', 'ADVISES'],
-            'BUSINESS': ['OWNS', 'PARTNERS_WITH', 'COMPETES_WITH', 'SUPPLIES_TO', 'INVESTS_IN'],
-            'ACADEMIC': ['RESEARCHES', 'COLLABORATES_ON', 'PUBLISHES_WITH', 'SUPERVISES', 'STUDIES'],
-            'TECHNICAL': ['USES', 'DEVELOPS', 'IMPLEMENTS', 'BASED_ON', 'INTEGRATES_WITH'],
-            'SPATIAL': ['LOCATED_IN', 'OPERATES_IN', 'HEADQUARTERED_IN', 'SERVES', 'COVERS'],
-            'TEMPORAL': ['PRECEDES', 'FOLLOWS', 'CONCURRENT_WITH', 'TRIGGERS', 'ENABLES'],
-            'CONCEPTUAL': ['IS_A', 'PART_OF', 'CONTAINS', 'RELATED_TO', 'INFLUENCES']
-        }
     
     def _get_extraction_model_config(self) -> Dict[str, Any]:
         """Get LLM configuration optimized for knowledge extraction"""
@@ -97,6 +63,13 @@ class LLMKnowledgeExtractor:
             
             # Parse and validate LLM response
             parsed_result = self._parse_llm_response(llm_response)
+            
+            # Extract discoveries from parsed_result
+            discoveries = parsed_result.get('discoveries', {})
+            
+            # Process discoveries asynchronously
+            if discoveries:
+                asyncio.create_task(self._process_discoveries_async(discoveries))
             
             # Enhance entities with hierarchical classification
             enhanced_entities = self._enhance_entities_with_hierarchy(parsed_result.get('entities', []))
@@ -125,7 +98,15 @@ class LLMKnowledgeExtractor:
                     'domain_hints': domain_hints or [],
                     'context_provided': context is not None,
                     'text_length': len(text),
-                    'total_extractions': len(enhanced_entities) + len(validated_relationships)
+                    'total_extractions': len(enhanced_entities) + len(validated_relationships),
+                    'discoveries_made': bool(discoveries),
+                    'new_entity_types': len(discoveries.get('new_entity_types', [])),
+                    'new_relationship_types': len(discoveries.get('new_relationship_types', [])),
+                    'discovery_details': {
+                        'entity_types_discovered': discoveries.get('new_entity_types', []),
+                        'relationship_types_discovered': discoveries.get('new_relationship_types', []),
+                        'discovery_processing_initiated': bool(discoveries)
+                    }
                 }
             )
             
@@ -146,6 +127,9 @@ class LLMKnowledgeExtractor:
     def _build_extraction_prompt(self, text: str, context: Optional[Dict[str, Any]] = None,
                                 domain_hints: Optional[List[str]] = None) -> str:
         """Build sophisticated extraction prompt with context and domain awareness"""
+        from app.services.settings_prompt_service import get_prompt_service as get_settings_prompt_service
+        
+        prompt_service = get_settings_prompt_service()
         
         # Context information
         context_info = ""
@@ -165,64 +149,21 @@ CONTEXT INFORMATION:
 DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entities and relationships.
 """
         
-        # Build comprehensive prompt
-        prompt = f"""You are an expert knowledge graph extraction system with deep contextual understanding. Your task is to extract entities and relationships from the provided text with high precision and semantic awareness.
-
-{context_info}
-{domain_guidance}
-
-HIERARCHICAL ENTITY TYPES TO CONSIDER:
-{json.dumps(self.hierarchical_entity_types, indent=2)}
-
-RELATIONSHIP CATEGORIES:
-{json.dumps(self.relationship_taxonomy, indent=2)}
-
-EXTRACTION GUIDELINES:
-1. Extract entities with their most specific subtype when possible
-2. Include entity attributes when clearly mentioned
-3. Focus on explicit relationships with clear evidence in the text
-4. Provide confidence scores (0.0-1.0) based on textual evidence
-5. Include reasoning for each extraction decision
-6. Consider context and implicit relationships
-7. Avoid over-extraction of weak or speculative connections
-
-TEXT TO ANALYZE:
-{text}
-
-OUTPUT FORMAT (JSON):
-{{
-    "entities": [
-        {{
-            "text": "exact text from source",
-            "canonical_form": "normalized name",
-            "type": "main type (PERSON, ORGANIZATION, etc.)",
-            "subtype": "specific subtype if applicable",
-            "attributes": {{"key": "value"}},
-            "confidence": 0.95,
-            "evidence": "supporting text snippet",
-            "start_char": 0,
-            "end_char": 10
-        }}
-    ],
-    "relationships": [
-        {{
-            "source_entity": "canonical name of source",
-            "target_entity": "canonical name of target", 
-            "relationship_type": "specific relationship type",
-            "confidence": 0.85,
-            "evidence": "supporting text snippet",
-            "context": "broader context of relationship",
-            "temporal_info": "when this relationship existed/exists",
-            "attributes": {{"key": "value"}}
-        }}
-    ],
-    "reasoning": "Brief explanation of extraction approach and key decisions",
-    "confidence_notes": "Explanation of confidence scoring rationale"
-}}
-
-Provide ONLY the JSON output without any additional text or formatting."""
-
-        return prompt
+        # Get dynamic schema from DynamicSchemaManager
+        dynamic_schema = asyncio.run(dynamic_schema_manager.get_combined_schema())
+        entity_types = dynamic_schema['entity_types']
+        relationship_types = dynamic_schema['relationship_types']
+        
+        return prompt_service.get_prompt(
+            "knowledge_extraction",
+            variables={
+                "text": text,
+                "context_info": context_info,
+                "domain_guidance": domain_guidance,
+                "entity_types": entity_types,
+                "relationship_types": relationship_types
+            }
+        )
     
     async def _call_llm_for_extraction(self, prompt: str) -> str:
         """Call LLM API for knowledge extraction"""
@@ -256,7 +197,7 @@ Provide ONLY the JSON output without any additional text or formatting."""
             raise
     
     def _parse_llm_response(self, response: str) -> Dict[str, Any]:
-        """Parse and validate LLM JSON response"""
+        """Parse and validate LLM JSON response, including dynamic discoveries"""
         try:
             # Clean response - remove any non-JSON text
             response = response.strip()
@@ -272,12 +213,14 @@ Provide ONLY the JSON output without any additional text or formatting."""
                 parsed['entities'] = []
             if not isinstance(parsed.get('relationships'), list):
                 parsed['relationships'] = []
+            if not isinstance(parsed.get('discoveries', {}), dict):
+                parsed['discoveries'] = {}
                 
             return parsed
             
         except Exception as e:
             logger.error(f"Failed to parse LLM response: {e}")
-            return {'entities': [], 'relationships': [], 'reasoning': 'Parse error'}
+            return {'entities': [], 'relationships': [], 'reasoning': 'Parse error', 'discoveries': {}}
     
     def _enhance_entities_with_hierarchy(self, raw_entities: List[Dict[str, Any]]) -> List[ExtractedEntity]:
         """Convert raw entities to ExtractedEntity objects with hierarchical enhancement"""
@@ -388,6 +331,70 @@ Provide ONLY the JSON output without any additional text or formatting."""
             total_items += 1
         
         return total_confidence / total_items if total_items > 0 else 0.0
+
+    def _calculate_overall_confidence(self, entities: List[ExtractedEntity], 
+                                    relationships: List[ExtractedRelationship]) -> float:
+        """Calculate overall confidence score for the extraction"""
+        if not entities and not relationships:
+            return 0.0
+        
+        total_confidence = 0.0
+        total_items = 0
+        
+        # Entity confidence
+        for entity in entities:
+            total_confidence += entity.confidence
+            total_items += 1
+        
+        # Relationship confidence
+        for rel in relationships:
+            total_confidence += rel.confidence
+            total_items += 1
+        
+        return total_confidence / total_items if total_items > 0 else 0.0
+    
+    async def _process_discoveries_async(self, discoveries: Dict[str, Any]) -> None:
+        """Process new entity and relationship type discoveries asynchronously"""
+        try:
+            from app.services.dynamic_schema_manager import DiscoveredEntityType, DiscoveredRelationshipType
+            from datetime import datetime
+            
+            # Process new entity types
+            new_entity_types = discoveries.get('new_entity_types', [])
+            for entity_type_data in new_entity_types:
+                if entity_type_data.get('confidence', 0) >= 0.7:  # High confidence threshold
+                    entity_type = DiscoveredEntityType(
+                        type=entity_type_data['type'],
+                        description=entity_type_data['description'],
+                        examples=entity_type_data.get('examples', []),
+                        confidence=entity_type_data['confidence'],
+                        frequency=1,
+                        first_seen=datetime.utcnow(),
+                        last_seen=datetime.utcnow(),
+                        status='pending'
+                    )
+                    await dynamic_schema_manager._update_entity_cache([entity_type])
+            
+            # Process new relationship types
+            new_relationship_types = discoveries.get('new_relationship_types', [])
+            for rel_type_data in new_relationship_types:
+                if rel_type_data.get('confidence', 0) >= 0.7:  # High confidence threshold
+                    relationship_type = DiscoveredRelationshipType(
+                        type=rel_type_data['type'],
+                        description=rel_type_data['description'],
+                        inverse=rel_type_data.get('inverse'),
+                        examples=rel_type_data.get('examples', []),
+                        confidence=rel_type_data.get('confidence', 0.5),
+                        frequency=1,
+                        first_seen=datetime.utcnow(),
+                        last_seen=datetime.utcnow(),
+                        status='pending'
+                    )
+                    await dynamic_schema_manager._update_relationship_cache([relationship_type])
+                    
+        except Exception as e:
+            logger.error(f"Error processing discoveries: {e}")
+
 
 # Singleton instance
 _llm_extractor: Optional[LLMKnowledgeExtractor] = None

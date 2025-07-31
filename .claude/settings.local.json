@@ -80,7 +80,8 @@
       "Bash(claude config set installMethod npm-global)",
       "Bash(npm run lint)",
       "Bash(open http://localhost:3000/settings.html)",
-      "Bash(npm run dev:*)"
+      "Bash(npm run dev:*)",
+      "Bash(log show:*)"
     ],
     "deny": []
   },

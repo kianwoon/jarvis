@@ -151,6 +151,95 @@ class KnowledgeGraphExtractionService:
             self.nlp = None
             SPACY_AVAILABLE = False
     
+    def _is_valid_entity(self, entity_text: str, entity_type: str) -> bool:
+        """Validate if an extracted entity is valid"""
+        entity_text = entity_text.strip()
+        
+        # Basic length validation
+        if len(entity_text) < 2 or len(entity_text) > 50:
+            return False
+            
+        # Convert to lowercase for pattern matching
+        text_lower = entity_text.lower()
+        
+        # Invalid patterns
+        invalid_patterns = [
+            r'^(this|that|these|those|it|they|we|you|i|me|my|your|their)\b',
+            r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by|from)\b',
+            r'\b(submit|identify|include|present|highlight|align|maintain|submitting|identifying|including|presenting|highlighting|aligning|maintaining)\b',
+            r'\b(proposal|strategy|content|steps|points|relationship|document|text|information|data|process|system|application)\b',
+            r'\b(a few|be ready|it likely|existing vendor|on time|and compelling|both content)\b',
+            r'\b(immediately|ready|likely|aligning|including|perhaps|even)\b',
+            r'\b(this might include|this includes|as well as|as\s+\w+\s+as)\b',
+            r'^[\d\W]+$',  # Numbers and special chars only
+            r'^\s*$',     # Empty or whitespace
+        ]
+        
+        # Check against invalid patterns
+        for pattern in invalid_patterns:
+            if re.search(pattern, text_lower, re.IGNORECASE):
+                return False
+        
+        # Check for overly generic terms
+        generic_terms = {
+            'thing', 'stuff', 'item', 'part', 'piece', 'aspect', 'element', 'component',
+            'factor', 'issue', 'problem', 'solution', 'approach', 'method', 'technique',
+            'process', 'procedure', 'step', 'action', 'activity', 'task', 'work',
+            'result', 'outcome', 'impact', 'effect', 'benefit', 'advantage',
+            'plan', 'strategy', 'proposal', 'document', 'content', 'information'
+        }
+        
+        if text_lower in generic_terms:
+            return False
+            
+        # Check if it's a complete phrase vs. action/fragment
+        if any(word in text_lower for word in ['submit the', 'identify the', 'include the', 'present the', 'highlight the']):
+            return False
+            
+        # Check for sentence-like structures
+        if len(text_lower.split()) > 8:  # Too many words for a single entity
+            return False
+            
+        return True
+    
+    def _validate_and_filter_entities(self, entities: List[ExtractedEntity]) -> List[ExtractedEntity]:
+        """Filter out invalid entities from extraction results"""
+        valid_entities = []
+        seen_entities = set()
+        
+        for entity in entities:
+            if self._is_valid_entity(entity.text, entity.label):
+                # Normalize and deduplicate
+                normalized = entity.text.strip().title()
+                if normalized not in seen_entities:
+                    entity.text = normalized
+                    entity.canonical_form = normalized
+                    seen_entities.add(normalized)
+                    valid_entities.append(entity)
+                else:
+                    # Update existing entity with higher confidence
+                    for existing in valid_entities:
+                        if existing.text == normalized:
+                            existing.confidence = max(existing.confidence, entity.confidence)
+                            break
+        
+        logger.info(f"📊 Entity validation: {len(entities)} → {len(valid_entities)} valid entities")
+        return valid_entities
+    
+    def _filter_valid_relationships(self, relationships: List[ExtractedRelationship], valid_entities: List[ExtractedEntity]) -> List[ExtractedRelationship]:
+        """Filter relationships to only include those with valid source and target entities"""
+        valid_entity_texts = {entity.text for entity in valid_entities}
+        valid_relationships = []
+        
+        for rel in relationships:
+            if rel.source_entity in valid_entity_texts and rel.target_entity in valid_entity_texts:
+                valid_relationships.append(rel)
+            else:
+                logger.warning(f"🚫 Skipping relationship: {rel.source_entity} → {rel.target_entity} (missing entities)")
+        
+        logger.info(f"📊 Relationship validation: {len(relationships)} → {len(valid_relationships)} valid relationships")
+        return valid_relationships
+    
     async def extract_from_chunk(self, chunk: ExtractedChunk) -> GraphExtractionResult:
         """Extract entities and relationships from a single document chunk with LLM enhancement"""
         start_time = datetime.now()
@@ -162,10 +251,18 @@ class KnowledgeGraphExtractionService:
             if use_llm_enhancement:
                 # Use LLM-enhanced extraction
                 entities, relationships = await self._extract_with_llm_enhancement(chunk)
+                # Validate entities
+                entities = self._validate_and_filter_entities(entities)
+                # Filter relationships with missing entities
+                relationships = self._filter_valid_relationships(relationships, entities)
             else:
                 # Use traditional extraction methods
                 entities = await self._extract_entities(chunk.content)
                 relationships = await self._extract_relationships(chunk.content, entities)
+                # Validate entities
+                entities = self._validate_and_filter_entities(entities)
+                # Filter relationships with missing entities
+                relationships = self._filter_valid_relationships(relationships, entities)
             
             # Calculate processing time
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
@@ -243,6 +340,9 @@ class KnowledgeGraphExtractionService:
             # Fallback to traditional methods
             entities = await self._extract_entities(chunk.content)
             relationships = await self._extract_relationships(chunk.content, entities)
+            # Validate entities and relationships
+            entities = self._validate_and_filter_entities(entities)
+            relationships = self._filter_valid_relationships(relationships, entities)
             return entities, relationships
     
     def _infer_domain_from_content(self, content: str) -> str:
@@ -828,7 +928,7 @@ class KnowledgeGraphExtractionService:
         return deduplicated
     
     async def store_in_neo4j(self, extraction_result: GraphExtractionResult, document_id: str) -> Dict[str, Any]:
-        """Store extracted entities and relationships in Neo4j with cross-document linking"""
+        """Store extracted entities and relationships in Neo4j with anti-silo relationship discovery"""
         try:
             neo4j_service = get_neo4j_service()
             
@@ -954,6 +1054,18 @@ class KnowledgeGraphExtractionService:
                 else:
                     logger.error(f"🔥 Failed to store relationship: {relationship.source_entity} -> {relationship.target_entity}")
             
+            # Step 4: Anti-silo relationship discovery - add cross-document relationships
+            enable_anti_silo = self.config.get('extraction', {}).get('enable_anti_silo', True)
+            if enable_anti_silo and stored_entities:
+                try:
+                    anti_silo_relationships = await self._discover_anti_silo_relationships(
+                        stored_entities, document_id
+                    )
+                    stored_relationships.extend(anti_silo_relationships)
+                    logger.info(f"🔗 ANTI-SILO: Added {len(anti_silo_relationships)} cross-document relationships")
+                except Exception as e:
+                    logger.error(f"Anti-silo relationship discovery failed: {e}")
+            
             logger.info(f"🔥 STORAGE COMPLETE: {len(stored_entities)} entities, {len(stored_relationships)} relationships stored")
             
             return {
@@ -962,10 +1074,12 @@ class KnowledgeGraphExtractionService:
                 'relationships_stored': len(stored_relationships),
                 'processing_time_ms': extraction_result.processing_time_ms,
                 'entity_mappings_created': len(entity_name_to_id),
+                'anti_silo_relationships': len([r for r in stored_relationships if r.get('type') == 'ANTI_SILO_LINK']),
                 'debug_info': {
                     'entity_names': list(entity_name_to_id.keys()),
                     'relationship_attempts': len(extraction_result.relationships),
-                    'relationship_successes': len(stored_relationships)
+                    'relationship_successes': len(stored_relationships),
+                    'anti_silo_enabled': enable_anti_silo
                 }
             }
             
@@ -1010,6 +1124,263 @@ class KnowledgeGraphExtractionService:
         
         logger.debug(f"🔥 No entity ID found for: {entity_name} (tried all strategies)")
         return None
+    
+    async def _discover_anti_silo_relationships(self, stored_entities: List[str], document_id: str) -> List[Dict[str, Any]]:
+        """Discover cross-document relationships to prevent silo nodes using semantic similarity"""
+        try:
+            neo4j_service = get_neo4j_service()
+            anti_silo_relationships = []
+            
+            if not stored_entities or len(stored_entities) < 2:
+                logger.info("🔗 ANTI-SILO: Insufficient entities for relationship discovery")
+                return anti_silo_relationships
+            
+            logger.info(f"🔗 ANTI-SILO: Processing {len(stored_entities)} entities for cross-document linking")
+            
+            # Get entity details for semantic matching
+            entity_details = {}
+            for entity_id in stored_entities:
+                query = """
+                MATCH (e {id: $entity_id})
+                RETURN e.name as name, e.type as type, e.original_text as original_text, 
+                       labels(e)[0] as label, e.document_id as doc_id
+                """
+                result = neo4j_service.execute_cypher(query, {'entity_id': entity_id})
+                if result:
+                    entity_details[entity_id] = result[0]
+            
+            if len(entity_details) < 2:
+                return anti_silo_relationships
+            
+            # Find similar entities across documents using multiple strategies
+            from difflib import SequenceMatcher
+            
+            # Strategy 1: Semantic similarity based on entity names
+            entity_names = [(eid, details['name']) for eid, details in entity_details.items()]
+            
+            for i, (entity1_id, name1) in enumerate(entity_names):
+                for entity2_id, name2 in entity_names[i+1:]:
+                    # Skip if same document
+                    if entity_details[entity1_id]['doc_id'] == entity_details[entity2_id]['doc_id']:
+                        continue
+                    
+                    # Calculate similarity using multiple methods
+                    similarity = SequenceMatcher(None, name1.lower(), name2.lower()).ratio()
+                    
+                    # Enhanced similarity with type matching
+                    type_match = entity_details[entity1_id]['type'] == entity_details[entity2_id]['type']
+                    if type_match:
+                        similarity *= 1.2  # Boost for same type
+                    
+                    # Check for name variations (aliases, abbreviations)
+                    name_variations = self._check_name_variations(name1, name2)
+                    if name_variations['is_match']:
+                        similarity = max(similarity, name_variations['confidence'])
+                    
+                    # Threshold for creating anti-silo relationships
+                    min_similarity = 0.75 if type_match else 0.85
+                    
+                    if similarity >= min_similarity:
+                        # Create cross-document relationship
+                        rel_properties = {
+                            'confidence': similarity,
+                            'type': entity_details[entity1_id]['type'],
+                            'source_document': entity_details[entity1_id]['doc_id'],
+                            'target_document': entity_details[entity2_id]['doc_id'],
+                            'matching_method': 'semantic_similarity',
+                            'created_at': datetime.now().isoformat(),
+                            'relationship_type': 'ANTI_SILO_LINK'
+                        }
+                        
+                        success = neo4j_service.create_relationship(
+                            entity1_id, entity2_id, 'ANTI_SILO_LINK', rel_properties
+                        )
+                        
+                        if success:
+                            anti_silo_relationships.append({
+                                'source': entity1_id,
+                                'target': entity2_id,
+                                'type': 'ANTI_SILO_LINK',
+                                'confidence': similarity,
+                                'entities': f"{name1} ↔ {name2}"
+                            })
+                            
+                            # Also create reverse relationship for bidirectional linking
+                            reverse_properties = rel_properties.copy()
+                            reverse_properties['matching_method'] = 'semantic_similarity_reverse'
+                            
+                            neo4j_service.create_relationship(
+                                entity2_id, entity1_id, 'ANTI_SILO_LINK', reverse_properties
+                            )
+                            
+                            logger.debug(f"🔗 ANTI-SILO: Linked {name1} ({entity1_id}) ↔ {name2} ({entity2_id}) with confidence {similarity:.3f}")
+            
+            # Strategy 2: Co-occurrence analysis across documents
+            # Find entities that appear in similar contexts across different documents
+            await self._analyze_cooccurrence_patterns(entity_details, anti_silo_relationships)
+            
+            # Strategy 3: Type-based clustering
+            await self._create_type_based_links(entity_details, anti_silo_relationships)
+            
+            logger.info(f"🔗 ANTI-SILO: Discovered {len(anti_silo_relationships)} cross-document relationships")
+            return anti_silo_relationships
+            
+        except Exception as e:
+            logger.error(f"ANTI-SILO discovery failed: {e}")
+            return []
+    
+    def _check_name_variations(self, name1: str, name2: str) -> Dict[str, Any]:
+        """Check for name variations like abbreviations, initials, etc."""
+        name1_clean = name1.lower().strip()
+        name2_clean = name2.lower().strip()
+        
+        # Remove common prefixes/suffixes
+        prefixes = ['dr ', 'mr ', 'ms ', 'mrs ', 'prof ', 'ceo ', 'cto ']
+        suffixes = [' inc', ' corp', ' llc', ' ltd', ' company', ' corporation']
+        
+        for prefix in prefixes:
+            name1_clean = name1_clean.replace(prefix, '')
+            name2_clean = name2_clean.replace(prefix, '')
+        
+        for suffix in suffixes:
+            name1_clean = name1_clean.replace(suffix, '')
+            name2_clean = name2_clean.replace(suffix, '')
+        
+        # Check for exact match after cleaning
+        if name1_clean == name2_clean:
+            return {'is_match': True, 'confidence': 0.95}
+        
+        # Check for initials
+        initials1 = ''.join([word[0] for word in name1_clean.split()])
+        initials2 = ''.join([word[0] for word in name2_clean.split()])
+        
+        if initials1 == initials2 and len(initials1) >= 2:
+            return {'is_match': True, 'confidence': 0.8}
+        
+        # Check for partial containment
+        if (name1_clean in name2_clean or name2_clean in name1_clean) and len(name1_clean) >= 3:
+            containment_ratio = len(name1_clean) / len(name2_clean) if len(name2_clean) > 0 else 0
+            if 0.7 <= containment_ratio <= 1.3:
+                return {'is_match': True, 'confidence': 0.75}
+        
+        return {'is_match': False, 'confidence': 0.0}
+    
+    async def _analyze_cooccurrence_patterns(self, entity_details: Dict[str, Dict], anti_silo_relationships: List[Dict[str, Any]]):
+        """Analyze co-occurrence patterns across documents"""
+        try:
+            neo4j_service = get_neo4j_service()
+            
+            # Find entities that co-occur with similar entities across documents
+            entity_ids = list(entity_details.keys())
+            
+            for entity_id in entity_ids:
+                # Get related entities in the same document
+                query = """
+                MATCH (e {id: $entity_id})-[:MENTIONED_WITH|RELATED_TO|ASSOCIATED_WITH]-(related)
+                WHERE related.id <> $entity_id
+                RETURN related.name as related_name, related.type as related_type
+                """
+                
+                related_entities = neo4j_service.execute_cypher(query, {'entity_id': entity_id})
+                
+                # Find similar patterns in other documents
+                for related in related_entities:
+                    similar_pattern_query = """
+                    MATCH (e2)-[:MENTIONED_WITH|RELATED_TO|ASSOCIATED_WITH]-(related2)
+                    WHERE e2.name = $entity_name AND e2.document_id <> $source_doc
+                    AND related2.name = $related_name
+                    RETURN e2.id as similar_entity_id, e2.document_id as target_doc
+                    """
+                    
+                    similar_patterns = neo4j_service.execute_cypher(similar_pattern_query, {
+                        'entity_name': entity_details[entity_id]['name'],
+                        'source_doc': entity_details[entity_id]['doc_id'],
+                        'related_name': related['related_name']
+                    })
+                    
+                    for pattern in similar_patterns:
+                        # Create relationship based on co-occurrence pattern
+                        rel_properties = {
+                            'confidence': 0.7,
+                            'type': 'CO_OCCURRENCE_PATTERN',
+                            'source_document': entity_details[entity_id]['doc_id'],
+                            'target_document': pattern['target_doc'],
+                            'pattern_entity': related['related_name'],
+                            'created_at': datetime.now().isoformat(),
+                            'relationship_type': 'ANTI_SILO_LINK'
+                        }
+                        
+                        success = neo4j_service.create_relationship(
+                            entity_id, pattern['similar_entity_id'], 'ANTI_SILO_LINK', rel_properties
+                        )
+                        
+                        if success:
+                            anti_silo_relationships.append({
+                                'source': entity_id,
+                                'target': pattern['similar_entity_id'],
+                                'type': 'ANTI_SILO_LINK',
+                                'confidence': 0.7,
+                                'entities': f"{entity_details[entity_id]['name']} ↔ {entity_details[pattern['similar_entity_id']]['name']}"
+                            })
+                            
+        except Exception as e:
+            logger.error(f"Co-occurrence analysis failed: {e}")
+    
+    async def _create_type_based_links(self, entity_details: Dict[str, Dict], anti_silo_relationships: List[Dict[str, Any]]):
+        """Create links between entities of the same type across documents"""
+        try:
+            neo4j_service = get_neo4j_service()
+            
+            # Group entities by type
+            entities_by_type = {}
+            for entity_id, details in entity_details.items():
+                entity_type = details['type']
+                if entity_type not in entities_by_type:
+                    entities_by_type[entity_type] = []
+                entities_by_type[entity_type].append((entity_id, details))
+            
+            # Create links within each type group
+            for entity_type, entities in entities_by_type.items():
+                if len(entities) >= 2:
+                    # Create a hub entity for the type to reduce silos
+                    type_hub_id = f"type_hub_{entity_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    
+                    # Create hub entity
+                    hub_properties = {
+                        'name': f"Hub_{entity_type}",
+                        'type': entity_type,
+                        'is_hub': True,
+                        'created_at': datetime.now().isoformat(),
+                        'entity_count': len(entities)
+                    }
+                    
+                    hub_id = neo4j_service.create_entity('HUB', hub_properties)
+                    
+                    if hub_id:
+                        # Connect all entities of this type to the hub
+                        for entity_id, entity_details in entities:
+                            rel_properties = {
+                                'confidence': 0.8,
+                                'type_category': entity_type,
+                                'relationship_type': 'TYPE_HUB_LINK',
+                                'created_at': datetime.now().isoformat()
+                            }
+                            
+                            success = neo4j_service.create_relationship(
+                                entity_id, hub_id, 'BELONGS_TO_TYPE', rel_properties
+                            )
+                            
+                            if success:
+                                anti_silo_relationships.append({
+                                    'source': entity_id,
+                                    'target': hub_id,
+                                    'type': 'TYPE_HUB_LINK',
+                                    'confidence': 0.8,
+                                    'entities': f"{entity_details['name']} → Type_Hub_{entity_type}"
+                                })
+            
+        except Exception as e:
+            logger.error(f"Type-based linking failed: {e}")
     
     async def _update_linked_entity(self, entity_id: str, entity: ExtractedEntity, 
                                    document_id: str, chunk_id: str) -> bool:

@@ -1,5 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import { SnackbarProvider } from 'notistack'
 import App from './App'
 import './index.css'
 
@@ -12,7 +13,9 @@ if (rootElement) {
   console.log('✅ ROOT FOUND, RENDERING REACT APP...');
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
-      <App />
+      <SnackbarProvider maxSnack={3}>
+        <App />
+      </SnackbarProvider>
     </React.StrictMode>,
   );
 } else {

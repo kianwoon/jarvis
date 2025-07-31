@@ -109,6 +109,16 @@ const KnowledgeGraphViewer: React.FC = () => {
   const [availableDocuments, setAvailableDocuments] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fontSize, setFontSize] = useState(() => {
+    const saved = localStorage.getItem('jarvis-kg-font-size');
+    return saved ? parseInt(saved) : 12;
+  });
+  
+  const handleFontSizeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const newSize = parseInt(event.target.value);
+    setFontSize(newSize);
+    localStorage.setItem('jarvis-kg-font-size', newSize.toString());
+  };
   
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -424,7 +434,7 @@ const KnowledgeGraphViewer: React.FC = () => {
         .join('text')
         .attr('text-anchor', 'middle')
         .attr('dy', -8)
-        .attr('font-size', '11px')
+        .attr('font-size', `${fontSize - 1}px`)
         .attr('font-weight', '500')
         .attr('fill', themeColors.linkLabelColor)
         .attr('stroke', themeColors.surface)
@@ -468,7 +478,7 @@ const KnowledgeGraphViewer: React.FC = () => {
         .join('text')
         .attr('text-anchor', 'middle')
         .attr('dy', 5)
-        .attr('font-size', '12px')
+        .attr('font-size', `${fontSize}px`)
         .attr('font-weight', '600')
         .attr('fill', themeColors.nodeLabelColor)
         .attr('stroke', themeColors.surface)
@@ -559,7 +569,7 @@ const KnowledgeGraphViewer: React.FC = () => {
           .attr('y', dimensions.height / 2)
           .attr('text-anchor', 'middle')
           .attr('fill', 'red')
-          .attr('font-size', '14px')
+          .attr('font-size', `${fontSize + 2}px`)
           .text('Visualization Error - Check Console');
       }
     }
@@ -606,7 +616,7 @@ const KnowledgeGraphViewer: React.FC = () => {
     if (entities.length > 0) {
       createVisualization();
     }
-  }, [entities, relationships, dimensions, isDarkMode]);
+  }, [entities, relationships, dimensions, isDarkMode, fontSize]);
 
   // Keyboard shortcuts for zoom controls
   useEffect(() => {
@@ -1056,6 +1066,33 @@ const KnowledgeGraphViewer: React.FC = () => {
               }}
             />
           )}
+        </div>
+
+        {/* Font Size Control */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <label htmlFor="fontSize" style={{ fontSize: '14px', fontWeight: '500', color: themeColors.text }}>Font Size:</label>
+          <select
+            id="fontSize"
+            value={fontSize}
+            onChange={handleFontSizeChange}
+            style={{ 
+              padding: '6px 10px', 
+              border: `1px solid ${themeColors.border}`, 
+              borderRadius: '4px',
+              fontSize: '14px',
+              background: themeColors.surface,
+              color: themeColors.text,
+              minWidth: '70px'
+            }}
+          >
+            <option value={8}>8px</option>
+            <option value={10}>10px</option>
+            <option value={12}>12px</option>
+            <option value={14}>14px</option>
+            <option value={16}>16px</option>
+            <option value={18}>18px</option>
+            <option value={20}>20px</option>
+          </select>
         </div>
 
         {/* Navigation Controls */}
