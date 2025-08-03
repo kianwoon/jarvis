@@ -25,7 +25,14 @@ import {
   AccordionSummary,
   AccordionDetails,
   Switch,
-  FormControlLabel
+  FormControlLabel,
+  Tooltip,
+  CardHeader,
+  CardContent,
+  Card,
+  Grid,
+  Divider,
+  Autocomplete
 } from '@mui/material';
 import {
   Edit as EditIcon,
@@ -98,7 +105,7 @@ const PromptManagement: React.FC<PromptManagementProps> = ({
           version: 1,
           is_active: true,
           prompt_template: 'Analyze the following text and extract all entities. Return entities in JSON format: {text}',
-          parameters: { format: 'json', types: ['Person', 'Organization', 'Location', 'Event'] }
+          parameters: { format: 'json', confidence_threshold: 0.7 }
         },
         {
           id: '2',
@@ -241,7 +248,7 @@ const PromptManagement: React.FC<PromptManagementProps> = ({
                   version: 1,
                   is_active: true,
                   prompt_template: 'Analyze the following text and extract all entities. Return entities in JSON format: {text}',
-                  parameters: { format: 'json', types: ['Person', 'Organization', 'Location', 'Event'] }
+                  parameters: { format: 'json', confidence_threshold: 0.7 }
                 },
                 {
                   id: '2',
@@ -357,9 +364,41 @@ const PromptManagement: React.FC<PromptManagementProps> = ({
               </Box>
             </AccordionSummary>
             <AccordionDetails>
-              <Typography variant="body2" color="text.secondary" paragraph>
-                Parameters: {JSON.stringify(prompt.parameters, null, 2)}
-              </Typography>
+              {/* User-friendly parameters display */}
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 600 }}>
+                  Parameters:
+                </Typography>
+                <Grid container spacing={1}>
+                  {prompt.parameters && Object.entries(prompt.parameters).map(([key, value]) => (
+                    <Grid item xs={12} sm={6} md={4} key={key}>
+                      <Chip
+                        label={`${key}: ${Array.isArray(value) ? value.join(', ') : String(value)}`}
+                        variant="outlined"
+                        size="small"
+                        sx={{ 
+                          width: '100%',
+                          justifyContent: 'flex-start',
+                          '& .MuiChip-label': {
+                            display: 'block',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            maxWidth: '100%'
+                          }
+                        }}
+                      />
+                    </Grid>
+                  ))}
+                  {(!prompt.parameters || Object.keys(prompt.parameters).length === 0) && (
+                    <Grid item xs={12}>
+                      <Typography variant="body2" color="text.secondary" fontStyle="italic">
+                        No parameters configured
+                      </Typography>
+                    </Grid>
+                  )}
+                </Grid>
+              </Box>
               {prompt.prompt_template && (
                 <Box sx={{ mt: 2 }}>
                   <Typography variant="subtitle2" gutterBottom>
@@ -368,7 +407,8 @@ const PromptManagement: React.FC<PromptManagementProps> = ({
                   <Box
                     component="pre"
                     sx={{
-                      backgroundColor: 'grey.100',
+                      backgroundColor: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.grey[100],
+                      color: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[100] : theme.palette.grey[900],
                       p: 2,
                       borderRadius: 1,
                       fontSize: '0.8rem',
@@ -391,40 +431,221 @@ const PromptManagement: React.FC<PromptManagementProps> = ({
       <Dialog
         open={editDialogOpen}
         onClose={() => setEditDialogOpen(false)}
-        maxWidth="lg"
+        maxWidth="xl"
         fullWidth
       >
         <DialogTitle>
-          Edit Prompt: {selectedPrompt?.name}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Typography variant="h6">Edit Prompt</Typography>
+            <Chip label={selectedPrompt?.name} color="primary" />
+            <Box sx={{ flexGrow: 1 }} />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={selectedPrompt?.is_active || false}
+                  onChange={(e) => {
+                    if (selectedPrompt) {
+                      const updatedPrompts = prompts.map(p => 
+                        p.id === selectedPrompt.id 
+                          ? { ...p, is_active: e.target.checked }
+                          : p
+                      );
+                      onChange('prompts', updatedPrompts);
+                      setSelectedPrompt({ ...selectedPrompt, is_active: e.target.checked });
+                    }
+                  }}
+                />
+              }
+              label="Active"
+            />
+          </Box>
         </DialogTitle>
         <DialogContent>
-          <TextField
-            fullWidth
-            multiline
-            rows={20}
-            value={editedTemplate}
-            onChange={(e) => setEditedTemplate(e.target.value)}
-            variant="outlined"
-            label="Prompt Template"
-            helperText="Use {variable_name} for template variables"
-            sx={{ mt: 2 }}
-          />
-          {selectedPrompt && (
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="subtitle2" gutterBottom>
-                Available Variables:
-              </Typography>
-              {extractVariables(editedTemplate).map((variable) => (
-                <Chip
-                  key={variable.name}
-                  label={`${variable.name} ${variable.required ? '*' : ''}`}
-                  size="small"
-                  variant="outlined"
-                  sx={{ mr: 1, mb: 1 }}
+          <Grid container spacing={3} sx={{ mt: 1 }}>
+            {/* Left Column - Basic Info */}
+            <Grid item xs={12} md={4}>
+              <Card variant="outlined">
+                <CardHeader title="Prompt Information" />
+                <CardContent>
+                  <TextField
+                    fullWidth
+                    label="Name"
+                    value={selectedPrompt?.name || ''}
+                    onChange={(e) => {
+                      if (selectedPrompt) {
+                        const updatedPrompts = prompts.map(p => 
+                          p.id === selectedPrompt.id 
+                            ? { ...p, name: e.target.value }
+                            : p
+                        );
+                        onChange('prompts', updatedPrompts);
+                        setSelectedPrompt({ ...selectedPrompt, name: e.target.value });
+                      }
+                    }}
+                    margin="normal"
+                    variant="outlined"
+                  />
+                  <TextField
+                    fullWidth
+                    label="Description"
+                    multiline
+                    rows={3}
+                    value={selectedPrompt?.description || ''}
+                    onChange={(e) => {
+                      if (selectedPrompt) {
+                        const updatedPrompts = prompts.map(p => 
+                          p.id === selectedPrompt.id 
+                            ? { ...p, description: e.target.value }
+                            : p
+                        );
+                        onChange('prompts', updatedPrompts);
+                        setSelectedPrompt({ ...selectedPrompt, description: e.target.value });
+                      }
+                    }}
+                    margin="normal"
+                    variant="outlined"
+                    helperText="Brief description of what this prompt does"
+                  />
+                  <Autocomplete
+                    fullWidth
+                    options={promptTypes}
+                    value={selectedPrompt?.prompt_type || ''}
+                    onChange={(_, newValue) => {
+                      if (selectedPrompt && newValue) {
+                        const updatedPrompts = prompts.map(p => 
+                          p.id === selectedPrompt.id 
+                            ? { ...p, prompt_type: newValue }
+                            : p
+                        );
+                        onChange('prompts', updatedPrompts);
+                        setSelectedPrompt({ ...selectedPrompt, prompt_type: newValue });
+                      }
+                    }}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        label="Prompt Type"
+                        margin="normal"
+                        variant="outlined"
+                        helperText="Category of this prompt"
+                      />
+                    )}
+                  />
+                </CardContent>
+              </Card>
+
+              {/* Parameters Card */}
+              <Card variant="outlined" sx={{ mt: 2 }}>
+                <CardHeader 
+                  title="Parameters" 
+                  subheader="Configure prompt-specific parameters"
                 />
-              ))}
-            </Box>
-          )}
+                <CardContent>
+                  {selectedPrompt?.parameters && Object.entries(selectedPrompt.parameters).map(([key, value]) => (
+                    <Box key={key} sx={{ mb: 2 }}>
+                      <TextField
+                        fullWidth
+                        label={key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ')}
+                        value={Array.isArray(value) ? value.join(', ') : String(value)}
+                        onChange={(e) => {
+                          if (selectedPrompt) {
+                            const newParams = { ...selectedPrompt.parameters };
+                            // Handle arrays vs single values
+                            if (Array.isArray(value)) {
+                              newParams[key] = e.target.value.split(',').map(v => v.trim()).filter(v => v);
+                            } else if (typeof value === 'number') {
+                              newParams[key] = parseFloat(e.target.value) || 0;
+                            } else if (typeof value === 'boolean') {
+                              newParams[key] = e.target.value.toLowerCase() === 'true';
+                            } else {
+                              newParams[key] = e.target.value;
+                            }
+                            
+                            const updatedPrompts = prompts.map(p => 
+                              p.id === selectedPrompt.id 
+                                ? { ...p, parameters: newParams }
+                                : p
+                            );
+                            onChange('prompts', updatedPrompts);
+                            setSelectedPrompt({ ...selectedPrompt, parameters: newParams });
+                          }
+                        }}
+                        variant="outlined"
+                        size="small"
+                        helperText={
+                          Array.isArray(value) 
+                            ? "Comma-separated list" 
+                            : typeof value === 'number' 
+                            ? "Numeric value" 
+                            : typeof value === 'boolean'
+                            ? "true or false"
+                            : "Text value"
+                        }
+                      />
+                    </Box>
+                  ))}
+                  {(!selectedPrompt?.parameters || Object.keys(selectedPrompt.parameters).length === 0) && (
+                    <Typography variant="body2" color="text.secondary" fontStyle="italic">
+                      No parameters configured for this prompt
+                    </Typography>
+                  )}
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Right Column - Template Editor */}
+            <Grid item xs={12} md={8}>
+              <Card variant="outlined" sx={{ height: 'fit-content' }}>
+                <CardHeader 
+                  title="Prompt Template" 
+                  subheader="Edit the template using {variable_name} for placeholders"
+                />
+                <CardContent>
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={16}
+                    value={editedTemplate}
+                    onChange={(e) => setEditedTemplate(e.target.value)}
+                    variant="outlined"
+                    label="Template"
+                    placeholder="Enter your prompt template here..."
+                    sx={{ 
+                      '& .MuiInputBase-input': {
+                        fontFamily: 'monospace',
+                        fontSize: '14px'
+                      }
+                    }}
+                  />
+                  {selectedPrompt && (
+                    <Box sx={{ mt: 2 }}>
+                      <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 600 }}>
+                        Template Variables:
+                      </Typography>
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                        {extractVariables(editedTemplate).map((variable) => (
+                          <Tooltip key={variable.name} title={variable.description}>
+                            <Chip
+                              label={`{${variable.name}}`}
+                              size="small"
+                              variant="outlined"
+                              color={variable.required ? "primary" : "default"}
+                              icon={variable.required ? <span style={{fontSize: '12px'}}>*</span> : undefined}
+                            />
+                          </Tooltip>
+                        ))}
+                        {extractVariables(editedTemplate).length === 0 && (
+                          <Typography variant="body2" color="text.secondary" fontStyle="italic">
+                            No variables detected. Use {"{variable_name}"} syntax to add variables.
+                          </Typography>
+                        )}
+                      </Box>
+                    </Box>
+                  )}
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditDialogOpen(false)} startIcon={<CancelIcon />}>
@@ -485,7 +706,8 @@ const PromptManagement: React.FC<PromptManagementProps> = ({
               <Box
                 component="pre"
                 sx={{
-                  backgroundColor: 'grey.100',
+                  backgroundColor: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.grey[100],
+                  color: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[100] : theme.palette.grey[900],
                   p: 2,
                   borderRadius: 1,
                   fontSize: '0.8rem',

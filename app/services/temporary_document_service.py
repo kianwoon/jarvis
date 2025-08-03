@@ -563,11 +563,12 @@ class TemporaryDocumentService:
                         'total_relationships': 0
                     }
                 
-                # Process chunks for knowledge graph
+                # Process chunks for knowledge graph with progressive storage for better UX
                 graph_result = await self.graph_processor.process_document_for_graph(
                     chunks=chunks,
                     document_id=temp_doc_id,
-                    store_in_neo4j=self.kg_config.get('neo4j', {}).get('enabled', False)
+                    store_in_neo4j=self.kg_config.get('neo4j', {}).get('enabled', False),
+                    progressive_storage=True  # Enable progressive storage for immediate user feedback
                 )
                 
                 return {

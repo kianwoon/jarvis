@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test KG Data Flow</title>
+</head>
+<body>
+    <h1>Testing Knowledge Graph Data Flow</h1>
+    <pre id="result"></pre>
+    
+    <script>
+        async function testDataFlow() {
+            try {
+                // Fetch the API data
+                const response = await fetch('/api/v1/settings/knowledge_graph');
+                const apiData = await response.json();
+                
+                // Simulate the SettingsApp processing
+                const settingsData = apiData.settings || apiData;
+                
+                // Simulate cleanNestedSettings
+                const cleanNestedSettings = (obj) => {
+                    if (typeof obj !== 'object' || obj === null) return obj;
+                    
+                    const cleaned = Array.isArray(obj) ? [] : {};
+                    const seenKeys = new Set();
+                    
+                    for (const [key, value] of Object.entries(obj)) {
+                        let cleanKey = key;
+                        
+                        while (cleanKey.startsWith('settings.settings.')) {
+                            cleanKey = cleanKey.replace('settings.settings.', '');
+                        }
+                        
+                        if (cleanKey.startsWith('settings.') && 'knowledge_graph' !== 'settings') {
+                            cleanKey = cleanKey.replace('settings.', '');
+                        }
+                        
+                        if (!seenKeys.has(cleanKey)) {
+                            seenKeys.add(cleanKey);
+                            cleaned[cleanKey] = cleanNestedSettings(value);
+                        }
+                    }
+                    
+                    return cleaned;
+                };
+                
+                const cleanedData = cleanNestedSettings(settingsData);
+                
+                // Display the results
+                const result = document.getElementById('result');
+                result.textContent = JSON.stringify({
+                    'API Response': apiData,
+                    'Extracted Settings': settingsData,
+                    'Cleaned Data': cleanedData,
+                    'Model Config': cleanedData.model_config,
+                    'Model': cleanedData.model_config?.model
+                }, null, 2);
+                
+            } catch (error) {
+                document.getElementById('result').textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        testDataFlow();
+    </script>
+</body>
+</html>

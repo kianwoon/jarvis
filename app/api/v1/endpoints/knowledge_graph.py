@@ -164,11 +164,12 @@ async def ingest_document_to_graph(
                 message=f"Preview generated for '{file.filename}' - {preview_data.get('total_entities_found', 0)} entities, {preview_data.get('total_relationships_found', 0)} relationships found"
             )
         else:
-            # Full processing
+            # Full processing with progressive storage
             graph_result = await graph_processor.process_document_for_graph(
                 chunks=chunks,
                 document_id=document_id,
-                store_in_neo4j=store_in_neo4j
+                store_in_neo4j=store_in_neo4j,
+                progressive_storage=True
             )
             
             return GraphIngestionResponse(
@@ -253,12 +254,13 @@ async def ingest_document_with_progress(
             if extract_entities:
                 yield f"data: {json.dumps({'progress': 60, 'step': 'Extracting entities and relationships', 'status': 'processing'})}\n\n"
             
-            # Graph processing
+            # Graph processing with progressive storage
             graph_processor = get_graph_document_processor()
             graph_result = await graph_processor.process_document_for_graph(
                 chunks=chunks,
                 document_id=document_id,
-                store_in_neo4j=store_in_neo4j
+                store_in_neo4j=store_in_neo4j,
+                progressive_storage=True
             )
             
             if store_in_neo4j:
@@ -290,6 +292,59 @@ async def ingest_document_with_progress(
         }
     )
 
+@router.get("/entities")
+async def get_all_entities(limit: int = 1000):
+    """
+    Get all entities from the knowledge graph.
+    """
+    try:
+        neo4j_service = get_neo4j_service()
+        
+        if not neo4j_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        # Get all entities without document filtering
+        query = """
+        MATCH (n)
+        WHERE n.name IS NOT NULL
+        RETURN n.id as id, n.name as name, 
+               COALESCE(n.type, labels(n)[0]) as type, 
+               COALESCE(n.confidence, 0.5) as confidence,
+               COALESCE(n.original_text, '') as original_text,
+               COALESCE(n.chunk_id, '') as chunk_id,
+               COALESCE(n.created_at, '') as created_at,
+               COALESCE(n.document_id, '') as document_id
+        ORDER BY n.name
+        LIMIT $limit
+        """
+        
+        entities = neo4j_service.execute_cypher(query, {'limit': limit})
+        
+        # Format entities for response
+        formatted_entities = []
+        for entity in entities:
+            formatted_entities.append({
+                'id': entity.get('id', 'unknown'),
+                'name': entity.get('name', 'unknown'),
+                'type': entity.get('type', 'unknown'),
+                'confidence': entity.get('confidence', 0.0),
+                'original_text': entity.get('original_text', ''),
+                'chunk_id': entity.get('chunk_id', ''),
+                'created_at': entity.get('created_at', ''),
+                'document_id': entity.get('document_id', '')
+            })
+        
+        return {
+            'entities': formatted_entities,
+            'total_count': len(formatted_entities)
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get all entities: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve entities: {str(e)}")
+
 @router.get("/entities/{document_id}")
 async def get_document_entities(document_id: str, limit: int = 100):
     """
@@ -300,6 +355,10 @@ async def get_document_entities(document_id: str, limit: int = 100):
         
         if not neo4j_service.is_enabled():
             raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        # Handle special case for "all" documents
+        if document_id.lower() == "all":
+            return await get_all_entities(max(limit, 1000))  # Ensure we get all entities
         
         entities = neo4j_service.find_entities(
             properties={'document_id': document_id},
@@ -331,6 +390,62 @@ async def get_document_entities(document_id: str, limit: int = 100):
         logger.error(f"Failed to get entities for document {document_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve entities: {str(e)}")
 
+@router.get("/relationships")
+async def get_all_relationships(limit: int = 1000):
+    """
+    Get all relationships from the knowledge graph.
+    """
+    try:
+        neo4j_service = get_neo4j_service()
+        
+        if not neo4j_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        # Get all relationships without document filtering
+        cypher_query = """
+        MATCH (a)-[r]->(b)
+        RETURN a.id as source_entity_id, a.name as source_name, 
+               type(r) as relationship_type, 
+               b.id as target_entity_id, b.name as target_name,
+               COALESCE(r.confidence, 0.5) as confidence, 
+               COALESCE(r.context, '') as context, 
+               COALESCE(r.chunk_id, '') as chunk_id,
+               COALESCE(r.created_at, '') as created_at, 
+               COALESCE(r.document_id, '') as document_id
+        ORDER BY relationship_type, source_name, target_name
+        LIMIT $limit
+        """
+        
+        results = neo4j_service.execute_cypher(cypher_query, {'limit': limit})
+        
+        # Format relationships for response
+        formatted_relationships = []
+        for result in results:
+            formatted_relationships.append({
+                'id': f"{result.get('source_entity_id', 'unknown')}_{result.get('target_entity_id', 'unknown')}_{result.get('relationship_type', 'unknown')}",
+                'source_entity': result.get('source_entity_id', result.get('source_name', 'unknown')),
+                'target_entity': result.get('target_entity_id', result.get('target_name', 'unknown')),
+                'source_name': result.get('source_name', 'unknown'),
+                'target_name': result.get('target_name', 'unknown'),
+                'relationship_type': result.get('relationship_type', 'unknown'),
+                'confidence': result.get('confidence', 0.0),
+                'context': result.get('context', ''),
+                'chunk_id': result.get('chunk_id', ''),
+                'created_at': result.get('created_at', ''),
+                'document_id': result.get('document_id', '')
+            })
+        
+        return {
+            'relationships': formatted_relationships,
+            'total_count': len(formatted_relationships)
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get all relationships: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve relationships: {str(e)}")
+
 @router.get("/relationships/{document_id}")
 async def get_document_relationships(document_id: str, limit: int = 100):
     """
@@ -341,6 +456,10 @@ async def get_document_relationships(document_id: str, limit: int = 100):
         
         if not neo4j_service.is_enabled():
             raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        # Handle special case for "all" documents
+        if document_id.lower() == "all":
+            return await get_all_relationships(max(limit, 1000))  # Ensure we get all relationships
         
         # Use custom query to get relationships for the document
         # Return both IDs and names for proper frontend linking
@@ -403,10 +522,10 @@ async def get_knowledge_graph_stats():
         # Get database info
         db_info = neo4j_service.get_database_info()
         
-        # Get entity type distribution
+        # Get entity type distribution using the type property instead of labels
         entity_types_query = """
         MATCH (n)
-        RETURN labels(n)[0] as entity_type, count(n) as count
+        RETURN COALESCE(n.type, labels(n)[0]) as entity_type, count(n) as count
         ORDER BY count DESC
         """
         entity_results = neo4j_service.execute_cypher(entity_types_query)
@@ -627,19 +746,99 @@ async def deduplicate_entities():
 
 @router.get("/isolated-nodes")
 async def get_isolated_nodes():
-    """Get truly isolated nodes (handling duplicates correctly)."""
+    """Get truly isolated nodes with comprehensive debugging information."""
     try:
         neo4j_service = get_neo4j_service()
         
         if not neo4j_service.is_enabled():
             raise HTTPException(status_code=503, detail="Neo4j service is not available")
         
-        isolated_nodes = neo4j_service.get_truly_isolated_nodes()
+        # Method 1: Neo4j Service method (deduplication-aware)
+        isolated_method1 = neo4j_service.get_truly_isolated_nodes()
+        
+        # Method 2: Simple isolation check (like anti-silo service)
+        simple_isolation_query = """
+        MATCH (n)
+        WHERE n.name IS NOT NULL
+        WITH n, [(n)-[r]-(other) | r] as relationships
+        WHERE size(relationships) = 0
+        RETURN n.id as id, n.name as name, n.type as type, labels(n) as labels
+        ORDER BY n.name
+        """
+        isolated_method2 = neo4j_service.execute_cypher(simple_isolation_query)
+        
+        # Method 3: Direct relationship count check
+        direct_count_query = """
+        MATCH (n)
+        WHERE n.name IS NOT NULL
+        OPTIONAL MATCH (n)-[r]-()
+        WITH n, count(r) as rel_count
+        WHERE rel_count = 0
+        RETURN n.id as id, n.name as name, n.type as type, labels(n) as labels, rel_count
+        ORDER BY n.name
+        """
+        isolated_method3 = neo4j_service.execute_cypher(direct_count_query)
+        
+        # Method 4: Check for nodes with no incoming or outgoing relationships
+        no_relationships_query = """
+        MATCH (n)
+        WHERE n.name IS NOT NULL
+        AND NOT (n)--()
+        RETURN n.id as id, n.name as name, n.type as type, labels(n) as labels
+        ORDER BY n.name
+        """
+        isolated_method4 = neo4j_service.execute_cypher(no_relationships_query)
+        
+        # Compare results
+        method1_ids = {node['id'] for node in isolated_method1}
+        method2_ids = {node['id'] for node in isolated_method2}
+        method3_ids = {node['id'] for node in isolated_method3}
+        method4_ids = {node['id'] for node in isolated_method4}
+        
+        # Find discrepancies
+        all_isolated_ids = method1_ids | method2_ids | method3_ids | method4_ids
+        
+        discrepancy_analysis = {}
+        for node_id in all_isolated_ids:
+            discrepancy_analysis[node_id] = {
+                'in_method1': node_id in method1_ids,
+                'in_method2': node_id in method2_ids,
+                'in_method3': node_id in method3_ids,
+                'in_method4': node_id in method4_ids,
+                'node_info': next((node for node in isolated_method2 if node['id'] == node_id), 
+                                 next((node for node in isolated_method1 if node['id'] == node_id), None))
+            }
         
         return {
-            'isolated_nodes': isolated_nodes,
-            'total_count': len(isolated_nodes),
-            'message': f'Found {len(isolated_nodes)} truly isolated entities'
+            'success': True,
+            'isolation_methods': {
+                'method1_deduplication_aware': {
+                    'count': len(isolated_method1),
+                    'nodes': isolated_method1[:10]  # Limit for readability
+                },
+                'method2_simple_check': {
+                    'count': len(isolated_method2),
+                    'nodes': isolated_method2[:10]
+                },
+                'method3_direct_count': {
+                    'count': len(isolated_method3),
+                    'nodes': isolated_method3[:10]
+                },
+                'method4_no_relationships': {
+                    'count': len(isolated_method4),
+                    'nodes': isolated_method4[:10]
+                }
+            },
+            'summary': {
+                'method1_count': len(isolated_method1),
+                'method2_count': len(isolated_method2),
+                'method3_count': len(isolated_method3),
+                'method4_count': len(isolated_method4),
+                'total_unique_isolated': len(all_isolated_ids),
+                'methods_agree': len(method1_ids) == len(method2_ids) == len(method3_ids) == len(method4_ids) and method1_ids == method2_ids == method3_ids == method4_ids
+            },
+            'discrepancy_analysis': discrepancy_analysis,
+            'message': f'Found isolated nodes: Method1={len(isolated_method1)}, Method2={len(isolated_method2)}, Method3={len(isolated_method3)}, Method4={len(isolated_method4)}'
         }
     
     except HTTPException:
@@ -647,6 +846,158 @@ async def get_isolated_nodes():
     except Exception as e:
         logger.error(f"Failed to get isolated nodes: {e}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+@router.post("/force-nuclear-anti-silo")
+async def force_nuclear_anti_silo():
+    """Manually trigger nuclear anti-silo processing to eliminate any remaining isolated nodes."""
+    try:
+        from app.services.knowledge_graph_service import get_knowledge_graph_service
+        
+        neo4j_service = get_neo4j_service()
+        if not neo4j_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        kg_service = get_knowledge_graph_service()
+        
+        # Check isolated nodes before processing
+        isolated_before = neo4j_service.get_truly_isolated_nodes()
+        
+        # Force nuclear anti-silo processing
+        connections_made = await kg_service._nuclear_anti_silo_elimination(neo4j_service)
+        
+        # Check isolated nodes after processing
+        isolated_after = neo4j_service.get_truly_isolated_nodes()
+        
+        return {
+            'success': True,
+            'processing_result': {
+                'isolated_before': len(isolated_before),
+                'isolated_after': len(isolated_after),
+                'connections_made': connections_made,
+                'nodes_eliminated': len(isolated_before) - len(isolated_after),
+                'elimination_success': len(isolated_after) == 0
+            },
+            'remaining_isolated_nodes': isolated_after,
+            'message': f'Nuclear anti-silo processing complete. Eliminated {len(isolated_before) - len(isolated_after)} isolated nodes with {connections_made} new connections.'
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to run nuclear anti-silo: {e}")
+        raise HTTPException(status_code=500, detail=f"Nuclear processing failed: {str(e)}")
+
+@router.get("/frontend-validation")
+async def validate_frontend_data():
+    """Validate that frontend data has proper entity-relationship mapping."""
+    try:
+        neo4j_service = get_neo4j_service()
+        if not neo4j_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Neo4j service is not available")
+        
+        # Get entities (same as frontend receives)
+        entities_query = """
+        MATCH (n)
+        WHERE n.name IS NOT NULL
+        RETURN n.id as id, n.name as name, 
+               COALESCE(n.type, labels(n)[0]) as type, 
+               COALESCE(n.confidence, 0.5) as confidence
+        ORDER BY n.name
+        LIMIT 1000
+        """
+        entities = neo4j_service.execute_cypher(entities_query)
+        
+        # Get relationships (same as frontend receives)
+        relationships_query = """
+        MATCH (a)-[r]->(b)
+        RETURN a.id as source_entity_id, a.name as source_name, 
+               type(r) as relationship_type, 
+               b.id as target_entity_id, b.name as target_name,
+               COALESCE(r.confidence, 0.5) as confidence
+        ORDER BY relationship_type, source_name, target_name
+        LIMIT 1000
+        """
+        relationships = neo4j_service.execute_cypher(relationships_query)
+        
+        # Analyze connectivity like frontend would
+        entity_ids = {e['id'] for e in entities}
+        entity_names = {e['name'] for e in entities}
+        
+        # Check relationship validity
+        valid_relationships = []
+        invalid_relationships = []
+        entities_with_connections = set()
+        
+        for rel in relationships:
+            source_id = rel['source_entity_id']
+            target_id = rel['target_entity_id']
+            
+            source_valid = source_id in entity_ids
+            target_valid = target_id in entity_ids
+            
+            if source_valid and target_valid:
+                valid_relationships.append(rel)
+                entities_with_connections.add(source_id)
+                entities_with_connections.add(target_id)
+            else:
+                invalid_relationships.append({
+                    'relationship': rel,
+                    'source_valid': source_valid,
+                    'target_valid': target_valid
+                })
+        
+        # Find entities without connections
+        isolated_entities = []
+        for entity in entities:
+            if entity['id'] not in entities_with_connections:
+                isolated_entities.append(entity)
+        
+        # Analyze connection distribution
+        connection_count = {}
+        for rel in valid_relationships:
+            source_id = rel['source_entity_id']
+            target_id = rel['target_entity_id']
+            connection_count[source_id] = connection_count.get(source_id, 0) + 1
+            connection_count[target_id] = connection_count.get(target_id, 0) + 1
+        
+        # Find weakly connected entities (1-2 connections)
+        weakly_connected = []
+        for entity in entities:
+            count = connection_count.get(entity['id'], 0)
+            if 1 <= count <= 2:
+                weakly_connected.append({
+                    'entity': entity,
+                    'connection_count': count
+                })
+        
+        return {
+            'success': True,
+            'entity_count': len(entities),
+            'relationship_count': len(relationships),
+            'valid_relationships': len(valid_relationships),
+            'invalid_relationships': len(invalid_relationships),
+            'isolated_entities': {
+                'count': len(isolated_entities),
+                'entities': isolated_entities
+            },
+            'weakly_connected': {
+                'count': len(weakly_connected),
+                'entities': weakly_connected[:10]  # Top 10 weakly connected
+            },
+            'connectivity_stats': {
+                'fully_connected': len(entities_with_connections),
+                'average_connections': sum(connection_count.values()) / len(connection_count) if connection_count else 0,
+                'max_connections': max(connection_count.values()) if connection_count else 0,
+                'min_connections': min(connection_count.values()) if connection_count else 0
+            },
+            'sample_invalid': invalid_relationships[:5] if invalid_relationships else []
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to validate frontend data: {e}")
+        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
 
 @router.get("/connectivity-analysis")
 async def analyze_graph_connectivity():
@@ -855,3 +1206,164 @@ async def knowledge_graph_health():
     except Exception as e:
         logger.error(f"Knowledge graph health check failed: {e}")
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
+
+@router.post("/global-anti-silo-cleanup")
+async def run_global_anti_silo_cleanup():
+    """
+    Run comprehensive global anti-silo analysis to eliminate isolated nodes.
+    
+    This endpoint performs a system-wide analysis to find and link entities
+    that should be connected across documents, reducing silo nodes.
+    """
+    try:
+        logger.info("🌍 Starting global anti-silo cleanup via API request")
+        
+        kg_service = get_knowledge_graph_service()
+        
+        # Run the global analysis
+        results = await kg_service.run_global_anti_silo_analysis()
+        
+        return {
+            "success": True,
+            "message": "Global anti-silo analysis completed successfully",
+            "results": results,
+            "timestamp": datetime.now().isoformat(),
+            "summary": {
+                "silo_nodes_analyzed": results.get('entities_analyzed', 0),
+                "cross_document_links_created": results.get('cross_document_links_created', 0),
+                "potential_silos_found": results.get('silo_nodes_found', 0),
+                "errors_encountered": len(results.get('errors', []))
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Global anti-silo cleanup failed: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Global anti-silo cleanup failed: {str(e)}"
+        )
+
+@router.get("/silo-analysis")
+async def get_silo_analysis():
+    """
+    Analyze current silo nodes in the knowledge graph.
+    
+    Returns information about entities that have few or no connections,
+    helping identify potential data silos.
+    """
+    try:
+        neo4j_service = get_neo4j_service()
+        
+        # Query for silo nodes (entities with 2 or fewer connections)
+        silo_query = """
+        MATCH (n)
+        OPTIONAL MATCH (n)-[r]-(connected)
+        WITH n, count(DISTINCT connected) as connection_count
+        WHERE connection_count <= 2
+        RETURN n.id as entity_id, n.name as name, n.type as type, 
+               n.document_id as document_id, connection_count,
+               n.confidence as confidence
+        ORDER BY connection_count ASC, n.name ASC
+        """
+        
+        silo_nodes = neo4j_service.execute_cypher(silo_query)
+        
+        # Group by connection count for analysis
+        analysis = {
+            'isolated_nodes': [],      # 0 connections
+            'weakly_connected': [],    # 1-2 connections  
+            'total_silos': len(silo_nodes),
+            'analysis_timestamp': datetime.now().isoformat()
+        }
+        
+        for node in silo_nodes:
+            node_info = {
+                'entity_id': node['entity_id'],
+                'name': node['name'],
+                'type': node['type'],
+                'document_id': node['document_id'],
+                'connections': node['connection_count'],
+                'confidence': node.get('confidence', 0.0)
+            }
+            
+            if node['connection_count'] == 0:
+                analysis['isolated_nodes'].append(node_info)
+            else:
+                analysis['weakly_connected'].append(node_info)
+        
+        # Add summary statistics
+        analysis['summary'] = {
+            'total_entities_analyzed': len(silo_nodes),
+            'isolated_count': len(analysis['isolated_nodes']),
+            'weakly_connected_count': len(analysis['weakly_connected']),
+            'silo_percentage': round((len(silo_nodes) / max(1, len(silo_nodes))) * 100, 2)
+        }
+        
+        return {
+            "success": True,
+            "analysis": analysis,
+            "message": f"Found {len(silo_nodes)} potential silo nodes"
+        }
+        
+    except Exception as e:
+        logger.error(f"Silo analysis failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Silo analysis failed: {str(e)}"
+        )
+
+@router.get("/debug/entity-types")
+async def debug_entity_types():
+    """Debug endpoint to verify entity types in Neo4j database"""
+    try:
+        neo4j_service = get_neo4j_service()
+        
+        if not neo4j_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Neo4j service not available")
+        
+        # Query to get entity type distribution
+        type_distribution_query = """
+        MATCH (n)
+        WHERE n.name IS NOT NULL
+        WITH n.type as entity_type, count(n) as count, collect(n.name)[0..5] as sample_names
+        RETURN entity_type, count, sample_names
+        ORDER BY count DESC
+        """
+        
+        type_results = neo4j_service.execute_cypher(type_distribution_query)
+        
+        # Query to get recent entities with their types
+        recent_entities_query = """
+        MATCH (n)
+        WHERE n.name IS NOT NULL AND n.created_at IS NOT NULL
+        RETURN n.name as name, n.type as type, n.created_at as created_at, 
+               n.confidence as confidence, n.document_id as document_id
+        ORDER BY n.created_at DESC
+        LIMIT 20
+        """
+        
+        recent_results = neo4j_service.execute_cypher(recent_entities_query)
+        
+        # Query to check for null types
+        null_type_query = """
+        MATCH (n)
+        WHERE n.name IS NOT NULL AND (n.type IS NULL OR n.type = '')
+        RETURN count(n) as null_type_count, collect(n.name)[0..10] as sample_null_entities
+        """
+        
+        null_results = neo4j_service.execute_cypher(null_type_query)
+        
+        return {
+            "success": True,
+            "entity_type_distribution": type_results,
+            "recent_entities": recent_results,
+            "null_type_analysis": null_results[0] if null_results else {"null_type_count": 0, "sample_null_entities": []},
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Debug entity types failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Debug entity types failed: {str(e)}"
+        )

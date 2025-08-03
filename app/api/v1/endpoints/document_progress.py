@@ -506,11 +506,12 @@ async def progress_generator(file_content: bytes, filename: str, progress: Uploa
             print(f"🔥 PROGRESS_GENERATOR: Processing {len(extracted_chunks)} chunks for knowledge graph")
             
             try:
-                # Use the correct method: process_document_for_graph
+                # Use the correct method: process_document_for_graph with progressive storage
                 result = await graph_processor.process_document_for_graph(
                     chunks=extracted_chunks,
                     document_id=file_id,
-                    store_in_neo4j=True
+                    store_in_neo4j=True,
+                    progressive_storage=True
                 )
                 
                 total_entities = result.total_entities if result and result.success else 0

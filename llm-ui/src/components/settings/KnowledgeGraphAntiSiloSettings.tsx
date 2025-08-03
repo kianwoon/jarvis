@@ -118,6 +118,8 @@ interface AntiSiloConfig {
   connectivity_analysis_threshold: number;
   enable_isolation_detection: boolean;
   isolation_detection_threshold: number;
+  enable_nuclear_option: boolean;
+  nuclear_similarity_threshold: number;
 }
 
 interface KnowledgeGraphAntiSiloSettingsProps {
@@ -137,59 +139,61 @@ const KnowledgeGraphAntiSiloSettings: React.FC<KnowledgeGraphAntiSiloSettingsPro
   const [isTesting, setIsTesting] = useState(false);
 
   const antiSiloConfig: AntiSiloConfig = {
-    enable_anti_silo: data?.extraction?.enable_anti_silo ?? true,
-    anti_silo_similarity_threshold: data?.extraction?.anti_silo_similarity_threshold ?? 0.75,
-    anti_silo_type_boost: data?.extraction?.anti_silo_type_boost ?? 1.2,
-    enable_cooccurrence_analysis: data?.extraction?.enable_cooccurrence_analysis ?? true,
-    enable_type_based_clustering: data?.extraction?.enable_type_based_clustering ?? true,
-    enable_hub_entities: data?.extraction?.enable_hub_entities ?? true,
-    hub_entity_threshold: data?.extraction?.hub_entity_threshold ?? 3,
-    enable_semantic_clustering: data?.extraction?.enable_semantic_clustering ?? true,
-    clustering_similarity_threshold: data?.extraction?.clustering_similarity_threshold ?? 0.8,
-    enable_document_bridge_relationships: data?.extraction?.enable_document_bridge_relationships ?? true,
-    bridge_relationship_confidence: data?.extraction?.bridge_relationship_confidence ?? 0.6,
-    enable_temporal_linking: data?.extraction?.enable_temporal_linking ?? true,
-    temporal_linking_window: data?.extraction?.temporal_linking_window ?? 7,
-    enable_contextual_linking: data?.extraction?.enable_contextual_linking ?? true,
-    contextual_linking_threshold: data?.extraction?.contextual_linking_threshold ?? 0.7,
-    enable_fuzzy_matching: data?.extraction?.enable_fuzzy_matching ?? true,
-    fuzzy_matching_threshold: data?.extraction?.fuzzy_matching_threshold ?? 0.85,
-    enable_alias_detection: data?.extraction?.enable_alias_detection ?? true,
-    alias_detection_threshold: data?.extraction?.alias_detection_threshold ?? 0.9,
-    enable_abbreviation_matching: data?.extraction?.enable_abbreviation_matching ?? true,
-    abbreviation_matching_threshold: data?.extraction?.abbreviation_matching_threshold ?? 0.8,
-    enable_synonym_detection: data?.extraction?.enable_synonym_detection ?? true,
-    synonym_detection_threshold: data?.extraction?.synonym_detection_threshold ?? 0.75,
-    enable_hierarchical_linking: data?.extraction?.enable_hierarchical_linking ?? true,
-    hierarchical_linking_depth: data?.extraction?.hierarchical_linking_depth ?? 2,
-    enable_geographic_linking: data?.extraction?.enable_geographic_linking ?? true,
-    geographic_linking_threshold: data?.extraction?.geographic_linking_threshold ?? 0.7,
-    enable_temporal_coherence: data?.extraction?.enable_temporal_coherence ?? true,
-    temporal_coherence_threshold: data?.extraction?.temporal_coherence_threshold ?? 0.6,
-    enable_semantic_bridge_entities: data?.extraction?.enable_semantic_bridge_entities ?? true,
-    semantic_bridge_threshold: data?.extraction?.semantic_bridge_threshold ?? 0.65,
-    enable_cross_reference_analysis: data?.extraction?.enable_cross_reference_analysis ?? true,
-    cross_reference_threshold: data?.extraction?.cross_reference_threshold ?? 0.7,
-    enable_relationship_propagation: data?.extraction?.enable_relationship_propagation ?? true,
-    relationship_propagation_depth: data?.extraction?.relationship_propagation_depth ?? 2,
-    enable_entity_consolidation: data?.extraction?.enable_entity_consolidation ?? true,
-    entity_consolidation_threshold: data?.extraction?.entity_consolidation_threshold ?? 0.85,
-    enable_synthetic_relationships: data?.extraction?.enable_synthetic_relationships ?? true,
-    synthetic_relationship_confidence: data?.extraction?.synthetic_relationship_confidence ?? 0.5,
-    enable_graph_enrichment: data?.extraction?.enable_graph_enrichment ?? true,
-    graph_enrichment_depth: data?.extraction?.graph_enrichment_depth ?? 3,
-    enable_connectivity_analysis: data?.extraction?.enable_connectivity_analysis ?? true,
-    connectivity_analysis_threshold: data?.extraction?.connectivity_analysis_threshold ?? 0.4,
-    enable_isolation_detection: data?.extraction?.enable_isolation_detection ?? true,
-    isolation_detection_threshold: data?.extraction?.isolation_detection_threshold ?? 1,
-    ...data?.extraction
+    enable_anti_silo: data?.knowledge_graph?.extraction?.enable_anti_silo ?? true,
+    anti_silo_similarity_threshold: data?.knowledge_graph?.extraction?.anti_silo_similarity_threshold ?? 0.75,
+    anti_silo_type_boost: data?.knowledge_graph?.extraction?.anti_silo_type_boost ?? 1.2,
+    enable_cooccurrence_analysis: data?.knowledge_graph?.extraction?.enable_cooccurrence_analysis ?? true,
+    enable_type_based_clustering: data?.knowledge_graph?.extraction?.enable_type_based_clustering ?? true,
+    enable_hub_entities: data?.knowledge_graph?.extraction?.enable_hub_entities ?? true,
+    hub_entity_threshold: data?.knowledge_graph?.extraction?.hub_entity_threshold ?? 3,
+    enable_semantic_clustering: data?.knowledge_graph?.extraction?.enable_semantic_clustering ?? true,
+    clustering_similarity_threshold: data?.knowledge_graph?.extraction?.clustering_similarity_threshold ?? 0.8,
+    enable_document_bridge_relationships: data?.knowledge_graph?.extraction?.enable_document_bridge_relationships ?? true,
+    bridge_relationship_confidence: data?.knowledge_graph?.extraction?.bridge_relationship_confidence ?? 0.6,
+    enable_temporal_linking: data?.knowledge_graph?.extraction?.enable_temporal_linking ?? true,
+    temporal_linking_window: data?.knowledge_graph?.extraction?.temporal_linking_window ?? 7,
+    enable_contextual_linking: data?.knowledge_graph?.extraction?.enable_contextual_linking ?? true,
+    contextual_linking_threshold: data?.knowledge_graph?.extraction?.contextual_linking_threshold ?? 0.7,
+    enable_fuzzy_matching: data?.knowledge_graph?.extraction?.enable_fuzzy_matching ?? true,
+    fuzzy_matching_threshold: data?.knowledge_graph?.extraction?.fuzzy_matching_threshold ?? 0.85,
+    enable_alias_detection: data?.knowledge_graph?.extraction?.enable_alias_detection ?? true,
+    alias_detection_threshold: data?.knowledge_graph?.extraction?.alias_detection_threshold ?? 0.9,
+    enable_abbreviation_matching: data?.knowledge_graph?.extraction?.enable_abbreviation_matching ?? true,
+    abbreviation_matching_threshold: data?.knowledge_graph?.extraction?.abbreviation_matching_threshold ?? 0.8,
+    enable_synonym_detection: data?.knowledge_graph?.extraction?.enable_synonym_detection ?? true,
+    synonym_detection_threshold: data?.knowledge_graph?.extraction?.synonym_detection_threshold ?? 0.75,
+    enable_hierarchical_linking: data?.knowledge_graph?.extraction?.enable_hierarchical_linking ?? true,
+    hierarchical_linking_depth: data?.knowledge_graph?.extraction?.hierarchical_linking_depth ?? 2,
+    enable_geographic_linking: data?.knowledge_graph?.extraction?.enable_geographic_linking ?? true,
+    geographic_linking_threshold: data?.knowledge_graph?.extraction?.geographic_linking_threshold ?? 0.7,
+    enable_temporal_coherence: data?.knowledge_graph?.extraction?.enable_temporal_coherence ?? true,
+    temporal_coherence_threshold: data?.knowledge_graph?.extraction?.temporal_coherence_threshold ?? 0.6,
+    enable_semantic_bridge_entities: data?.knowledge_graph?.extraction?.enable_semantic_bridge_entities ?? true,
+    semantic_bridge_threshold: data?.knowledge_graph?.extraction?.semantic_bridge_threshold ?? 0.65,
+    enable_cross_reference_analysis: data?.knowledge_graph?.extraction?.enable_cross_reference_analysis ?? true,
+    cross_reference_threshold: data?.knowledge_graph?.extraction?.cross_reference_threshold ?? 0.7,
+    enable_relationship_propagation: data?.knowledge_graph?.extraction?.enable_relationship_propagation ?? true,
+    relationship_propagation_depth: data?.knowledge_graph?.extraction?.relationship_propagation_depth ?? 2,
+    enable_entity_consolidation: data?.knowledge_graph?.extraction?.enable_entity_consolidation ?? true,
+    entity_consolidation_threshold: data?.knowledge_graph?.extraction?.entity_consolidation_threshold ?? 0.85,
+    enable_synthetic_relationships: data?.knowledge_graph?.extraction?.enable_synthetic_relationships ?? true,
+    synthetic_relationship_confidence: data?.knowledge_graph?.extraction?.synthetic_relationship_confidence ?? 0.5,
+    enable_graph_enrichment: data?.knowledge_graph?.extraction?.enable_graph_enrichment ?? true,
+    graph_enrichment_depth: data?.knowledge_graph?.extraction?.graph_enrichment_depth ?? 3,
+    enable_connectivity_analysis: data?.knowledge_graph?.extraction?.enable_connectivity_analysis ?? true,
+    connectivity_analysis_threshold: data?.knowledge_graph?.extraction?.connectivity_analysis_threshold ?? 0.4,
+    enable_isolation_detection: data?.knowledge_graph?.extraction?.enable_isolation_detection ?? true,
+    isolation_detection_threshold: data?.knowledge_graph?.extraction?.isolation_detection_threshold ?? 1,
+    enable_nuclear_option: data?.knowledge_graph?.extraction?.enable_nuclear_option ?? false,
+    nuclear_similarity_threshold: data?.knowledge_graph?.extraction?.nuclear_similarity_threshold ?? 0.1,
+    ...data?.knowledge_graph?.extraction
   };
 
   const handleConfigChange = (field: string, value: any) => {
     const newConfig = {
-      ...data,
+      ...data?.knowledge_graph,
       extraction: {
-        ...data?.extraction,
+        ...data?.knowledge_graph?.extraction,
         [field]: value
       }
     };
@@ -198,9 +202,9 @@ const KnowledgeGraphAntiSiloSettings: React.FC<KnowledgeGraphAntiSiloSettingsPro
 
   const handleBulkConfigChange = (config: Partial<AntiSiloConfig>) => {
     const newConfig = {
-      ...data,
+      ...data?.knowledge_graph,
       extraction: {
-        ...data?.extraction,
+        ...data?.knowledge_graph?.extraction,
         ...config
       }
     };
@@ -257,7 +261,9 @@ const KnowledgeGraphAntiSiloSettings: React.FC<KnowledgeGraphAntiSiloSettingsPro
       enable_graph_enrichment: true,
       graph_enrichment_depth: 4,
       enable_relationship_propagation: true,
-      relationship_propagation_depth: 3
+      relationship_propagation_depth: 3,
+      enable_nuclear_option: true,
+      nuclear_similarity_threshold: 0.1
     },
     balanced: {
       enable_anti_silo: true,
@@ -372,15 +378,10 @@ const KnowledgeGraphAntiSiloSettings: React.FC<KnowledgeGraphAntiSiloSettingsPro
   );
 
   return (
-    <Box sx={{ p: 2 }}>
-      <Box sx={{ mb: 3 }}>
-        <Typography variant="h4" gutterBottom>
-          Anti-Silo Knowledge Graph Configuration
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Configure advanced settings to prevent isolated nodes and improve knowledge graph connectivity
-        </Typography>
-      </Box>
+    <Box>
+      <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
+        Anti-Silo Configuration
+      </Typography>
 
       <Box sx={{ mb: 3 }}>
         <Alert severity="info" sx={{ mb: 2 }}>
@@ -770,6 +771,26 @@ const KnowledgeGraphAntiSiloSettings: React.FC<KnowledgeGraphAntiSiloSettingsPro
                   "Isolation Detection Threshold",
                   "isolation_detection_threshold",
                   0.5, 5, 0.5
+                )}
+                
+                <Divider sx={{ my: 2 }} />
+                
+                {renderSwitchControl(
+                  "Enable Nuclear Option",
+                  "enable_nuclear_option",
+                  "⚠️ AGGRESSIVE: Force connect ALL isolated nodes with very low thresholds"
+                )}
+                
+                {renderSliderControl(
+                  "Nuclear Similarity Threshold",
+                  "nuclear_similarity_threshold",
+                  0.05, 0.5, 0.05,
+                  [
+                    { value: 0.05, label: 'Ultra Low' },
+                    { value: 0.1, label: 'Very Low' },
+                    { value: 0.2, label: 'Low' },
+                    { value: 0.3, label: 'Medium' }
+                  ]
                 )}
               </CardContent>
             </Card>

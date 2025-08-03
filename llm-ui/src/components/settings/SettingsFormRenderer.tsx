@@ -47,6 +47,7 @@ import MCPServerManager from './MCPServerManager';
 import MCPToolManager from './MCPToolManager';
 import VectorDatabaseManager from './VectorDatabaseManager';
 import KnowledgeGraphSettings from './KnowledgeGraphSettings';
+import PromptManagement from './PromptManagement';
 
 interface SettingsFormRendererProps {
   category: string;
@@ -66,6 +67,10 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   onShowSuccess
 }) => {
   console.log('[DEBUG] SettingsFormRenderer - category:', category, 'data:', data);
+  if (category === 'knowledge_graph') {
+    console.log('[DEBUG] SettingsFormRenderer - KG data.model_config:', data?.model_config);
+    console.log('[DEBUG] SettingsFormRenderer - KG data keys:', Object.keys(data || {}));
+  }
   // Move all hooks to the top level - they must always be called in the same order
   const [activeTab, setActiveTab] = React.useState(() => {
     if (category === 'rag') return 'retrieval';
@@ -624,43 +629,42 @@ const ModelSelector: React.FC<{
           title="LLM Model Configuration"
           subheader="Select and configure your language model"
           action={
-            <Box sx={{ display: 'flex', gap: 1 }}>
+            <Tooltip title="Update available models and reload LLM cache with current settings">
               <Button 
                 size="small" 
-                onClick={fetchAvailableModels}
-                startIcon={<RefreshIcon />}
-                disabled={loading}
-              >
-                Refresh
-              </Button>
-              <Tooltip title="Reload LLM cache with current settings">
-                <Button 
-                  size="small" 
-                  onClick={async () => {
-                    try {
-                      const response = await fetch('/api/v1/settings/llm/cache/reload', { method: 'POST' });
-                      if (response.ok) {
-                        const result = await response.json();
-                        console.log('LLM cache reloaded:', result);
-                        if (onShowSuccess) {
-                          onShowSuccess('Cache reloaded successfully!');
-                        }
-                      } else {
-                        console.error('Failed to reload cache');
-                        console.error('Failed to reload cache');
+                onClick={async () => {
+                  // First fetch available models
+                  await fetchAvailableModels();
+                  
+                  // Then reload cache
+                  try {
+                    const response = await fetch('/api/v1/settings/llm/cache/reload', { method: 'POST' });
+                    if (response.ok) {
+                      const result = await response.json();
+                      console.log('LLM cache reloaded:', result);
+                      if (onShowSuccess) {
+                        onShowSuccess('Models updated and cache reloaded successfully!');
                       }
-                    } catch (error) {
-                      console.error('Error reloading cache:', error);
-                      console.error('Error reloading cache:', error);
+                    } else {
+                      console.error('Failed to reload cache');
+                      if (onShowSuccess) {
+                        onShowSuccess('Models updated but cache reload failed');
+                      }
                     }
-                  }}
-                  startIcon={<CacheIcon />}
-                  variant="outlined"
-                >
-                  Reload Cache
-                </Button>
-              </Tooltip>
-            </Box>
+                  } catch (error) {
+                    console.error('Error reloading cache:', error);
+                    if (onShowSuccess) {
+                      onShowSuccess('Models updated but cache reload failed');
+                    }
+                  }
+                }}
+                startIcon={loading ? <CircularProgress size={16} /> : <RefreshIcon />}
+                disabled={loading}
+                variant="contained"
+              >
+                {loading ? 'Updating...' : 'Update Models & Cache'}
+              </Button>
+            </Tooltip>
           }
         />
         <CardContent>
@@ -1647,10 +1651,25 @@ const renderStandardForm = (
         else if (lowerKey.includes('second_llm')) {
           categories.second_llm.fields[key] = value;
         }
-        // Knowledge Graph Tab - Use KnowledgeGraphSettings component for enhanced UI
-        else if (lowerKey.includes('knowledge_graph')) {
+        // Knowledge Graph Tab - Standard form like Main LLM and Second LLM  
+        else if (lowerKey.includes('knowledge_graph') || lowerKey.includes('kg_') || 
+                 lowerKey.includes('entity_') || lowerKey.includes('relationship_') || 
+                 lowerKey.includes('neo4j') || lowerKey.includes('graph_') ||
+                 (lowerKey.includes('extraction') && lowerKey.includes('prompt')) ||
+                 lowerKey.includes('entity_types') || lowerKey.includes('relationship_types') ||
+                 lowerKey.includes('max_entities_per_chunk') || lowerKey.includes('coreference_resolution') ||
+                 lowerKey.includes('entity_discovery') || lowerKey.includes('relationship_discovery') ||
+                 lowerKey.includes('knowledge_extraction') || lowerKey.includes('discovery') ||
+                 (lowerKey.includes('prompt') && (lowerKey.includes('entity') || lowerKey.includes('relationship') || lowerKey.includes('knowledge'))) ||
+                 (key === 'prompts' && Array.isArray(value) && value.some((item: any) => 
+                   item?.name?.includes('entity_discovery') || 
+                   item?.name?.includes('relationship_discovery') || 
+                   item?.name?.includes('knowledge_extraction') ||
+                   item?.prompt_type?.includes('entity') ||
+                   item?.prompt_type?.includes('relationship') ||
+                   item?.prompt_type?.includes('knowledge')
+                 ))) {
           categories.knowledge_graph.fields[key] = value;
-          categories.knowledge_graph.customComponent = 'KnowledgeGraphSettings';
         }
         // Query Classifier Tab - All classifier-related settings
         else if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {
@@ -2527,6 +2546,19 @@ const renderStandardForm = (
     }
 
     if (Array.isArray(value)) {
+      // Special handling for prompts arrays - use PromptManagement component instead of raw JSON
+      if (key === 'prompts' || (Array.isArray(value) && value.length > 0 && value[0]?.prompt_template)) {
+        return (
+          <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px`, gridColumn: '1 / -1' }}>
+            <PromptManagement
+              data={value}
+              onChange={(field, newValue) => onChangeHandler(key, newValue)}
+              onShowSuccess={onShowSuccess}
+            />
+          </div>
+        );
+      }
+      
       const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
@@ -3025,54 +3057,6 @@ const renderStandardForm = (
                   </Card>
                 )}
 
-                {/* Test Connection Button for Knowledge Graph */}
-                {category === 'llm' && categoryKey === 'knowledge_graph' && (
-                  <Card variant="outlined" sx={{ mb: 3 }}>
-                    <CardHeader 
-                      title="Neo4j Connection Test"
-                      subheader="Test the connection to your Neo4j knowledge graph database"
-                    />
-                    <CardContent>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
-                        <Button
-                          variant="contained"
-                          onClick={testNeo4jConnection}
-                          disabled={testingConnection || !testNeo4jConnection}
-                          startIcon={testingConnection ? <CircularProgress size={16} /> : <CheckCircleIcon />}
-                        >
-                          {testingConnection ? 'Testing...' : 'Test Connection'}
-                        </Button>
-                      </Box>
-                      
-                      {connectionTestResult && (
-                        <Alert 
-                          severity={connectionTestResult.success ? 'success' : 'error'} 
-                          sx={{ mt: 2 }}
-                        >
-                          <Typography variant="body2">
-                            {connectionTestResult.success 
-                              ? connectionTestResult.message || 'Connection successful!'
-                              : connectionTestResult.error || 'Connection failed'
-                            }
-                          </Typography>
-                          {connectionTestResult.success && (connectionTestResult as any).database_info && (
-                            <Box sx={{ mt: 1 }}>
-                              <Typography variant="caption" component="div">
-                                Database: {(connectionTestResult as any).database_info.database_name || 'neo4j'}
-                              </Typography>
-                              <Typography variant="caption" component="div">
-                                Nodes: {(connectionTestResult as any).database_info.node_count || 0}
-                              </Typography>
-                              <Typography variant="caption" component="div">
-                                Relationships: {(connectionTestResult as any).database_info.relationship_count || 0}
-                              </Typography>
-                            </Box>
-                          )}
-                        </Alert>
-                      )}
-                    </CardContent>
-                  </Card>
-                )}
                 
                 <div className={category === 'rag' || category === 'large_generation' || category === 'langfuse' || category === 'environment' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'knowledge_graph' || categoryKey === 'settings') ? 'single-column' : ''}`}>
                 {(() => {
@@ -3162,6 +3146,17 @@ const renderStandardForm = (
                   // Special rendering for Environment & Runtime settings with card grouping
                   if (category === 'environment') {
                     return renderEnvironmentFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
+                  }
+                  
+                  // Special handling for Knowledge Graph category OR Knowledge Graph tab in LLM category
+                  if (category === 'knowledge_graph' || (category === 'llm' && categoryKey === 'knowledge_graph')) {
+                    return (
+                      <KnowledgeGraphSettings
+                        data={data}
+                        onChange={onChange}
+                        onShowSuccess={onShowSuccess}
+                      />
+                    );
                   }
                   
                   // Render sorted fields normally for other categories

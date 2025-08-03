@@ -15,6 +15,16 @@ class ExtractedChunk:
     metadata: Dict[str, Any]
     quality_score: float = 1.0  # 0-1 score for chunk quality
     
+    @property
+    def chunk_id(self) -> str:
+        """Get chunk ID from metadata or generate one"""
+        return self.metadata.get('chunk_id', f"chunk_{hash(self.content) % 1000000}")
+    
+    @property
+    def text(self) -> str:
+        """Alias for content to match knowledge graph service expectations"""
+        return self.content
+    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "content": self.content,

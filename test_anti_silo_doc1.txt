@@ -1,0 +1,5 @@
+Apache Kafka is a distributed streaming platform that has become essential for real-time data processing. Many companies in India are adopting Kafka for their data infrastructure needs. The technology originated from LinkedIn and has since become an Apache Foundation project.
+
+PostgreSQL is another critical technology being widely adopted across Asia, particularly in countries like Indonesia where digital transformation is accelerating. DBS Bank has been evaluating PostgreSQL for their core banking systems.
+
+Temenos, the banking software company, has been expanding its presence in the East Asian markets, including partnerships with financial institutions in Singapore and Hong Kong.

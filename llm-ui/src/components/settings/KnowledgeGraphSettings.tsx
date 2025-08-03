@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Card,
   CardHeader,
@@ -18,36 +18,32 @@ import {
   RadioGroup,
   Radio,
   FormControl,
-  Paper,
   Divider,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemSecondaryAction,
-  IconButton,
   CircularProgress,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Badge
+  Badge,
+  Select,
+  MenuItem,
+  InputLabel,
+  Paper,
+  Tooltip,
+  IconButton,
+  InputAdornment
 } from '@mui/material';
 import {
   Settings as SettingsIcon,
   Psychology as BrainIcon,
   CheckCircle as CheckCircleIcon,
   Cancel as XCircleIcon,
-  Refresh as RefreshCwIcon,
   TrendingUp as TrendingUpIcon,
   Warning as AlertTriangleIcon,
-  Add as AddIcon,
-  Delete as DeleteIcon,
+  Refresh as RefreshIcon,
+  Cached as CacheIcon,
   Visibility as VisibilityIcon,
-  VisibilityOff as VisibilityOffIcon,
-  Code as CodeIcon
+  VisibilityOff as VisibilityOffIcon
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import PromptManagement from './PromptManagement';
+import KnowledgeGraphAntiSiloSettings from './KnowledgeGraphAntiSiloSettings';
 
 interface DiscoveredEntity {
   type: string;
@@ -89,87 +85,285 @@ interface KnowledgeGraphSettingsProps {
   onShowSuccess?: (message?: string) => void;
 }
 
+// Knowledge Graph Model Selector Component
+const KnowledgeGraphModelSelector: React.FC<{
+  value: string;
+  data: any;
+  onChange: (field: string, value: any) => void;
+  onShowSuccess?: (message?: string) => void;
+}> = ({ value, data, onChange, onShowSuccess }) => {
+  const [models, setModels] = React.useState<Array<{name: string, id: string, size: string, modified: string, context_length: string}>>([]);
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    fetchAvailableModels();
+  }, []);
+
+  const fetchAvailableModels = async () => {
+    setLoading(true);
+    try {
+      // Call API to get available models
+      const response = await fetch('/api/v1/ollama/models');
+      if (response.ok) {
+        const data = await response.json();
+        setModels(data.models || []);
+      } else {
+        // Fallback to hardcoded models if API fails
+        setModels([
+          { name: 'qwen3:0.6b', id: '7df6b6e09427', size: '522 MB', modified: '2 minutes ago', context_length: 'Unknown' },
+          { name: 'deepseek-r1:8b', id: '6995872bfe4c', size: '5.2 GB', modified: '5 weeks ago', context_length: 'Unknown' },
+          { name: 'qwen3:30b-a3b', id: '2ee832bc15b5', size: '18 GB', modified: '7 weeks ago', context_length: 'Unknown' }
+        ]);
+      }
+    } catch (error) {
+      console.error('Failed to fetch models:', error);
+      // Use hardcoded models as fallback
+      setModels([
+        { name: 'qwen3:0.6b', id: '7df6b6e09427', size: '522 MB', modified: '2 minutes ago', context_length: 'Unknown' },
+        { name: 'deepseek-r1:8b', id: '6995872bfe4c', size: '5.2 GB', modified: '5 weeks ago', context_length: 'Unknown' },
+        { name: 'qwen3:30b-a3b', id: '2ee832bc15b5', size: '18 GB', modified: '7 weeks ago', context_length: 'Unknown' }
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const selectedModel = models.find(m => m.name === value);
+
+  return (
+    <Card variant="outlined" sx={{ mb: 2 }}>
+      <CardHeader 
+        title="LLM Model Configuration"
+        subheader="Select and configure your language model for knowledge graph extraction"
+        action={
+          <Tooltip title="Update available models and reload Knowledge Graph LLM cache">
+            <Button 
+              size="small" 
+              onClick={async () => {
+                try {
+                  // First save current settings to database
+                  const saveResponse = await fetch('/api/v1/settings/knowledge_graph', {
+                    method: 'PUT',
+                    headers: {
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                      settings: {
+                        model_config: {
+                          model: data?.model_config?.model || "qwen3:30b-a3b-instruct-2507-q4_K_M",
+                          temperature: data?.model_config?.temperature !== undefined ? data?.model_config?.temperature : 0.1,
+                          repeat_penalty: data?.model_config?.repeat_penalty !== undefined ? data?.model_config?.repeat_penalty : 1.1,
+                          system_prompt: data?.model_config?.system_prompt || "You are an expert knowledge graph extraction system. Extract entities and relationships from text accurately and comprehensively.",
+                          max_tokens: data?.model_config?.max_tokens || 4096,
+                          context_length: data?.model_config?.context_length || 40960,
+                          model_server: data?.model_config?.model_server || "http://localhost:11434"
+                        },
+                        neo4j: data?.neo4j || {
+                          enabled: true,
+                          host: "localhost",
+                          port: 7687,
+                          http_port: 7474,
+                          database: "neo4j",
+                          username: "neo4j",
+                          password: "jarvis_neo4j_password",
+                          uri: "bolt://localhost:7687"
+                        },
+                        anti_silo: data?.anti_silo || {
+                          enabled: true,
+                          similarity_threshold: 0.5,
+                          cross_document_linking: true,
+                          max_relationships_per_entity: 100
+                        }
+                      },
+                      persist_to_db: true,
+                      reload_cache: true
+                    }),
+                  });
+                  
+                  if (!saveResponse.ok) {
+                    throw new Error('Failed to save settings');
+                  }
+                  
+                  // Then fetch available models
+                  await fetchAvailableModels();
+                  
+                  // Finally reload knowledge graph cache
+                  const cacheResponse = await fetch('/api/v1/settings/knowledge-graph/cache/reload', { method: 'POST' });
+                  if (cacheResponse.ok) {
+                    const result = await cacheResponse.json();
+                    console.log('Knowledge Graph LLM cache reloaded:', result);
+                    if (onShowSuccess) {
+                      onShowSuccess('Settings saved, models updated, and cache reloaded successfully!');
+                    }
+                  } else {
+                    console.error('Failed to reload knowledge graph cache');
+                    if (onShowSuccess) {
+                      onShowSuccess('Settings saved and models updated, but cache reload failed');
+                    }
+                  }
+                } catch (error) {
+                  console.error('Error in update process:', error);
+                  if (onShowSuccess) {
+                    onShowSuccess('Failed to save settings or update models');
+                  }
+                }
+              }}
+              startIcon={loading ? <CircularProgress size={16} /> : <RefreshIcon />}
+              disabled={loading}
+              variant="contained"
+            >
+              {loading ? 'Updating...' : 'Update Models & Cache'}
+            </Button>
+          </Tooltip>
+        }
+      />
+      <CardContent>
+        {/* Model Selector */}
+        <FormControl fullWidth sx={{ mb: 3 }}>
+          <InputLabel id="kg-model-label">Select Model</InputLabel>
+          <Select
+            labelId="kg-model-label"
+            value={value}
+            label="Select Model"
+            onChange={(e) => {
+              const newModelName = e.target.value;
+              const newSelectedModel = models.find(m => m.name === newModelName);
+              
+              // Update the model field in model_config
+              const currentModelConfig = data?.model_config || {};
+              const updatedModelConfig = { ...currentModelConfig, model: newModelName };
+              onChange('model_config', updatedModelConfig);
+              
+              // Auto-update context_length and max_tokens for knowledge graph
+              if (newSelectedModel && newSelectedModel.context_length !== 'Unknown') {
+                const contextLength = parseInt(newSelectedModel.context_length.replace(/,/g, ''));
+                if (!isNaN(contextLength)) {
+                  const updatedWithContext = { ...updatedModelConfig, context_length: contextLength };
+                  const suggestedMaxTokens = Math.floor(contextLength * 0.75);
+                  const updatedWithTokens = { ...updatedWithContext, max_tokens: suggestedMaxTokens };
+                  onChange('model_config', updatedWithTokens);
+                }
+              }
+            }}
+            disabled={loading}
+            endAdornment={loading && <CircularProgress size={20} />}
+          >
+            {models.map((model) => (
+              <MenuItem key={model.id} value={model.name}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Typography>{model.name}</Typography>
+                    {value === model.name && (
+                      <Chip 
+                        label="Active" 
+                        size="small" 
+                        color="success" 
+                        icon={<CheckCircleIcon />}
+                      />
+                    )}
+                  </Box>
+                  <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                    <Typography variant="caption" color="text.secondary">
+                      {model.size}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Context: {model.context_length}
+                    </Typography>
+                  </Box>
+                </Box>
+              </MenuItem>
+            ))}
+            <Divider />
+            <MenuItem value="custom">
+              <Typography color="primary">Enter custom model name...</Typography>
+            </MenuItem>
+          </Select>
+        </FormControl>
+
+        {/* Current Model Information Panel */}
+        {selectedModel && (
+          <Paper sx={{ p: 3, backgroundColor: 'action.hover', border: '1px solid', borderColor: 'primary.light' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <CheckCircleIcon color="success" />
+              <Typography variant="h6" color="primary">
+                Current Model: {selectedModel.name}
+              </Typography>
+            </Box>
+            
+            <Grid container spacing={3}>
+              <Grid item xs={12} md={3}>
+                <Box sx={{ textAlign: 'center', p: 2, backgroundColor: 'background.paper', borderRadius: 1 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                    Model Size
+                  </Typography>
+                  <Typography variant="h6" color="primary">
+                    {selectedModel.size}
+                  </Typography>
+                </Box>
+              </Grid>
+              
+              <Grid item xs={12} md={3}>
+                <Box sx={{ textAlign: 'center', p: 2, backgroundColor: 'background.paper', borderRadius: 1 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                    Context Length
+                  </Typography>
+                  <Typography variant="h6" color="primary">
+                    {selectedModel.context_length}
+                  </Typography>
+                </Box>
+              </Grid>
+              
+              <Grid item xs={12} md={3}>
+                <Box sx={{ textAlign: 'center', p: 2, backgroundColor: 'background.paper', borderRadius: 1 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                    Last Modified
+                  </Typography>
+                  <Typography variant="h6" color="primary">
+                    {selectedModel.modified}
+                  </Typography>
+                </Box>
+              </Grid>
+              
+              <Grid item xs={12} md={3}>
+                <Box sx={{ textAlign: 'center', p: 2, backgroundColor: 'background.paper', borderRadius: 1 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                    Model ID
+                  </Typography>
+                  <Typography variant="h6" color="primary" sx={{ fontSize: '0.9rem' }}>
+                    {selectedModel.id.substring(0, 8)}...
+                  </Typography>
+                </Box>
+              </Grid>
+            </Grid>
+          </Paper>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
 const KnowledgeGraphSettings: React.FC<KnowledgeGraphSettingsProps> = ({ 
   data, 
   onChange, 
   onShowSuccess 
 }) => {
+  // USE EXACT DATABASE VALUES - no fallbacks, no defaults
+  const actualModelConfig = data?.model_config || {};
   const { enqueueSnackbar } = useSnackbar();
   const [testText, setTestText] = useState('');
   const [discoveryResults, setDiscoveryResults] = useState<any>(null);
   const [tabValue, setTabValue] = useState(0);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionTestResult, setConnectionTestResult] = useState<any>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
-  // Simplified anti-silo focused configuration
-  const config = data?.knowledge_graph || {
-    anti_silo_mode: 'enhanced',
-    entity_discovery: {
-      enabled: true,
-      confidence_threshold: 0.75,
-      auto_linking: true,
-      relationship_boost: true
-    },
-    relationship_discovery: {
-      enabled: true,
-      confidence_threshold: 0.7,
-      cross_document: true,
-      semantic_linking: true
-    },
-    static_fallback: {
-      entity_types: ['Person', 'Organization', 'Location', 'Event', 'Concept'],
-      relationship_types: ['works_for', 'located_in', 'part_of', 'related_to', 'causes']
-    }
-  };
 
   const discoveredEntities = data?.discovered_entities || [];
   const discoveredRelationships = data?.discovered_relationships || [];
   const stats = data?.schema_stats || null;
-  const loading = false;
+  const [loading, setLoading] = useState(false);
 
 
-  const updateConfiguration = (newConfig: any) => {
-    try {
-      onChange('knowledge_graph', newConfig);
-      if (onShowSuccess) {
-        onShowSuccess("Configuration updated: Knowledge graph settings saved successfully");
-      }
-    } catch (error) {
-      enqueueSnackbar("Update failed: Failed to update configuration", { 
-        variant: "error" 
-      });
-    }
-  };
-
-  const handleSchemaModeChange = (mode: string) => {
-    const newConfig = {
-      ...config,
-      schema_mode: mode
-    };
-    updateConfiguration(newConfig);
-  };
-
-  const toggleDiscovery = (type: 'entity' | 'relationship', enabled: boolean) => {
-    const key = type === 'entity' ? 'entity_discovery' : 'relationship_discovery';
-    const newConfig = {
-      ...config,
-      [key]: {
-        ...config[key],
-        enabled
-      }
-    };
-    updateConfiguration(newConfig);
-  };
-
-  const updateConfidenceThreshold = (type: 'entity' | 'relationship', value: number) => {
-    const key = type === 'entity' ? 'entity_discovery' : 'relationship_discovery';
-    const newConfig = {
-      ...config,
-      [key]: {
-        ...config[key],
-        confidence_threshold: value
-      }
-    };
-    updateConfiguration(newConfig);
-  };
 
   const handleApprove = async (type: string, category: 'entity' | 'relationship') => {
     try {
@@ -245,7 +439,7 @@ const KnowledgeGraphSettings: React.FC<KnowledgeGraphSettingsProps> = ({
         body: JSON.stringify({
           // Send the discovery request as part of the knowledge_graph settings
           knowledge_graph: {
-            ...config,
+            ...data,
             discovery_request: {
               text: testText,
               action: 'discover_schema'
@@ -292,21 +486,40 @@ const KnowledgeGraphSettings: React.FC<KnowledgeGraphSettingsProps> = ({
     }
   };
 
-  if (!config) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '256px' }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
 
-  const pendingEntities = discoveredEntities.filter(e => e.status === 'pending');
-  const pendingRelationships = discoveredRelationships.filter(r => r.status === 'pending');
-  const acceptedEntities = discoveredEntities.filter(e => e.status === 'accepted');
-  const acceptedRelationships = discoveredRelationships.filter(r => r.status === 'accepted');
+  const pendingEntities = discoveredEntities.filter((e: any) => e.status === 'pending');
+  const acceptedEntities = discoveredEntities.filter((e: any) => e.status === 'accepted');
 
-  const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
+  const handleTabChange = (_: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
+  };
+
+  const testNeo4jConnection = async () => {
+    setTestingConnection(true);
+    setConnectionTestResult(null);
+    
+    try {
+      const response = await fetch('/api/v1/settings/knowledge-graph/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data?.knowledge_graph || {})
+      });
+      
+      const result = await response.json();
+      setConnectionTestResult(result);
+      
+      if (onShowSuccess) {
+        onShowSuccess(result.success ? 'Neo4j connection successful!' : `Connection failed: ${result.error}`);
+      }
+    } catch (error) {
+      const errorResult = { success: false, error: 'Connection test failed' };
+      setConnectionTestResult(errorResult);
+      if (onShowSuccess) {
+        onShowSuccess('Connection test failed');
+      }
+    } finally {
+      setTestingConnection(false);
+    }
   };
 
   return (
@@ -321,292 +534,1228 @@ const KnowledgeGraphSettings: React.FC<KnowledgeGraphSettingsProps> = ({
       </Box>
 
       <Tabs value={tabValue} onChange={handleTabChange} sx={{ mb: 3 }}>
-        <Tab label="Schema Mode" />
-        <Tab label="Discovery" />
+        <Tab label="Quick Setup" />
+        <Tab label="Model Config" />
+        <Tab label="Neo4j Database" />
+        <Tab label="Schema & Discovery" />
         <Tab label="Prompts" />
-        <Tab label="Test Discovery" />
+        <Tab label="Test & Validate" />
+        <Tab label="Anti-Silo" />
       </Tabs>
 
       {tabValue === 0 && (
-        <Card>
-          <CardHeader title="Schema Mode Configuration" />
-          <CardContent>
-            <Box sx={{ mb: 4 }}>
-              <Typography variant="h6" gutterBottom>Schema Mode</Typography>
-              <RadioGroup 
-                value={config.schema_mode} 
-                onChange={(e) => handleSchemaModeChange(e.target.value)}
-              >
-                <FormControlLabel value="static" control={<Radio />} label="Static Only - Use predefined entity/relationship types" />
-                <FormControlLabel value="dynamic" control={<Radio />} label="Dynamic Only - Use LLM-discovered types" />
-                <FormControlLabel value="hybrid" control={<Radio />} label="Hybrid - Combine static types with LLM discoveries" />
-              </RadioGroup>
-            </Box>
+        <Box>
+          {/* Quick Setup Overview */}
+          <Alert severity="info" sx={{ mb: 3 }}>
+            <Typography variant="body2">
+              <strong>Quick Setup:</strong> Configure the essential settings to get your knowledge graph extraction working. 
+              For advanced configuration, use the other tabs.
+            </Typography>
+          </Alert>
 
-            <Grid container spacing={3}>
-              <Grid item xs={12} md={6}>
-                <Card>
-                  <CardHeader title="Entity Discovery" />
-                  <CardContent>
-                    <Box sx={{ mb: 2 }}>
+          {/* Essential Configuration */}
+          <Grid container spacing={3}>
+            {/* Mode Selection */}
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Extraction Mode"
+                  subheader="Choose how the AI extracts knowledge"
+                />
+                <CardContent>
+                  <FormControl component="fieldset">
+                    <RadioGroup 
+                      value={data?.mode || 'thinking'} 
+                      onChange={(e) => onChange('mode', e.target.value)}
+                    >
                       <FormControlLabel 
-                        control={
-                          <Switch
-                            checked={config.entity_discovery?.enabled || false}
-                            onChange={(e) => toggleDiscovery('entity', e.target.checked)}
-                          />
-                        }
-                        label="Enable Entity Discovery"
+                        value="thinking" 
+                        control={<Radio />} 
+                        label={
+                          <Box>
+                            <Typography variant="body2" fontWeight={600}>Thinking Mode (Recommended)</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              More accurate with step-by-step reasoning
+                            </Typography>
+                          </Box>
+                        } 
                       />
-                    </Box>
-                    <Typography gutterBottom>Confidence Threshold: {config.entity_discovery?.confidence_threshold || 0.75}</Typography>
-                    <Slider
-                      value={config.entity_discovery?.confidence_threshold || 0.75}
-                      onChange={(_, value) => updateConfidenceThreshold('entity', value as number)}
-                      min={0.1}
-                      max={1}
-                      step={0.05}
-                      valueLabelDisplay="auto"
-                    />
-                    <Typography variant="body2" color="text.secondary">
-                      Minimum confidence (0-1) for accepting discovered entity types
-                    </Typography>
-                  </CardContent>
-                </Card>
-              </Grid>
-
-              <Grid item xs={12} md={6}>
-                <Card>
-                  <CardHeader title="Relationship Discovery" />
-                  <CardContent>
-                    <Box sx={{ mb: 2 }}>
                       <FormControlLabel 
-                        control={
-                          <Switch
-                            checked={config.relationship_discovery?.enabled || false}
-                            onChange={(e) => toggleDiscovery('relationship', e.target.checked)}
-                          />
-                        }
-                        label="Enable Relationship Discovery"
+                        value="non-thinking" 
+                        control={<Radio />} 
+                        label={
+                          <Box>
+                            <Typography variant="body2" fontWeight={600}>Direct Mode</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              Faster extraction without reasoning steps
+                            </Typography>
+                          </Box>
+                        } 
                       />
-                    </Box>
-                    <Typography gutterBottom>Confidence Threshold: {config.relationship_discovery?.confidence_threshold || 0.7}</Typography>
-                    <Slider
-                      value={config.relationship_discovery?.confidence_threshold || 0.7}
-                      onChange={(_, value) => updateConfidenceThreshold('relationship', value as number)}
-                      min={0.1}
-                      max={1}
-                      step={0.05}
-                      valueLabelDisplay="auto"
-                    />
-                    <Typography variant="body2" color="text.secondary">
-                      Minimum confidence (0-1) for accepting discovered relationship types
-                    </Typography>
-                  </CardContent>
-                </Card>
-              </Grid>
+                    </RadioGroup>
+                  </FormControl>
+                </CardContent>
+              </Card>
             </Grid>
 
-            <Card sx={{ mt: 3 }}>
-              <CardHeader title="Static Fallback Types" />
-              <CardContent>
-                <Grid container spacing={2}>
-                  <Grid item xs={12} md={6}>
-                    <Typography variant="h6" gutterBottom>Entity Types</Typography>
-                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                      {(config.static_fallback?.entity_types || ['Person', 'Organization', 'Location', 'Event', 'Concept']).map(type => (
-                        <Chip key={type} label={type} variant="outlined" />
-                      ))}
-                    </Box>
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <Typography variant="h6" gutterBottom>Relationship Types</Typography>
-                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                      {(config.static_fallback?.relationship_types || ['works_for', 'located_in', 'part_of', 'related_to', 'causes']).map(type => (
-                        <Chip key={type} label={type} variant="outlined" />
-                      ))}
-                    </Box>
-                  </Grid>
-                </Grid>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
-                  Static types are used as fallback when schema_mode is 'static' or 'hybrid'
-                </Typography>
-              </CardContent>
-            </Card>
+            {/* Schema Mode */}
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Schema Strategy"
+                  subheader="How to define entity and relationship types"
+                />
+                <CardContent>
+                  <FormControl component="fieldset">
+                    <RadioGroup 
+                      value={data?.schema_mode || 'dynamic'} 
+                      onChange={(e) => onChange('schema_mode', e.target.value)}
+                    >
+                      <FormControlLabel 
+                        value="hybrid" 
+                        control={<Radio />} 
+                        label={
+                          <Box>
+                            <Typography variant="body2" fontWeight={600}>Smart Hybrid (Recommended)</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              AI discovers new types + uses predefined ones
+                            </Typography>
+                          </Box>
+                        } 
+                      />
+                      <FormControlLabel 
+                        value="dynamic" 
+                        control={<Radio />} 
+                        label={
+                          <Box>
+                            <Typography variant="body2" fontWeight={600}>Pure LLM Discovery</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              AI discovers all entity and relationship types from your content
+                            </Typography>
+                          </Box>
+                        } 
+                      />
+                    </RadioGroup>
+                  </FormControl>
+                </CardContent>
+              </Card>
+            </Grid>
 
-            {stats && (
-              <Card sx={{ mt: 3 }}>
-                <CardHeader title="Discovery Statistics" />
+            {/* Discovery Settings */}
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Discovery Controls"
+                  subheader="Fine-tune what gets discovered"
+                />
+                <CardContent>
+                  <Box sx={{ mb: 2 }}>
+                    <FormControlLabel 
+                      control={
+                        <Switch
+                          checked={data?.entity_discovery?.enabled || false}
+                          onChange={(e) => {
+                            const updatedEntityDiscovery = { 
+                              ...data?.entity_discovery, 
+                              enabled: e.target.checked 
+                            };
+                            onChange('entity_discovery', updatedEntityDiscovery);
+                          }}
+                        />
+                      }
+                      label="Discover New Entity Types"
+                    />
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Let AI find new types of entities (people, places, etc.)
+                    </Typography>
+                  </Box>
+                  <Box sx={{ mb: 2 }}>
+                    <FormControlLabel 
+                      control={
+                        <Switch
+                          checked={data?.relationship_discovery?.enabled || false}
+                          onChange={(e) => {
+                            const updatedRelationshipDiscovery = { 
+                              ...data?.relationship_discovery, 
+                              enabled: e.target.checked 
+                            };
+                            onChange('relationship_discovery', updatedRelationshipDiscovery);
+                          }}
+                        />
+                      }
+                      label="Discover New Relationship Types"
+                    />
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Let AI find new types of relationships between entities
+                    </Typography>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Model Selection */}
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="AI Model"
+                  subheader="Choose the model for knowledge extraction"
+                />
+                <CardContent>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    Select a powerful model for accurate entity and relationship extraction
+                  </Typography>
+                  <TextField
+                    fullWidth
+                    label="Model Name"
+                    value={actualModelConfig.model || 'NO DATA'}
+                    onChange={(e) => {
+                      const updatedModelConfig = { ...actualModelConfig, model: e.target.value };
+                      onChange('model_config', updatedModelConfig);
+                    }}
+                    variant="outlined"
+                    placeholder="e.g., gpt-4, claude-3-sonnet"
+                    helperText="Use a capable model like GPT-4 or Claude for best results"
+                  />
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+
+          {/* Getting Started Guide */}
+          <Card sx={{ mt: 3, backgroundColor: 'action.hover' }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <TrendingUpIcon color="primary" />
+                Getting Started Guide
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={4}>
+                  <Typography variant="subtitle2" gutterBottom>1. Choose Your Settings</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Configure mode, schema strategy, and model above
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Typography variant="subtitle2" gutterBottom>2. Test Your Setup</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Use "Test & Validate" tab to try extraction on sample text
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Typography variant="subtitle2" gutterBottom>3. Review Results</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Check "Schema & Discovery" tab to approve discovered types
+                  </Typography>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        </Box>
+      )}
+
+      {tabValue === 1 && (
+        <Box>
+          {/* Use the enhanced ModelSelector component */}
+          <KnowledgeGraphModelSelector
+            value={actualModelConfig.model || ''}
+            data={data}
+            onChange={onChange}
+            onShowSuccess={onShowSuccess}
+          />
+          
+          {/* Additional Configuration Fields */}
+          <Grid container spacing={3}>
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Fine-tuning Parameters" 
+                  subheader="Control model behavior and output quality"
+                />
+                <CardContent>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <TextField
+                      label="Model Server URL"
+                      value={actualModelConfig.model_server || ''}
+                      onChange={(e) => {
+                        const updatedModelConfig = { ...actualModelConfig, model_server: e.target.value };
+                        onChange('model_config', updatedModelConfig);
+                      }}
+                      fullWidth
+                      variant="outlined"
+                      placeholder="e.g., http://localhost:8000, https://api.openai.com"
+                      helperText="API endpoint for the model"
+                    />
+                    <TextField
+                      label="Context Length"
+                      type="number"
+                      value={actualModelConfig.context_length || ''}
+                      onChange={(e) => {
+                        const updatedModelConfig = { ...actualModelConfig, context_length: parseInt(e.target.value) || undefined };
+                        onChange('model_config', updatedModelConfig);
+                      }}
+                      fullWidth
+                      variant="outlined"
+                      placeholder="e.g., 8192, 32768, 128000"
+                      helperText="Maximum context window size in tokens (auto-updated when model selected)"
+                    />
+                    <TextField
+                      label="Max Output Tokens"
+                      type="number"
+                      value={actualModelConfig.max_tokens || ''}
+                      onChange={(e) => {
+                        const updatedModelConfig = { ...actualModelConfig, max_tokens: parseInt(e.target.value) || undefined };
+                        onChange('model_config', updatedModelConfig);
+                      }}
+                      fullWidth
+                      variant="outlined"
+                      placeholder="e.g., 4096, 8192"
+                      helperText="Maximum tokens the model can generate (auto-updated to 75% of context length)"
+                    />
+                    <TextField
+                      label="Temperature"
+                      type="number"
+                      value={actualModelConfig.temperature || ''}
+                      onChange={(e) => {
+                        const updatedModelConfig = { ...actualModelConfig, temperature: parseFloat(e.target.value) || undefined };
+                        onChange('model_config', updatedModelConfig);
+                      }}
+                      fullWidth
+                      variant="outlined"
+                      placeholder="e.g., 0.3"
+                      inputProps={{ step: 0.1, min: 0, max: 2 }}
+                      helperText="Lower = more focused, Higher = more creative (0.0-2.0)"
+                    />
+                    <TextField
+                      label="Repeat Penalty"
+                      type="number"
+                      value={actualModelConfig.repeat_penalty || ''}
+                      onChange={(e) => {
+                        const updatedModelConfig = { ...actualModelConfig, repeat_penalty: parseFloat(e.target.value) || undefined };
+                        onChange('model_config', updatedModelConfig);
+                      }}
+                      fullWidth
+                      variant="outlined"
+                      placeholder="e.g., 1.1"
+                      inputProps={{ step: 0.05, min: 1.0, max: 2.0 }}
+                      helperText="Penalty for repetition (1.0 = none, >1.0 = penalty)"
+                    />
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="🔄 Two-Step Knowledge Extraction" 
+                  subheader="Advanced two-phase process: Document Analysis → Entity Extraction"
+                />
+                <CardContent>
+                  <Alert severity="info" sx={{ mb: 2 }}>
+                    <Typography variant="body2">
+                      <strong>Step 1:</strong> LLM analyzes document naturally → <strong>Step 2:</strong> LLM extracts structured entities/relationships from analysis
+                    </Typography>
+                  </Alert>
+
+                  <Box sx={{ mb: 3 }}>
+                    <Typography variant="h6" sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                      📊 Step 1: Document Analysis
+                    </Typography>
+                    <TextField
+                      multiline
+                      rows={8}
+                      value={actualModelConfig.analysis_prompt || ''}
+                      onChange={(e) => {
+                        const updatedModelConfig = { ...actualModelConfig, analysis_prompt: e.target.value };
+                        onChange('model_config', updatedModelConfig);
+                      }}
+                      fullWidth
+                      variant="outlined"
+                      placeholder="Analyze this business document comprehensively..."
+                      helperText="Prompt for natural document analysis (should encourage detailed breakdown of entities and relationships)"
+                    />
+                  </Box>
+                  
+                  <Box sx={{ mb: 3 }}>
+                    <Typography variant="h6" sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                      🎯 Step 2: Entity Extraction
+                    </Typography>
+                    <TextField
+                      multiline
+                      rows={8}
+                      value={actualModelConfig.extraction_prompt || ''}
+                      onChange={(e) => {
+                        const updatedModelConfig = { ...actualModelConfig, extraction_prompt: e.target.value };
+                        onChange('model_config', updatedModelConfig);
+                      }}
+                      fullWidth
+                      variant="outlined"
+                      placeholder="Extract entities and relationships from this analysis and return ONLY valid JSON..."
+                      helperText="Prompt for structured extraction from analysis (should demand specific JSON format and comprehensive extraction)"
+                    />
+                  </Box>
+
+                  <Divider sx={{ my: 2 }} />
+                  
+                  {/* Backward compatibility field */}
+                  <Box sx={{ opacity: 0.6 }}>
+                    <Typography variant="subtitle2" sx={{ mb: 1, color: 'text.secondary' }}>
+                      Legacy Single-Step Prompt (Deprecated)
+                    </Typography>
+                    <TextField
+                      multiline
+                      rows={3}
+                      value={actualModelConfig.system_prompt || ''}
+                      onChange={(e) => {
+                        const updatedModelConfig = { ...actualModelConfig, system_prompt: e.target.value };
+                        onChange('model_config', updatedModelConfig);
+                      }}
+                      fullWidth
+                      variant="outlined"
+                      placeholder="Legacy single-step prompt (use two-step prompts above instead)..."
+                      helperText="For backward compatibility only - use the two-step prompts above for better results"
+                      size="small"
+                    />
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+
+          {/* Neo4j Connection Test */}
+          <Card variant="outlined" sx={{ mt: 3 }}>
+            <CardHeader 
+              title="Neo4j Connection Test"
+              subheader="Test the connection to your Neo4j knowledge graph database"
+            />
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
+                <Button
+                  variant="contained"
+                  onClick={testNeo4jConnection}
+                  disabled={testingConnection}
+                  startIcon={testingConnection ? <CircularProgress size={16} /> : <CheckCircleIcon />}
+                >
+                  {testingConnection ? 'Testing...' : 'Test Connection'}
+                </Button>
+              </Box>
+              
+              {connectionTestResult && (
+                <Alert 
+                  severity={connectionTestResult.success ? 'success' : 'error'} 
+                  sx={{ mt: 2 }}
+                >
+                  <Typography variant="body2">
+                    {connectionTestResult.success 
+                      ? connectionTestResult.message || 'Connection successful!'
+                      : connectionTestResult.error || 'Connection failed'
+                    }
+                  </Typography>
+                  {connectionTestResult.success && connectionTestResult.database_info && (
+                    <Box sx={{ mt: 1 }}>
+                      <Typography variant="caption" component="div">
+                        Database: {connectionTestResult.database_info.database_name || 'neo4j'}
+                      </Typography>
+                      <Typography variant="caption" component="div">
+                        Nodes: {connectionTestResult.database_info.node_count || 0}
+                      </Typography>
+                      <Typography variant="caption" component="div">
+                        Relationships: {connectionTestResult.database_info.relationship_count || 0}
+                      </Typography>
+                    </Box>
+                  )}
+                </Alert>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Performance Tips */}
+          <Card sx={{ mt: 3, backgroundColor: 'action.hover' }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <TrendingUpIcon color="primary" />
+                Performance Tips
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={4}>
+                  <Typography variant="subtitle2" gutterBottom>Model Selection</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    GPT-4 and Claude-3.5-Sonnet provide the best extraction accuracy
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Typography variant="subtitle2" gutterBottom>Temperature Settings</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Use 0.1-0.3 for structured extraction, 0.5-0.7 for creative discovery
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Typography variant="subtitle2" gutterBottom>Context Window</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Larger context windows allow processing of longer documents
+                  </Typography>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        </Box>
+      )}
+
+      {tabValue === 2 && (
+        <Box>
+          <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
+            Neo4j Database Configuration
+          </Typography>
+          
+          <Grid container spacing={3}>
+            {/* Connection Settings */}
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Connection Settings"
+                  subheader="Configure Neo4j database connection"
+                />
                 <CardContent>
                   <Grid container spacing={2}>
-                    <Grid item xs={6} md={3}>
-                      <Box textAlign="center">
-                        <Typography variant="h4">{stats.total_entities_discovered}</Typography>
-                        <Typography variant="body2" color="text.secondary">Entities Discovered</Typography>
-                      </Box>
+                    <Grid item xs={12}>
+                      <FormControlLabel
+                        control={
+                          <Switch
+                            checked={data?.neo4j?.enabled ?? true}
+                            onChange={(e) => {
+                              const updatedNeo4j = { ...data.neo4j, enabled: e.target.checked };
+                              onChange('neo4j', updatedNeo4j);
+                            }}
+                          />
+                        }
+                        label="Enable Neo4j Database"
+                      />
                     </Grid>
-                    <Grid item xs={6} md={3}>
-                      <Box textAlign="center">
-                        <Typography variant="h4">{stats.entities_accepted}</Typography>
-                        <Typography variant="body2" color="text.secondary">Accepted</Typography>
-                      </Box>
+                    <Grid item xs={12}>
+                      <TextField
+                        fullWidth
+                        label="Host"
+                        value={data?.neo4j?.host || 'neo4j'}
+                        onChange={(e) => {
+                          const updatedNeo4j = { ...data.neo4j, host: e.target.value };
+                          onChange('neo4j', updatedNeo4j);
+                        }}
+                        size="small"
+                      />
                     </Grid>
-                    <Grid item xs={6} md={3}>
-                      <Box textAlign="center">
-                        <Typography variant="h4">{stats.total_relationships_discovered}</Typography>
-                        <Typography variant="body2" color="text.secondary">Relationships Discovered</Typography>
-                      </Box>
+                    <Grid item xs={6}>
+                      <TextField
+                        fullWidth
+                        label="Bolt Port"
+                        type="number"
+                        value={data?.neo4j?.port || 7687}
+                        onChange={(e) => {
+                          const updatedNeo4j = { ...data.neo4j, port: parseInt(e.target.value) };
+                          onChange('neo4j', updatedNeo4j);
+                        }}
+                        size="small"
+                      />
                     </Grid>
-                    <Grid item xs={6} md={3}>
-                      <Box textAlign="center">
-                        <Typography variant="h4">{stats.relationships_accepted}</Typography>
-                        <Typography variant="body2" color="text.secondary">Accepted</Typography>
-                      </Box>
+                    <Grid item xs={6}>
+                      <TextField
+                        fullWidth
+                        label="HTTP Port"
+                        type="number"
+                        value={data?.neo4j?.http_port || 7474}
+                        onChange={(e) => {
+                          const updatedNeo4j = { ...data.neo4j, http_port: parseInt(e.target.value) };
+                          onChange('neo4j', updatedNeo4j);
+                        }}
+                        size="small"
+                      />
+                    </Grid>
+                    <Grid item xs={12}>
+                      <TextField
+                        fullWidth
+                        label="Database Name"
+                        value={data?.neo4j?.database || 'neo4j'}
+                        onChange={(e) => {
+                          const updatedNeo4j = { ...data.neo4j, database: e.target.value };
+                          onChange('neo4j', updatedNeo4j);
+                        }}
+                        size="small"
+                      />
                     </Grid>
                   </Grid>
                 </CardContent>
               </Card>
-            )}
-          </CardContent>
-        </Card>
-      )}
+            </Grid>
 
-      {tabValue === 1 && (
-        <Card>
-          <CardHeader title="Discovered Entity Types" />
-          <CardContent>
-            <Box>
-              {pendingEntities.length > 0 && (
-                <Box sx={{ mb: 3 }}>
-                  <Typography variant="h6" gutterBottom>Pending Review</Typography>
-                  {pendingEntities.map((entity) => (
-                    <Card key={entity.type} sx={{ mb: 2 }}>
-                      <CardContent>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                          <Box flex={1}>
-                            <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-                              <Typography variant="h6">{entity.type}</Typography>
-                              <Chip label={entity.confidence.toFixed(2)} size="small" />
-                              <Chip label={`${entity.frequency}x`} size="small" />
-                            </Box>
-                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                              {entity.description}
-                            </Typography>
-                            <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                              {entity.examples.map((example, idx) => (
-                                <Chip key={idx} label={example} size="small" variant="outlined" />
-                              ))}
-                            </Box>
-                          </Box>
-                          <Box sx={{ display: 'flex', gap: 1, ml: 2 }}>
-                            <Button
-                              size="small"
-                              variant="contained"
-                              color="success"
-                              onClick={() => handleApprove(entity.type, 'entity')}
-                              startIcon={<CheckCircleIcon />}
-                            >
-                              Approve
-                            </Button>
-                            <Button
-                              size="small"
-                              variant="contained"
-                              color="error"
-                              onClick={() => handleReject(entity.type, 'entity')}
-                              startIcon={<XCircleIcon />}
-                            >
-                              Reject
-                            </Button>
-                          </Box>
+            {/* Authentication */}
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Authentication"
+                  subheader="Neo4j database credentials"
+                />
+                <CardContent>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12}>
+                      <TextField
+                        fullWidth
+                        label="Username"
+                        value={data?.neo4j?.username || 'neo4j'}
+                        onChange={(e) => {
+                          const updatedNeo4j = { ...data.neo4j, username: e.target.value };
+                          onChange('neo4j', updatedNeo4j);
+                        }}
+                        size="small"
+                      />
+                    </Grid>
+                    <Grid item xs={12}>
+                      <TextField
+                        fullWidth
+                        label="Password"
+                        type={showPassword ? 'text' : 'password'}
+                        value={data?.neo4j?.password || 'jarvis_neo4j_password'}
+                        onChange={(e) => {
+                          const updatedNeo4j = { ...data.neo4j, password: e.target.value };
+                          onChange('neo4j', updatedNeo4j);
+                        }}
+                        size="small"
+                        InputProps={{
+                          endAdornment: (
+                            <InputAdornment position="end">
+                              <IconButton
+                                onClick={() => setShowPassword(!showPassword)}
+                                edge="end"
+                                size="small"
+                              >
+                                {showPassword ? <VisibilityOffIcon /> : <VisibilityIcon />}
+                              </IconButton>
+                            </InputAdornment>
+                          ),
+                        }}
+                      />
+                    </Grid>
+                    <Grid item xs={12}>
+                      <TextField
+                        fullWidth
+                        label="Connection URI"
+                        value={data?.neo4j?.uri || 'bolt://neo4j:7687'}
+                        onChange={(e) => {
+                          const updatedNeo4j = { ...data.neo4j, uri: e.target.value };
+                          onChange('neo4j', updatedNeo4j);
+                        }}
+                        size="small"
+                        helperText="Full connection URI (auto-generated from host:port)"
+                      />
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Connection Test */}
+            <Grid item xs={12}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Connection Test"
+                  subheader="Test the connection to your Neo4j database"
+                />
+                <CardContent>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
+                    <Button
+                      variant="contained"
+                      onClick={testNeo4jConnection}
+                      disabled={testingConnection}
+                      startIcon={testingConnection ? <CircularProgress size={16} /> : <CheckCircleIcon />}
+                    >
+                      {testingConnection ? 'Testing...' : 'Test Neo4j Connection'}
+                    </Button>
+                  </Box>
+                  
+                  {connectionTestResult && (
+                    <Alert 
+                      severity={connectionTestResult.success ? "success" : "error"}
+                      sx={{ mt: 2 }}
+                    >
+                      {connectionTestResult.success ? 'Connection successful!' : `Connection failed: ${connectionTestResult.error}`}
+                      {connectionTestResult.success && connectionTestResult.database_info && (
+                        <Box sx={{ mt: 1 }}>
+                          <Typography variant="caption" component="div">
+                            Database: {connectionTestResult.database_info.database_name || 'neo4j'}
+                          </Typography>
+                          <Typography variant="caption" component="div">
+                            Nodes: {connectionTestResult.database_info.node_count || 0}
+                          </Typography>
+                          <Typography variant="caption" component="div">
+                            Relationships: {connectionTestResult.database_info.relationship_count || 0}
+                          </Typography>
                         </Box>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </Box>
-              )}
-
-              {acceptedEntities.length > 0 && (
-                <Box>
-                  <Typography variant="h6" gutterBottom>Accepted</Typography>
-                  {acceptedEntities.map((entity) => (
-                    <Card key={entity.type} sx={{ mb: 2, borderLeft: '4px solid #4caf50' }}>
-                      <CardContent>
-                        <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-                          <Typography variant="h6">{entity.type}</Typography>
-                          <Chip label="Accepted" size="small" color="success" icon={<CheckCircleIcon />} />
-                        </Box>
-                        <Typography variant="body2" color="text.secondary">
-                          {entity.description}
-                        </Typography>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </Box>
-              )}
-            </Box>
-          </CardContent>
-        </Card>
-      )}
-
-      {tabValue === 2 && (
-        <PromptManagement 
-          data={data?.prompts || []} 
-          onChange={(field, value) => onChange('prompts', value)} 
-          onShowSuccess={onShowSuccess}
-        />
+                      )}
+                    </Alert>
+                  )}
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+        </Box>
       )}
 
       {tabValue === 3 && (
-        <Card>
-          <CardHeader title="Test Schema Discovery" />
-          <CardContent>
-            <Box sx={{ mb: 3 }}>
-              <Typography variant="body1" gutterBottom>
-                Enter text to analyze for schema discovery
-              </Typography>
-              <TextField
-                fullWidth
-                multiline
-                rows={4}
-                value={testText}
-                onChange={(e) => setTestText(e.target.value)}
-                placeholder="Paste your text here to discover new entity and relationship types..."
-                variant="outlined"
-              />
-            </Box>
-            
-            <Button 
-              variant="contained"
-              onClick={runDiscovery}
-              disabled={!testText.trim() || loading}
-              startIcon={loading ? <CircularProgress size={20} /> : <BrainIcon />}
-              sx={{ mb: 3 }}
-            >
-              {loading ? 'Analyzing...' : 'Run Discovery'}
-            </Button>
+        <Box>
+          <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
+            Schema Strategy &amp; Discovery Management
+          </Typography>
 
-            {discoveryResults && (
-              <Box>
-                <Alert severity="success" sx={{ mb: 3 }}>
-                  Discovery Results: {discoveryResults.discovered_entities?.length || 0} entities, 
-                  {discoveryResults.discovered_relationships?.length || 0} relationships discovered
-                </Alert>
-                
-                {discoveryResults.discovered_entities?.length > 0 && (
+          <Alert severity="info" sx={{ mb: 3 }}>
+            <Typography variant="body2">
+              Configure how entity and relationship types are defined, and review AI-discovered schema elements.
+            </Typography>
+          </Alert>
+
+          {/* Schema Strategy */}
+          <Card variant="outlined" sx={{ mb: 3 }}>
+            <CardHeader 
+              title="Schema Strategy" 
+              subheader="Choose how entity and relationship types are defined"
+            />
+            <CardContent>
+              <RadioGroup 
+                value={data?.schema_mode || 'dynamic'} 
+                onChange={(e) => onChange('schema_mode', e.target.value)}
+              >
+                <FormControlLabel 
+                  value="hybrid" 
+                  control={<Radio />} 
+                  label={
+                    <Box>
+                      <Typography variant="body2" fontWeight={600}>Smart Hybrid (Recommended)</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Combines predefined types with AI-discovered types for comprehensive coverage
+                      </Typography>
+                    </Box>
+                  } 
+                />
+                <FormControlLabel 
+                  value="dynamic" 
+                  control={<Radio />} 
+                  label={
+                    <Box>
+                      <Typography variant="body2" fontWeight={600}>AI Discovery Only</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Relies entirely on AI to discover and define entity/relationship types from content
+                      </Typography>
+                    </Box>
+                  } 
+                />
+              </RadioGroup>
+            </CardContent>
+          </Card>
+
+          {/* Discovery Configuration */}
+          <Grid container spacing={3}>
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Entity Discovery" 
+                  subheader="Configure AI discovery of entity types"
+                />
+                <CardContent>
+                  <Box sx={{ mb: 2 }}>
+                    <FormControlLabel 
+                      control={
+                        <Switch
+                          checked={data?.entity_discovery?.enabled || false}
+                          onChange={(e) => {
+                            const updatedEntityDiscovery = { 
+                              ...data?.entity_discovery, 
+                              enabled: e.target.checked 
+                            };
+                            onChange('entity_discovery', updatedEntityDiscovery);
+                          }}
+                        />
+                      }
+                      label="Enable Entity Discovery"
+                    />
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Let AI discover new entity types (Person, Organization, etc.)
+                    </Typography>
+                  </Box>
+                  <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                    Confidence Threshold: {(data?.entity_discovery?.confidence_threshold || 0.75).toFixed(2)}
+                  </Typography>
+                  <Slider
+                    value={data?.entity_discovery?.confidence_threshold || 0.75}
+                    onChange={(_, value) => {
+                      const updatedEntityDiscovery = { 
+                        ...data?.entity_discovery, 
+                        confidence_threshold: value as number 
+                      };
+                      onChange('entity_discovery', updatedEntityDiscovery);
+                    }}
+                    min={0.1}
+                    max={1}
+                    step={0.05}
+                    valueLabelDisplay="auto"
+                    sx={{ mb: 1 }}
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    Higher values = stricter filtering (fewer but more reliable discoveries)
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title="Relationship Discovery" 
+                  subheader="Configure AI discovery of relationship types"
+                />
+                <CardContent>
+                  <Box sx={{ mb: 2 }}>
+                    <FormControlLabel 
+                      control={
+                        <Switch
+                          checked={data?.relationship_discovery?.enabled || false}
+                          onChange={(e) => {
+                            const updatedRelationshipDiscovery = { 
+                              ...data?.relationship_discovery, 
+                              enabled: e.target.checked 
+                            };
+                            onChange('relationship_discovery', updatedRelationshipDiscovery);
+                          }}
+                        />
+                      }
+                      label="Enable Relationship Discovery"
+                    />
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Let AI discover new relationship types (works_for, located_in, etc.)
+                    </Typography>
+                  </Box>
+                  <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                    Confidence Threshold: {(data?.relationship_discovery?.confidence_threshold || 0.7).toFixed(2)}
+                  </Typography>
+                  <Slider
+                    value={data?.relationship_discovery?.confidence_threshold || 0.7}
+                    onChange={(_, value) => {
+                      const updatedRelationshipDiscovery = { 
+                        ...data?.relationship_discovery, 
+                        confidence_threshold: value as number 
+                      };
+                      onChange('relationship_discovery', updatedRelationshipDiscovery);
+                    }}
+                    min={0.1}
+                    max={1}
+                    step={0.05}
+                    valueLabelDisplay="auto"
+                    sx={{ mb: 1 }}
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    Higher values = stricter filtering (fewer but more reliable discoveries)
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+
+
+          {/* Discovery Statistics */}
+          {stats && (
+            <Card variant="outlined" sx={{ mt: 3 }}>
+              <CardHeader 
+                title="Discovery Statistics" 
+                subheader="Summary of AI-discovered schema elements"
+              />
+              <CardContent>
+                <Grid container spacing={3}>
+                  <Grid item xs={6} md={3}>
+                    <Box textAlign="center" sx={{ p: 2, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                      <Typography variant="h3" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                        {stats.total_entities_discovered}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Entities Discovered
+                      </Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={6} md={3}>
+                    <Box textAlign="center" sx={{ p: 2, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                      <Typography variant="h3" sx={{ fontWeight: 700, color: 'success.main' }}>
+                        {stats.entities_accepted}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Entities Accepted
+                      </Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={6} md={3}>
+                    <Box textAlign="center" sx={{ p: 2, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                      <Typography variant="h3" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                        {stats.total_relationships_discovered}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Relationships Discovered
+                      </Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={6} md={3}>
+                    <Box textAlign="center" sx={{ p: 2, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                      <Typography variant="h3" sx={{ fontWeight: 700, color: 'success.main' }}>
+                        {stats.relationships_accepted}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Relationships Accepted
+                      </Typography>
+                    </Box>
+                  </Grid>
+                </Grid>
+                {stats.last_discovery && (
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 2, textAlign: 'center' }}>
+                    Last discovery: {new Date(stats.last_discovery).toLocaleString()}
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Review Discovered Types */}
+          {(pendingEntities.length > 0 || acceptedEntities.length > 0) && (
+            <Card variant="outlined" sx={{ mt: 3 }}>
+              <CardHeader 
+                title="Review Discovered Types" 
+                subheader="Approve or reject AI-discovered entity types"
+              />
+              <CardContent>
+                {pendingEntities.length > 0 && (
                   <Box sx={{ mb: 3 }}>
-                    <Typography variant="h6" gutterBottom>Discovered Entities</Typography>
-                    {discoveryResults.discovered_entities.map((entity: any, idx: number) => (
-                      <Paper key={idx} sx={{ p: 2, mb: 1 }}>
-                        <Typography variant="h6">{entity.type}</Typography>
-                        <Typography variant="body2" color="text.secondary">{entity.description}</Typography>
-                      </Paper>
+                    <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      Pending Review
+                      <Badge badgeContent={pendingEntities.length} color="warning">
+                        <AlertTriangleIcon />
+                      </Badge>
+                    </Typography>
+                    {pendingEntities.map((entity: any) => (
+                      <Card key={entity.type} variant="outlined" sx={{ mb: 2, borderLeft: '4px solid orange' }}>
+                        <CardContent>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                            <Box flex={1}>
+                              <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                                <Typography variant="h6">{entity.type}</Typography>
+                                <Chip label={`${(entity.confidence * 100).toFixed(0)}%`} size="small" color="warning" />
+                                <Chip label={`${entity.frequency} occurrences`} size="small" variant="outlined" />
+                              </Box>
+                              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                                {entity.description}
+                              </Typography>
+                              <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                                {entity.examples.slice(0, 3).map((example: any, idx: number) => (
+                                  <Chip key={idx} label={example} size="small" variant="outlined" />
+                                ))}
+                                {entity.examples.length > 3 && (
+                                  <Chip label={`+${entity.examples.length - 3} more`} size="small" variant="outlined" />
+                                )}
+                              </Box>
+                            </Box>
+                            <Box sx={{ display: 'flex', gap: 1, ml: 2 }}>
+                              <Button
+                                size="small"
+                                variant="contained"
+                                color="success"
+                                onClick={() => handleApprove(entity.type, 'entity')}
+                                startIcon={<CheckCircleIcon />}
+                              >
+                                Approve
+                              </Button>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                color="error"
+                                onClick={() => handleReject(entity.type, 'entity')}
+                                startIcon={<XCircleIcon />}
+                              >
+                                Reject
+                              </Button>
+                            </Box>
+                          </Box>
+                        </CardContent>
+                      </Card>
                     ))}
                   </Box>
                 )}
+
+                {acceptedEntities.length > 0 && (
+                  <Box>
+                    <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      Accepted Types
+                      <Badge badgeContent={acceptedEntities.length} color="success">
+                        <CheckCircleIcon />
+                      </Badge>
+                    </Typography>
+                    <Grid container spacing={1}>
+                      {acceptedEntities.map((entity: any) => (
+                        <Grid item xs={12} sm={6} md={4} key={entity.type}>
+                          <Card variant="outlined" sx={{ borderLeft: '4px solid green' }}>
+                            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                                {entity.type}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {entity.description}
+                              </Typography>
+                            </CardContent>
+                          </Card>
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </Box>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </Box>
+      )}
+
+      {tabValue === 4 && (
+        <Box>
+          <PromptManagement 
+            data={data?.prompts || []} 
+            onChange={(field, value) => onChange('prompts', value)} 
+            onShowSuccess={onShowSuccess}
+          />
+        </Box>
+      )}
+
+      {tabValue === 5 && (
+        <Box>
+          <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
+            Test &amp; Validate Configuration
+          </Typography>
+
+          <Alert severity="info" sx={{ mb: 3 }}>
+            <Typography variant="body2">
+              Test your knowledge graph extraction settings by running them on sample text. 
+              This helps validate your configuration before processing real documents.
+            </Typography>
+          </Alert>
+
+          {/* Test Input */}
+          <Card variant="outlined" sx={{ mb: 3 }}>
+            <CardHeader 
+              title="Sample Text Input" 
+              subheader="Enter or paste text to test knowledge extraction"
+            />
+            <CardContent>
+              <TextField
+                fullWidth
+                multiline
+                rows={8}
+                value={testText}
+                onChange={(e) => setTestText(e.target.value)}
+                placeholder="Example: John Smith works as CEO at Microsoft Corporation in Seattle. The company was founded in 1975 and has partnerships with Amazon and Google. Microsoft's headquarters are located in Redmond, Washington."
+                variant="outlined"
+                sx={{ 
+                  '& .MuiInputBase-input': {
+                    fontFamily: 'monospace',
+                    fontSize: '14px'
+                  }
+                }}
+                helperText="Enter descriptive text with entities (people, organizations, locations) and relationships"
+              />
+              
+              <Box sx={{ mt: 2, display: 'flex', gap: 2, alignItems: 'center' }}>
+                <Button 
+                  variant="contained"
+                  onClick={runDiscovery}
+                  disabled={!testText.trim() || loading}
+                  startIcon={loading ? <CircularProgress size={20} /> : <BrainIcon />}
+                  size="large"
+                >
+                  {loading ? 'Analyzing...' : 'Test Extraction'}
+                </Button>
+                
+                <Button 
+                  variant="outlined"
+                  onClick={() => setTestText("John Smith works as CEO at Microsoft Corporation in Seattle. The company was founded in 1975 and has partnerships with Amazon and Google. Microsoft's headquarters are located in Redmond, Washington.")}
+                  disabled={loading}
+                >
+                  Use Sample Text
+                </Button>
+                
+                <Button 
+                  variant="text"
+                  onClick={() => setTestText('')}
+                  disabled={loading}
+                >
+                  Clear
+                </Button>
               </Box>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+
+          {/* Results */}
+          {discoveryResults && (
+            <Grid container spacing={3}>
+              {/* Summary */}
+              <Grid item xs={12}>
+                <Alert severity="success" sx={{ mb: 2 }}>
+                  <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                    Extraction Complete! 
+                  </Typography>
+                  <Typography variant="body2">
+                    Found {discoveryResults.discovered_entities?.length || 0} entities and {discoveryResults.discovered_relationships?.length || 0} relationships
+                  </Typography>
+                </Alert>
+              </Grid>
+
+              {/* Entities */}
+              {discoveryResults.discovered_entities?.length > 0 && (
+                <Grid item xs={12} md={6}>
+                  <Card>
+                    <CardHeader 
+                      title="Extracted Entities" 
+                      subheader={`${discoveryResults.discovered_entities.length} entities discovered`}
+                    />
+                    <CardContent>
+                      <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
+                        {discoveryResults.discovered_entities.map((entity: any, idx: number) => (
+                          <Card key={idx} variant="outlined" sx={{ mb: 2 }}>
+                            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                                <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                                  {entity.name || entity.value}
+                                </Typography>
+                                <Chip label={entity.type} size="small" color="primary" />
+                              </Box>
+                              {entity.description && (
+                                <Typography variant="body2" color="text.secondary">
+                                  {entity.description}
+                                </Typography>
+                              )}
+                              {entity.confidence && (
+                                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                                  Confidence: {(entity.confidence * 100).toFixed(0)}%
+                                </Typography>
+                              )}
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              )}
+
+              {/* Relationships */}
+              {discoveryResults.discovered_relationships?.length > 0 && (
+                <Grid item xs={12} md={6}>
+                  <Card>
+                    <CardHeader 
+                      title="Extracted Relationships" 
+                      subheader={`${discoveryResults.discovered_relationships.length} relationships discovered`}
+                    />
+                    <CardContent>
+                      <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
+                        {discoveryResults.discovered_relationships.map((rel: any, idx: number) => (
+                          <Card key={idx} variant="outlined" sx={{ mb: 2 }}>
+                            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                                <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                                  {rel.source} 
+                                </Typography>
+                                <Chip label={rel.type} size="small" color="secondary" />
+                                <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                                  {rel.target}
+                                </Typography>
+                              </Box>
+                              {rel.description && (
+                                <Typography variant="body2" color="text.secondary">
+                                  {rel.description}
+                                </Typography>
+                              )}
+                              {rel.confidence && (
+                                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                                  Confidence: {(rel.confidence * 100).toFixed(0)}%
+                                </Typography>
+                              )}
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              )}
+
+              {/* No Results */}
+              {(!discoveryResults.discovered_entities || discoveryResults.discovered_entities.length === 0) && 
+               (!discoveryResults.discovered_relationships || discoveryResults.discovered_relationships.length === 0) && (
+                <Grid item xs={12}>
+                  <Alert severity="warning">
+                    <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                      No entities or relationships detected
+                    </Typography>
+                    <Typography variant="body2">
+                      Try adjusting your settings or using more descriptive text with clear entities and relationships.
+                    </Typography>
+                  </Alert>
+                </Grid>
+              )}
+            </Grid>
+          )}
+
+          {/* Configuration Status */}
+          <Card sx={{ mt: 3, backgroundColor: 'action.hover' }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <SettingsIcon color="primary" />
+                Current Configuration
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={3}>
+                  <Typography variant="subtitle2" gutterBottom>Extraction Mode</Typography>
+                  <Chip 
+                    label={data?.knowledge_graph?.mode === 'thinking' ? 'Thinking Mode' : 'Direct Mode'} 
+                    size="small" 
+                    color={data?.knowledge_graph?.mode === 'thinking' ? 'primary' : 'default'}
+                  />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <Typography variant="subtitle2" gutterBottom>Schema Strategy</Typography>
+                  <Chip 
+                    label={
+                      data?.schema_mode === 'hybrid' ? 'Smart Hybrid' :
+                      data?.schema_mode === 'dynamic' ? 'AI Discovery' : 'Predefined Only'
+                    } 
+                    size="small" 
+                    color="secondary"
+                  />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <Typography variant="subtitle2" gutterBottom>Entity Discovery</Typography>
+                  <Chip 
+                    label={data?.entity_discovery?.enabled ? 'Enabled' : 'Disabled'} 
+                    size="small" 
+                    color={data?.entity_discovery?.enabled ? 'success' : 'default'}
+                  />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <Typography variant="subtitle2" gutterBottom>Model</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {actualModelConfig.model || 'Not configured'}
+                  </Typography>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        </Box>
+      )}
+      
+      {tabValue === 6 && (
+        <Box>
+          <KnowledgeGraphAntiSiloSettings 
+            data={data}
+            onChange={onChange}
+            onShowSuccess={onShowSuccess}
+          />
+        </Box>
       )}
     </Box>
   );

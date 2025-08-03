@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Frontend Debug</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        .field { margin: 10px 0; padding: 10px; background: #f0f0f0; }
+        .empty { background: #ffcccc; }
+        .filled { background: #ccffcc; }
+    </style>
+</head>
+<body>
+    <h1>Frontend Model Config Debug</h1>
+    <button onclick="checkFrontend()">Check Frontend Data</button>
+    <div id="results"></div>
+    
+    <script>
+        async function checkFrontend() {
+            const results = document.getElementById('results');
+            results.innerHTML = '<p>Checking...</p>';
+            
+            try {
+                // Direct API call
+                const response = await fetch('/api/v1/settings/knowledge_graph');
+                const data = await response.json();
+                const modelConfig = data.settings?.model_config || {};
+                
+                const fields = [
+                    'model',
+                    'temperature', 
+                    'repeat_penalty',
+                    'system_prompt',
+                    'max_tokens',
+                    'context_length',
+                    'model_server'
+                ];
+                
+                let html = '<h2>Direct API Check:</h2>';
+                
+                fields.forEach(field => {
+                    const value = modelConfig[field];
+                    const isEmpty = value === undefined || value === null || value === '';
+                    const className = isEmpty ? 'empty' : 'filled';
+                    
+                    html += `<div class="field ${className}">
+                        <strong>${field}:</strong> ${isEmpty ? '❌ EMPTY' : '✅ ' + JSON.stringify(value)}
+                    </div>`;
+                });
+                
+                results.innerHTML = html;
+                
+            } catch (error) {
+                results.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+            }
+        }
+        
+        // Auto-run on load
+        checkFrontend();
+    </script>
+</body>
+</html>

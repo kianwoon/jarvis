@@ -18,7 +18,9 @@ from app.api.v1.endpoints import automation
 from app.api.v1.endpoints import temp_documents
 from app.api.v1.endpoints import knowledge_graph
 from app.api.v1.endpoints import knowledge_graph_schema
+from app.api.v1.endpoints import knowledge_graph_anti_silo
 from app.api.v1.endpoints import prompt_management
+from app.api.v1.endpoints import unified_processing
 import logging
 
 logger = logging.getLogger(__name__)
@@ -190,7 +192,18 @@ api_router.include_router(
 )
 
 api_router.include_router(
+    knowledge_graph_anti_silo.router,
+    tags=["knowledge-graph-anti-silo"]
+)
+
+api_router.include_router(
     prompt_management.router,
     prefix="/prompts",
     tags=["prompts"]
+)
+
+api_router.include_router(
+    unified_processing.router,
+    prefix="/documents",
+    tags=["unified-processing"]
 )

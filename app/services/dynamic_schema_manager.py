@@ -396,43 +396,15 @@ class DynamicSchemaManager:
             self.redis.hset(self.relationship_cache_key, key, json.dumps(asdict(rel)))
     
     async def get_combined_schema(self) -> Dict[str, List[str]]:
-        """Get combined schema (static + dynamic) based on current mode"""
-        settings = get_knowledge_graph_settings()
-        schema_mode = settings.get('schema_mode', 'static')
+        """Get pure LLM-discovered schema - no static fallbacks"""
+        # Always use dynamic (LLM-discovered) schema - no static fallbacks
+        dynamic_entities = await self.get_current_entities()
+        dynamic_relationships = await self.get_current_relationships()
         
-        static_entities = settings.get('static_fallback', {}).get('entity_types', [])
-        static_relationships = settings.get('static_fallback', {}).get('relationship_types', [])
-        
-        if schema_mode == 'static':
-            return {
-                'entity_types': static_entities,
-                'relationship_types': static_relationships
-            }
-        
-        elif schema_mode == 'dynamic':
-            dynamic_entities = await self.get_current_entities()
-            dynamic_relationships = await self.get_current_relationships()
-            
-            return {
-                'entity_types': [e.type for e in dynamic_entities if e.status == 'accepted'],
-                'relationship_types': [r.type for r in dynamic_relationships if r.status == 'accepted']
-            }
-        
-        else:  # hybrid mode
-            dynamic_entities = await self.get_current_entities()
-            dynamic_relationships = await self.get_current_relationships()
-            
-            combined_entities = list(set(
-                static_entities + [e.type for e in dynamic_entities if e.status == 'accepted']
-            ))
-            combined_relationships = list(set(
-                static_relationships + [r.type for r in dynamic_relationships if r.status == 'accepted']
-            ))
-            
-            return {
-                'entity_types': combined_entities,
-                'relationship_types': combined_relationships
-            }
+        return {
+            'entity_types': [e.type for e in dynamic_entities if e.status == 'accepted'],
+            'relationship_types': [r.type for r in dynamic_relationships if r.status == 'accepted']
+        }
 
 
 # Global instance for easy access

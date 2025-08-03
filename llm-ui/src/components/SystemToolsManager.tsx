@@ -422,11 +422,11 @@ const SystemToolsManager: React.FC<SystemToolsManagerProps> = ({ onRefresh }) =>
                 <Typography variant="subtitle2" gutterBottom>Parameters Schema:</Typography>
                 <Box sx={{ 
                   p: 1, 
-                  bgcolor: (theme) => theme.palette.mode === 'dark' ? 'grey.800' : 'grey.50',
+                  bgcolor: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[800] : theme.palette.grey[50],
                   borderRadius: 1, 
                   mt: 1,
                   border: (theme) => theme.palette.mode === 'dark' ? '1px solid' : 'none',
-                  borderColor: 'grey.700'
+                  borderColor: (theme) => theme.palette.grey[700]
                 }}>
                   <pre style={{ 
                     margin: 0, 

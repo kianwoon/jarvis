@@ -1,0 +1,3 @@
+Embracing such platforms is consistent with DBS's goal of simplifying its tech stack and supporting microservices. Another strategic motive is DBS's desire to create new digital offerings and ecosystems quickly. The bank has broadened its business model to act as a technology platform.
+
+OceanBase and TDSQL are designed for extreme transaction volumes and concurrency. By investing in these areas, the interest in these technologies serves DBS's strategic goal of being a nimble organization that is customer-focused.

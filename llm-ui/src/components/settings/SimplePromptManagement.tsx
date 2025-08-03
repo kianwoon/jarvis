@@ -309,7 +309,8 @@ Return JSON format with entities, relationships, and discoveries.`
                   <Box
                     component="pre"
                     sx={{
-                      backgroundColor: 'grey.100',
+                      backgroundColor: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.grey[100],
+                      color: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[100] : theme.palette.grey[900],
                       p: 2,
                       borderRadius: 1,
                       fontSize: '0.8rem',

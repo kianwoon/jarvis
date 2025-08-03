@@ -12,13 +12,14 @@ from datetime import datetime
 from dataclasses import dataclass
 
 from app.document_handlers.base import DocumentHandler, ExtractedChunk, ExtractionPreview
-from app.services.knowledge_graph_service import (
-    get_knowledge_graph_service, 
+from app.services.knowledge_graph_service import get_knowledge_graph_service
+from app.services.knowledge_graph_types import (
     GraphExtractionResult,
     ExtractedEntity,
     ExtractedRelationship
 )
 from app.core.knowledge_graph_settings_cache import get_knowledge_graph_settings
+from app.services.dynamic_chunk_sizing import get_dynamic_chunk_sizer, optimize_chunks_for_model
 
 logger = logging.getLogger(__name__)
 
@@ -67,18 +68,30 @@ class GraphDocumentProcessor:
     def __init__(self):
         self.kg_service = get_knowledge_graph_service()
         self.config = get_knowledge_graph_settings()
+        self.chunk_sizer = get_dynamic_chunk_sizer()
         
-        # Graph processing settings
-        self.min_chunk_length = self.config.get('extraction', {}).get('min_chunk_length', 100)
-        self.max_chunk_length = self.config.get('extraction', {}).get('max_chunk_length', 2000)
+        # Get dynamic chunk configuration based on current model
+        chunk_config = self.chunk_sizer.get_chunk_configuration()
+        
+        # Graph processing settings with dynamic chunk sizing
+        self.min_chunk_length = chunk_config.get('min_chunk_size', 100)
+        self.max_chunk_length = chunk_config.get('max_chunk_size', 2000)
+        self.chunk_overlap = chunk_config.get('chunk_overlap', 200)
+        self.processing_strategy = chunk_config.get('processing_strategy', 'traditional')
         self.entity_threshold = self.config.get('extraction', {}).get('min_entity_confidence', 0.7)
         self.relationship_threshold = self.config.get('extraction', {}).get('min_relationship_confidence', 0.6)
+        
+        logger.info(f"🧠 Graph processor initialized with dynamic chunk sizing:")
+        logger.info(f"   Strategy: {self.processing_strategy}")
+        logger.info(f"   Chunk size: {self.min_chunk_length:,} - {self.max_chunk_length:,} characters")
+        logger.info(f"   Model context: {self.chunk_sizer.context_limit:,} tokens")
     
     async def process_document_for_graph(
         self, 
         chunks: List[ExtractedChunk], 
         document_id: str,
-        store_in_neo4j: bool = True
+        store_in_neo4j: bool = True,
+        progressive_storage: bool = True
     ) -> GraphProcessingResult:
         """
         Process document chunks for knowledge graph extraction with multi-chunk overlap detection.
@@ -101,10 +114,14 @@ class GraphDocumentProcessor:
             
             if enable_multi_chunk and len(chunks) > 1:
                 # Use multi-chunk processor for better cross-boundary relationship detection
-                return await self._process_with_multi_chunk_overlap(chunks, document_id, store_in_neo4j)
+                return await self._process_with_multi_chunk_overlap(
+                    chunks, document_id, store_in_neo4j, progressive_storage
+                )
             else:
                 # Use standard single-chunk processing
-                return await self._process_chunks_individually(chunks, document_id, store_in_neo4j)
+                return await self._process_chunks_individually(
+                    chunks, document_id, store_in_neo4j, progressive_storage
+                )
                 
         except Exception as e:
             logger.error(f"Graph processing failed for document {document_id}: {e}")
@@ -122,7 +139,8 @@ class GraphDocumentProcessor:
             )
     
     async def _process_with_multi_chunk_overlap(self, chunks: List[ExtractedChunk], 
-                                              document_id: str, store_in_neo4j: bool) -> GraphProcessingResult:
+                                              document_id: str, store_in_neo4j: bool, 
+                                              progressive_storage: bool = True) -> GraphProcessingResult:
         """Process chunks with overlap detection for cross-boundary relationships"""
         start_time = datetime.now()
         
@@ -131,36 +149,58 @@ class GraphDocumentProcessor:
             multi_chunk_processor = get_multi_chunk_processor()
             
             # Filter chunks suitable for graph processing
-            suitable_chunks = self._filter_suitable_chunks(chunks)
+            suitable_chunks = self._filter_chunks_for_graph_processing(chunks)
             
             if not suitable_chunks:
                 logger.warning("No suitable chunks found for graph processing")
                 return self._create_empty_result(document_id, len(chunks))
             
             # Process with multi-chunk overlap detection
+            kg_service = self.kg_service if progressive_storage else None
             multi_result = await multi_chunk_processor.process_document_with_overlap(
-                suitable_chunks, document_id
+                suitable_chunks, document_id, progressive_storage, kg_service
             )
             
-            # Combine all results
+            # Combine all results for final calculation
             all_extraction_results = multi_result.individual_results.copy()
             
-            # Create synthetic results for cross-chunk extractions
+            # Add cross-chunk results for calculation
             if multi_result.cross_chunk_entities or multi_result.cross_chunk_relationships:
                 cross_chunk_result = GraphExtractionResult(
                     chunk_id=f"{document_id}_cross_chunk",
                     entities=multi_result.cross_chunk_entities,
                     relationships=multi_result.cross_chunk_relationships,
-                    processing_time_ms=multi_result.total_processing_time_ms * 0.3,  # Portion of time
+                    processing_time_ms=multi_result.total_processing_time_ms * 0.3,
                     source_metadata={'type': 'cross_chunk_synthesis'},
                     warnings=[]
                 )
                 all_extraction_results.append(cross_chunk_result)
             
-            # Store in Neo4j if requested
+            # Store in Neo4j if requested (skip individual results if progressive storage was used)
             storage_results = []
-            if store_in_neo4j:
-                storage_results = await self._store_results_in_neo4j(all_extraction_results, document_id)
+            if store_in_neo4j and not progressive_storage:
+                # Only store if progressive storage wasn't used (to avoid duplicates)
+                for result in multi_result.individual_results:
+                    if result.entities or result.relationships:
+                        storage_result = await self.kg_service.store_in_neo4j(result, document_id)
+                        storage_results.append(storage_result)
+            
+            # Always store cross-chunk results (these are new relationships)
+            cross_chunk_stored = 0
+            if store_in_neo4j and (multi_result.cross_chunk_entities or multi_result.cross_chunk_relationships):
+                cross_chunk_result = GraphExtractionResult(
+                    chunk_id=f"{document_id}_cross_chunk",
+                    entities=multi_result.cross_chunk_entities,
+                    relationships=multi_result.cross_chunk_relationships,
+                    processing_time_ms=multi_result.total_processing_time_ms * 0.3,
+                    source_metadata={'type': 'cross_chunk_synthesis'},
+                    warnings=[]
+                )
+                storage_result = await self.kg_service.store_in_neo4j(cross_chunk_result, document_id)
+                storage_results.append(storage_result)
+                if storage_result.get('success'):
+                    cross_chunk_stored = storage_result.get('entities_stored', 0) + storage_result.get('relationships_stored', 0)
+                    logger.info(f"🔗 Cross-chunk analysis stored: {cross_chunk_stored} new connections")
             
             # Calculate totals
             total_entities = sum(len(result.entities) for result in all_extraction_results)
@@ -174,7 +214,22 @@ class GraphDocumentProcessor:
             
             success = len(errors) == 0 and total_entities > 0
             
-            logger.info(f"🔄 MULTI-CHUNK COMPLETE: {total_entities} entities, {total_relationships} relationships (quality: {multi_result.quality_metrics})")
+            # Run final anti-silo analysis if progressive storage was used
+            anti_silo_results = {}
+            if progressive_storage and store_in_neo4j:
+                try:
+                    logger.info("🌍 Running final anti-silo analysis after progressive storage...")
+                    anti_silo_results = await self.kg_service.run_global_anti_silo_analysis()
+                    if anti_silo_results.get('success'):
+                        logger.info(f"✅ Anti-silo complete: {anti_silo_results.get('connections_made', 0)} new connections")
+                    else:
+                        logger.warning(f"⚠️ Anti-silo analysis failed: {anti_silo_results.get('error')}")
+                except Exception as e:
+                    logger.error(f"❌ Anti-silo analysis error: {e}")
+                    anti_silo_results = {'error': str(e)}
+            
+            storage_mode = "progressive" if progressive_storage else "batch"
+            logger.info(f"🔄 MULTI-CHUNK COMPLETE ({storage_mode}): {total_entities} entities, {total_relationships} relationships (+{cross_chunk_stored} cross-chunk)")
             
             return GraphProcessingResult(
                 document_id=document_id,
@@ -191,10 +246,13 @@ class GraphDocumentProcessor:
         except Exception as e:
             logger.error(f"Multi-chunk processing failed: {e}")
             # Fallback to individual processing
-            return await self._process_chunks_individually(chunks, document_id, store_in_neo4j)
+            return await self._process_chunks_individually(
+                chunks, document_id, store_in_neo4j, progressive_storage
+            )
     
     async def _process_chunks_individually(self, chunks: List[ExtractedChunk], 
-                                         document_id: str, store_in_neo4j: bool) -> GraphProcessingResult:
+                                         document_id: str, store_in_neo4j: bool, 
+                                         progressive_storage: bool = True) -> GraphProcessingResult:
         """Standard individual chunk processing"""
         start_time = datetime.now()
         
@@ -203,25 +261,30 @@ class GraphDocumentProcessor:
             suitable_chunks = self._filter_chunks_for_graph_processing(chunks)
             logger.info(f"Filtered to {len(suitable_chunks)} suitable chunks for graph extraction")
             
-            # Process chunks in parallel for better performance
-            extraction_tasks = []
-            for chunk in suitable_chunks:
-                task = self.kg_service.extract_from_chunk(chunk)
-                extraction_tasks.append(task)
-            
-            # Execute extractions with concurrency limit
-            batch_size = min(5, len(extraction_tasks))  # Process up to 5 chunks concurrently
+            # Process chunks serially with optional progressive storage
             extraction_results = []
             
-            for i in range(0, len(extraction_tasks), batch_size):
-                batch = extraction_tasks[i:i + batch_size]
-                batch_results = await asyncio.gather(*batch, return_exceptions=True)
-                
-                for result in batch_results:
-                    if isinstance(result, Exception):
-                        logger.error(f"Chunk extraction failed: {result}")
-                        continue
+            for i, chunk in enumerate(suitable_chunks, 1):
+                logger.info(f"Processing chunk {i}/{len(suitable_chunks)} for knowledge graph extraction")
+                try:
+                    result = await self.kg_service.extract_from_chunk(chunk)
                     extraction_results.append(result)
+                    
+                    # Progressive storage: store immediately after extraction
+                    if progressive_storage and store_in_neo4j and (result.entities or result.relationships):
+                        try:
+                            storage_result = await self.kg_service.store_in_neo4j(result, document_id)
+                            if storage_result.get('success'):
+                                logger.info(f"📊 Progressive storage: chunk {i} stored ({storage_result.get('entities_stored', 0)} entities, {storage_result.get('relationships_stored', 0)} relationships)")
+                            else:
+                                logger.warning(f"❌ Progressive storage failed for chunk {i}: {storage_result.get('error')}")
+                        except Exception as storage_e:
+                            logger.error(f"❌ Progressive storage error for chunk {i}: {storage_e}")
+                    
+                    logger.info(f"✅ Chunk {i} completed: {len(result.entities)} entities, {len(result.relationships)} relationships")
+                except Exception as e:
+                    logger.error(f"❌ Chunk {i} extraction failed: {e}")
+                    continue
             
             # Collect statistics
             total_entities = sum(len(result.entities) for result in extraction_results)
@@ -229,10 +292,10 @@ class GraphDocumentProcessor:
             
             logger.info(f"Extracted {total_entities} entities and {total_relationships} relationships")
             
-            # Store in Neo4j if requested
+            # Store in Neo4j if requested (only in batch mode - progressive mode already stored)
             storage_errors = []
-            if store_in_neo4j and extraction_results:
-                logger.info(f"Storing graph data in Neo4j for document {document_id}")
+            if store_in_neo4j and extraction_results and not progressive_storage:
+                logger.info(f"Storing graph data in Neo4j for document {document_id} (batch mode)")
                 
                 for result in extraction_results:
                     if result.entities or result.relationships:
@@ -241,6 +304,22 @@ class GraphDocumentProcessor:
                             error_msg = f"Failed to store chunk {result.chunk_id}: {storage_result.get('error')}"
                             storage_errors.append(error_msg)
                             logger.error(error_msg)
+            elif progressive_storage:
+                logger.info(f"Individual chunks stored progressively during extraction")
+            
+            # Run final anti-silo analysis if progressive storage was used
+            anti_silo_results = {}
+            if progressive_storage and store_in_neo4j and extraction_results:
+                try:
+                    logger.info("🌍 Running final anti-silo analysis after progressive storage...")
+                    anti_silo_results = await self.kg_service.run_global_anti_silo_analysis()
+                    if anti_silo_results.get('success'):
+                        logger.info(f"✅ Anti-silo complete: {anti_silo_results.get('connections_made', 0)} new connections")
+                    else:
+                        logger.warning(f"⚠️ Anti-silo analysis failed: {anti_silo_results.get('error')}")
+                except Exception as e:
+                    logger.error(f"❌ Anti-silo analysis error: {e}")
+                    anti_silo_results = {'error': str(e)}
             
             # Calculate processing time
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
@@ -258,7 +337,8 @@ class GraphDocumentProcessor:
                 graph_data=extraction_results
             )
             
-            logger.info(f"Graph processing completed for {document_id}: {total_entities} entities, {total_relationships} relationships")
+            storage_mode = "progressive" if progressive_storage else "batch"
+            logger.info(f"Graph processing completed for {document_id} ({storage_mode}): {total_entities} entities, {total_relationships} relationships")
             return result
             
         except Exception as e:
@@ -277,23 +357,55 @@ class GraphDocumentProcessor:
             )
     
     def _filter_chunks_for_graph_processing(self, chunks: List[ExtractedChunk]) -> List[ExtractedChunk]:
-        """Filter chunks that are suitable for graph processing"""
-        suitable_chunks = []
+        """Filter and optimize chunks for graph processing based on model capabilities"""
+        logger.info(f"🔧 Optimizing {len(chunks)} chunks for model: {self.chunk_sizer.model_name}")
         
-        for chunk in chunks:
-            # Check chunk length
+        # Use dynamic chunk sizing to optimize chunks for the current model
+        optimized_chunks = optimize_chunks_for_model(chunks)
+        
+        # Apply additional filtering based on content quality
+        suitable_chunks = []
+        logger.debug(f"🔍 Chunk filtering: min_chunk_length={self.min_chunk_length}, max_chunk_length={self.max_chunk_length}")
+        
+        for chunk in optimized_chunks:
             content_length = len(chunk.content.strip())
+            logger.debug(f"🔍 Checking chunk: {content_length} chars")
+            
+            # Check minimum length requirement  
             if content_length < self.min_chunk_length:
+                logger.debug(f"⏭️  Skipping short chunk: {content_length} chars < {self.min_chunk_length}")
                 continue
             
-            if content_length > self.max_chunk_length:
-                # Split large chunks
+            # Check maximum length (should be handled by optimizer, but safety check)
+            if content_length > self.max_chunk_length * 1.1:  # 10% tolerance
+                logger.warning(f"⚠️  Chunk too large after optimization: {content_length} chars > {self.max_chunk_length}")
+                # Split if still too large
                 split_chunks = self._split_large_chunk(chunk)
                 suitable_chunks.extend(split_chunks)
             else:
                 suitable_chunks.append(chunk)
         
+        logger.info(f"✅ Chunk optimization complete: {len(chunks)} → {len(suitable_chunks)} chunks")
+        if suitable_chunks:
+            avg_size = sum(len(c.content) for c in suitable_chunks) // len(suitable_chunks)
+            logger.info(f"   Average chunk size: {avg_size:,} characters")
+            logger.info(f"   Size range: {min(len(c.content) for c in suitable_chunks):,} - {max(len(c.content) for c in suitable_chunks):,} characters")
+        
         return suitable_chunks
+    
+    def _create_empty_result(self, document_id: str, total_chunks: int) -> GraphProcessingResult:
+        """Create an empty result when no suitable chunks are found"""
+        return GraphProcessingResult(
+            document_id=document_id,
+            total_chunks=total_chunks,
+            processed_chunks=0,
+            total_entities=0,
+            total_relationships=0,
+            processing_time_ms=0.0,
+            success=True,
+            errors=[],
+            graph_data=[]
+        )
     
     def _split_large_chunk(self, chunk: ExtractedChunk) -> List[ExtractedChunk]:
         """Split a large chunk into smaller, more manageable pieces"""

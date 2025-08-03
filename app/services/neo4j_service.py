@@ -232,12 +232,44 @@ class Neo4jService:
             # Constraint might already exist, that's fine
             logger.debug(f"Constraint creation for {entity_type}: {str(e)}")
     
+    def _validate_neo4j_properties(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and sanitize properties for Neo4j compatibility"""
+        if not properties:
+            return {}
+            
+        validated = {}
+        invalid_props = []
+        
+        for key, value in properties.items():
+            if value is None:
+                continue  # Skip None values
+            elif isinstance(value, (str, int, float, bool)):
+                validated[key] = value  # Primitive types are OK
+            elif isinstance(value, list) and all(isinstance(item, (str, int, float, bool)) for item in value):
+                validated[key] = value  # Arrays of primitives are OK
+            elif isinstance(value, (dict, list)):
+                invalid_props.append(f"{key}: {type(value).__name__}")
+                # Convert to JSON string as fallback
+                import json
+                validated[key] = json.dumps(value)
+            else:
+                invalid_props.append(f"{key}: {type(value).__name__}")
+                validated[key] = str(value)  # Convert to string as fallback
+        
+        if invalid_props:
+            logger.warning(f"Neo4j property validation: Converted complex types to strings: {invalid_props}")
+        
+        return validated
+
     def create_relationship(self, from_id: str, to_id: str, relationship_type: str, 
                           properties: Optional[Dict[str, Any]] = None) -> bool:
         """Create a relationship between two entities"""
         try:
             if not self.is_enabled():
                 return False
+            
+            # Validate and sanitize properties
+            safe_properties = self._validate_neo4j_properties(properties or {})
             
             with self.driver.session() as session:
                 # Create relationship
@@ -250,7 +282,7 @@ class Neo4jService:
                 result = session.run(query, 
                                    from_id=from_id, 
                                    to_id=to_id, 
-                                   properties=properties or {})
+                                   properties=safe_properties)
                 return result.single() is not None
                 
         except Exception as e:

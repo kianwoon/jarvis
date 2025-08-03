@@ -1,0 +1,45 @@
+DBS Bank Technology Strategy Report
+
+Executive Summary
+DBS Bank, headquartered in Singapore, is a leading financial institution in Southeast Asia. The bank has embarked on an ambitious digital transformation journey to become a technology-first bank by 2030.
+
+Strategic Technology Initiatives
+
+1. Database Modernization
+DBS Bank is actively evaluating distributed database technologies including:
+- OceanBase: A distributed relational database management system developed by Ant Group (Alibaba affiliate)
+- SOFAStack: Middleware platform for cloud-native applications from Ant Group
+- TDSQL: Tencent's distributed database offering with proven scalability
+
+2. Cloud Infrastructure Partnerships
+The bank has established strategic partnerships with:
+- Microsoft Azure for hybrid cloud infrastructure
+- Alibaba Cloud for regional expansion in China
+- Amazon Web Services for global application hosting
+
+3. Regulatory Compliance Technology
+Singapore's Monetary Authority requires strict compliance frameworks:
+- Data residency requirements for customer information
+- Real-time transaction monitoring systems
+- Advanced fraud detection using machine learning
+
+4. Digital Banking Platform
+DBS aims to build "DBS 2.0" - a fully digital banking platform featuring:
+- Microservices architecture for rapid deployment
+- API-first design for third-party integrations
+- Real-time analytics for personalized customer experiences
+
+Technology Partners and Vendors
+- Oracle: Legacy database systems currently in use
+- MariaDB: Open-source database migration project completed in 2023
+- Neo4j: Graph database for relationship analysis
+- Redis: In-memory data structure store for caching
+
+Innovation Labs and Research
+DBS operates innovation labs in:
+- Singapore: Primary research and development center
+- India: Software development and engineering
+- China: Market research and partnership development
+
+Future Roadmap
+The bank plans to complete its digital transformation by 2030, positioning itself as the leading digital bank in Asia-Pacific region through advanced technology adoption and strategic partnerships.

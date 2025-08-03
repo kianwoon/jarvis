@@ -1,0 +1,7 @@
+DBS Bank, Singapore's leading financial institution, has been exploring cutting-edge database technologies to modernize its infrastructure. The bank is particularly interested in Ant Group's OceanBase database and SOFAStack middleware solutions.
+
+Ant Group, the Chinese technology giant behind Alipay, developed these technologies to handle massive scale. OceanBase is a distributed SQL database originally created by Ant Group for their financial services platform. SOFAStack provides middleware components for building resilient applications.
+
+Tencent, another major Chinese technology company, has also developed similar database solutions. The competition between these tech giants has led to innovative database technologies that can handle billions of transactions.
+
+CEO Piyush Gupta and other DBS leaders have stressed the need to learn from internet giants who have mastered handling massive scale operations. DBS aims to strengthen its technology infrastructure in line with its digital transformation goals.

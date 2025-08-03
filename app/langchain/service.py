@@ -511,14 +511,21 @@ def build_messages_for_synthesis(
     logger.info(f"[DEBUG] Messages synthesis - Has RAG: {bool(rag_context)}, Has tools: {bool(tool_context)}")
     
     # Get system prompt based on context
+    # CRITICAL FIX: When tool_context exists, it means tools have ALREADY been executed
+    # and results are provided. The model should synthesize these results, NOT make more tool calls.
     if tool_context:
-        logger.info(f"[DEBUG] Messages synthesis - Tool context exists, calling build_enhanced_system_prompt()")
+        logger.info(f"[DEBUG] Messages synthesis - Tool context exists, using basic system prompt for synthesis")
+        llm_settings = get_llm_settings()
+        base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
+        # Add synthesis-specific instructions
+        system_prompt = f"""{base_prompt}
+
+SYNTHESIS MODE: You are provided with tool results and should synthesize a comprehensive answer based on the information given. Do NOT make additional tool calls - use only the provided information to generate your response."""
+        logger.info(f"[DEBUG] Messages synthesis - Basic system prompt with synthesis instructions length: {len(system_prompt)}")
+    else:
+        logger.info(f"[DEBUG] Messages synthesis - No tool context, using enhanced system prompt for potential tool usage")
         system_prompt = build_enhanced_system_prompt()
         logger.info(f"[DEBUG] Messages synthesis - Enhanced system prompt length: {len(system_prompt)}")
-    else:
-        logger.info(f"[DEBUG] Messages synthesis - No tool context, using basic system prompt")
-        llm_settings = get_llm_settings()
-        system_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
     
     # Check if system prompt contains specific format instructions
     has_format_instructions = any(phrase in system_prompt.lower() for phrase in [
@@ -545,7 +552,7 @@ def build_messages_for_synthesis(
 🔧 Current Information (Web Search):
 {tool_context}
 
-IMPORTANT: Use ONLY the tool results above for current/real-time information. Ignore any outdated data from conversation history.""")
+SYNTHESIS INSTRUCTIONS: Use BOTH the internal knowledge base information and the web search results to provide a comprehensive answer. Do NOT make additional tool calls. Focus on synthesizing the provided information.""")
     elif rag_context:
         user_content_parts.append(f"""You have access to relevant information from our internal knowledge base.
 
@@ -558,14 +565,14 @@ IMPORTANT: Use ONLY the tool results above for current/real-time information. Ig
 🌐 Current Information (Web Search):
 {tool_context}
 
-IMPORTANT: Use ONLY the tool results above for current/real-time information. Ignore any outdated data from conversation history.""")
+SYNTHESIS INSTRUCTIONS: Use ONLY the web search results above to answer the user's question. Do NOT make additional tool calls. Synthesize a comprehensive, helpful answer based solely on the provided search results.""")
         else:
             user_content_parts.append(f"""You have executed tools to gather current, real-time information.
 
 🔧 Tool Results:
 {tool_context}
 
-IMPORTANT: Use ONLY the tool results above for current/real-time information. Ignore any outdated data from conversation history.""")
+SYNTHESIS INSTRUCTIONS: Use ONLY the tool results above to answer the user's question. Do NOT make additional tool calls. Synthesize a comprehensive, helpful answer based solely on the provided tool results.""")
     else:
         # Pure LLM - just note the context without instructions
         if query_type == "TOOLS":

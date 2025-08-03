@@ -135,14 +135,95 @@ const KnowledgeGraphViewer: React.FC = () => {
     return saved ? JSON.parse(saved) : false;
   });
 
-  // Color scheme for different entity types
-  const entityColors: Record<string, string> = {
-    'PERSON': '#ff7f0e',
-    'ORG': '#2ca02c', 
-    'CONCEPT': '#1f77b4',
-    'LOCATION': '#d62728',
-    'PRODUCT': '#9467bd',
-    'default': '#7f7f7f'
+  // Entity type colors matching backend LLM extractor types
+  // Enhanced color system with accessibility and theme support
+  const getEntityColors = (isDark: boolean): Record<string, string> => {
+    const lightTheme = {
+      // Core entity types (matching backend hierarchical_entity_types)
+      'PERSON': '#e67e22',           // Darker orange for better contrast
+      'ORGANIZATION': '#27ae60',     // Darker green for companies, banks, groups
+      'LOCATION': '#c0392b',         // Darker red for places, cities, countries
+      'EVENT': '#e74c3c',            // Solid red for meetings, conferences, incidents
+      'TECHNOLOGY': '#3498db',       // Bright blue for software, databases, tools
+      'CONCEPT': '#2980b9',          // Darker blue for abstract ideas, strategies
+      'PRODUCT': '#8e44ad',          // Darker purple for services, applications
+      'SERVICE': '#d63384',          // Bootstrap pink for APIs, platforms, offerings
+      'PROJECT': '#a0522d',          // Saddle brown for initiatives, programs
+      'SYSTEM': '#f39c12',           // Bright orange for infrastructure, frameworks
+      
+      // Legacy aliases for backward compatibility
+      'ORG': '#27ae60',              // Alias for ORGANIZATION
+      'TECH': '#3498db',             // Alias for TECHNOLOGY
+      
+      // Additional business concepts
+      'INITIATIVE': '#2ecc71',       // Emerald for business initiatives
+      'STRATEGY': '#9b59b6',         // Amethyst for strategic concepts
+      'PROCESS': '#795548',          // Brown for business processes
+      'COUNTRY': '#c0392b',          // Same as LOCATION
+      'CITY': '#ff5722',             // Deep orange (distinguishable from PERSON)
+      
+      // Default fallback
+      'default': '#6c757d'           // Bootstrap secondary grey
+    };
+    
+    const darkTheme = {
+      // Brighter colors for dark mode with better visibility
+      'PERSON': '#ff9f43',           // Brighter orange
+      'ORGANIZATION': '#2ed573',     // Brighter green
+      'LOCATION': '#ff3838',         // Brighter red
+      'EVENT': '#ff6b6b',            // Bright coral
+      'TECHNOLOGY': '#54a0ff',       // Bright blue
+      'CONCEPT': '#74b9ff',          // Light blue
+      'PRODUCT': '#a55eea',          // Bright purple
+      'SERVICE': '#fd79a8',          // Bright pink
+      'PROJECT': '#d63031',          // Bright red-brown
+      'SYSTEM': '#fdcb6e',           // Bright yellow-orange
+      
+      // Legacy aliases
+      'ORG': '#2ed573',
+      'TECH': '#54a0ff',
+      
+      // Additional concepts
+      'INITIATIVE': '#00b894',       // Teal
+      'STRATEGY': '#6c5ce7',         // Periwinkle
+      'PROCESS': '#a29bfe',          // Light purple
+      'COUNTRY': '#ff3838',
+      'CITY': '#fd79a8',
+      
+      // Default fallback
+      'default': '#b2bec3'           // Light grey for dark theme
+    };
+    
+    return isDark ? darkTheme : lightTheme;
+  };
+  
+  const entityColors = getEntityColors(isDarkMode);
+
+  // Enhanced color generator with accessibility features
+  const generateColor = (entityType: string): string => {
+    if (entityColors[entityType]) {
+      return entityColors[entityType];
+    }
+    
+    // Generate consistent color based on entity type string
+    let hash = 0;
+    for (let i = 0; i < entityType.length; i++) {
+      const char = entityType.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    
+    // Enhanced HSL generation with better accessibility
+    const hue = Math.abs(hash) % 360;
+    
+    // Avoid problematic hue ranges (yellow-green that's hard to see)
+    const adjustedHue = (hue >= 60 && hue <= 120) ? (hue + 60) % 360 : hue;
+    
+    // Higher saturation and better contrast for accessibility
+    const saturation = isDarkMode ? 85 : 75; // Higher saturation for visibility
+    const lightness = isDarkMode ? 70 : 40;  // Better contrast ratios
+    
+    return `hsl(${adjustedHue}, ${saturation}%, ${lightness}%)`;
   };
 
   // Theme-aware colors
@@ -171,9 +252,10 @@ const KnowledgeGraphViewer: React.FC = () => {
     return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
-  // Fetch available document IDs
+  // Fetch available document IDs or entity types
   const fetchAvailableDocuments = async () => {
     try {
+      // First try to get documents with document_id
       const response = await fetch('/api/v1/knowledge-graph/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -185,10 +267,18 @@ const KnowledgeGraphViewer: React.FC = () => {
       if (response.ok) {
         const data = await response.json();
         const docIds = data.results?.map((r: any) => r.document_id) || [];
-        setAvailableDocuments(docIds);
+        
+        if (docIds.length > 0) {
+          setAvailableDocuments(docIds);
+        } else {
+          // Fallback: show "All Entities" option if no document IDs exist
+          setAvailableDocuments(['ALL_ENTITIES']);
+        }
       }
     } catch (err) {
       console.error('Error fetching document IDs:', err);
+      // Fallback: show "All Entities" option
+      setAvailableDocuments(['ALL_ENTITIES']);
     }
   };
 
@@ -208,18 +298,44 @@ const KnowledgeGraphViewer: React.FC = () => {
     }
   };
 
-  // Fetch entities for a specific document
+  // Fetch entities for a specific document or all entities
   const fetchEntities = async (documentId: string) => {
     if (!documentId) return;
     
     setLoading(true);
     try {
-      const response = await fetch(`/api/v1/knowledge-graph/entities/${documentId}`);
-      if (response.ok) {
-        const data = await response.json();
-        setEntities(data.entities || []);
+      if (documentId === 'ALL_ENTITIES') {
+        // Fetch all entities using direct query
+        const response = await fetch('/api/v1/knowledge-graph/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: 'MATCH (n) RETURN n.id as id, n.name as name, n.type as type, n.confidence as confidence, n.original_text as original_text LIMIT 100'
+          })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          const entities = data.results?.map((r: any) => ({
+            id: r.id || 'unknown',
+            name: r.name || 'Unknown',
+            type: r.type || 'UNKNOWN',
+            confidence: r.confidence || 0.5,
+            original_text: r.original_text || ''
+          })) || [];
+          setEntities(entities);
+        } else {
+          setError('Failed to fetch all entities');
+        }
       } else {
-        setError('Failed to fetch entities');
+        // Original document-specific query
+        const response = await fetch(`/api/v1/knowledge-graph/entities/${documentId}`);
+        if (response.ok) {
+          const data = await response.json();
+          setEntities(data.entities || []);
+        } else {
+          setError('Failed to fetch entities');
+        }
       }
     } catch (err) {
       setError('Error fetching entities');
@@ -229,17 +345,44 @@ const KnowledgeGraphViewer: React.FC = () => {
     }
   };
 
-  // Fetch relationships for a specific document
+  // Fetch relationships for a specific document or all relationships
   const fetchRelationships = async (documentId: string) => {
     if (!documentId) return;
     
     try {
-      const response = await fetch(`/api/v1/knowledge-graph/relationships/${documentId}`);
-      if (response.ok) {
-        const data = await response.json();
-        setRelationships(data.relationships || []);
+      if (documentId === 'ALL_ENTITIES') {
+        // Fetch all relationships using direct query
+        const response = await fetch('/api/v1/knowledge-graph/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: 'MATCH (a)-[r]->(b) RETURN a.id as source_entity, b.id as target_entity, type(r) as relationship_type, r.confidence as confidence, r.context as context LIMIT 100'
+          })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          const relationships = data.results?.map((r: any) => ({
+            id: `${r.source_entity}_${r.target_entity}_${r.relationship_type}`,
+            source_entity: r.source_entity || 'unknown',
+            target_entity: r.target_entity || 'unknown',
+            relationship_type: r.relationship_type || 'RELATED_TO',
+            confidence: r.confidence || 0.5,
+            context: r.context || ''
+          })) || [];
+          setRelationships(relationships);
+        } else {
+          setError('Failed to fetch all relationships');
+        }
       } else {
-        setError('Failed to fetch relationships');
+        // Original document-specific query
+        const response = await fetch(`/api/v1/knowledge-graph/relationships/${documentId}`);
+        if (response.ok) {
+          const data = await response.json();
+          setRelationships(data.relationships || []);
+        } else {
+          setError('Failed to fetch relationships');
+        }
       }
     } catch (err) {
       setError('Error fetching relationships');
@@ -302,7 +445,7 @@ const KnowledgeGraphViewer: React.FC = () => {
         
         // If source_entity is not a valid ID, try to map from name
         if (!entityIds.has(sourceId)) {
-          const sourceFromName = nameToIdMap.get(sourceId.toLowerCase()) || nameToIdMap.get(rel.source_name?.toLowerCase());
+          const sourceFromName = nameToIdMap.get(sourceId.toLowerCase());
           if (sourceFromName) {
             sourceId = sourceFromName;
             console.log(`🔗 Mapped source "${rel.source_entity}" -> "${sourceId}"`);
@@ -311,7 +454,7 @@ const KnowledgeGraphViewer: React.FC = () => {
         
         // If target_entity is not a valid ID, try to map from name
         if (!entityIds.has(targetId)) {
-          const targetFromName = nameToIdMap.get(targetId.toLowerCase()) || nameToIdMap.get(rel.target_name?.toLowerCase());
+          const targetFromName = nameToIdMap.get(targetId.toLowerCase());
           if (targetFromName) {
             targetId = targetFromName;
             console.log(`🔗 Mapped target "${rel.target_entity}" -> "${targetId}"`);
@@ -395,22 +538,95 @@ const KnowledgeGraphViewer: React.FC = () => {
           const transform = event.transform;
           setZoomTransform(transform);
           mainGroup.attr('transform', transform.toString());
+          
+          // Adjust font sizes based on zoom level for better readability
+          // Only update font sizes if zoom level changes significantly to improve performance
+          if (Math.abs(transform.k - 1) > 0.1) {
+            const scaledFontSize = Math.max(8, (fontSize - 4) / Math.sqrt(transform.k));
+            const scaledLinkFontSize = Math.max(6, Math.max(fontSize - 10, 6) / Math.sqrt(transform.k));
+            
+            // Update node label font sizes
+            mainGroup.selectAll('.node-label-group text')
+              .attr('font-size', `${scaledFontSize}px`);
+              
+            // Update link label font sizes
+            mainGroup.selectAll('.link-labels text')
+              .attr('font-size', `${scaledLinkFontSize}px`);
+          }
         });
 
       // Apply zoom behavior to SVG and store reference
       svg.call(zoom);
       zoomBehaviorRef.current = zoom;
 
+      // Helper function to wrap text and calculate node size
+      const wrapText = (text: string, maxLineLength: number = 12): { lines: string[], maxWidth: number } => {
+        const words = text.split(/\s+/);
+        const lines: string[] = [];
+        let currentLine = '';
+        let maxWidth = 0;
+        
+        for (const word of words) {
+          const testLine = currentLine + (currentLine ? ' ' : '') + word;
+          
+          if (testLine.length <= maxLineLength) {
+            currentLine = testLine;
+          } else {
+            if (currentLine) {
+              lines.push(currentLine);
+              maxWidth = Math.max(maxWidth, currentLine.length);
+              currentLine = word;
+            } else {
+              // Word is longer than maxLineLength, truncate it
+              lines.push(word.length > maxLineLength ? word.slice(0, maxLineLength - 1) + '…' : word);
+              maxWidth = Math.max(maxWidth, Math.min(word.length, maxLineLength));
+              currentLine = '';
+            }
+          }
+        }
+        
+        if (currentLine) {
+          lines.push(currentLine);
+          maxWidth = Math.max(maxWidth, currentLine.length);
+        }
+        
+        // Limit to maximum 3 lines for readability
+        if (lines.length > 3) {
+          lines.splice(2, lines.length - 2, lines.slice(2).join(' '));
+          if (lines[2].length > maxLineLength) {
+            lines[2] = lines[2].slice(0, maxLineLength - 1) + '…';
+          }
+        }
+        
+        return { lines, maxWidth };
+      };
+
+      // Calculate text wrapping for all nodes to determine optimal sizing
+      const nodeTextInfo = nodes.map(d => {
+        // Dynamic max line length based on font size - smaller fonts can fit more characters
+        const maxLineLength = Math.max(8, Math.min(20, 200 / fontSize));
+        const { lines, maxWidth } = wrapText(d.name, maxLineLength);
+        const estimatedWidth = maxWidth * (fontSize - 4) * 0.6; // Approximate character width
+        const estimatedHeight = lines.length * (fontSize - 2); // Line height
+        return {
+          node: d,
+          lines,
+          textWidth: estimatedWidth,
+          textHeight: estimatedHeight,
+          radius: Math.max(20 + (d.confidence * 12), Math.max(estimatedWidth, estimatedHeight) / 2 + 10)
+        };
+      });
+
       // Create simulation with better force configuration
       const simulation = d3.forceSimulation<GraphNode>(nodes)
         .force('link', d3.forceLink<GraphNode, GraphLink>(links)
           .id(d => d.id)
-          .distance(120)  // Increased distance for better visibility
+          .distance(180)  // Much larger distance for bigger nodes
           .strength(0.8)  // Stronger links to keep connected nodes together
         )
-        .force('charge', d3.forceManyBody().strength(-400))  // Stronger repulsion for better spread
+        .force('charge', d3.forceManyBody().strength(-800))  // Much stronger repulsion for larger nodes
         .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('collision', d3.forceCollide().radius(30))  // Larger collision radius to prevent overlap
+        .force('collision', d3.forceCollide().radius((_, i) => nodeTextInfo[i]?.radius + 5 || 55))  // Dynamic collision based on actual node size
         .force('x', d3.forceX(width / 2).strength(0.1))    // Gentle centering force
         .force('y', d3.forceY(height / 2).strength(0.1));  // Gentle centering force
 
@@ -422,9 +638,23 @@ const KnowledgeGraphViewer: React.FC = () => {
         .join('line')
         .attr('stroke', themeColors.linkColor)
         .attr('stroke-opacity', 0.8)
-        .attr('stroke-width', d => Math.max(2, d.confidence * 4))
+        .attr('stroke-width', d => Math.max(0.6, d.confidence * 1.2))
         .attr('stroke-dasharray', d => d.confidence < 0.7 ? '5,5' : 'none')  // Dashed lines for lower confidence
-        .style('cursor', 'pointer');
+        .style('cursor', 'pointer')
+        .on('mouseenter', function(_, d) {
+          d3.select(this)
+            .transition()
+            .duration(200)
+            .attr('stroke-width', Math.max(1.2, d.confidence * 1.8))
+            .attr('stroke-opacity', 1.0);
+        })
+        .on('mouseleave', function(_, d) {
+          d3.select(this)
+            .transition()
+            .duration(200)
+            .attr('stroke-width', Math.max(0.6, d.confidence * 1.2))
+            .attr('stroke-opacity', 0.8);
+        });
 
       // Create link labels group
       const linkLabelGroup = mainGroup.append('g').attr('class', 'link-labels');
@@ -433,15 +663,21 @@ const KnowledgeGraphViewer: React.FC = () => {
         .data(links)
         .join('text')
         .attr('text-anchor', 'middle')
-        .attr('dy', -8)
-        .attr('font-size', `${fontSize - 1}px`)
-        .attr('font-weight', '500')
+        .attr('dy', -10)
+        .attr('font-size', `${Math.max(fontSize - 10, 6)}px`)
+        .attr('font-weight', '400')
+        .attr('font-family', 'Arial, Helvetica, system-ui, -apple-system, sans-serif')
         .attr('fill', themeColors.linkLabelColor)
-        .attr('stroke', themeColors.surface)
-        .attr('stroke-width', '3')
-        .attr('paint-order', 'stroke')
+        .attr('fill-opacity', '0.7')
+        .attr('stroke', isDarkMode ? 'rgba(0,0,0,0.8)' : 'rgba(255,255,255,0.8)')
+        .attr('stroke-width', '0.2px')
+        .attr('paint-order', 'stroke fill')
         .style('pointer-events', 'none')
-        .text(d => d.relationship_type.toUpperCase());
+        .style('filter', 'drop-shadow(0 1px 2px rgba(0,0,0,0.1))')
+        .text(d => {
+          const type = d.relationship_type.toUpperCase();
+          return type.length > 12 ? type.slice(0, 12) + '…' : type;
+        });
 
       // Create nodes group
       const nodeGroup = mainGroup.append('g').attr('class', 'nodes');
@@ -449,43 +685,64 @@ const KnowledgeGraphViewer: React.FC = () => {
         .selectAll('circle')
         .data(nodes)
         .join('circle')
-        .attr('r', d => 12 + (d.confidence * 8))  // Larger nodes for better visibility
-        .attr('fill', d => entityColors[d.type] || entityColors.default)
+        .attr('r', d => 20 + (d.confidence * 12))  // Much larger nodes for better visibility
+        .attr('fill', d => generateColor(d.type))
         .attr('stroke', '#fff')
-        .attr('stroke-width', 3)
+        .attr('stroke-width', 0.5)
         .style('cursor', 'pointer')
         .style('filter', 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))')  // Add shadow for depth
-        .on('mouseenter', function(event, d) {
+        .on('mouseenter', function(_, d) {
+          const nodeIndex = nodes.findIndex(n => n.id === d.id);
+          const originalRadius = nodeTextInfo[nodeIndex]?.radius || (20 + (d.confidence * 12));
           d3.select(this)
             .transition()
             .duration(200)
-            .attr('r', (12 + (d.confidence * 8)) * 1.2)
-            .attr('stroke-width', 4);
+            .attr('r', originalRadius * 1.2)
+            .attr('stroke-width', 1);
         })
-        .on('mouseleave', function(event, d) {
+        .on('mouseleave', function(_, d) {
+          const nodeIndex = nodes.findIndex(n => n.id === d.id);
+          const originalRadius = nodeTextInfo[nodeIndex]?.radius || (20 + (d.confidence * 12));
           d3.select(this)
             .transition()
             .duration(200)
-            .attr('r', 12 + (d.confidence * 8))
-            .attr('stroke-width', 3);
+            .attr('r', originalRadius)
+            .attr('stroke-width', 0.5);
         });
 
-      // Create node labels group
+      // Update node radius based on text requirements
+      node.attr('r', (_, i) => nodeTextInfo[i].radius);
+
+      // Create node labels group with proper text wrapping
       const nodeLabelGroup = mainGroup.append('g').attr('class', 'node-labels');
-      const nodeLabels = nodeLabelGroup
-        .selectAll('text')
-        .data(nodes)
-        .join('text')
-        .attr('text-anchor', 'middle')
-        .attr('dy', 5)
-        .attr('font-size', `${fontSize}px`)
-        .attr('font-weight', '600')
-        .attr('fill', themeColors.nodeLabelColor)
-        .attr('stroke', themeColors.surface)
-        .attr('stroke-width', '2')
-        .attr('paint-order', 'stroke')
-        .style('pointer-events', 'none')
-        .text(d => d.name.length > 15 ? d.name.slice(0, 15) + '...' : d.name);
+      
+      // Create a group for each node to hold multiple text lines
+      const nodeLabelGroups = nodeLabelGroup
+        .selectAll('g')
+        .data(nodeTextInfo)
+        .join('g')
+        .attr('class', 'node-label-group')
+        .style('pointer-events', 'none');
+
+      // Add text lines for each node
+      nodeLabelGroups.each(function(d) {
+        const group = d3.select(this);
+        const lineHeight = fontSize - 2;
+        const totalHeight = d.lines.length * lineHeight;
+        const startY = -(totalHeight - lineHeight) / 2; // Center the text block vertically
+        
+        d.lines.forEach((line, lineIndex) => {
+          group.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('dy', startY + lineIndex * lineHeight)
+            .attr('font-size', `${fontSize - 4}px`)
+            .attr('font-weight', '600')
+            .attr('font-family', 'Arial, Helvetica, system-ui, -apple-system, sans-serif')
+            .attr('fill', themeColors.nodeLabelColor)
+            .style('user-select', 'none')
+            .text(line);
+        });
+      });
 
       // Add tooltips for nodes
       node.append('title')
@@ -539,9 +796,8 @@ const KnowledgeGraphViewer: React.FC = () => {
             .attr('cx', d => d.x || 0)
             .attr('cy', d => d.y || 0);
 
-          nodeLabels
-            .attr('x', d => d.x || 0)
-            .attr('y', d => d.y || 0);
+          nodeLabelGroups
+            .attr('transform', (_, i) => `translate(${nodeTextInfo[i].node.x || 0}, ${nodeTextInfo[i].node.y || 0})`);
         } catch (tickError) {
           console.error('Error in simulation tick:', tickError);
         }
@@ -551,6 +807,11 @@ const KnowledgeGraphViewer: React.FC = () => {
       setTimeout(() => {
         simulation.stop();
         console.log('Simulation stopped after 8 seconds');
+        
+        // Auto-fit to view after simulation settles
+        setTimeout(() => {
+          fitToView();
+        }, 100);
         console.log(`Final layout: ${nodes.length} nodes, ${links.length} links`);
       }, 8000);
       
@@ -569,7 +830,8 @@ const KnowledgeGraphViewer: React.FC = () => {
           .attr('y', dimensions.height / 2)
           .attr('text-anchor', 'middle')
           .attr('fill', 'red')
-          .attr('font-size', `${fontSize + 2}px`)
+          .attr('font-size', `${fontSize}px`)
+          .attr('font-family', 'Arial, Helvetica, system-ui, -apple-system, sans-serif')
           .text('Visualization Error - Check Console');
       }
     }
@@ -615,6 +877,11 @@ const KnowledgeGraphViewer: React.FC = () => {
   useEffect(() => {
     if (entities.length > 0) {
       createVisualization();
+      
+      // Auto-fit to view after a short delay to let nodes settle
+      setTimeout(() => {
+        fitToView();
+      }, 1000);
     }
   }, [entities, relationships, dimensions, isDarkMode, fontSize]);
 
@@ -986,7 +1253,7 @@ const KnowledgeGraphViewer: React.FC = () => {
                       display: 'inline-flex',
                       alignItems: 'center',
                       padding: '4px 10px',
-                      background: entityColors[type] || entityColors.default,
+                      background: generateColor(type),
                       color: 'white',
                       borderRadius: '16px',
                       fontSize: '12px',
@@ -1039,7 +1306,9 @@ const KnowledgeGraphViewer: React.FC = () => {
             >
               <option value="">Select a document...</option>
               {availableDocuments.map(docId => (
-                <option key={docId} value={docId}>{docId}</option>
+                <option key={docId} value={docId}>
+                  {docId === 'ALL_ENTITIES' ? 'View All Entities' : docId}
+                </option>
               ))}
             </select>
           ) : (
@@ -1224,7 +1493,7 @@ const KnowledgeGraphViewer: React.FC = () => {
               alignItems: 'center'
             }}>
               <h3 style={{ margin: '0', fontSize: '16px', fontWeight: '600' }}>
-                Knowledge Graph for Document: {selectedDocument}
+                Knowledge Graph: {selectedDocument === 'ALL_ENTITIES' ? 'All Entities' : `Document ${selectedDocument}`}
               </h3>
               <div style={{ fontSize: '12px', color: themeColors.secondaryText }}>
                 {entities.length} entities • {relationships.length} relationships
@@ -1266,7 +1535,7 @@ const KnowledgeGraphViewer: React.FC = () => {
               flexWrap: 'wrap'
             }}>
               <strong style={{ fontSize: '12px', color: themeColors.text }}>Legend:</strong>
-              {Object.entries(entityColors).filter(([type]) => type !== 'default').map(([type, color]) => (
+              {Array.from(new Set(entities.map(entity => entity.type))).sort().map(type => (
                 <span 
                   key={type}
                   style={{ 
@@ -1281,7 +1550,7 @@ const KnowledgeGraphViewer: React.FC = () => {
                     style={{ 
                       width: '10px',
                       height: '10px',
-                      background: color,
+                      background: generateColor(type),
                       borderRadius: '50%',
                       border: '1px solid white',
                       boxShadow: '0 1px 2px rgba(0,0,0,0.1)'

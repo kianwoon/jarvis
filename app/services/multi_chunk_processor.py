@@ -66,7 +66,9 @@ class MultiChunkRelationshipProcessor:
         ]
     
     async def process_document_with_overlap(self, chunks: List[ExtractedChunk], 
-                                          document_id: str) -> MultiChunkExtractionResult:
+                                          document_id: str, 
+                                          progressive_storage: bool = False,
+                                          kg_service=None) -> MultiChunkExtractionResult:
         """Process document chunks with overlap to detect cross-chunk relationships"""
         start_time = datetime.now()
         
@@ -77,8 +79,10 @@ class MultiChunkRelationshipProcessor:
         try:
             logger.info(f"🔄 MULTI-CHUNK: Processing {len(chunks)} chunks with overlap detection")
             
-            # Step 1: Process individual chunks
-            individual_results = await self._process_individual_chunks(chunks, document_id)
+            # Step 1: Process individual chunks (with optional progressive storage)
+            individual_results = await self._process_individual_chunks(
+                chunks, document_id, progressive_storage, kg_service
+            )
             
             # Step 2: Create sliding windows with overlap
             chunk_windows = self._create_chunk_windows(chunks)
@@ -116,7 +120,9 @@ class MultiChunkRelationshipProcessor:
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
             
             # Fallback to individual processing
-            individual_results = await self._process_individual_chunks(chunks, document_id)
+            individual_results = await self._process_individual_chunks(
+                chunks, document_id, progressive_storage, kg_service
+            )
             return MultiChunkExtractionResult(
                 individual_results=individual_results,
                 cross_chunk_entities=[],
@@ -127,25 +133,34 @@ class MultiChunkRelationshipProcessor:
             )
     
     async def _process_individual_chunks(self, chunks: List[ExtractedChunk], 
-                                       document_id: str) -> List[GraphExtractionResult]:
+                                       document_id: str, 
+                                       progressive_storage: bool = False,
+                                       kg_service=None) -> List[GraphExtractionResult]:
         """Process each chunk individually"""
-        individual_results = []
-        
-        # Process chunks in parallel for efficiency
-        tasks = []
-        for chunk in chunks:
-            task = self.kg_service.extract_from_chunk(chunk)
-            tasks.append(task)
-        
-        individual_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Filter out exceptions and log errors
+        # Process chunks serially to avoid overloading Ollama service
         valid_results = []
-        for i, result in enumerate(individual_results):
-            if isinstance(result, Exception):
-                logger.error(f"Chunk {i} processing failed: {result}")
-            else:
+        
+        for i, chunk in enumerate(chunks, 1):
+            logger.info(f"Processing individual chunk {i}/{len(chunks)}")
+            try:
+                result = await self.kg_service.extract_from_chunk(chunk)
                 valid_results.append(result)
+                
+                # Progressive storage: store immediately after extraction
+                if progressive_storage and kg_service and (result.entities or result.relationships):
+                    try:
+                        storage_result = await kg_service.store_in_neo4j(result, document_id)
+                        if storage_result.get('success'):
+                            logger.info(f"📊 Progressive storage: chunk {i} stored ({storage_result.get('entities_stored', 0)} entities, {storage_result.get('relationships_stored', 0)} relationships)")
+                        else:
+                            logger.warning(f"❌ Progressive storage failed for chunk {i}: {storage_result.get('error')}")
+                    except Exception as storage_e:
+                        logger.error(f"❌ Progressive storage error for chunk {i}: {storage_e}")
+                
+                logger.info(f"✅ Individual chunk {i} completed: {len(result.entities)} entities, {len(result.relationships)} relationships")
+            except Exception as e:
+                logger.error(f"❌ Individual chunk {i} processing failed: {e}")
+                continue
         
         return valid_results
     
@@ -197,13 +212,15 @@ class MultiChunkRelationshipProcessor:
         # Look for overlap at the end of chunk1 and beginning of chunk2
         max_overlap = min(self.overlap_size, len(chunk1_content), len(chunk2_content))
         
-        for overlap_len in range(max_overlap, 20, -1):  # Minimum 20 chars for meaningful overlap
-            chunk1_end = chunk1_content[-overlap_len:].strip()
-            chunk2_start = chunk2_content[:overlap_len].strip()
-            
-            # Check for approximate match (allowing for minor differences)
-            if self._text_similarity(chunk1_end, chunk2_start) > 0.8:
-                return chunk1_end, len(chunk2_content[:overlap_len])
+        # Only try to find overlap if we have enough text
+        if max_overlap >= 20:
+            for overlap_len in range(max_overlap, 19, -1):  # Minimum 20 chars for meaningful overlap
+                chunk1_end = chunk1_content[-overlap_len:].strip()
+                chunk2_start = chunk2_content[:overlap_len].strip()
+                
+                # Check for approximate match (allowing for minor differences)
+                if self._text_similarity(chunk1_end, chunk2_start) > 0.8:
+                    return chunk1_end, len(chunk2_content[:overlap_len])
         
         return "", 0
     
@@ -387,9 +404,13 @@ class MultiChunkRelationshipProcessor:
         return deduplicated
     
     async def _process_chunks_individually(self, chunks: List[ExtractedChunk], 
-                                         document_id: str) -> MultiChunkExtractionResult:
+                                         document_id: str, 
+                                         progressive_storage: bool = False,
+                                         kg_service=None) -> MultiChunkExtractionResult:
         """Fallback to individual chunk processing"""
-        individual_results = await self._process_individual_chunks(chunks, document_id)
+        individual_results = await self._process_individual_chunks(
+            chunks, document_id, progressive_storage, kg_service
+        )
         
         return MultiChunkExtractionResult(
             individual_results=individual_results,

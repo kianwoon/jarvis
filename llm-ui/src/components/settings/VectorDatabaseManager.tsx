@@ -324,8 +324,8 @@ const VectorDatabaseManager: React.FC<VectorDatabaseManagerProps> = ({ data, onC
               
               <Box 
                 sx={{ 
-                  backgroundColor: (theme) => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.100',
-                  color: (theme) => theme.palette.mode === 'dark' ? 'grey.100' : 'grey.900',
+                  backgroundColor: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.grey[100],
+                  color: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[100] : theme.palette.grey[900],
                   p: 1,
                   borderRadius: 1,
                   fontFamily: 'monospace',

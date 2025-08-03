@@ -569,8 +569,8 @@ print(result)`;
                   Copy
                 </Button>
               </Box>
-              <Paper variant="outlined" sx={{ p: 2, bgcolor: theme => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.50' }}>
-                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: theme => theme.palette.mode === 'dark' ? 'grey.100' : 'grey.800' }}>
+              <Paper variant="outlined" sx={{ p: 2, bgcolor: theme => theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.grey[50] }}>
+                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: theme => theme.palette.mode === 'dark' ? theme.palette.grey[100] : theme.palette.grey[800] }}>
                   {getCurlExample()}
                 </Typography>
               </Paper>
@@ -591,8 +591,8 @@ print(result)`;
                   Copy
                 </Button>
               </Box>
-              <Paper variant="outlined" sx={{ p: 2, bgcolor: theme => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.50' }}>
-                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: theme => theme.palette.mode === 'dark' ? 'grey.100' : 'grey.800' }}>
+              <Paper variant="outlined" sx={{ p: 2, bgcolor: theme => theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.grey[50] }}>
+                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: theme => theme.palette.mode === 'dark' ? theme.palette.grey[100] : theme.palette.grey[800] }}>
                   {getJavaScriptExample()}
                 </Typography>
               </Paper>
@@ -613,8 +613,8 @@ print(result)`;
                   Copy
                 </Button>
               </Box>
-              <Paper variant="outlined" sx={{ p: 2, bgcolor: theme => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.50' }}>
-                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: theme => theme.palette.mode === 'dark' ? 'grey.100' : 'grey.800' }}>
+              <Paper variant="outlined" sx={{ p: 2, bgcolor: theme => theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.grey[50] }}>
+                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', color: theme => theme.palette.mode === 'dark' ? theme.palette.grey[100] : theme.palette.grey[800] }}>
                   {getPythonExample()}
                 </Typography>
               </Paper>

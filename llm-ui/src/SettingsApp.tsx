@@ -34,8 +34,7 @@ import {
   Computer as SystemIcon,
   Save as SaveIcon,
   Refresh as RefreshIcon,
-  AccessTime as AccessTimeIcon,
-  DeviceHub as KnowledgeGraphIcon
+  AccessTime as AccessTimeIcon
 } from '@mui/icons-material';
 import SettingsFormRenderer from './components/settings/SettingsFormRenderer';
 import './styles/settings-theme.css';
@@ -69,6 +68,12 @@ const settingsCategories: SettingsCategory[] = [
     name: 'Storage & Databases',
     icon: <StorageIcon />,
     description: 'Vector databases, embedding models, and storage configuration'
+  },
+  {
+    id: 'knowledge_graph',
+    name: 'Knowledge Graph',
+    icon: <AIIcon />,
+    description: 'Knowledge graph extraction, entity types, relationships, and Neo4j database settings'
   },
   {
     id: 'langfuse',
@@ -284,11 +289,13 @@ function SettingsApp() {
           data = { environment_variables: {} };
         }
       } else if (category === 'knowledge_graph') {
-        // Knowledge graph settings are nested under llm category
-        response = await fetch('/api/v1/settings/llm');
+        // Knowledge graph settings have their own category - add cache busting
+        response = await fetch(`/api/v1/settings/knowledge_graph?t=${Date.now()}`);
         if (response.ok) {
-          const llmData = await response.json();
-          data = { settings: llmData.settings?.knowledge_graph || {} };
+          data = await response.json();
+          console.log('[DEBUG] KG FETCH - received data:', JSON.stringify(data, null, 2));
+          console.log('[DEBUG] KG FETCH - analysis_prompt:', data?.settings?.model_config?.analysis_prompt);
+          console.log('[DEBUG] KG FETCH - extraction_prompt:', data?.settings?.model_config?.extraction_prompt);
         } else {
           data = { settings: {} };
         }
@@ -342,17 +349,19 @@ function SettingsApp() {
         return cleaned;
       };
       
-      // Extract the actual settings data
-      // For MCP category, we need to preserve the servers and tools arrays
+      // Extract the actual settings data with category-specific handling
       let settingsData: any;
+      
       if (category === 'mcp' && data.servers !== undefined && data.tools !== undefined) {
         // MCP has a special structure with servers, tools, and settings
         settingsData = data;
       } else {
-        // Other categories use data.settings or data directly
+        // All other categories use data.settings or data directly
         settingsData = data.settings || data;
       }
-      const cleanedData = cleanNestedSettings(settingsData);
+      
+      // Apply cleaning for all categories except MCP which has special structure
+      const cleanedData = (category === 'mcp') ? settingsData : cleanNestedSettings(settingsData);
       
       // Debug log for MCP category after cleaning
       if (category === 'mcp') {
@@ -380,7 +389,21 @@ function SettingsApp() {
         }
       }
       
-      setSettingsData(prev => ({ ...prev, [category]: cleanedData }));
+      // DEBUG: Knowledge graph category
+      if (category === 'knowledge_graph') {
+        console.log('[CRITICAL DEBUG SettingsApp] Knowledge graph - raw API response:', JSON.stringify(data, null, 2));
+        console.log('[CRITICAL DEBUG SettingsApp] Knowledge graph - extracted settingsData:', JSON.stringify(settingsData, null, 2));
+        console.log('[CRITICAL DEBUG SettingsApp] Knowledge graph - cleanedData:', JSON.stringify(cleanedData, null, 2));
+        console.log('[CRITICAL DEBUG SettingsApp] Knowledge graph - model_config:', JSON.stringify(cleanedData.model_config, null, 2));
+      }
+      
+      // Force fresh state update for knowledge graph
+      if (category === 'knowledge_graph') {
+        console.log('[DEBUG] KG - forcing fresh state update');
+        setSettingsData(prev => ({ ...prev, [category]: {...cleanedData} }));  // Force new object
+      } else {
+        setSettingsData(prev => ({ ...prev, [category]: cleanedData }));
+      }
     } catch (err) {
       setError(prev => ({ 
         ...prev, 
@@ -420,61 +443,64 @@ function SettingsApp() {
         console.log('[DEBUG] MCP save - final cleanData:', cleanData);
       }
 
-      // Special handling for knowledge_graph category - save to llm.knowledge_graph
+      // Category-specific save logic to prevent cross-contamination
+      let response: Response;
+      
       if (category === 'knowledge_graph') {
-        console.log('[DEBUG] Knowledge Graph save - saving to llm.knowledge_graph');
-        const response = await fetch('/api/v1/settings/llm');
-        const llmData = await response.json();
+        console.log('[DEBUG] Knowledge Graph save - saving all user-modified settings');
         
-        // Update the knowledge_graph section within llm settings
-        const updatedLlmSettings = {
-          ...llmData.settings,
-          knowledge_graph: cleanData
+        // First, fetch current database values to merge with UI changes
+        const currentResponse = await fetch(`/api/v1/settings/knowledge_graph?t=${Date.now()}`);
+        const currentData = currentResponse.ok ? await currentResponse.json() : { settings: {} };
+        console.log('[DEBUG] Knowledge Graph save - current DB data:', currentData.settings);
+        
+        // Deep merge current DB data with UI changes to preserve all fields - NO HARDCODING
+        const mergedData = {
+          ...currentData.settings,
+          ...cleanData  // Simply merge all UI changes with current DB data
         };
         
-        const llmResponse = await fetch('/api/v1/settings/llm', {
+        console.log('[DEBUG] Knowledge Graph save - merged data:', mergedData);
+        response = await fetch('/api/v1/settings/knowledge_graph', {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            settings: updatedLlmSettings,
+            settings: mergedData,
             persist_to_db: true,
             reload_cache: true
           }),
         });
-
-        if (!llmResponse.ok) {
-          throw new Error(`Failed to save knowledge graph settings: ${llmResponse.statusText}`);
-        }
-
-        setSuccess(prev => ({ ...prev, [category]: true }));
-        setSuccessMessage(prev => ({ ...prev, [category]: 'Knowledge Graph settings saved successfully!' }));
-        setTimeout(() => {
-          setSuccess(prev => ({ ...prev, [category]: false }));
-        }, 3000);
-        
-        return; // Exit early since we handled the save differently
+      } else {
+        // All other categories use the standard endpoint pattern
+        console.log(`[DEBUG] ${category} save - saving to standard endpoint /api/v1/settings/${category}`);
+        response = await fetch(`/api/v1/settings/${category}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            settings: cleanData,
+            persist_to_db: true,
+            reload_cache: true
+          }),
+        });
       }
-
-      const response = await fetch(`/api/v1/settings/${category}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          settings: cleanData,
-          persist_to_db: true,
-          reload_cache: true
-        }),
-      });
 
       if (!response.ok) {
         throw new Error(`Failed to save ${category} settings: ${response.statusText}`);
       }
 
       setSuccess(prev => ({ ...prev, [category]: true }));
-      setSuccessMessage(prev => ({ ...prev, [category]: 'Settings saved successfully!' }));
+      setSuccessMessage(prev => ({ ...prev, [category]: `${category === 'knowledge_graph' ? 'Knowledge Graph' : 'Settings'} saved successfully!` }));
+      
+      // Force reload for knowledge graph to ensure UI shows correct data
+      if (category === 'knowledge_graph') {
+        console.log('[DEBUG] KG save success - forcing reload');
+        await loadSettings(category);
+      }
+      
       setTimeout(() => {
         setSuccess(prev => ({ ...prev, [category]: false }));
       }, 3000);
@@ -778,9 +804,10 @@ function SettingsApp() {
                       className="jarvis-btn jarvis-btn-secondary"
                       onClick={() => loadSettings(selectedCategory, true)}
                       disabled={loading[selectedCategory]}
+                      title="Refresh all settings data from the server"
                     >
                       <RefreshIcon sx={{ fontSize: 16 }} />
-                      Reload
+                      Refresh Settings
                     </button>
                     <button 
                       className="jarvis-btn jarvis-btn-primary"

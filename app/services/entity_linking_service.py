@@ -16,7 +16,7 @@ from difflib import SequenceMatcher
 import hashlib
 
 from app.services.neo4j_service import get_neo4j_service
-from app.services.knowledge_graph_service import ExtractedEntity
+from app.services.knowledge_graph_types import ExtractedEntity
 from app.core.knowledge_graph_settings_cache import get_knowledge_graph_settings
 
 logger = logging.getLogger(__name__)
@@ -49,25 +49,115 @@ class EntityLinkingService:
     def __init__(self):
         self.neo4j_service = get_neo4j_service()
         self.config = get_knowledge_graph_settings()
-        self.similarity_threshold = 0.7  # Minimum similarity for linking
+        self.similarity_threshold = 0.5  # Reduced from 0.7 to allow more fuzzy matching
         
-        # Entity type equivalences for cross-type matching
+        # Enhanced entity type equivalences for comprehensive cross-type matching
         self.type_equivalences = {
             'PERSON': ['PERSON', 'EXECUTIVE', 'RESEARCHER', 'ENTREPRENEUR'],
-            'ORGANIZATION': ['ORGANIZATION', 'COMPANY', 'UNIVERSITY', 'STARTUP'],
+            'ORGANIZATION': ['ORGANIZATION', 'COMPANY', 'UNIVERSITY', 'STARTUP', 'ORG'],
+            'ORG': ['ORG', 'ORGANIZATION', 'COMPANY', 'TECHNOLOGY', 'STARTUP'],  # Allow ORG to match TECHNOLOGY
             'CONCEPT': ['CONCEPT', 'TECHNOLOGY', 'METHODOLOGY', 'PRODUCT'],
-            'LOCATION': ['LOCATION', 'CITY', 'COUNTRY', 'FACILITY']
+            'TECHNOLOGY': ['TECHNOLOGY', 'ORG', 'CONCEPT', 'PRODUCT', 'ORGANIZATION'],  # Technology can match multiple types
+            'LOCATION': ['LOCATION', 'CITY', 'COUNTRY', 'FACILITY'],
+            'TEMPORAL': ['TEMPORAL', 'DATE', 'TIME', 'YEAR'],
+            'COMPANY': ['COMPANY', 'ORG', 'ORGANIZATION', 'TECHNOLOGY'],  # For legacy compatibility
         }
         
-        # Common variations and aliases
+        # Enhanced variations and aliases with comprehensive company hierarchies and geographic relationships
         self.name_variations = {
-            'company_suffixes': ['inc', 'corp', 'llc', 'ltd', 'company', 'corporation'],
-            'title_prefixes': ['dr', 'prof', 'mr', 'ms', 'mrs', 'ceo', 'cto', 'founder'],
+            'company_suffixes': ['inc', 'corp', 'llc', 'ltd', 'company', 'corporation', 'bank', 'technology', 'group', 'holdings'],
+            'title_prefixes': ['dr', 'prof', 'mr', 'ms', 'mrs', 'ceo', 'cto', 'cio', 'cfo', 'founder', 'president', 'director'],
+            
+            # Company hierarchies and subsidiaries 
+            'company_hierarchies': {
+                'dbs bank': ['dbs', 'development bank of singapore'],
+                'ping an technology': ['ping an', 'ping an group', 'ping an insurance'],
+                'ant group': ['ant', 'ant financial', 'alipay', 'ant fintech'],
+                'alibaba group': ['alibaba', 'alibaba cloud'],
+                'tencent holdings': ['tencent', 'tencent technology'],
+                'microsoft corporation': ['microsoft', 'msft'],
+                'google inc': ['google', 'alphabet'],
+                'amazon.com': ['amazon', 'aws', 'amazon web services'],
+                'meta platforms': ['meta', 'facebook'],
+                'oracle corporation': ['oracle'],
+                'ibm': ['international business machines'],
+                'jpmorgan chase': ['jpmorgan', 'jp morgan'],
+                'goldman sachs group': ['goldman sachs'],
+                'bank of america': ['boa', 'bofa'],
+                'wells fargo bank': ['wells fargo'],
+                'hsbc holdings': ['hsbc'],
+                'standard chartered': ['stanchart'],
+                'ocbc': ['oversea-chinese banking corporation'],
+                'uob': ['united overseas bank'],
+            },
+            
+            # Geographic relationships and aliases
+            'geographic_relationships': {
+                'hong kong': ['hk', 'hong kong sar'],
+                'singapore': ['sg', 'republic of singapore'],
+                'indonesia': ['id', 'republic of indonesia'],
+                'malaysia': ['my', 'malaysia federation'],
+                'thailand': ['th', 'kingdom of thailand'],
+                'vietnam': ['vn', 'socialist republic of vietnam'],
+                'philippines': ['ph', 'republic of the philippines'],
+                'china': ['prc', 'peoples republic of china', 'mainland china'],
+                'india': ['bharat', 'republic of india'],
+                'japan': ['jp', 'nippon'],
+                'south korea': ['korea', 'republic of korea', 'rok'],
+                'taiwan': ['tw', 'republic of china', 'chinese taipei'],
+                'australia': ['au', 'commonwealth of australia'],
+                'new zealand': ['nz', 'aotearoa'],
+                'united states': ['usa', 'us', 'america', 'united states of america'],
+                'united kingdom': ['uk', 'britain', 'great britain', 'england'],
+                'east asia': ['east', 'asia pacific', 'eastern asia', 'far east'],
+                'southeast asia': ['sea', 'asean', 'south east asia'],
+                'south asia': ['indian subcontinent'],
+                'middle east': ['mena', 'middle east and north africa'],
+            },
+            
+            # Technology and database aliases
+            'technology_aliases': {
+                'apache kafka': ['kafka', 'apache kafka cluster'],
+                'postgresql': ['postgres', 'pg', 'postgressql'],
+                'mysql': ['my sql', 'mysql database'],
+                'mongodb': ['mongo', 'mongo db'],
+                'elasticsearch': ['elastic search', 'es', 'elastic'],
+                'redis': ['redis cache', 'redis database'],
+                'apache hadoop': ['hadoop', 'big data platform'],
+                'apache spark': ['spark'],
+                'kubernetes': ['k8s', 'container orchestration'],
+                'docker': ['docker container', 'containerization'],
+                'microsoft azure': ['azure', 'azure cloud'],
+                'google cloud platform': ['gcp', 'google cloud'],
+                'amazon web services': ['aws', 'amazon aws'],
+                'temenos': ['core banking', 'banking platform'],
+                'mainframe': ['legacy system', 'z/os'],
+                'microservices': ['micro services'],
+                'api gateway': ['gateway'],
+            },
+            
+            # Standard abbreviations (expanded)
             'abbreviations': {
                 'artificial intelligence': ['ai', 'a.i.'],
                 'machine learning': ['ml', 'm.l.'],
-                'united states': ['usa', 'us', 'america'],
-                'united kingdom': ['uk', 'britain', 'great britain']
+                'natural language processing': ['nlp'],
+                'computer vision': ['cv'],
+                'deep learning': ['dl'],
+                'application programming interface': ['api'],
+                'representational state transfer': ['rest'],
+                'structured query language': ['sql'],
+                'chief executive officer': ['ceo'],
+                'chief technology officer': ['cto'],
+                'chief information officer': ['cio'],
+                'chief financial officer': ['cfo'],
+                'research and development': ['r&d', 'rnd'],
+                'user interface': ['ui'],
+                'user experience': ['ux'],
+                'business intelligence': ['bi'],
+                'extract transform load': ['etl'],
+                'software as a service': ['saas'],
+                'platform as a service': ['paas'],
+                'infrastructure as a service': ['iaas'],
             }
         }
     
@@ -156,11 +246,13 @@ class EntityLinkingService:
         candidates = []
         
         try:
-            # Query for exact matches
+            # Enhanced query for exact matches with cross-type support
             query = """
             MATCH (n)
-            WHERE n.name = $name AND labels(n)[0] IN $types
-            RETURN n.id as id, n.name as name, n.type as type, n.confidence as confidence,
+            WHERE n.name = $name AND (labels(n)[0] IN $types OR n.type IN $types)
+            RETURN n.id as id, n.name as name, 
+                   COALESCE(n.type, labels(n)[0]) as type, 
+                   COALESCE(n.confidence, 0.0) as confidence,
                    labels(n)[0] as label, properties(n) as properties
             """
             
@@ -192,11 +284,13 @@ class EntityLinkingService:
         candidates = []
         
         try:
-            # Get all entities of compatible types for fuzzy comparison
+            # Enhanced query for fuzzy matches with cross-type support  
             query = """
             MATCH (n)
-            WHERE labels(n)[0] IN $types
-            RETURN n.id as id, n.name as name, n.type as type, n.confidence as confidence,
+            WHERE (labels(n)[0] IN $types OR n.type IN $types)
+            RETURN n.id as id, n.name as name, 
+                   COALESCE(n.type, labels(n)[0]) as type, 
+                   COALESCE(n.confidence, 0.0) as confidence,
                    labels(n)[0] as label, properties(n) as properties
             LIMIT 1000
             """
@@ -246,11 +340,13 @@ class EntityLinkingService:
             if not aliases:
                 return candidates
             
-            # Query for alias matches
+            # Enhanced query for alias matches with cross-type support
             query = """
             MATCH (n)
-            WHERE n.name IN $aliases AND labels(n)[0] IN $types
-            RETURN n.id as id, n.name as name, n.type as type, n.confidence as confidence,
+            WHERE n.name IN $aliases AND (labels(n)[0] IN $types OR n.type IN $types)
+            RETURN n.id as id, n.name as name, 
+                   COALESCE(n.type, labels(n)[0]) as type, 
+                   COALESCE(n.confidence, 0.0) as confidence,
                    labels(n)[0] as label, properties(n) as properties
             """
             
@@ -302,12 +398,14 @@ class EntityLinkingService:
             if len(entity_words) >= 3:
                 partial_names.append(' '.join(entity_words[1:-1]))  # Middle words
             
-            # Query for partial matches
+            # Enhanced query for partial matches with cross-type support
             for partial_name in partial_names:
                 query = """
                 MATCH (n)
-                WHERE toLower(n.name) CONTAINS $partial_name AND labels(n)[0] IN $types
-                RETURN n.id as id, n.name as name, n.type as type, n.confidence as confidence,
+                WHERE toLower(n.name) CONTAINS $partial_name AND (labels(n)[0] IN $types OR n.type IN $types)
+                RETURN n.id as id, n.name as name, 
+                       COALESCE(n.type, labels(n)[0]) as type, 
+                       COALESCE(n.confidence, 0.0) as confidence,
                        labels(n)[0] as label, properties(n) as properties
                 """
                 
@@ -365,11 +463,38 @@ class EntityLinkingService:
         return name
     
     def _generate_entity_aliases(self, name: str, entity_type: str) -> List[str]:
-        """Generate possible aliases for an entity"""
+        """Generate comprehensive aliases for an entity including hierarchies and geographic relationships"""
         aliases = []
         name_lower = name.lower()
         
-        # Check abbreviation mappings
+        # Check company hierarchies and subsidiaries
+        for parent_company, subsidiaries in self.name_variations['company_hierarchies'].items():
+            if parent_company in name_lower:
+                aliases.extend(subsidiaries)
+            for subsidiary in subsidiaries:
+                if subsidiary in name_lower:
+                    aliases.append(parent_company)
+                    aliases.extend([s for s in subsidiaries if s != subsidiary])
+        
+        # Check geographic relationships
+        for location, aliases_list in self.name_variations['geographic_relationships'].items():
+            if location in name_lower:
+                aliases.extend(aliases_list)
+            for alias in aliases_list:
+                if alias in name_lower:
+                    aliases.append(location)
+                    aliases.extend([a for a in aliases_list if a != alias])
+        
+        # Check technology aliases
+        for tech_name, tech_aliases in self.name_variations['technology_aliases'].items():
+            if tech_name in name_lower:
+                aliases.extend(tech_aliases)
+            for alias in tech_aliases:
+                if alias in name_lower:
+                    aliases.append(tech_name)
+                    aliases.extend([a for a in tech_aliases if a != alias])
+        
+        # Check standard abbreviation mappings
         for full_name, abbrevs in self.name_variations['abbreviations'].items():
             if full_name in name_lower:
                 for abbrev in abbrevs:
@@ -381,10 +506,18 @@ class EntityLinkingService:
                     aliases.append(name.replace(abbrev, full_name))
         
         # For organizations, try without suffixes
-        if entity_type in ['ORGANIZATION', 'COMPANY']:
+        if entity_type in ['ORGANIZATION', 'COMPANY', 'ORG']:
             for suffix in self.name_variations['company_suffixes']:
                 if name_lower.endswith(f' {suffix}'):
-                    aliases.append(name[:-len(suffix)-1].strip())
+                    base_name = name[:-len(suffix)-1].strip()
+                    aliases.append(base_name)
+                    # Also check if base name has hierarchies
+                    base_lower = base_name.lower()
+                    for parent, subs in self.name_variations['company_hierarchies'].items():
+                        if parent == base_lower:
+                            aliases.extend(subs)
+                        elif base_lower in subs:
+                            aliases.append(parent)
         
         # For people, try without titles
         if entity_type == 'PERSON':
@@ -392,6 +525,15 @@ class EntityLinkingService:
                 if name_lower.startswith(f'{prefix} '):
                     aliases.append(name[len(prefix)+1:].strip())
         
+        # For locations, add variations with common geographic suffixes
+        if entity_type in ['LOCATION', 'CITY', 'COUNTRY']:
+            geographic_suffixes = ['region', 'area', 'province', 'state', 'territory']
+            for suffix in geographic_suffixes:
+                if name_lower.endswith(f' {suffix}'):
+                    aliases.append(name[:-len(suffix)-1].strip())
+        
+        # Clean and deduplicate aliases
+        aliases = [alias.strip() for alias in aliases if alias.strip() and len(alias.strip()) > 1]
         return list(set(aliases))  # Remove duplicates
     
     def _calculate_partial_similarity(self, name1: str, name2: str) -> float:
@@ -449,10 +591,11 @@ class EntityLinkingService:
             entity, best_candidate, candidates
         )
         
-        # Decide whether to link or create new entity
+        # Decide whether to link or create new entity with smart thresholds
+        confidence_threshold = self._get_confidence_threshold_for_entity_type(entity.label)
         should_link = (
             best_candidate.similarity_score >= self.similarity_threshold and
-            linking_confidence >= 0.7
+            linking_confidence >= confidence_threshold
         )
         
         if should_link:
@@ -475,6 +618,20 @@ class EntityLinkingService:
                 alternative_candidates=candidates[:5],
                 reasoning=f"Similarity too low ({best_candidate.similarity_score:.3f}) or confidence too low ({linking_confidence:.3f})"
             )
+    
+    def _get_confidence_threshold_for_entity_type(self, entity_type: str) -> float:
+        """Get confidence threshold based on entity type - different types need different confidence levels"""
+        thresholds = {
+            'TECHNOLOGY': 0.4,    # Lower threshold for technology entities (acronyms, variations)
+            'LOCATION': 0.5,      # Medium threshold for geographic entities
+            'ORG': 0.5,          # Medium threshold for organizations
+            'ORGANIZATION': 0.5,  # Medium threshold for organizations
+            'COMPANY': 0.5,       # Medium threshold for companies
+            'PERSON': 0.6,        # Higher threshold for people (avoid false positives)
+            'TEMPORAL': 0.3,      # Very low threshold for dates/times (usually clear)
+            'CONCEPT': 0.5,       # Medium threshold for concepts
+        }
+        return thresholds.get(entity_type, 0.5)  # Default to 0.5
     
     def _calculate_linking_confidence(self, entity: ExtractedEntity,
                                     best_candidate: EntityCandidate,

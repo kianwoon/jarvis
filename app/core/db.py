@@ -250,6 +250,158 @@ def get_db():
 
 from contextlib import contextmanager
 
+# Knowledge Graph Enhancement Models
+
+class KnowledgeGraphDocument(Base):
+    """Enhanced document tracking for unified knowledge graph processing"""
+    __tablename__ = "knowledge_graph_documents"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(String(255), unique=True, nullable=False, index=True)
+    filename = Column(String(500), nullable=False)
+    file_hash = Column(String(64), nullable=False, index=True)
+    file_size_bytes = Column(Integer, nullable=True)
+    file_type = Column(String(50), nullable=True)
+    
+    # Processing configuration
+    milvus_collection = Column(String(100), nullable=True)
+    neo4j_graph_id = Column(String(255), nullable=True)
+    processing_mode = Column(String(50), default='unified')  # 'unified', 'milvus-only', 'neo4j-only'
+    
+    # Processing status and metrics
+    processing_status = Column(String(50), default='pending', index=True)  # 'pending', 'processing', 'completed', 'failed', 'partial'
+    entities_extracted = Column(Integer, default=0)
+    relationships_extracted = Column(Integer, default=0)
+    chunks_processed = Column(Integer, default=0)
+    total_chunks = Column(Integer, default=0)
+    processing_time_ms = Column(Integer, nullable=True)
+    extraction_confidence = Column(Float, nullable=True)
+    
+    # Error tracking
+    error_message = Column(String, nullable=True)
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
+    
+    # Metadata and provenance
+    upload_metadata = Column(JSON, nullable=True)
+    processing_config = Column(JSON, nullable=True)
+    quality_scores = Column(JSON, nullable=True)
+    
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    processing_started_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    processing_completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    
+    # Relationships
+    quality_metrics = relationship("ExtractionQualityMetric", back_populates="document", cascade="all, delete-orphan")
+
+class ExtractionQualityMetric(Base):
+    """Quality metrics and validation for knowledge graph extraction"""
+    __tablename__ = "extraction_quality_metrics"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(String(255), ForeignKey('knowledge_graph_documents.document_id'), nullable=False, index=True)
+    chunk_id = Column(String(255), nullable=True, index=True)
+    
+    # Extraction results
+    entities_discovered = Column(Integer, default=0)
+    relationships_discovered = Column(Integer, default=0)
+    entities_validated = Column(Integer, default=0)
+    relationships_validated = Column(Integer, default=0)
+    
+    # Quality scores
+    confidence_scores = Column(JSON, nullable=True)  # {entity_confidence: [], relationship_confidence: []}
+    validation_scores = Column(JSON, nullable=True)  # Quality validation results
+    
+    # Processing details
+    llm_model_used = Column(String(100), nullable=True)
+    processing_method = Column(String(50), nullable=True)  # 'llm_enhanced', 'traditional', 'hybrid'
+    processing_time_ms = Column(Integer, nullable=True)
+    
+    # Validation and errors
+    validation_errors = Column(JSON, nullable=True)
+    extraction_warnings = Column(JSON, nullable=True)
+    
+    # Cross-reference tracking
+    milvus_chunk_ids = Column(JSON, nullable=True)  # Array of related Milvus chunk IDs
+    neo4j_entity_ids = Column(JSON, nullable=True)  # Array of related Neo4j entity IDs
+    
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    
+    # Relationship
+    document = relationship("KnowledgeGraphDocument", back_populates="quality_metrics")
+
+class GraphSchemaEvolution(Base):
+    """Track evolution of knowledge graph schema over time"""
+    __tablename__ = "graph_schema_evolution"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    schema_version = Column(String(20), nullable=False, index=True)
+    
+    # Schema definitions
+    entity_types = Column(JSON, nullable=False)  # {type: {description, examples, confidence_threshold}}
+    relationship_types = Column(JSON, nullable=False)  # {type: {description, inverse, examples, confidence_threshold}}
+    
+    # Configuration snapshots
+    confidence_thresholds = Column(JSON, nullable=True)
+    extraction_config = Column(JSON, nullable=True)
+    
+    # Change tracking
+    change_description = Column(String, nullable=True)
+    change_type = Column(String(50), nullable=True)  # 'manual', 'automatic', 'user_approval', 'system_optimization'
+    changes_summary = Column(JSON, nullable=True)  # {added: [], modified: [], removed: []}
+    
+    # Impact metrics
+    documents_affected = Column(Integer, default=0)
+    entities_reclassified = Column(Integer, default=0)
+    relationships_reclassified = Column(Integer, default=0)
+    
+    # Provenance
+    created_by = Column(String(100), nullable=True)
+    trigger_event = Column(String(200), nullable=True)  # What triggered this schema change
+    
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    
+    # Add index for efficient querying
+    __table_args__ = (
+        UniqueConstraint('schema_version', name='uq_schema_version'),
+    )
+
+class DocumentCrossReference(Base):
+    """Cross-reference mapping between Milvus chunks and Neo4j entities"""
+    __tablename__ = "document_cross_references"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(String(255), ForeignKey('knowledge_graph_documents.document_id'), nullable=False, index=True)
+    
+    # Milvus references
+    milvus_collection = Column(String(100), nullable=False)
+    milvus_chunk_id = Column(String(255), nullable=False, index=True)
+    chunk_text_preview = Column(String(500), nullable=True)  # First 500 chars for reference
+    
+    # Neo4j references
+    neo4j_entity_id = Column(String(255), nullable=False, index=True)
+    entity_name = Column(String(255), nullable=False)
+    entity_type = Column(String(100), nullable=False)
+    
+    # Relationship metadata
+    confidence_score = Column(Float, nullable=True)
+    relationship_type = Column(String(100), nullable=True)  # How chunk relates to entity
+    context_window = Column(JSON, nullable=True)  # Character positions in chunk
+    
+    # Quality and validation
+    validation_status = Column(String(50), default='pending')  # 'pending', 'validated', 'rejected'
+    manual_review = Column(Boolean, default=False)
+    review_notes = Column(String, nullable=True)
+    
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Compound index for efficient lookups
+    __table_args__ = (
+        UniqueConstraint('milvus_chunk_id', 'neo4j_entity_id', name='uq_chunk_entity_mapping'),
+    )
+
 @contextmanager
 def get_db_session():
     """Context manager for database sessions with automatic cleanup"""

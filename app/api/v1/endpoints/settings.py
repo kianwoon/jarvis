@@ -71,6 +71,21 @@ def reload_timeout_cache():
         logger.error(f"Failed to reload timeout cache: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload timeout cache: {str(e)}")
 
+@router.post("/knowledge-graph/cache/reload")
+def reload_knowledge_graph_cache():
+    """Force reload knowledge graph settings cache from database"""
+    try:
+        settings = reload_knowledge_graph_settings()
+        return {
+            "success": True, 
+            "message": "Knowledge graph cache reloaded successfully",
+            "settings": settings,
+            "cache_size": len(str(settings))
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload knowledge graph cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload knowledge graph cache: {str(e)}")
+
 # Dependency to get DB session
 def get_db():
     db = SessionLocal()
@@ -694,6 +709,14 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         except Exception as e:
             logger.error(f"Error writing to .env file: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to update .env file: {str(e)}")
+    
+    # If updating knowledge graph settings, reload cache
+    if category == 'knowledge_graph':
+        logger.info("Processing knowledge graph settings")
+        # The settings are already saved to database above
+        # Just reload the cache
+        reload_knowledge_graph_settings()
+        logger.info("Knowledge graph settings saved and cache reloaded")
     
     return {"category": category, "settings": settings_row.settings}
 

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test All Settings Categories</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        .category { margin: 20px 0; padding: 15px; background: #f0f0f0; border-radius: 5px; }
+        .success { background: #e6ffe6; }
+        .error { background: #ffe6e6; }
+        .loading { background: #e6f3ff; }
+        pre { white-space: pre-wrap; word-wrap: break-word; max-height: 200px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>Settings Categories Test</h1>
+    <button onclick="testAllCategories()">Test All Categories</button>
+    <div id="results"></div>
+    
+    <script>
+        async function testAllCategories() {
+            const results = document.getElementById('results');
+            results.innerHTML = '<p>Testing all settings categories...</p>';
+            
+            const categories = ['llm', 'knowledge_graph', 'rag', 'storage', 'mcp'];
+            
+            for (const category of categories) {
+                const div = document.createElement('div');
+                div.className = 'category loading';
+                div.innerHTML = `<h3>${category.toUpperCase()}</h3><p>Loading...</p>`;
+                results.appendChild(div);
+                
+                try {
+                    let url;
+                    if (category === 'knowledge_graph') {
+                        url = '/api/v1/settings/knowledge_graph';
+                    } else {
+                        url = `/api/v1/settings/${category}`;
+                    }
+                    
+                    const response = await fetch(url);
+                    const data = await response.json();
+                    
+                    // Check for key data
+                    let status = 'success';
+                    let message = 'OK';
+                    
+                    if (category === 'llm') {
+                        // LLM should have standard settings but NO model_config
+                        if (data.settings?.model_config) {
+                            status = 'error';
+                            message = 'ERROR: LLM has model_config (should not have it)';
+                        } else {
+                            message = 'OK: LLM has clean structure without model_config';
+                        }
+                    } else if (category === 'knowledge_graph') {
+                        // Knowledge Graph should have model_config
+                        if (data.settings?.model_config?.model) {
+                            message = `OK: Knowledge Graph has model_config with model: ${data.settings.model_config.model}`;
+                        } else {
+                            status = 'error';
+                            message = 'ERROR: Knowledge Graph missing model_config';
+                        }
+                    } else {
+                        message = `OK: ${category} loaded successfully`;
+                    }
+                    
+                    div.className = `category ${status}`;
+                    div.innerHTML = `
+                        <h3>${category.toUpperCase()}</h3>
+                        <p><strong>Status:</strong> ${message}</p>
+                        <pre>${JSON.stringify(data, null, 2)}</pre>
+                    `;
+                    
+                } catch (error) {
+                    div.className = 'category error';
+                    div.innerHTML = `
+                        <h3>${category.toUpperCase()}</h3>
+                        <p><strong>ERROR:</strong> ${error.message}</p>
+                    `;
+                }
+            }
+        }
+        
+        // Auto-run test
+        testAllCategories();
+    </script>
+</body>
+</html>

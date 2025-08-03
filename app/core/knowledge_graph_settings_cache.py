@@ -92,12 +92,12 @@ def get_default_neo4j_config() -> Dict[str, Any]:
 def get_default_knowledge_graph_settings() -> Dict[str, Any]:
     """Get default knowledge graph settings with enhanced anti-silo configuration"""
     return {
-        'mode': 'thinking',
+        'mode': 'normal',
         'model': 'qwen3:30b-a3b-q4_K_M',
         'max_tokens': 8192,
         'model_server': 'http://localhost:11434',
         'system_prompt': 'You are an expert knowledge graph extraction system. Extract entities and relationships from the provided text with high precision.',
-        'context_length': 40960,
+        'context_length': 40960,  # Conservative fallback - database should override
         'repeat_penalty': '1.05',
         'temperature': 0.3,
         'extraction_prompt': None,  # Use database-driven prompt from LLMPrompt table
@@ -122,10 +122,7 @@ def get_default_knowledge_graph_settings() -> Dict[str, Any]:
             'min_frequency': 2,
             'enable_inverse_relationships': True
         },
-        'static_fallback': {
-            'entity_types': ['Person', 'Organization', 'Location', 'Event', 'Concept'],
-            'relationship_types': ['works_for', 'located_in', 'part_of', 'related_to', 'causes']
-        },
+        # No static fallback - pure LLM discovery only
         'learning': {
             'enable_user_feedback': True,
             'auto_accept_threshold': 0.85,
@@ -485,24 +482,26 @@ def set_knowledge_graph_settings(settings_dict: Dict[str, Any]):
     # Then persist to database
     try:
         from app.core.db import SessionLocal, Settings as SettingsModel
+        from datetime import datetime
         
         db = SessionLocal()
         try:
-            row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
-            if not row:
-                # Create new settings row if it doesn't exist
-                row = SettingsModel(category='llm', settings={})
-                db.add(row)
-                db.commit()
-            
-            # Update knowledge graph settings
-            if not row.settings:
-                row.settings = {}
-            
-            # Merge with existing settings to preserve other LLM configurations
-            existing_settings = row.settings.get('knowledge_graph', {})
-            existing_settings.update(settings_dict)
-            row.settings['knowledge_graph'] = existing_settings
+            # Try to find existing knowledge_graph category
+            kg_row = db.query(SettingsModel).filter(SettingsModel.category == 'knowledge_graph').first()
+            if kg_row:
+                # Update existing knowledge graph settings
+                existing_settings = kg_row.settings or {}
+                existing_settings.update(settings_dict)
+                kg_row.settings = existing_settings
+                kg_row.updated_at = datetime.now()
+            else:
+                # Create new knowledge_graph settings row
+                kg_row = SettingsModel(
+                    category='knowledge_graph', 
+                    settings=settings_dict,
+                    updated_at=datetime.now()
+                )
+                db.add(kg_row)
             
             db.commit()
             print("Knowledge graph settings persisted to database successfully")
@@ -519,26 +518,41 @@ def reload_knowledge_graph_settings() -> Dict[str, Any]:
         
         db = SessionLocal()
         try:
-            row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
-            if row and 'knowledge_graph' in row.settings:
-                settings = row.settings['knowledge_graph']
+            # First try the new knowledge_graph category
+            kg_row = db.query(SettingsModel).filter(SettingsModel.category == 'knowledge_graph').first()
+            if kg_row and kg_row.settings:
+                settings = kg_row.settings
                 
                 # Ensure Neo4j config is present
                 if 'neo4j' not in settings:
                     settings['neo4j'] = get_default_neo4j_config()
                     # Save updated settings back to database
-                    row.settings['knowledge_graph'] = settings
+                    kg_row.settings = settings
                     db.commit()
                     print("Added default Neo4j configuration to knowledge graph settings")
                 
                 # Cache the settings
                 cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings)
                 return settings
-            else:
-                # No knowledge graph settings found, return defaults
-                default_settings = get_default_knowledge_graph_settings()
-                cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, default_settings)
-                return default_settings
+            
+            # Fallback: check for legacy knowledge_graph in LLM settings
+            llm_row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
+            if llm_row and 'knowledge_graph' in llm_row.settings:
+                print("Found legacy knowledge_graph settings in LLM category - consider running migration")
+                settings = llm_row.settings['knowledge_graph']
+                
+                # Ensure Neo4j config is present
+                if 'neo4j' not in settings:
+                    settings['neo4j'] = get_default_neo4j_config()
+                
+                # Cache the settings
+                cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings)
+                return settings
+            
+            # No knowledge graph settings found, return defaults
+            default_settings = get_default_knowledge_graph_settings()
+            cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, default_settings)
+            return default_settings
         finally:
             db.close()
     except Exception as e:
@@ -601,26 +615,55 @@ def update_neo4j_password(new_password: str) -> bool:
     """Update Neo4j password in settings"""
     try:
         from app.core.db import SessionLocal, Settings as SettingsModel
+        from datetime import datetime
         
         db = SessionLocal()
         try:
-            row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
-            if row and 'knowledge_graph' in row.settings:
+            # Try knowledge_graph category first
+            kg_row = db.query(SettingsModel).filter(SettingsModel.category == 'knowledge_graph').first()
+            if kg_row and kg_row.settings:
                 # Update password in knowledge graph settings
-                row.settings['knowledge_graph']['neo4j']['password'] = new_password
+                if 'neo4j' not in kg_row.settings:
+                    kg_row.settings['neo4j'] = get_default_neo4j_config()
+                
+                kg_row.settings['neo4j']['password'] = new_password
                 
                 # Update URI with new password if using embedded auth
-                neo4j_config = row.settings['knowledge_graph']['neo4j']
+                neo4j_config = kg_row.settings['neo4j']
                 host = neo4j_config.get('host', 'neo4j')
                 port = neo4j_config.get('port', 7687)
                 username = neo4j_config.get('username', 'neo4j')
-                row.settings['knowledge_graph']['neo4j']['uri'] = f"bolt://{username}:{new_password}@{host}:{port}"
+                kg_row.settings['neo4j']['uri'] = f"bolt://{username}:{new_password}@{host}:{port}"
+                kg_row.updated_at = datetime.now()
                 
                 db.commit()
                 
                 # Reload cache
                 reload_knowledge_graph_settings()
                 return True
+            
+            # Fallback: try legacy location in LLM settings
+            llm_row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
+            if llm_row and 'knowledge_graph' in llm_row.settings:
+                print("Updating Neo4j password in legacy LLM settings - consider running migration")
+                # Update password in knowledge graph settings
+                llm_row.settings['knowledge_graph']['neo4j']['password'] = new_password
+                
+                # Update URI with new password if using embedded auth
+                neo4j_config = llm_row.settings['knowledge_graph']['neo4j']
+                host = neo4j_config.get('host', 'neo4j')
+                port = neo4j_config.get('port', 7687)
+                username = neo4j_config.get('username', 'neo4j')
+                llm_row.settings['knowledge_graph']['neo4j']['uri'] = f"bolt://{username}:{new_password}@{host}:{port}"
+                llm_row.updated_at = datetime.now()
+                
+                db.commit()
+                
+                # Reload cache
+                reload_knowledge_graph_settings()
+                return True
+            
+            return False
         finally:
             db.close()
     except Exception as e:

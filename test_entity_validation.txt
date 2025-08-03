@@ -1,0 +1,5 @@
+DBS Bank is a leading financial institution headquartered in Singapore. The bank has strategic partnerships with Microsoft for cloud infrastructure and Alibaba for database technologies.
+
+OceanBase is a distributed database developed by Ant Group (Alibaba affiliate). SOFAStack provides middleware solutions for cloud-native applications. TDSQL is Tencent's distributed database offering.
+
+Singapore regulators require strict compliance for financial technology implementations. DBS Bank aims to become a fully digital bank by modernizing its core systems with these new technologies.
