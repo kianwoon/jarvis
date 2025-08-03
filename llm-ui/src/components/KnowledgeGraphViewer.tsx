@@ -269,16 +269,29 @@ const KnowledgeGraphViewer: React.FC = () => {
         const docIds = data.results?.map((r: any) => r.document_id) || [];
         
         if (docIds.length > 0) {
-          setAvailableDocuments(docIds);
+          setAvailableDocuments(['ALL_ENTITIES', ...docIds]);
+          // Auto-select ALL_ENTITIES as default if nothing is selected
+          if (!selectedDocument) {
+            console.log('🔄 Auto-selecting ALL_ENTITIES as default document');
+            setSelectedDocument('ALL_ENTITIES');
+          }
         } else {
           // Fallback: show "All Entities" option if no document IDs exist
           setAvailableDocuments(['ALL_ENTITIES']);
+          // Auto-select ALL_ENTITIES as the only option
+          console.log('🔄 Auto-selecting ALL_ENTITIES as fallback');
+          setSelectedDocument('ALL_ENTITIES');
         }
       }
     } catch (err) {
       console.error('Error fetching document IDs:', err);
       // Fallback: show "All Entities" option
       setAvailableDocuments(['ALL_ENTITIES']);
+      // Auto-select ALL_ENTITIES as fallback
+      if (!selectedDocument) {
+        console.log('🔄 Auto-selecting ALL_ENTITIES after error');
+        setSelectedDocument('ALL_ENTITIES');
+      }
     }
   };
 
@@ -302,30 +315,39 @@ const KnowledgeGraphViewer: React.FC = () => {
   const fetchEntities = async (documentId: string) => {
     if (!documentId) return;
     
+    console.log('🔍 fetchEntities called with documentId:', documentId);
     setLoading(true);
     try {
       if (documentId === 'ALL_ENTITIES') {
-        // Fetch all entities using direct query
-        const response = await fetch('/api/v1/knowledge-graph/query', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query: 'MATCH (n) RETURN n.id as id, n.name as name, n.type as type, n.confidence as confidence, n.original_text as original_text LIMIT 100'
-          })
+        console.log('✅ Using unlimited endpoint for ALL_ENTITIES');
+        // Use the new unlimited visualization endpoint - fetch both entities and relationships
+        const timestamp = Date.now();
+        const url = `/api/v1/knowledge-graph/visualization-data?t=${timestamp}`;
+        console.log('🔄 Fetching from unlimited endpoint with cache bust:', url);
+        const response = await fetch(url, {
+          cache: 'no-cache',
+          headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache'
+          }
         });
         
         if (response.ok) {
           const data = await response.json();
-          const entities = data.results?.map((r: any) => ({
-            id: r.id || 'unknown',
-            name: r.name || 'Unknown',
-            type: r.type || 'UNKNOWN',
-            confidence: r.confidence || 0.5,
-            original_text: r.original_text || ''
-          })) || [];
-          setEntities(entities);
+          console.log('🔍 RAW API RESPONSE FROM UNLIMITED ENDPOINT:', {
+            url: url,
+            entitiesCount: data.entities?.length || 0,
+            relationshipsCount: data.relationships?.length || 0,
+            firstFewRelationships: data.relationships?.slice(0, 3),
+            stats: data.stats
+          });
+          setEntities(data.entities || []);
+          setRelationships(data.relationships || []);
+          console.log(`🎉 SUCCESS: Loaded ${data.entities?.length || 0} entities and ${data.relationships?.length || 0} relationships from unlimited endpoint`);
+          console.log('📊 Stats from backend:', data.stats);
         } else {
-          setError('Failed to fetch all entities');
+          console.error('❌ Failed to fetch from unlimited endpoint, status:', response.status);
+          setError('Failed to fetch visualization data');
         }
       } else {
         // Original document-specific query
@@ -351,29 +373,8 @@ const KnowledgeGraphViewer: React.FC = () => {
     
     try {
       if (documentId === 'ALL_ENTITIES') {
-        // Fetch all relationships using direct query
-        const response = await fetch('/api/v1/knowledge-graph/query', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query: 'MATCH (a)-[r]->(b) RETURN a.id as source_entity, b.id as target_entity, type(r) as relationship_type, r.confidence as confidence, r.context as context LIMIT 100'
-          })
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          const relationships = data.results?.map((r: any) => ({
-            id: `${r.source_entity}_${r.target_entity}_${r.relationship_type}`,
-            source_entity: r.source_entity || 'unknown',
-            target_entity: r.target_entity || 'unknown',
-            relationship_type: r.relationship_type || 'RELATED_TO',
-            confidence: r.confidence || 0.5,
-            context: r.context || ''
-          })) || [];
-          setRelationships(relationships);
-        } else {
-          setError('Failed to fetch all relationships');
-        }
+        // Skip - relationships are already loaded with entities in fetchEntities
+        return;
       } else {
         // Original document-specific query
         const response = await fetch(`/api/v1/knowledge-graph/relationships/${documentId}`);
@@ -437,9 +438,19 @@ const KnowledgeGraphViewer: React.FC = () => {
       console.log('🔗 Entity IDs available:', Array.from(entityIds));
       console.log('🔗 Entity names available:', Array.from(entityNames));
       console.log('🔗 Raw relationships received:', relationships);
+      console.log('🔍 DEBUGGING RELATIONSHIP FILTERING:');
+      console.log(`   • Total relationships to process: ${relationships.length}`);
+      console.log(`   • Entity IDs available: ${entityIds.size}`);
+      console.log(`   • Sample relationship source/target IDs:`, relationships.slice(0, 10).map(r => ({
+        source: r.source_entity, 
+        target: r.target_entity,
+        sourceExists: entityIds.has(r.source_entity),
+        targetExists: entityIds.has(r.target_entity)
+      })));
       
       // Enhanced relationship filtering with fallback logic
-      const validRelationships = relationships.filter(rel => {
+      let filteredOutCount = 0;
+      const validRelationships = relationships.filter((rel, index) => {
         let sourceId = rel.source_entity;
         let targetId = rel.target_entity;
         
@@ -465,13 +476,14 @@ const KnowledgeGraphViewer: React.FC = () => {
         const targetValid = entityIds.has(targetId);
         
         if (!sourceValid || !targetValid) {
-          console.warn('❌ Invalid relationship:', {
+          filteredOutCount++;
+          console.warn(`❌ Invalid relationship #${filteredOutCount}:`, {
             original: rel,
             mappedSource: sourceId,
             mappedTarget: targetId,
             sourceValid,
             targetValid,
-            availableEntityIds: Array.from(entityIds)
+            index: index
           });
           return false;
         }
@@ -504,9 +516,15 @@ const KnowledgeGraphViewer: React.FC = () => {
       
       console.log('📊 RELATIONSHIP PROCESSING SUMMARY:');
       console.log(`   • Raw relationships received: ${relationships.length}`);
+      console.log(`   • Relationships filtered out: ${filteredOutCount}`);
       console.log(`   • Valid relationships after filtering: ${validRelationships.length}`);
       console.log(`   • Final D3 links created: ${links.length}`);
       console.log(`   • Entities available: ${nodes.length}`);
+      
+      if (filteredOutCount > 0) {
+        console.error(`🚨 CRITICAL ISSUE: ${filteredOutCount} relationships were filtered out due to entity ID mismatches!`);
+        console.error('This suggests the backend is returning inconsistent entity IDs between entities and relationships data.');
+      }
       
       if (relationships.length > 0 && validRelationships.length === 0) {
         console.error('🚨 CRITICAL: All relationships were filtered out!');
@@ -872,6 +890,15 @@ const KnowledgeGraphViewer: React.FC = () => {
     fetchStats();
     fetchAvailableDocuments();
   }, []);
+
+  // Auto-fetch entities when selectedDocument changes to ALL_ENTITIES
+  useEffect(() => {
+    if (selectedDocument === 'ALL_ENTITIES') {
+      console.log('🔄 Auto-fetching entities for ALL_ENTITIES');
+      fetchEntities('ALL_ENTITIES');
+      fetchRelationships('ALL_ENTITIES');
+    }
+  }, [selectedDocument]);
 
   // Update visualization when data changes
   useEffect(() => {

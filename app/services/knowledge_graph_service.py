@@ -195,6 +195,14 @@ class KnowledgeGraphExtractionService:
             
             logger.info(f"✅ Stored LLM knowledge: {entities_stored} entities, {relationships_stored} relationships ({relationship_failures} relationship failures)")
             
+            # Debug logging for entity storage tracking
+            if entities_stored != len(result.entities):
+                logger.warning(f"🔍 Entity storage mismatch: Expected {len(result.entities)}, actually stored {entities_stored}")
+                for i, entity in enumerate(result.entities):
+                    logger.debug(f"   Entity {i+1}: {entity.canonical_form} ({entity.label}) - Chunk: {result.chunk_id}")
+            else:
+                logger.debug(f"✅ All {entities_stored} entities stored successfully from chunk {result.chunk_id}")
+            
             # Automatically run anti-silo analysis after storage to reduce isolated nodes
             if entities_stored > 0:
                 try:

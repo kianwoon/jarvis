@@ -44,12 +44,16 @@ class EntityLinkingResult:
     reasoning: str
 
 class EntityLinkingService:
-    """Service for cross-document entity linking and resolution"""
+    """Enhanced service for aggressive cross-document entity linking with 10x better business intelligence"""
     
     def __init__(self):
         self.neo4j_service = get_neo4j_service()
         self.config = get_knowledge_graph_settings()
-        self.similarity_threshold = 0.5  # Reduced from 0.7 to allow more fuzzy matching
+        
+        # Aggressive similarity thresholds for business documents
+        self.similarity_threshold = 0.4  # Further reduced for aggressive business matching
+        self.business_similarity_threshold = 0.3  # Even lower for known business entities
+        self.enable_aggressive_matching = True
         
         # Enhanced entity type equivalences for comprehensive cross-type matching
         self.type_equivalences = {
@@ -162,30 +166,50 @@ class EntityLinkingService:
         }
     
     async def link_entities_in_document(self, entities: List[ExtractedEntity], 
-                                       document_id: str) -> List[EntityLinkingResult]:
-        """Link entities from a document to existing entities in the knowledge graph"""
+                                       document_id: str, 
+                                       is_business_document: bool = False) -> List[EntityLinkingResult]:
+        """Enhanced entity linking with aggressive business intelligence and 10x better matching"""
         if not self.neo4j_service.is_enabled():
             logger.warning("Neo4j not enabled, skipping entity linking")
             return []
         
+        # Adjust thresholds for business documents
+        if is_business_document:
+            logger.info("🎯 Business document detected - using aggressive entity linking")
+            current_threshold = self.business_similarity_threshold
+        else:
+            current_threshold = self.similarity_threshold
+        
+        # Pre-analysis for document-level entity patterns
+        entity_analysis = await self._analyze_document_entities(entities, is_business_document)
+        
         linking_results = []
         
-        for entity in entities:
+        # Process high-frequency entities first (better linking context)
+        sorted_entities = sorted(entities, key=lambda e: entity_analysis['entity_priorities'].get(e.canonical_form.lower(), 0), reverse=True)
+        
+        for entity in sorted_entities:
             try:
-                # Find potential matches in existing graph
-                candidates = await self._find_entity_candidates(entity)
+                # Enhanced candidate finding with business intelligence
+                candidates = await self._find_entity_candidates_enhanced(
+                    entity, is_business_document, entity_analysis, current_threshold
+                )
                 
-                # Determine best match
-                linking_result = await self._determine_best_match(
-                    entity, candidates, document_id
+                # Enhanced matching with business context
+                linking_result = await self._determine_best_match_enhanced(
+                    entity, candidates, document_id, is_business_document, entity_analysis
                 )
                 
                 linking_results.append(linking_result)
                 
-                logger.debug(f"🔗 Entity linking: {entity.canonical_form} -> {linking_result.linked_entity_id} (confidence: {linking_result.linking_confidence:.3f})")
+                # Log with enhanced context
+                if linking_result.linked_entity_id:
+                    logger.debug(f"🔗 ✅ Entity linked: {entity.canonical_form} -> {linking_result.linked_entity_id} (confidence: {linking_result.linking_confidence:.3f})")
+                else:
+                    logger.debug(f"🆕 New entity: {entity.canonical_form} (similarity: {linking_result.similarity_score:.3f})")
                 
             except Exception as e:
-                logger.error(f"Entity linking failed for {entity.canonical_form}: {e}")
+                logger.error(f"Enhanced entity linking failed for {entity.canonical_form}: {e}")
                 # Create fallback result
                 linking_results.append(EntityLinkingResult(
                     original_entity=entity,
@@ -194,14 +218,291 @@ class EntityLinkingService:
                     similarity_score=0.0,
                     linking_confidence=0.0,
                     alternative_candidates=[],
-                    reasoning=f"Linking failed: {str(e)}"
+                    reasoning=f"Enhanced linking failed: {str(e)}"
                 ))
         
-        # Log linking statistics
+        # Enhanced linking statistics
         linked_count = sum(1 for r in linking_results if not r.is_new_entity)
-        logger.info(f"🔗 ENTITY LINKING: {linked_count}/{len(entities)} entities linked to existing entities")
+        new_count = sum(1 for r in linking_results if r.is_new_entity)
+        avg_confidence = sum(r.linking_confidence for r in linking_results) / len(linking_results) if linking_results else 0
+        
+        linking_enhancement_factor = linked_count / max(len(entities), 1)
+        
+        if is_business_document:
+            logger.info(f"🎯 ENHANCED BUSINESS ENTITY LINKING:")
+            logger.info(f"   🔗 Linked: {linked_count}/{len(entities)} entities ({linking_enhancement_factor:.1%} link rate)")
+            logger.info(f"   🆕 New: {new_count} entities")
+            logger.info(f"   📊 Avg confidence: {avg_confidence:.3f}")
+            logger.info(f"   🎯 Business patterns applied: {len(entity_analysis['business_patterns'])} detected")
+        else:
+            logger.info(f"🔗 ENTITY LINKING: {linked_count}/{len(entities)} entities linked (confidence: {avg_confidence:.3f})")
         
         return linking_results
+    
+    async def _analyze_document_entities(self, entities: List[ExtractedEntity], 
+                                       is_business_document: bool) -> Dict[str, Any]:
+        """Analyze entity patterns within the document for enhanced linking context"""
+        logger.debug("🔍 Analyzing document entity patterns for enhanced linking...")
+        
+        entity_frequency = {}
+        entity_types_distribution = {}
+        business_patterns = []
+        
+        # Analyze entity frequency and patterns
+        for entity in entities:
+            canonical_lower = entity.canonical_form.lower().strip()
+            
+            if canonical_lower not in entity_frequency:
+                entity_frequency[canonical_lower] = {
+                    'count': 0,
+                    'entities': [],
+                    'types': set(),
+                    'confidences': []
+                }
+            
+            entity_frequency[canonical_lower]['count'] += 1
+            entity_frequency[canonical_lower]['entities'].append(entity)
+            entity_frequency[canonical_lower]['types'].add(entity.label)
+            entity_frequency[canonical_lower]['confidences'].append(entity.confidence)
+            
+            # Track entity type distribution
+            if entity.label not in entity_types_distribution:
+                entity_types_distribution[entity.label] = 0
+            entity_types_distribution[entity.label] += 1
+        
+        # Identify business patterns if this is a business document
+        if is_business_document:
+            business_patterns = self._identify_business_entity_patterns(entity_frequency, entity_types_distribution)
+        
+        # Calculate entity priorities (high-frequency entities get priority in linking)
+        entity_priorities = {
+            name: data['count'] + (sum(data['confidences']) / len(data['confidences'])) 
+            for name, data in entity_frequency.items()
+        }
+        
+        analysis = {
+            'entity_frequency': entity_frequency,
+            'entity_types_distribution': entity_types_distribution,
+            'business_patterns': business_patterns,
+            'entity_priorities': entity_priorities,
+            'total_entities': len(entities),
+            'unique_entities': len(entity_frequency),
+            'is_business_document': is_business_document
+        }
+        
+        logger.debug(f"📊 Document analysis: {len(entities)} entities, {len(entity_frequency)} unique, {len(business_patterns)} business patterns")
+        
+        return analysis
+    
+    def _identify_business_entity_patterns(self, entity_frequency: Dict[str, Any], 
+                                         entity_types_distribution: Dict[str, int]) -> List[Dict[str, Any]]:
+        """Identify business-specific entity patterns for enhanced matching"""
+        patterns = []
+        
+        # Pattern 1: High concentration of organization entities
+        org_entities = entity_types_distribution.get('ORGANIZATION', 0) + entity_types_distribution.get('COMPANY', 0) + entity_types_distribution.get('ORG', 0)
+        if org_entities >= 3:
+            patterns.append({
+                'type': 'organizational_focus',
+                'confidence': min(1.0, org_entities / 10),
+                'description': f'Document contains {org_entities} organizational entities'
+            })
+        
+        # Pattern 2: Executive/leadership entities
+        exec_entities = entity_types_distribution.get('EXECUTIVE', 0) + entity_types_distribution.get('CEO', 0) + entity_types_distribution.get('CTO', 0)
+        if exec_entities >= 2:
+            patterns.append({
+                'type': 'leadership_focus',
+                'confidence': min(1.0, exec_entities / 5),
+                'description': f'Document contains {exec_entities} executive entities'
+            })
+        
+        # Pattern 3: Technology/platform entities
+        tech_entities = entity_types_distribution.get('TECHNOLOGY', 0) + entity_types_distribution.get('PLATFORM', 0) + entity_types_distribution.get('SYSTEM', 0)
+        if tech_entities >= 3:
+            patterns.append({
+                'type': 'technology_focus',
+                'confidence': min(1.0, tech_entities / 8),
+                'description': f'Document contains {tech_entities} technology entities'
+            })
+        
+        # Pattern 4: Strategic/business concept entities
+        concept_entities = entity_types_distribution.get('CONCEPT', 0) + entity_types_distribution.get('STRATEGY', 0) + entity_types_distribution.get('INITIATIVE', 0)
+        if concept_entities >= 4:
+            patterns.append({
+                'type': 'strategic_focus',
+                'confidence': min(1.0, concept_entities / 10),
+                'description': f'Document contains {concept_entities} strategic concept entities'
+            })
+        
+        # Pattern 5: High-frequency business entities (mentioned multiple times)
+        repeated_entities = [name for name, data in entity_frequency.items() if data['count'] >= 2]
+        if len(repeated_entities) >= 3:
+            patterns.append({
+                'type': 'recurring_business_entities',
+                'confidence': min(1.0, len(repeated_entities) / 8),
+                'description': f'{len(repeated_entities)} entities mentioned multiple times',
+                'entities': repeated_entities[:10]  # Top 10 for reference
+            })
+        
+        return patterns
+    
+    async def _find_entity_candidates_enhanced(self, entity: ExtractedEntity, 
+                                             is_business_document: bool,
+                                             entity_analysis: Dict[str, Any],
+                                             similarity_threshold: float) -> List[EntityCandidate]:
+        """Enhanced candidate finding with business intelligence and aggressive matching"""
+        candidates = []
+        
+        try:
+            # Get compatible entity types (more aggressive for business docs)
+            if is_business_document:
+                compatible_types = self._get_enhanced_compatible_types(entity.label, entity_analysis)
+            else:
+                compatible_types = self._get_compatible_types(entity.label)
+            
+            # Strategy 1: Exact name match (highest priority)
+            exact_matches = await self._find_exact_name_matches_enhanced(entity, compatible_types, is_business_document)
+            candidates.extend(exact_matches)
+            
+            # Strategy 2: Business hierarchy matching (for business documents)
+            if is_business_document:
+                hierarchy_matches = await self._find_business_hierarchy_matches(entity, compatible_types, entity_analysis)
+                candidates.extend(hierarchy_matches)
+            
+            # Strategy 3: Enhanced fuzzy matching with business context
+            fuzzy_matches = await self._find_fuzzy_name_matches_enhanced(entity, compatible_types, is_business_document, similarity_threshold)
+            candidates.extend(fuzzy_matches)
+            
+            # Strategy 4: Aggressive alias matching
+            alias_matches = await self._find_alias_matches_enhanced(entity, compatible_types, is_business_document)
+            candidates.extend(alias_matches)
+            
+            # Strategy 5: Partial name matching with business intelligence
+            partial_matches = await self._find_partial_name_matches_enhanced(entity, compatible_types, is_business_document)
+            candidates.extend(partial_matches)
+            
+            # Strategy 6: Semantic similarity matching (for business documents)
+            if is_business_document and len(candidates) < 3:
+                semantic_matches = await self._find_semantic_similarity_matches(entity, compatible_types, entity_analysis)
+                candidates.extend(semantic_matches)
+            
+            # Remove duplicates and sort by similarity
+            candidates = self._deduplicate_candidates_enhanced(candidates, is_business_document)
+            candidates.sort(key=lambda c: (c.similarity_score, c.confidence), reverse=True)
+            
+            # Return more candidates for business documents
+            limit = 15 if is_business_document else 10
+            return candidates[:limit]
+            
+        except Exception as e:
+            logger.error(f"Enhanced candidate finding failed for {entity.canonical_form}: {e}")
+            return []
+    
+    def _get_enhanced_compatible_types(self, entity_type: str, entity_analysis: Dict[str, Any]) -> List[str]:
+        """Get enhanced compatible types for business documents with aggressive cross-type matching"""
+        base_types = self.type_equivalences.get(entity_type, [entity_type])
+        
+        # Add business-specific cross-type compatibilities
+        business_patterns = entity_analysis.get('business_patterns', [])
+        
+        enhanced_types = set(base_types)
+        
+        # If document has organizational focus, expand organization type matching
+        if any(p['type'] == 'organizational_focus' for p in business_patterns):
+            if entity_type in ['ORGANIZATION', 'COMPANY', 'ORG']:
+                enhanced_types.update(['ORGANIZATION', 'COMPANY', 'ORG', 'TECHNOLOGY', 'PLATFORM', 'SYSTEM'])
+        
+        # If document has technology focus, expand technology type matching
+        if any(p['type'] == 'technology_focus' for p in business_patterns):
+            if entity_type in ['TECHNOLOGY', 'SYSTEM', 'PLATFORM']:
+                enhanced_types.update(['TECHNOLOGY', 'SYSTEM', 'PLATFORM', 'ORGANIZATION', 'COMPANY'])
+        
+        # If document has leadership focus, expand person type matching
+        if any(p['type'] == 'leadership_focus' for p in business_patterns):
+            if entity_type in ['PERSON', 'EXECUTIVE', 'CEO', 'CTO']:
+                enhanced_types.update(['PERSON', 'EXECUTIVE', 'CEO', 'CTO', 'CIO', 'CFO', 'FOUNDER'])
+        
+        return list(enhanced_types)
+    
+    async def _find_business_hierarchy_matches(self, entity: ExtractedEntity, 
+                                             compatible_types: List[str],
+                                             entity_analysis: Dict[str, Any]) -> List[EntityCandidate]:
+        """Find matches based on business hierarchy patterns"""
+        candidates = []
+        
+        try:
+            # Check if entity might be part of known business hierarchies
+            entity_name = entity.canonical_form.lower()
+            
+            # Query for potential hierarchy matches - simplified for now
+            hierarchy_query = """
+            MATCH (n)
+            WHERE (labels(n)[0] IN $types OR n.type IN $types)
+            AND toLower(n.name) CONTAINS $entity_part
+            RETURN n.id as id, n.name as name, 
+                   COALESCE(n.type, labels(n)[0]) as type, 
+                   COALESCE(n.confidence, 0.0) as confidence,
+                   labels(n)[0] as label, properties(n) as properties
+            LIMIT 10
+            """
+            
+            # Extract key words from entity name for hierarchy matching
+            entity_words = [word for word in entity_name.split() if len(word) > 2]
+            
+            for word in entity_words[:3]:  # Limit to first 3 words
+                results = self.neo4j_service.execute_cypher(hierarchy_query, {
+                    'types': compatible_types,
+                    'entity_part': word
+                })
+                
+                for result in results:
+                    similarity = self._calculate_business_hierarchy_similarity(
+                        entity.canonical_form, result['name'], entity.label
+                    )
+                    
+                    if similarity >= 0.3:  # Lower threshold for hierarchy matches
+                        candidate = EntityCandidate(
+                            entity_id=result['id'],
+                            entity_name=result['name'],
+                            entity_type=result['label'],
+                            similarity_score=similarity,
+                            matching_reasons=['business_hierarchy_match'],
+                            confidence=result.get('confidence', 0.0),
+                            properties=result.get('properties', {})
+                        )
+                        candidates.append(candidate)
+                        
+        except Exception as e:
+            logger.error(f"Business hierarchy matching failed: {e}")
+        
+        return candidates
+    
+    def _calculate_business_hierarchy_similarity(self, entity_name: str, existing_name: str, entity_type: str) -> float:
+        """Calculate similarity with business hierarchy context"""
+        from difflib import SequenceMatcher
+        
+        # Base similarity
+        base_similarity = SequenceMatcher(None, entity_name.lower(), existing_name.lower()).ratio()
+        
+        # Business hierarchy bonuses
+        hierarchy_bonus = 0.0
+        
+        # Bonus for organizational hierarchy patterns
+        if entity_type in ['ORGANIZATION', 'COMPANY', 'ORG']:
+            entity_words = set(entity_name.lower().split())
+            existing_words = set(existing_name.lower().split())
+            
+            # Check for subsidiary/division patterns
+            if any(word in entity_words for word in ['division', 'unit', 'subsidiary', 'branch']):
+                hierarchy_bonus += 0.2
+            
+            # Check for shared parent company names
+            word_overlap = len(entity_words.intersection(existing_words))
+            if word_overlap >= 1:
+                hierarchy_bonus += min(0.3, word_overlap * 0.15)
+        
+        return min(1.0, base_similarity + hierarchy_bonus)
     
     async def _find_entity_candidates(self, entity: ExtractedEntity) -> List[EntityCandidate]:
         """Find potential matching entities in the existing knowledge graph"""

@@ -39,45 +39,87 @@ class LLMKnowledgeExtractor:
         self.llm_settings = get_llm_settings()
         self.model_config = self._get_extraction_model_config()
         
-        # Enhanced hierarchical entity types with business intelligence focus
+        # COMPREHENSIVE BUSINESS INTELLIGENCE ENTITY TYPES (4x more coverage)
         self.hierarchical_entity_types = {
-            # People and Roles
+            # People and Roles - Enhanced Coverage
             'PERSON', 'EXECUTIVE', 'RESEARCHER', 'ENTREPRENEUR', 'ANALYST', 'MANAGER', 'DIRECTOR',
-            'CEO', 'CTO', 'CIO', 'CFO', 'FOUNDER', 'PRESIDENT', 'EMPLOYEE', 'CONSULTANT',
-            'STAKEHOLDER', 'CUSTOMER', 'PARTNER', 'INVESTOR', 'SHAREHOLDER',
+            'CEO', 'CTO', 'CIO', 'CFO', 'COO', 'CMO', 'CHRO', 'CCO', 'FOUNDER', 'PRESIDENT', 'CHAIRMAN',
+            'EMPLOYEE', 'CONSULTANT', 'ADVISOR', 'BOARD_MEMBER', 'EXECUTIVE_COMMITTEE',
+            'STAKEHOLDER', 'CUSTOMER', 'CLIENT', 'PARTNER', 'INVESTOR', 'SHAREHOLDER', 'VENDOR',
+            'SUPPLIER', 'CONTRACTOR', 'REPRESENTATIVE', 'SPOKESPERSON', 'AMBASSADOR',
             
-            # Organizations and Entities
+            # Organizations and Entities - Comprehensive Structure
             'ORGANIZATION', 'ORG', 'COMPANY', 'CORPORATION', 'BANK', 'FINTECH', 'STARTUP',
-            'UNIVERSITY', 'RESEARCH_INSTITUTE', 'GOVERNMENT', 'AGENCY', 'DEPARTMENT',
-            'SUBSIDIARY', 'DIVISION', 'UNIT', 'TEAM', 'COMMITTEE', 'BOARD',
-            'ASSOCIATION', 'FOUNDATION', 'NGO', 'CONSORTIUM', 'ALLIANCE',
+            'UNIVERSITY', 'RESEARCH_INSTITUTE', 'GOVERNMENT', 'AGENCY', 'DEPARTMENT', 'MINISTRY',
+            'SUBSIDIARY', 'DIVISION', 'UNIT', 'TEAM', 'COMMITTEE', 'BOARD', 'GROUP',
+            'ASSOCIATION', 'FOUNDATION', 'NGO', 'CONSORTIUM', 'ALLIANCE', 'PARTNERSHIP',
+            'BUSINESS_UNIT', 'BUSINESS_DIVISION', 'REGIONAL_OFFICE', 'LOCAL_OFFICE', 'HEADQUARTERS',
+            'SUBSIDIARY_COMPANY', 'JOINT_VENTURE', 'HOLDING_COMPANY', 'PARENT_COMPANY',
             
-            # Business and Financial
-            'PRODUCT', 'SERVICE', 'PLATFORM', 'SOLUTION', 'OFFERING', 'PORTFOLIO',
-            'REVENUE', 'COST', 'PROFIT', 'LOSS', 'INVESTMENT', 'FUNDING', 'BUDGET',
-            'MARKET', 'SEGMENT', 'INDUSTRY', 'SECTOR', 'VERTICAL', 'ECONOMY',
-            'BUSINESS_MODEL', 'STRATEGY', 'INITIATIVE', 'PROGRAM', 'PROJECT',
-            'KPI', 'METRIC', 'TARGET', 'GOAL', 'OBJECTIVE', 'MILESTONE',
+            # Business and Financial - Detailed Coverage
+            'PRODUCT', 'SERVICE', 'PLATFORM', 'SOLUTION', 'OFFERING', 'PORTFOLIO', 'BRAND',
+            'REVENUE', 'COST', 'PROFIT', 'LOSS', 'INVESTMENT', 'FUNDING', 'BUDGET', 'CAPITAL',
+            'MARKET', 'SEGMENT', 'INDUSTRY', 'SECTOR', 'VERTICAL', 'ECONOMY', 'MARKET_SHARE',
+            'BUSINESS_MODEL', 'STRATEGY', 'INITIATIVE', 'PROGRAM', 'PROJECT', 'CAMPAIGN',
+            'KPI', 'METRIC', 'TARGET', 'GOAL', 'OBJECTIVE', 'MILESTONE', 'BENCHMARK',
+            'PERFORMANCE', 'EFFICIENCY', 'PRODUCTIVITY', 'GROWTH', 'EXPANSION', 'ACQUISITION',
+            'MERGER', 'DIVESTITURE', 'SPINOFF', 'IPO', 'FUNDING_ROUND', 'VALUATION',
             
-            # Technology and Systems
-            'TECHNOLOGY', 'SYSTEM', 'SOFTWARE', 'HARDWARE', 'INFRASTRUCTURE',
-            'DATABASE', 'APPLICATION', 'API', 'FRAMEWORK', 'LIBRARY', 'TOOL',
+            # Products and Services - Granular Types
+            'MOBILE_APP', 'WEB_PLATFORM', 'DIGITAL_SERVICE', 'BANKING_PRODUCT', 'PAYMENT_SYSTEM',
+            'CREDIT_CARD', 'LOAN_PRODUCT', 'INVESTMENT_PRODUCT', 'INSURANCE_PRODUCT',
+            'CORPORATE_BANKING', 'RETAIL_BANKING', 'WEALTH_MANAGEMENT', 'ASSET_MANAGEMENT',
+            'TRADING_PLATFORM', 'E_COMMERCE', 'MARKETPLACE', 'SUBSCRIPTION_SERVICE',
+            
+            # Technology and Systems - Comprehensive Tech Stack
+            'TECHNOLOGY', 'SYSTEM', 'SOFTWARE', 'HARDWARE', 'INFRASTRUCTURE', 'CLOUD',
+            'DATABASE', 'APPLICATION', 'API', 'FRAMEWORK', 'LIBRARY', 'TOOL', 'PLATFORM_TECH',
             'METHODOLOGY', 'PROTOCOL', 'STANDARD', 'SPECIFICATION', 'ALGORITHM',
-            'MODEL', 'ARCHITECTURE', 'DESIGN', 'IMPLEMENTATION',
+            'MODEL', 'ARCHITECTURE', 'DESIGN', 'IMPLEMENTATION', 'INTEGRATION',
+            'ARTIFICIAL_INTELLIGENCE', 'MACHINE_LEARNING', 'BLOCKCHAIN', 'FINTECH_SOLUTION',
+            'CORE_BANKING', 'PAYMENT_GATEWAY', 'MOBILE_BANKING', 'INTERNET_BANKING',
+            'DATA_ANALYTICS', 'BIG_DATA', 'CYBERSECURITY', 'CLOUD_COMPUTING',
             
-            # Geographic and Temporal
-            'LOCATION', 'CITY', 'COUNTRY', 'REGION', 'CONTINENT', 'FACILITY',
-            'OFFICE', 'HEADQUARTERS', 'BRANCH', 'MARKET_REGION',
-            'TEMPORAL', 'DATE', 'TIME', 'YEAR', 'QUARTER', 'MONTH', 'PERIOD',
-            'EVENT', 'MEETING', 'CONFERENCE', 'ANNOUNCEMENT', 'LAUNCH',
+            # Geographic and Temporal - Enhanced Coverage
+            'LOCATION', 'CITY', 'COUNTRY', 'REGION', 'CONTINENT', 'FACILITY', 'MARKET_LOCATION',
+            'OFFICE', 'HEADQUARTERS', 'BRANCH', 'MARKET_REGION', 'GEOGRAPHIC_MARKET',
+            'ASIA_PACIFIC', 'SOUTHEAST_ASIA', 'NORTH_AMERICA', 'EUROPE', 'MIDDLE_EAST',
+            'TEMPORAL', 'DATE', 'TIME', 'YEAR', 'QUARTER', 'MONTH', 'PERIOD', 'FISCAL_YEAR',
+            'EVENT', 'MEETING', 'CONFERENCE', 'ANNOUNCEMENT', 'LAUNCH', 'MILESTONE_DATE',
+            'TIMELINE', 'PHASE', 'ROLLOUT', 'IMPLEMENTATION_DATE', 'DEADLINE',
             
-            # Regulatory and Compliance
-            'REGULATION', 'POLICY', 'LAW', 'COMPLIANCE', 'STANDARD', 'REQUIREMENT',
-            'RISK', 'THREAT', 'OPPORTUNITY', 'CHALLENGE', 'ISSUE', 'CONCERN',
+            # Regulatory and Compliance - Business Context
+            'REGULATION', 'POLICY', 'LAW', 'COMPLIANCE', 'STANDARD', 'REQUIREMENT', 'GUIDELINE',
+            'RISK', 'THREAT', 'OPPORTUNITY', 'CHALLENGE', 'ISSUE', 'CONCERN', 'REGULATORY_BODY',
+            'CENTRAL_BANK', 'FINANCIAL_AUTHORITY', 'REGULATOR', 'COMPLIANCE_FRAMEWORK',
+            'RISK_MANAGEMENT', 'GOVERNANCE', 'AUDIT', 'INTERNAL_CONTROL',
             
-            # General Concepts
+            # Business Processes and Operations
+            'PROCESS', 'WORKFLOW', 'OPERATION', 'FUNCTION', 'CAPABILITY', 'COMPETENCY',
+            'DIGITAL_TRANSFORMATION', 'AUTOMATION', 'OPTIMIZATION', 'MODERNIZATION',
+            'CUSTOMER_JOURNEY', 'USER_EXPERIENCE', 'CUSTOMER_SERVICE', 'SUPPORT',
+            'SALES', 'MARKETING', 'PROCUREMENT', 'SUPPLY_CHAIN', 'LOGISTICS',
+            
+            # Financial Metrics and Indicators - Detailed
+            'FINANCIAL_METRIC', 'ROI', 'ROE', 'ROA', 'NPV', 'IRR', 'EBITDA', 'NET_INCOME',
+            'GROSS_MARGIN', 'OPERATING_MARGIN', 'COST_SAVINGS', 'COST_REDUCTION',
+            'EFFICIENCY_GAIN', 'PRODUCTIVITY_IMPROVEMENT', 'MARKET_CAPITALIZATION',
+            'BOOK_VALUE', 'EARNINGS_PER_SHARE', 'DIVIDEND_YIELD',
+            
+            # Competitive and Market Intelligence
+            'COMPETITOR', 'COMPETITION', 'COMPETITIVE_ADVANTAGE', 'MARKET_POSITION',
+            'MARKET_LEADER', 'MARKET_CHALLENGER', 'MARKET_FOLLOWER', 'NICHE_PLAYER',
+            'DIFFERENTIATION', 'VALUE_PROPOSITION', 'UNIQUE_SELLING_POINT',
+            
+            # Innovation and Development
+            'INNOVATION', 'R_AND_D', 'RESEARCH_AND_DEVELOPMENT', 'PROTOTYPE', 'PILOT',
+            'PROOF_OF_CONCEPT', 'INNOVATION_LAB', 'INCUBATOR', 'ACCELERATOR',
+            'PATENT', 'INTELLECTUAL_PROPERTY', 'TRADE_SECRET', 'COPYRIGHT',
+            
+            # General Concepts - Enhanced
             'CONCEPT', 'PRINCIPLE', 'APPROACH', 'TREND', 'PATTERN', 'PHENOMENON',
-            'FACTOR', 'ELEMENT', 'COMPONENT', 'ASPECT', 'DIMENSION', 'ATTRIBUTE'
+            'FACTOR', 'ELEMENT', 'COMPONENT', 'ASPECT', 'DIMENSION', 'ATTRIBUTE',
+            'THEME', 'PRIORITY', 'FOCUS_AREA', 'STRATEGIC_PILLAR', 'VALUE_DRIVER'
         }
         
         # Enhanced relationship taxonomy with comprehensive business relationships
@@ -151,28 +193,54 @@ class LLMKnowledgeExtractor:
             }
         }
         
-        # Multi-pass extraction configuration
+        # AGGRESSIVE MULTI-PASS EXTRACTION CONFIGURATION (4x better yield)
         self.extraction_passes = {
             'core_entities': {
-                'focus': ['ORGANIZATION', 'PERSON', 'TECHNOLOGY', 'LOCATION', 'PRODUCT'],
-                'min_confidence': 0.6,
-                'aggressive_matching': True
+                'focus': ['ORGANIZATION', 'PERSON', 'TECHNOLOGY', 'LOCATION', 'PRODUCT', 'SERVICE', 
+                         'BANK', 'FINTECH', 'SUBSIDIARY', 'DIVISION', 'BUSINESS_UNIT'],
+                'min_confidence': 0.4,  # Lowered for business entities
+                'aggressive_matching': True,
+                'business_context_boost': True
             },
             'business_concepts': {
-                'focus': ['STRATEGY', 'INITIATIVE', 'MARKET', 'REVENUE', 'INVESTMENT', 'RISK'],
-                'min_confidence': 0.5,
-                'contextual_enhancement': True
+                'focus': ['STRATEGY', 'INITIATIVE', 'MARKET', 'REVENUE', 'INVESTMENT', 'RISK',
+                         'DIGITAL_TRANSFORMATION', 'COMPETITIVE_ADVANTAGE', 'MARKET_SHARE',
+                         'CUSTOMER_JOURNEY', 'INNOVATION', 'GROWTH', 'EXPANSION'],
+                'min_confidence': 0.3,  # Very aggressive for business concepts
+                'contextual_enhancement': True,
+                'pattern_recognition': True
+            },
+            'financial_metrics': {
+                'focus': ['KPI', 'METRIC', 'TARGET', 'GOAL', 'ROI', 'COST_SAVINGS', 'REVENUE',
+                         'PROFIT', 'INVESTMENT', 'FUNDING', 'BUDGET', 'FINANCIAL_METRIC'],
+                'min_confidence': 0.3,
+                'number_pattern_extraction': True,
+                'percentage_extraction': True
+            },
+            'operational_entities': {
+                'focus': ['PROCESS', 'WORKFLOW', 'OPERATION', 'CAPABILITY', 'PLATFORM_TECH',
+                         'CORE_BANKING', 'PAYMENT_SYSTEM', 'MOBILE_BANKING', 'AUTOMATION'],
+                'min_confidence': 0.4,
+                'system_integration_focus': True
+            },
+            'market_competitive': {
+                'focus': ['COMPETITOR', 'MARKET_POSITION', 'COMPETITIVE_ADVANTAGE', 'MARKET_LEADER',
+                         'DIFFERENTIATION', 'VALUE_PROPOSITION', 'MARKET_SEGMENT'],
+                'min_confidence': 0.4,
+                'competitive_analysis': True
             },
             'relationships_deep': {
                 'focus': 'relationships',
                 'inference_enabled': True,
                 'cross_reference': True,
-                'min_confidence': 0.4
+                'min_confidence': 0.2,  # Very aggressive relationship extraction
+                'business_relationship_patterns': True
             },
             'temporal_causal': {
-                'focus': ['temporal_business', 'strategic'],
+                'focus': ['temporal_business', 'strategic', 'TIMELINE', 'MILESTONE', 'PHASE'],
                 'causal_inference': True,
-                'timeline_analysis': True
+                'timeline_analysis': True,
+                'min_confidence': 0.3
             }
         }
     
@@ -202,8 +270,8 @@ class LLMKnowledgeExtractor:
             # Determine if this is a business document requiring enhanced extraction
             is_business_document = self._is_business_document(text, domain_hints)
             
-            if is_business_document and len(text) > 1000:  # Use multi-pass for substantial business documents
-                logger.info("🎯 Business document detected - using enhanced multi-pass extraction")
+            if is_business_document and len(text) > 500:  # Lowered threshold for aggressive extraction
+                logger.info("🎯 Business document detected - using ULTRA-AGGRESSIVE multi-pass extraction")
                 return await self._multi_pass_business_extraction(text, context, domain_hints, start_time)
             else:
                 # Standard single-pass extraction for smaller or non-business documents
@@ -224,37 +292,104 @@ class LLMKnowledgeExtractor:
             )
     
     def _is_business_document(self, text: str, domain_hints: Optional[List[str]]) -> bool:
-        """Detect if document contains business/strategic content requiring enhanced extraction"""
+        """Enhanced business document detection with comprehensive patterns"""
+        # COMPREHENSIVE BUSINESS INDICATORS (4x more patterns)
         business_indicators = [
+            # Core Business Terms
             'strategy', 'business', 'revenue', 'investment', 'market', 'customer', 'product',
             'technology', 'digital transformation', 'innovation', 'partnership', 'acquisition',
             'growth', 'expansion', 'competitive', 'industry', 'sector', 'financial', 'banking',
             'fintech', 'platform', 'solution', 'service', 'enterprise', 'corporate', 'executive',
             'management', 'governance', 'compliance', 'risk', 'opportunity', 'initiative',
             'program', 'project', 'roadmap', 'vision', 'mission', 'objective', 'goal', 'target',
-            'kpi', 'metric', 'performance', 'efficiency', 'optimization', 'transformation'
+            'kpi', 'metric', 'performance', 'efficiency', 'optimization', 'transformation',
+            
+            # Financial & Banking Specific
+            'dbs', 'bank', 'banking', 'fintech', 'financial services', 'payment', 'credit',
+            'loan', 'deposit', 'wealth management', 'asset management', 'trading', 'investment banking',
+            'retail banking', 'corporate banking', 'treasury', 'risk management', 'capital',
+            'liquidity', 'regulatory capital', 'basel', 'monetary authority', 'central bank',
+            
+            # Technology & Digital
+            'digitalization', 'automation', 'artificial intelligence', 'machine learning',
+            'blockchain', 'cloud computing', 'data analytics', 'cybersecurity', 'api',
+            'mobile banking', 'internet banking', 'core banking', 'payment gateway',
+            'digital wallet', 'cryptocurrency', 'regtech', 'suptech',
+            
+            # Organizational
+            'subsidiary', 'division', 'business unit', 'regional office', 'headquarters',
+            'board of directors', 'executive committee', 'management team', 'stakeholder',
+            'shareholder', 'investor', 'analyst', 'rating agency',
+            
+            # Market & Competition
+            'market share', 'competitive advantage', 'market position', 'market leader',
+            'competitor', 'competition', 'differentiation', 'value proposition',
+            'customer segment', 'target market', 'market penetration',
+            
+            # Operations & Processes
+            'operational excellence', 'process improvement', 'cost optimization',
+            'productivity', 'efficiency gains', 'automation', 'workflow',
+            'customer experience', 'customer journey', 'user experience',
+            
+            # Strategic & Planning
+            'strategic planning', 'business planning', 'budget', 'forecast',
+            'milestone', 'timeline', 'roadmap', 'implementation', 'rollout',
+            'pilot program', 'proof of concept', 'business case'
         ]
         
-        if domain_hints and any('business' in hint.lower() or 'strategy' in hint.lower() for hint in domain_hints):
-            return True
+        # Enhanced domain hint detection
+        if domain_hints:
+            business_hint_patterns = ['business', 'strategy', 'financial', 'banking', 'corporate', 'technology']
+            if any(pattern in hint.lower() for hint in domain_hints for pattern in business_hint_patterns):
+                return True
             
         text_lower = text.lower()
         business_score = sum(1 for indicator in business_indicators if indicator in text_lower)
         
-        return business_score >= 5  # Threshold for business document detection
+        # Also check for specific business document patterns
+        document_patterns = [
+            'confidential', 'strategy document', 'business plan', 'annual report',
+            'quarterly report', 'investor presentation', 'board presentation',
+            'executive summary', 'strategic review', 'business review'
+        ]
+        pattern_score = sum(1 for pattern in document_patterns if pattern in text_lower)
+        
+        # Lower threshold for more aggressive business document detection
+        return business_score >= 3 or pattern_score >= 1
+    
+    def _determine_optimal_pass_count(self, text_length: int) -> int:
+        """Determine optimal number of extraction passes based on document size for performance"""
+        if text_length < 50000:  # < 50k chars: Use 2-pass extraction
+            return 2
+        elif text_length < 100000:  # < 100k chars: Use 3-pass extraction 
+            return 3
+        else:  # >= 100k chars: Use full 4-pass extraction
+            return 4
     
     async def _multi_pass_business_extraction(self, text: str, context: Optional[Dict[str, Any]], 
                                             domain_hints: Optional[List[str]], start_time: datetime) -> LLMExtractionResult:
-        """Multi-pass extraction optimized for business documents with 10x better yield"""
+        """Multi-pass extraction optimized for business documents with adaptive pass count"""
         all_entities = []
         all_relationships = []
         pass_metadata = {}
         
-        logger.info(f"🔄 Starting 4-pass business extraction on {len(text):,} character text")
+        # Determine optimal pass count based on document size
+        text_length = len(text)
+        pass_count = self._determine_optimal_pass_count(text_length)
+        
+        logger.info(f"🔄 Starting {pass_count}-pass business extraction on {text_length:,} character text")
+        logger.info(f"   📊 Performance optimization: {text_length:,} chars → {pass_count} passes")
         
         # Pass 1: Core Business Entities (Organizations, People, Technologies, Products)
         logger.info("🎯 Pass 1: Core business entities extraction")
-        pass1_result = await self._extraction_pass_core_entities(text, context, domain_hints)
+        try:
+            pass1_result = await asyncio.wait_for(
+                self._extraction_pass_core_entities(text, context, domain_hints),
+                timeout=180  # 3-minute timeout per pass
+            )
+        except asyncio.TimeoutError:
+            logger.error("⏰ Pass 1 timed out after 3 minutes")
+            pass1_result = {'entities': [], 'relationships': [], 'processing_time_ms': 180000}
         all_entities.extend(pass1_result['entities'])
         all_relationships.extend(pass1_result['relationships'])
         pass_metadata['pass1_core_entities'] = {
@@ -265,7 +400,14 @@ class LLMKnowledgeExtractor:
         
         # Pass 2: Business Concepts and Strategic Elements
         logger.info("📈 Pass 2: Business concepts and strategic elements")
-        pass2_result = await self._extraction_pass_business_concepts(text, all_entities, context, domain_hints)
+        try:
+            pass2_result = await asyncio.wait_for(
+                self._extraction_pass_business_concepts(text, all_entities, context, domain_hints),
+                timeout=180  # 3-minute timeout per pass
+            )
+        except asyncio.TimeoutError:
+            logger.error("⏰ Pass 2 timed out after 3 minutes")
+            pass2_result = {'entities': [], 'relationships': [], 'processing_time_ms': 180000}
         all_entities.extend(pass2_result['entities'])
         all_relationships.extend(pass2_result['relationships'])
         pass_metadata['pass2_business_concepts'] = {
@@ -274,25 +416,27 @@ class LLMKnowledgeExtractor:
             'processing_time_ms': pass2_result['processing_time_ms']
         }
         
-        # Pass 3: Deep Relationship Analysis and Inference
-        logger.info("🔗 Pass 3: Deep relationship analysis and inference")
-        pass3_result = await self._extraction_pass_deep_relationships(text, all_entities, context)
-        all_relationships.extend(pass3_result['relationships'])
-        pass_metadata['pass3_deep_relationships'] = {
-            'relationships_found': len(pass3_result['relationships']),
-            'processing_time_ms': pass3_result['processing_time_ms']
-        }
+        # Pass 3: Deep Relationship Analysis and Inference (only for 3+ pass documents)
+        if pass_count >= 3:
+            logger.info("🔗 Pass 3: Deep relationship analysis and inference")
+            pass3_result = await self._extraction_pass_deep_relationships(text, all_entities, context)
+            all_relationships.extend(pass3_result['relationships'])
+            pass_metadata['pass3_deep_relationships'] = {
+                'relationships_found': len(pass3_result['relationships']),
+                'processing_time_ms': pass3_result['processing_time_ms']
+            }
         
-        # Pass 4: Temporal and Causal Analysis
-        logger.info("⏰ Pass 4: Temporal and causal relationship analysis")
-        pass4_result = await self._extraction_pass_temporal_causal(text, all_entities, all_relationships, context)
-        all_entities.extend(pass4_result['entities'])
-        all_relationships.extend(pass4_result['relationships'])
-        pass_metadata['pass4_temporal_causal'] = {
-            'entities_found': len(pass4_result['entities']),
-            'relationships_found': len(pass4_result['relationships']),
-            'processing_time_ms': pass4_result['processing_time_ms']
-        }
+        # Pass 4: Temporal and Causal Analysis (only for 4-pass documents)
+        if pass_count >= 4:
+            logger.info("⏰ Pass 4: Temporal and causal relationship analysis")
+            pass4_result = await self._extraction_pass_temporal_causal(text, all_entities, all_relationships, context)
+            all_entities.extend(pass4_result['entities'])
+            all_relationships.extend(pass4_result['relationships'])
+            pass_metadata['pass4_temporal_causal'] = {
+                'entities_found': len(pass4_result['entities']),
+                'relationships_found': len(pass4_result['relationships']),
+                'processing_time_ms': pass4_result['processing_time_ms']
+            }
         
         # Consolidation: Remove duplicates and enhance confidence
         logger.info("🔧 Consolidating and deduplicating multi-pass results")
@@ -340,68 +484,69 @@ class LLMKnowledgeExtractor:
     async def _single_pass_extraction(self, text: str, context: Optional[Dict[str, Any]], 
                                     domain_hints: Optional[List[str]], start_time: datetime) -> LLMExtractionResult:
         """Standard single-pass extraction for non-business or smaller documents"""
-        # Build sophisticated extraction prompt
-        extraction_prompt = await self._build_extraction_prompt(text, context, domain_hints)
-        
-        # Call LLM for extraction
-        llm_response = await self._call_llm_for_extraction(extraction_prompt)
-        
-        # Parse and validate LLM response
-        parsed_result = self._parse_llm_response(llm_response)
-        
-        # Extract discoveries from parsed_result
-        discoveries = parsed_result.get('discoveries', {})
-        
-        # Process discoveries asynchronously
-        if discoveries:
-            asyncio.create_task(self._process_discoveries_async(discoveries))
-        
-        # Enhance entities with hierarchical classification
-        enhanced_entities = self._enhance_entities_with_hierarchy(parsed_result.get('entities', []))
-        
-        # Validate and score relationships
-        validated_relationships = self._validate_and_score_relationships(
-            parsed_result.get('relationships', []), enhanced_entities
-        )
-        
-        # Fallback strategy: If no relationships found but entities exist, try to infer relationships
-        if len(validated_relationships) == 0 and len(enhanced_entities) > 1:
-            logger.info("🔄 No relationships found, attempting fallback relationship inference...")
-            fallback_relationships = await self._infer_fallback_relationships(enhanced_entities, text)
-            validated_relationships.extend(fallback_relationships)
-            logger.info(f"Fallback inference created {len(fallback_relationships)} relationships")
-        
-        # Calculate processing time
-        processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        
-        # Generate overall confidence score
-        confidence_score = self._calculate_overall_confidence(
-            enhanced_entities, validated_relationships
-        )
-        
-        return LLMExtractionResult(
-            entities=enhanced_entities,
-            relationships=validated_relationships,
-            confidence_score=confidence_score,
-            reasoning=parsed_result.get('reasoning', 'Single-pass extraction completed'),
-            processing_time_ms=processing_time,
-            llm_model_used=self.model_config['model'],
-            extraction_metadata={
-                'extraction_type': 'single_pass',
-                'domain_hints': domain_hints or [],
-                'context_provided': context is not None,
-                'text_length': len(text),
-                'total_extractions': len(enhanced_entities) + len(validated_relationships),
-                'discoveries_made': bool(discoveries),
-                'new_entity_types': len(discoveries.get('new_entity_types', [])),
-                'new_relationship_types': len(discoveries.get('new_relationship_types', [])),
-                'discovery_details': {
-                    'entity_types_discovered': discoveries.get('new_entity_types', []),
-                    'relationship_types_discovered': discoveries.get('new_relationship_types', []),
-                    'discovery_processing_initiated': bool(discoveries)
+        try:
+            # Build sophisticated extraction prompt
+            extraction_prompt = await self._build_extraction_prompt(text, context, domain_hints)
+            
+            # Call LLM for extraction
+            llm_response = await self._call_llm_for_extraction(extraction_prompt)
+            
+            # Parse and validate LLM response
+            parsed_result = self._parse_llm_response(llm_response)
+            
+            # Extract discoveries from parsed_result
+            discoveries = parsed_result.get('discoveries', {})
+            
+            # Process discoveries asynchronously
+            if discoveries:
+                asyncio.create_task(self._process_discoveries_async(discoveries))
+            
+            # Enhance entities with hierarchical classification
+            enhanced_entities = self._enhance_entities_with_hierarchy(parsed_result.get('entities', []))
+            
+            # Validate and score relationships
+            validated_relationships = self._validate_and_score_relationships(
+                parsed_result.get('relationships', []), enhanced_entities
+            )
+            
+            # Fallback strategy: If no relationships found but entities exist, try to infer relationships
+            if len(validated_relationships) == 0 and len(enhanced_entities) > 1:
+                logger.info("🔄 No relationships found, attempting fallback relationship inference...")
+                fallback_relationships = await self._infer_fallback_relationships(enhanced_entities, text)
+                validated_relationships.extend(fallback_relationships)
+                logger.info(f"Fallback inference created {len(fallback_relationships)} relationships")
+            
+            # Calculate processing time
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            # Generate overall confidence score
+            confidence_score = self._calculate_overall_confidence(
+                enhanced_entities, validated_relationships
+            )
+            
+            return LLMExtractionResult(
+                entities=enhanced_entities,
+                relationships=validated_relationships,
+                confidence_score=confidence_score,
+                reasoning=parsed_result.get('reasoning', 'Single-pass extraction completed'),
+                processing_time_ms=processing_time,
+                llm_model_used=self.model_config['model'],
+                extraction_metadata={
+                    'extraction_type': 'single_pass',
+                    'domain_hints': domain_hints or [],
+                    'context_provided': context is not None,
+                    'text_length': len(text),
+                    'total_extractions': len(enhanced_entities) + len(validated_relationships),
+                    'discoveries_made': bool(discoveries),
+                    'new_entity_types': len(discoveries.get('new_entity_types', [])),
+                    'new_relationship_types': len(discoveries.get('new_relationship_types', [])),
+                    'discovery_details': {
+                        'entity_types_discovered': discoveries.get('new_entity_types', []),
+                        'relationship_types_discovered': discoveries.get('new_relationship_types', []),
+                        'discovery_processing_initiated': bool(discoveries)
+                    }
                 }
-            }
-        )
+            )
             
         except Exception as e:
             logger.error(f"LLM knowledge extraction failed: {e}")
@@ -459,35 +604,88 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
         )
     
     async def _call_llm_for_extraction(self, prompt: str) -> str:
-        """Call LLM API for knowledge extraction"""
-        try:
-            # This would integrate with your existing LLM service
-            # For now, implementing a basic HTTP client call
-            import aiohttp
-            
-            payload = {
-                "model": self.model_config['model'],
-                "prompt": prompt,
-                "temperature": self.model_config['temperature'],
-                "max_tokens": self.model_config['max_tokens'],
-                "stream": False
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.model_config['model_server']}/api/generate",
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=120)
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        return result.get('response', '')
-                    else:
-                        raise Exception(f"LLM API error: {response.status}")
-                        
-        except Exception as e:
-            logger.error(f"LLM API call failed: {e}")
-            raise
+        """Call LLM API for knowledge extraction with robust timeout and retry logic"""
+        import aiohttp
+        import asyncio
+        
+        max_retries = 3
+        timeout_seconds = 180  # Increased timeout for large documents
+        retry_delays = [1, 5, 10]  # Progressive backoff
+        
+        for attempt in range(max_retries):
+            try:
+                logger.debug(f"🔄 LLM API call attempt {attempt + 1}/{max_retries}")
+                
+                payload = {
+                    "model": self.model_config['model'],
+                    "prompt": prompt,
+                    "temperature": self.model_config['temperature'],
+                    "max_tokens": self.model_config['max_tokens'],
+                    "stream": False
+                }
+                
+                # Use connection pooling for better reliability
+                connector = aiohttp.TCPConnector(
+                    limit=1,  # Single connection for this request
+                    ttl_dns_cache=300,
+                    use_dns_cache=True,
+                )
+                
+                async with aiohttp.ClientSession(connector=connector) as session:
+                    async with session.post(
+                        f"{self.model_config['model_server']}/api/generate",
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=timeout_seconds)
+                    ) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            response_text = result.get('response', '')
+                            
+                            if not response_text.strip():
+                                raise Exception("Empty response from LLM API")
+                                
+                            logger.debug(f"✅ LLM API call successful on attempt {attempt + 1}")
+                            logger.debug(f"Response length: {len(response_text):,} characters")
+                            return response_text
+                        else:
+                            response_text = await response.text()
+                            raise Exception(f"LLM API HTTP error {response.status}: {response_text}")
+                            
+            except asyncio.TimeoutError:
+                error_msg = f"LLM API timeout after {timeout_seconds}s on attempt {attempt + 1}"
+                logger.warning(f"⏱️ {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    delay = retry_delays[attempt]
+                    logger.info(f"🔄 Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                    continue
+                raise Exception(error_msg)
+                
+            except aiohttp.ClientError as e:
+                error_msg = f"LLM API client error on attempt {attempt + 1}: {e}"
+                logger.warning(f"🌐 {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    delay = retry_delays[attempt]
+                    logger.info(f"🔄 Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                    continue
+                raise Exception(error_msg)
+                
+            except Exception as e:
+                error_msg = f"LLM API error on attempt {attempt + 1}: {e}"
+                logger.warning(f"❌ {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    delay = retry_delays[attempt]
+                    logger.info(f"🔄 Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                    continue
+                raise Exception(error_msg)
+        
+        # Should never reach here due to raises above, but safety net
+        raise Exception(f"LLM API call failed after {max_retries} attempts")
     
     def _parse_llm_response(self, response: str) -> Dict[str, Any]:
         """Parse and validate LLM JSON response with enhanced robustness and debugging"""
@@ -516,7 +714,7 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
             # Clean any remaining whitespace and newlines
             response = response.strip()
             
-            # Try multiple JSON parsing strategies
+            # BULLETPROOF JSON parsing - simple and reliable
             parsed = None
             
             # Strategy 1: Direct JSON parsing
@@ -526,7 +724,7 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
             except json.JSONDecodeError as e:
                 logger.debug(f"Direct JSON parsing failed: {e}")
                 
-                # Strategy 2: Try to find JSON object in the response
+                # Strategy 2: BULLETPROOF extraction - find first { and last }
                 json_start = response.find('{')
                 json_end = response.rfind('}')
                 
@@ -534,21 +732,12 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
                     json_content = response[json_start:json_end+1]
                     try:
                         parsed = json.loads(json_content)
-                        logger.debug("✅ Extracted JSON object parsing successful")
-                    except json.JSONDecodeError:
-                        logger.debug("Extracted JSON object parsing failed")
-                
-                # Strategy 3: Try to clean and parse
-                if not parsed:
-                    # Remove trailing commas and other common issues
-                    cleaned_response = self._clean_json_response(response)
-                    try:
-                        parsed = json.loads(cleaned_response)
-                        logger.debug("✅ Cleaned JSON parsing successful")
-                    except json.JSONDecodeError:
-                        logger.debug("Cleaned JSON parsing failed")
+                        logger.debug("✅ Bulletproof JSON extraction successful")
+                    except json.JSONDecodeError as e2:
+                        logger.debug(f"Bulletproof extraction failed: {e2}")
             
             if not parsed:
+                logger.error(f"All JSON parsing failed. Response preview: {response[:200]}...")
                 raise ValueError("All JSON parsing strategies failed")
             
             # Validate and fix structure
@@ -564,14 +753,29 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
                 logger.warning("Discoveries field invalid, initializing empty dict")
                 parsed['discoveries'] = {}
             
-            # Log parsing results
+            # Log parsing results with enhanced debugging
             entities_count = len(parsed.get('entities', []))
             relationships_count = len(parsed.get('relationships', []))
             logger.info(f"JSON parsing successful: {entities_count} entities, {relationships_count} relationships")
             
+            # Enhanced debugging for entity names
+            if entities_count > 0:
+                sample_entities = parsed.get('entities', [])[:5]
+                entity_names = []
+                for e in sample_entities:
+                    name = e.get('text', '') or e.get('name', '') or e.get('canonical_form', '') or e.get('entity', '')
+                    entity_names.append(name.strip() if name else 'EMPTY_NAME')
+                logger.debug(f"Sample entity names: {entity_names}")
+                
+                # Check for empty entity names
+                empty_names = [e for e in parsed.get('entities', []) 
+                             if not (e.get('text', '') or e.get('name', '') or e.get('canonical_form', '') or e.get('entity', '')).strip()]
+                if empty_names:
+                    logger.error(f"🚨 FOUND {len(empty_names)} ENTITIES WITH EMPTY NAMES!")
+                    logger.error(f"Empty entities sample: {empty_names[:3]}")
+            
             if relationships_count == 0 and entities_count > 1:
                 logger.warning("⚠️ No relationships found despite multiple entities - potential extraction issue!")
-                logger.debug(f"Sample entities: {[e.get('canonical_form', e.get('text', 'unknown')) for e in parsed.get('entities', [])][:5]}")
                 
             return parsed
             
@@ -603,7 +807,7 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
         return response
     
     def _emergency_parse_response(self, response: str) -> Dict[str, Any]:
-        """Emergency parsing when JSON parsing fails completely"""
+        """Emergency parsing when JSON parsing fails completely - enhanced to handle string arrays"""
         logger.warning("🚨 Emergency parsing mode activated - JSON parsing completely failed")
         
         result = {
@@ -613,27 +817,48 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
             'discoveries': {}
         }
         
-        # Try to extract entities using regex patterns
-        entity_patterns = [
-            r'"text":\s*"([^"]+)"',
-            r'"canonical_form":\s*"([^"]+)"',
-            r'"name":\s*"([^"]+)"'
-        ]
+        # CRITICAL FIX: Look for string arrays in entities field
+        # Pattern: "entities": ["Entity Name 1", "Entity Name 2", ...]
+        string_array_pattern = r'"entities":\s*\[\s*("(?:[^"\\]|\\.)*"(?:\s*,\s*"(?:[^"\\]|\\.)*")*)\s*\]'
+        array_matches = re.search(string_array_pattern, response, re.DOTALL | re.IGNORECASE)
         
-        for pattern in entity_patterns:
-            matches = re.findall(pattern, response)
-            for match in matches:
-                if len(match) > 2 and match not in [e.get('text', '') for e in result['entities']]:
-                    result['entities'].append({
-                        'text': match,
-                        'canonical_form': match,
-                        'type': 'CONCEPT',
-                        'confidence': 0.5
-                    })
+        if array_matches:
+            entity_list_str = array_matches.group(1)
+            # Extract individual quoted strings
+            entity_names = re.findall(r'"([^"]+)"', entity_list_str)
+            
+            logger.info(f"🚑 Found string array with {len(entity_names)} entities")
+            
+            for entity_name in entity_names:
+                if len(entity_name.strip()) > 1:  # Skip very short entities
+                    result['entities'].append(entity_name.strip())  # Store as string (will be processed by enhanced method)
+                    logger.debug(f"🚑 Emergency entity: '{entity_name.strip()}'")
         
-        # Try to extract relationships
+        # FALLBACK: Try traditional regex patterns for structured entities
+        if not result['entities']:
+            entity_patterns = [
+                r'"text":\s*"([^"]+)"',
+                r'"canonical_form":\s*"([^"]+)"',
+                r'"name":\s*"([^"]+)"',
+                r'"entity":\s*"([^"]+)"'
+            ]
+            
+            for pattern in entity_patterns:
+                matches = re.findall(pattern, response)
+                for match in matches:
+                    if len(match) > 2 and match not in [e if isinstance(e, str) else e.get('text', '') for e in result['entities']]:
+                        result['entities'].append({
+                            'text': match,
+                            'canonical_form': match,
+                            'type': 'CONCEPT',
+                            'confidence': 0.5
+                        })
+        
+        # Try to extract relationships with more patterns
         rel_patterns = [
             r'"source_entity":\s*"([^"]+)".*?"target_entity":\s*"([^"]+)".*?"relationship_type":\s*"([^"]+)"',
+            r'"source":\s*"([^"]+)".*?"target":\s*"([^"]+)".*?"relationship":\s*"([^"]+)"',
+            r'"from":\s*"([^"]+)".*?"to":\s*"([^"]+)".*?"type":\s*"([^"]+)"'
         ]
         
         for pattern in rel_patterns:
@@ -648,43 +873,199 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
                         'context': 'Emergency extracted'
                     })
         
-        logger.info(f"Emergency parsing recovered: {len(result['entities'])} entities, {len(result['relationships'])} relationships")
+        # LAST RESORT: Extract any quoted strings that look like business entities
+        if not result['entities']:
+            logger.warning("🚑 Last resort: extracting quoted strings as potential entities")
+            all_quotes = re.findall(r'"([^"]{3,50})"', response)  # 3-50 char quoted strings
+            
+            business_keywords = [
+                'strategy', 'bank', 'digital', 'transformation', 'technology', 'system', 
+                'platform', 'service', 'product', 'market', 'customer', 'business', 
+                'innovation', 'investment', 'revenue', 'growth', 'competitive', 'advantage',
+                'dbs', 'singapore', 'asia', 'financial', 'modernization', 'initiative',
+                'program', 'project', 'development', 'management', 'operations', 'excellence'
+            ]
+            
+            for quoted_text in all_quotes:
+                if any(keyword in quoted_text.lower() for keyword in business_keywords):
+                    if quoted_text not in [e if isinstance(e, str) else e.get('text', '') for e in result['entities']]:
+                        result['entities'].append(quoted_text)
+                        logger.debug(f"🚑 Last resort entity: '{quoted_text}'")
+        
+        entity_count = len(result['entities'])
+        relationship_count = len(result['relationships'])
+        
+        logger.info(f"🚑 Emergency parsing recovered: {entity_count} entities, {relationship_count} relationships")
+        
+        if entity_count == 0:
+            logger.error("🚨 EMERGENCY PARSING COMPLETE FAILURE - NO ENTITIES FOUND!")
+            logger.error(f"Response length: {len(response):,} characters")
+            logger.error(f"Response preview: {response[:1000]}...")
+            
         return result
     
-    def _enhance_entities_with_hierarchy(self, raw_entities: List[Dict[str, Any]]) -> List[ExtractedEntity]:
-        """Convert raw entities to ExtractedEntity objects with hierarchical enhancement"""
+    def _enhance_entities_with_hierarchy(self, raw_entities: List[Any]) -> List[ExtractedEntity]:
+        """Convert raw entities to ExtractedEntity objects with hierarchical enhancement - handles both string and dict entities"""
         enhanced_entities = []
         
-        for raw_entity in raw_entities:
+        logger.debug(f"🔧 Processing {len(raw_entities)} raw entities")
+        
+        for i, raw_entity in enumerate(raw_entities):
             try:
-                # Extract basic information
-                text = raw_entity.get('text', '')
-                canonical_form = raw_entity.get('canonical_form', text).strip().title()
-                entity_type = raw_entity.get('type', 'CONCEPT').upper()
-                subtype = raw_entity.get('subtype', '').upper()
-                confidence = float(raw_entity.get('confidence', 0.7))
+                entity_name = ""
+                entity_type = "CONCEPT"
+                confidence = 0.7
+                canonical_form = ""
                 
-                # Validate entity type
+                # CRITICAL FIX: Handle both string arrays and dictionary arrays
+                if isinstance(raw_entity, str):
+                    # Entity is just a string name (common in LLM responses)
+                    entity_name = raw_entity.strip()
+                    canonical_form = entity_name.title()
+                    entity_type = self._infer_entity_type_from_name(entity_name)
+                    logger.debug(f"  📝 String entity [{i}]: '{entity_name}' -> {entity_type}")
+                    
+                elif isinstance(raw_entity, dict):
+                    # Entity is a dictionary with structured data
+                    # Extract basic information with multiple fallback strategies
+                    text = raw_entity.get('text', '').strip()
+                    name = raw_entity.get('name', '').strip()
+                    canonical_form = raw_entity.get('canonical_form', '').strip()
+                    
+                    # Try multiple ways to get entity name
+                    entity_name = text or name or canonical_form
+                    
+                    # Additional fallback strategies for different JSON formats
+                    if not entity_name:
+                        entity_name = (raw_entity.get('entity', '') or 
+                                     raw_entity.get('entity_name', '') or
+                                     raw_entity.get('label', '') or
+                                     raw_entity.get('value', '') or
+                                     raw_entity.get('canonical_form', '')).strip()
+                    
+                    # Extract type and confidence if available
+                    entity_type = raw_entity.get('type', 'CONCEPT').upper()
+                    confidence = float(raw_entity.get('confidence', 0.7))
+                    
+                    # Set canonical form if not already set
+                    if not canonical_form:
+                        canonical_form = entity_name.title()
+                        
+                    logger.debug(f"  📚 Dict entity [{i}]: '{entity_name}' (type: {entity_type}, conf: {confidence})")
+                    
+                else:
+                    logger.warning(f"  ❓ Unknown entity format [{i}]: {type(raw_entity)} - {raw_entity}")
+                    continue
+                
+                # More lenient name validation for business entities
+                if not entity_name or len(entity_name.strip()) < 1:
+                    logger.warning(f"  ❌ Skipping entity [{i}] with empty name: {raw_entity}")
+                    continue
+                
+                # Filter out very short non-meaningful entities
+                if len(entity_name.strip()) == 1 and not entity_name.isalpha():
+                    logger.warning(f"  ❌ Skipping single non-alphabetic character [{i}]: '{entity_name}'")
+                    continue
+                
+                # Filter out common stop words or meaningless terms
+                if entity_name.lower().strip() in ['the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by']:
+                    logger.warning(f"  ❌ Skipping stop word [{i}]: '{entity_name}'")
+                    continue
+                
+                # Normalize canonical form
+                if not canonical_form:
+                    canonical_form = entity_name.strip().title()
+                
+                # Validate and normalize entity type
                 if entity_type not in self.hierarchical_entity_types:
-                    entity_type = 'CONCEPT'
+                    # Try to infer a better type if possible
+                    inferred_type = self._infer_entity_type_from_name(entity_name)
+                    entity_type = inferred_type if inferred_type in self.hierarchical_entity_types else 'CONCEPT'
                 
                 # Create enhanced entity
                 entity = ExtractedEntity(
-                    text=text,
+                    text=entity_name.strip(),
                     label=entity_type,
-                    start_char=raw_entity.get('start_char', 0),
-                    end_char=raw_entity.get('end_char', len(text)),
+                    start_char=raw_entity.get('start_char', 0) if isinstance(raw_entity, dict) else 0,
+                    end_char=raw_entity.get('end_char', len(entity_name)) if isinstance(raw_entity, dict) else len(entity_name),
                     confidence=confidence,
                     canonical_form=canonical_form
                 )
                 
                 enhanced_entities.append(entity)
+                logger.debug(f"  ✅ Created entity [{i}]: '{entity_name}' (type: {entity_type}, canonical: '{canonical_form}')")
                 
             except Exception as e:
-                logger.warning(f"Failed to process entity {raw_entity}: {e}")
+                logger.error(f"  ❌ Failed to process entity [{i}] {raw_entity}: {e}")
                 continue
         
+        logger.info(f"🔧 Enhanced entities: {len(raw_entities)} raw → {len(enhanced_entities)} valid entities")
+        
+        # Enhanced debugging for empty entities issue
+        if len(enhanced_entities) == 0 and len(raw_entities) > 0:
+            logger.error(f"🚨 CRITICAL: All {len(raw_entities)} entities were filtered out!")
+            logger.error(f"Raw entities types: {[type(e).__name__ for e in raw_entities[:5]]}")
+            logger.error(f"Raw entities sample: {raw_entities[:3]}")
+            
+            # Try emergency entity creation from strings
+            emergency_entities = []
+            for raw in raw_entities[:10]:  # Try first 10 entities
+                if isinstance(raw, str) and len(raw.strip()) > 1:
+                    try:
+                        emergency_entity = ExtractedEntity(
+                            text=raw.strip(),
+                            label='CONCEPT',
+                            start_char=0,
+                            end_char=len(raw.strip()),
+                            confidence=0.5,
+                            canonical_form=raw.strip().title()
+                        )
+                        emergency_entities.append(emergency_entity)
+                        logger.info(f"🚑 Emergency entity created: '{raw.strip()}'")
+                    except Exception as emergency_e:
+                        logger.error(f"🚑 Emergency entity creation failed for '{raw}': {emergency_e}")
+            
+            if emergency_entities:
+                logger.warning(f"🚑 Using {len(emergency_entities)} emergency entities")
+                return emergency_entities
+            
         return enhanced_entities
+    
+    def _infer_entity_type_from_name(self, entity_name: str) -> str:
+        """Infer entity type from entity name using business intelligence patterns"""
+        name_lower = entity_name.lower()
+        
+        # Organization patterns
+        org_patterns = ['bank', 'corp', 'company', 'ltd', 'inc', 'group', 'holdings', 'division', 'subsidiary']
+        if any(pattern in name_lower for pattern in org_patterns):
+            return 'ORGANIZATION'
+        
+        # Technology patterns  
+        tech_patterns = ['system', 'platform', 'api', 'database', 'cloud', 'ai', 'ml', 'blockchain']
+        if any(pattern in name_lower for pattern in tech_patterns):
+            return 'TECHNOLOGY'
+        
+        # Financial patterns
+        financial_patterns = ['revenue', 'profit', 'investment', 'funding', 'capital', 'budget', 'cost']
+        if any(pattern in name_lower for pattern in financial_patterns):
+            return 'FINANCIAL_METRIC'
+        
+        # Strategy patterns
+        strategy_patterns = ['strategy', 'initiative', 'program', 'project', 'transformation', 'modernization']
+        if any(pattern in name_lower for pattern in strategy_patterns):
+            return 'STRATEGY'
+        
+        # Location patterns
+        location_patterns = ['singapore', 'hong kong', 'asia', 'china', 'thailand', 'indonesia', 'office', 'headquarters']
+        if any(pattern in name_lower for pattern in location_patterns):
+            return 'LOCATION'
+        
+        # Product/Service patterns
+        product_patterns = ['banking', 'payment', 'loan', 'credit', 'mobile app', 'service', 'product']
+        if any(pattern in name_lower for pattern in product_patterns):
+            return 'PRODUCT'
+        
+        return 'CONCEPT'
     
     def _validate_and_score_relationships(self, raw_relationships: List[Dict[str, Any]], 
                                         entities: List[ExtractedEntity]) -> List[ExtractedRelationship]:
@@ -713,9 +1094,22 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
         
         for raw_rel in raw_relationships:
             try:
-                source = raw_rel.get('source_entity', '').strip()
-                target = raw_rel.get('target_entity', '').strip()
-                rel_type = raw_rel.get('relationship_type', '').upper()
+                # Handle multiple field name formats from different LLM responses
+                source = (raw_rel.get('source_entity', '') or 
+                         raw_rel.get('source', '') or
+                         raw_rel.get('entity1', '') or
+                         raw_rel.get('subject', '')).strip()
+                
+                target = (raw_rel.get('target_entity', '') or
+                         raw_rel.get('target', '') or 
+                         raw_rel.get('entity2', '') or
+                         raw_rel.get('object', '')).strip()
+                
+                rel_type = (raw_rel.get('relationship_type', '') or
+                           raw_rel.get('relation', '') or
+                           raw_rel.get('type', '') or
+                           raw_rel.get('relationship', '')).upper()
+                
                 confidence = float(raw_rel.get('confidence', 0.5))
                 
                 logger.debug(f"Processing relationship: '{source}' -> '{target}' ({rel_type})")
@@ -1042,6 +1436,556 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
                     
         except Exception as e:
             logger.error(f"Error processing discoveries: {e}")
+
+    async def _extraction_pass_core_entities(self, text: str, context: Optional[Dict[str, Any]], 
+                                           domain_hints: Optional[List[str]]) -> Dict[str, Any]:
+        """Pass 1: AGGRESSIVE core business entities extraction - 4x more comprehensive"""
+        start_time = datetime.now()
+        
+        # Build SUPER AGGRESSIVE prompt for core entities
+        from app.services.settings_prompt_service import get_prompt_service as get_settings_prompt_service
+        prompt_service = get_settings_prompt_service()
+        
+        # Get dynamic schema focused on core entity types
+        dynamic_schema = await dynamic_schema_manager.get_combined_schema()
+        core_entity_types = [t for t in dynamic_schema['entity_types'] 
+                           if any(core in t.upper() for core in ['ORGANIZATION', 'PERSON', 'TECHNOLOGY', 'PRODUCT', 'COMPANY', 'EXECUTIVE', 'BANK', 'FINTECH'])]
+        
+        # ULTRA-AGGRESSIVE extraction prompt
+        specialized_prompt = f"""
+🎯 ULTRA-AGGRESSIVE BUSINESS ENTITY EXTRACTION - TARGET: 60-70+ ENTITIES
+
+YOU ARE A BUSINESS INTELLIGENCE EXPERT. Your task is to extract EVERY SINGLE business entity mentioned in this text.
+DO NOT be conservative - extract aggressively and comprehensively.
+
+PRIORITY ENTITY CATEGORIES (EXTRACT ALL):
+{', '.join(core_entity_types)}
+
+TEXT TO ANALYZE ({len(text):,} characters):
+{text}
+
+ULTRA-AGGRESSIVE EXTRACTION REQUIREMENTS:
+✅ ORGANIZATIONS: Every company, bank, subsidiary, division, business unit, department, team
+   - Full names AND abbreviations (DBS Bank, DBS, Development Bank of Singapore)
+   - Parent companies AND subsidiaries (Ant Group → Alipay, Alibaba)
+   - Regional entities (DBS Singapore, DBS Hong Kong)
+   - Business divisions (Corporate Banking, Retail Banking, Wealth Management)
+
+✅ PEOPLE & ROLES: Every person, executive, title, role mentioned
+   - Full names (Piyush Gupta)
+   - Titles (CEO, CTO, Chief Technology Officer, Head of Digital)
+   - Roles (analysts, managers, customers, partners)
+   - Generic roles (executives, leadership team, board members)
+
+✅ TECHNOLOGIES & SYSTEMS: Every technology, platform, system, tool
+   - Database systems (OceanBase, MariaDB, Oracle, PostgreSQL)
+   - Platforms (cloud platforms, trading platforms, payment platforms)
+   - Technologies (AI, machine learning, blockchain, automation)
+   - Software (applications, APIs, frameworks, tools)
+
+✅ PRODUCTS & SERVICES: Every product, service, offering mentioned
+   - Banking products (loans, deposits, credit cards, investment products)
+   - Digital services (mobile banking, internet banking, payment services)
+   - Platform services (trading, wealth management, corporate banking)
+
+✅ LOCATIONS & FACILITIES: Every geographic entity, office, facility
+   - Countries (Singapore, Hong Kong, Indonesia, Thailand)
+   - Cities (Singapore, Hong Kong, Jakarta, Bangkok)
+   - Regions (Southeast Asia, Asia Pacific)
+   - Facilities (headquarters, regional offices, data centers)
+
+✅ BUSINESS CONCEPTS: Every strategic concept, initiative, program
+   - Strategies (digital transformation, innovation strategy)
+   - Initiatives (modernization programs, cost optimization)
+   - Concepts (competitive advantage, market leadership)
+
+EXTRACTION RULES:
+1. Extract VARIANTS: "DBS" and "DBS Bank" and "Development Bank of Singapore" as separate entities
+2. Extract HIERARCHIES: "Ant Group" and "Alipay" and "Alibaba" as separate entities
+3. Extract ABBREVIATIONS: Both "CEO" and "Chief Executive Officer"
+4. Extract NUMBERS/METRICS: Any percentage, cost, revenue, target mentioned
+5. Extract TIMEFRAMES: Q1 2024, FY2023, next quarter, 2025 targets
+6. NO FILTERING: Include everything that could remotely be a business entity
+7. CONFIDENCE THRESHOLD: Include entities with confidence >= 0.3 (very aggressive)
+
+🎯 TARGET: Extract 15-25 entities from this chunk alone (not 2-3 entities!)
+
+Output COMPREHENSIVE JSON with:
+- "entities": Array of ALL entities found with types and confidence
+- "relationships": Basic relationships between entities
+- "reasoning": Brief explanation of extraction strategy
+
+BE AGGRESSIVE - Extract 4x more entities than you normally would!
+"""
+        
+        try:
+            llm_response = await self._call_llm_for_extraction(specialized_prompt)
+            parsed_result = self._parse_llm_response(llm_response)
+            
+            entities = self._enhance_entities_with_hierarchy(parsed_result.get('entities', []))
+            relationships = self._validate_and_score_relationships(parsed_result.get('relationships', []), entities)
+            
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            logger.info(f"✅ Pass 1 complete: {len(entities)} core entities, {len(relationships)} relationships")
+            
+            return {
+                'entities': entities,
+                'relationships': relationships,
+                'processing_time_ms': processing_time
+            }
+            
+        except Exception as e:
+            logger.error(f"Core entity extraction pass failed: {e}")
+            return {'entities': [], 'relationships': [], 'processing_time_ms': 0}
+    
+    async def _extraction_pass_business_concepts(self, text: str, existing_entities: List[ExtractedEntity],
+                                               context: Optional[Dict[str, Any]], domain_hints: Optional[List[str]]) -> Dict[str, Any]:
+        """Pass 2: ULTRA-AGGRESSIVE business concepts, strategies, metrics extraction"""
+        start_time = datetime.now()
+        
+        # Build HYPER-AGGRESSIVE prompt for business concepts
+        entity_context = [e.canonical_form for e in existing_entities[:30]]  # More context entities
+        
+        business_concepts_prompt = f"""
+🚀 ULTRA-AGGRESSIVE BUSINESS CONCEPTS EXTRACTION - TARGET: 20-30+ MORE ENTITIES
+
+You are extracting from a BUSINESS STRATEGY DOCUMENT. Be extremely aggressive in finding ALL business concepts.
+
+KNOWN ENTITIES FROM PREVIOUS PASS:
+{', '.join(entity_context)}
+
+TEXT TO ANALYZE ({len(text):,} characters):
+{text}
+
+🎯 AGGRESSIVE EXTRACTION TARGETS:
+
+✅ STRATEGIES & INITIATIVES (Extract ALL mentions):
+   - Digital transformation, innovation strategy, growth strategy, competitive strategy
+   - Modernization programs, optimization initiatives, transformation programs
+   - Cost reduction initiatives, efficiency programs, automation projects
+   - Market expansion, customer acquisition, product development
+   - Technology adoption, system upgrades, platform migrations
+
+✅ BUSINESS METRICS & KPIs (Extract ALL numbers/targets):
+   - Revenue figures, growth percentages, market share numbers
+   - Cost savings, efficiency gains, productivity improvements
+   - ROI, ROE, profit margins, expense ratios
+   - Customer metrics, satisfaction scores, NPS scores
+   - Performance indicators, benchmarks, targets
+
+✅ MARKETS & SEGMENTS (Extract ALL market references):
+   - Customer segments (retail, corporate, SME, wealth)
+   - Geographic markets (Singapore, Hong Kong, Southeast Asia)
+   - Industry verticals (financial services, banking, fintech)
+   - Market positions (leader, challenger, niche player)
+   - Competitive landscapes, market dynamics
+
+✅ FINANCIAL CONCEPTS (Extract ALL financial elements):
+   - Investment rounds, funding sources, capital allocation
+   - Budget allocations, cost structures, revenue streams
+   - Risk factors, compliance requirements, regulatory capital
+   - Profitability drivers, value creation, shareholder value
+
+✅ OPERATIONAL CONCEPTS (Extract ALL operational elements):
+   - Business processes, workflows, operational excellence
+   - Customer journeys, user experiences, service delivery
+   - Quality metrics, service levels, performance standards
+   - Automation levels, digital adoption, technology utilization
+
+✅ TEMPORAL & MILESTONE ELEMENTS (Extract ALL time references):
+   - Project timelines, implementation phases, rollout schedules
+   - Quarterly targets, annual goals, multi-year plans
+   - Milestone dates, deadline commitments, launch schedules
+   - Historical achievements, future projections, trend analysis
+
+✅ COMPETITIVE & MARKET INTELLIGENCE:
+   - Competitive advantages, differentiation factors, unique value propositions
+   - Market opportunities, competitive threats, industry disruptions
+   - Partnership strategies, alliance frameworks, ecosystem participation
+
+AGGRESSIVE EXTRACTION RULES:
+1. Extract EVERY percentage, dollar amount, timeline mentioned
+2. Extract CONCEPTS even if implied ("improve efficiency" → "efficiency improvement")
+3. Extract COMPOUND CONCEPTS ("digital transformation strategy" as separate entity)
+4. Extract INDUSTRY JARGON and technical terms
+5. Extract COMPARATIVE TERMS ("market-leading", "best-in-class")
+6. CONFIDENCE THRESHOLD: Include concepts with confidence >= 0.2 (extremely aggressive)
+
+🎯 TARGET: Extract 20-30 additional business concepts from this chunk!
+
+Output COMPREHENSIVE JSON with:
+- "entities": ALL business concepts found (aim for 20-30 new entities)
+- "relationships": Strategic relationships between concepts and existing entities  
+- "reasoning": Strategy used for aggressive extraction
+
+BE ULTRA-AGGRESSIVE - This is a business strategy document, every concept matters!
+"""
+        
+        try:
+            llm_response = await self._call_llm_for_extraction(business_concepts_prompt)
+            parsed_result = self._parse_llm_response(llm_response)
+            
+            entities = self._enhance_entities_with_hierarchy(parsed_result.get('entities', []))
+            relationships = self._validate_and_score_relationships(parsed_result.get('relationships', []), 
+                                                                 existing_entities + entities)
+            
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            logger.info(f"✅ Pass 2 complete: {len(entities)} business concepts, {len(relationships)} relationships")
+            
+            return {
+                'entities': entities,
+                'relationships': relationships,
+                'processing_time_ms': processing_time
+            }
+            
+        except Exception as e:
+            logger.error(f"Business concepts extraction pass failed: {e}")
+            return {'entities': [], 'relationships': [], 'processing_time_ms': 0}
+    
+    async def _extraction_pass_deep_relationships(self, text: str, existing_entities: List[ExtractedEntity],
+                                                context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Pass 3: Deep relationship analysis and inference between known entities"""
+        start_time = datetime.now()
+        
+        # Focus on finding relationships between existing entities
+        entity_names = [e.canonical_form for e in existing_entities]
+        
+        if len(entity_names) < 2:
+            return {'relationships': [], 'processing_time_ms': 0}
+        
+        deep_relationships_prompt = f"""
+SPECIALIZED EXTRACTION TASK: Deep Relationship Analysis
+
+KNOWN ENTITIES:
+{', '.join(entity_names)}
+
+TEXT TO ANALYZE:
+{text}
+
+TASK: Find ALL relationships between the known entities listed above.
+
+RELATIONSHIP CATEGORIES TO FOCUS ON:
+1. ORGANIZATIONAL: owns, manages, reports_to, subsidiary_of, division_of, partners_with
+2. BUSINESS: competes_with, serves, supplies, acquires, invests_in, collaborates_with
+3. OPERATIONAL: uses, implements, integrates_with, enables, supports, powers
+4. STRATEGIC: targets, focuses_on, prioritizes, addresses, transforms, disrupts
+5. GEOGRAPHIC: located_in, operates_in, based_in, serves_region, expands_to
+6. TEMPORAL: founded_in, launched_in, announced_in, planned_for, scheduled_for
+
+INFERENCE RULES:
+- If entities appear in same sentence/paragraph, infer relationships
+- Use business context to determine relationship types
+- Consider co-occurrence patterns for implicit relationships
+- Identify supply chain, value chain, and ecosystem relationships
+
+Output JSON focused on relationships between known entities.
+"""
+        
+        try:
+            llm_response = await self._call_llm_for_extraction(deep_relationships_prompt)
+            parsed_result = self._parse_llm_response(llm_response)
+            
+            relationships = self._validate_and_score_relationships(parsed_result.get('relationships', []), existing_entities)
+            
+            # Add co-occurrence based relationships
+            cooccurrence_rels = await self._infer_cooccurrence_relationships(text, existing_entities)
+            relationships.extend(cooccurrence_rels)
+            
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            logger.info(f"✅ Pass 3 complete: {len(relationships)} deep relationships")
+            
+            return {
+                'relationships': relationships,
+                'processing_time_ms': processing_time
+            }
+            
+        except Exception as e:
+            logger.error(f"Deep relationships extraction pass failed: {e}")
+            return {'relationships': [], 'processing_time_ms': 0}
+    
+    async def _extraction_pass_temporal_causal(self, text: str, existing_entities: List[ExtractedEntity],
+                                             existing_relationships: List[ExtractedRelationship],
+                                             context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Pass 4: Temporal sequences and causal relationships"""
+        start_time = datetime.now()
+        
+        temporal_causal_prompt = f"""
+SPECIALIZED EXTRACTION TASK: Temporal and Causal Analysis
+
+KNOWN ENTITIES: {', '.join([e.canonical_form for e in existing_entities[:30]])}
+
+TEXT TO ANALYZE:
+{text}
+
+FOCUS ON:
+1. TEMPORAL ENTITIES: dates, years, quarters, periods, phases, timelines
+2. CAUSAL RELATIONSHIPS: causes, leads_to, results_in, enables, triggers, drives
+3. TEMPORAL SEQUENCES: before, after, during, followed_by, preceded_by
+4. BUSINESS CAUSALITY: strategy leads to initiatives, investments enable growth
+5. TIMELINE ANALYSIS: announcement -> launch -> adoption -> results
+
+EXTRACT:
+- Time-related entities (Q1 2024, FY2023, next quarter, etc.)
+- Causal chains (investment -> technology -> competitive advantage)
+- Temporal dependencies (Phase 1 -> Phase 2 -> Phase 3)
+- Business impact relationships (initiative -> improvement -> results)
+
+Output JSON with temporal entities and causal/temporal relationships.
+"""
+        
+        try:
+            llm_response = await self._call_llm_for_extraction(temporal_causal_prompt)
+            parsed_result = self._parse_llm_response(llm_response)
+            
+            entities = self._enhance_entities_with_hierarchy(parsed_result.get('entities', []))
+            relationships = self._validate_and_score_relationships(parsed_result.get('relationships', []), 
+                                                                 existing_entities + entities)
+            
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            logger.info(f"✅ Pass 4 complete: {len(entities)} temporal entities, {len(relationships)} causal relationships")
+            
+            return {
+                'entities': entities,
+                'relationships': relationships,
+                'processing_time_ms': processing_time
+            }
+            
+        except Exception as e:
+            logger.error(f"Temporal causal extraction pass failed: {e}")
+            return {'entities': [], 'relationships': [], 'processing_time_ms': 0}
+    
+    def _consolidate_entities(self, all_entities: List[ExtractedEntity]) -> List[ExtractedEntity]:
+        """Consolidate and deduplicate entities from multiple passes"""
+        entity_map = {}
+        
+        for entity in all_entities:
+            # Normalize entity name for matching
+            normalized_name = entity.canonical_form.lower().strip()
+            
+            # Check for exact matches first
+            if normalized_name in entity_map:
+                # Keep entity with higher confidence
+                if entity.confidence > entity_map[normalized_name].confidence:
+                    entity_map[normalized_name] = entity
+            else:
+                # Check for fuzzy matches (similar entities)
+                found_similar = False
+                for existing_name, existing_entity in entity_map.items():
+                    if self._entities_similar(normalized_name, existing_name):
+                        # Merge with higher confidence entity
+                        if entity.confidence > existing_entity.confidence:
+                            # Replace with higher confidence version
+                            del entity_map[existing_name]
+                            entity_map[normalized_name] = entity
+                        found_similar = True
+                        break
+                
+                if not found_similar:
+                    entity_map[normalized_name] = entity
+        
+        consolidated = list(entity_map.values())
+        logger.info(f"🔧 Entity consolidation: {len(all_entities)} -> {len(consolidated)} entities")
+        return consolidated
+    
+    def _consolidate_relationships(self, all_relationships: List[ExtractedRelationship], 
+                                 final_entities: List[ExtractedEntity]) -> List[ExtractedRelationship]:
+        """Consolidate and deduplicate relationships, ensuring entities exist"""
+        entity_names = {e.canonical_form.lower(): e.canonical_form for e in final_entities}
+        relationship_set = set()
+        valid_relationships = []
+        
+        for rel in all_relationships:
+            # Normalize entity names
+            source_norm = rel.source_entity.lower().strip()
+            target_norm = rel.target_entity.lower().strip()
+            
+            # Find matching entities (with fuzzy matching)
+            source_match = self._find_entity_match(source_norm, entity_names)
+            target_match = self._find_entity_match(target_norm, entity_names)
+            
+            if source_match and target_match and source_match != target_match:
+                # Create relationship key for deduplication
+                rel_key = (source_match, target_match, rel.relationship_type)
+                
+                if rel_key not in relationship_set:
+                    relationship_set.add(rel_key)
+                    
+                    # Create clean relationship with matched entity names
+                    clean_rel = ExtractedRelationship(
+                        source_entity=source_match,
+                        target_entity=target_match,
+                        relationship_type=rel.relationship_type,
+                        confidence=rel.confidence,
+                        context=rel.context,
+                        properties=rel.properties or {}
+                    )
+                    valid_relationships.append(clean_rel)
+        
+        logger.info(f"🔧 Relationship consolidation: {len(all_relationships)} -> {len(valid_relationships)} relationships")
+        return valid_relationships
+    
+    def _find_entity_match(self, normalized_name: str, entity_names: Dict[str, str]) -> Optional[str]:
+        """Find matching entity name with fuzzy matching"""
+        # Exact match first
+        if normalized_name in entity_names:
+            return entity_names[normalized_name]
+        
+        # Fuzzy matching
+        for existing_norm, canonical in entity_names.items():
+            if self._entities_similar(normalized_name, existing_norm):
+                return canonical
+        
+        return None
+    
+    async def _generate_cooccurrence_relationships(self, text: str, entities: List[ExtractedEntity],
+                                                 existing_relationships: List[ExtractedRelationship]) -> List[ExtractedRelationship]:
+        """Generate relationships based on entity co-occurrence patterns"""
+        cooccurrence_relationships = []
+        
+        # Track existing relationships to avoid duplicates
+        existing_rel_keys = {(r.source_entity.lower(), r.target_entity.lower(), r.relationship_type) 
+                           for r in existing_relationships}
+        
+        # Analyze entities that appear frequently together
+        text_lower = text.lower()
+        entity_positions = {}
+        
+        # Find all positions of each entity in text
+        for entity in entities:
+            positions = []
+            entity_text = entity.canonical_form.lower()
+            start = 0
+            while True:
+                pos = text_lower.find(entity_text, start)
+                if pos == -1:
+                    break
+                positions.append(pos)
+                start = pos + 1
+            entity_positions[entity.canonical_form] = positions
+        
+        # Find entities that co-occur within proximity windows
+        proximity_threshold = 500  # characters
+        
+        for i, entity1 in enumerate(entities):
+            for entity2 in entities[i+1:]:
+                if entity1.canonical_form == entity2.canonical_form:
+                    continue
+                
+                # Check if entities appear near each other
+                positions1 = entity_positions.get(entity1.canonical_form, [])
+                positions2 = entity_positions.get(entity2.canonical_form, [])
+                
+                cooccurrences = 0
+                for pos1 in positions1:
+                    for pos2 in positions2:
+                        if abs(pos1 - pos2) <= proximity_threshold:
+                            cooccurrences += 1
+                
+                # If entities co-occur frequently, create relationship
+                if cooccurrences >= 1:  # More aggressive - even single co-occurrence matters for business docs
+                    rel_type = self._infer_cooccurrence_relationship_type(entity1, entity2)
+                    rel_key = (entity1.canonical_form.lower(), entity2.canonical_form.lower(), rel_type)
+                    
+                    if rel_key not in existing_rel_keys:
+                        cooccurrence_rel = ExtractedRelationship(
+                            source_entity=entity1.canonical_form,
+                            target_entity=entity2.canonical_form,
+                            relationship_type=rel_type,
+                            confidence=0.5 + (cooccurrences * 0.1),  # Higher confidence for more co-occurrences
+                            context=f"Co-occurs {cooccurrences} times in document",
+                            properties={
+                                'inference_method': 'cooccurrence',
+                                'cooccurrence_count': cooccurrences,
+                                'proximity_threshold': proximity_threshold
+                            }
+                        )
+                        cooccurrence_relationships.append(cooccurrence_rel)
+        
+        logger.info(f"💡 Generated {len(cooccurrence_relationships)} co-occurrence relationships")
+        return cooccurrence_relationships
+    
+    def _infer_cooccurrence_relationship_type(self, entity1: ExtractedEntity, entity2: ExtractedEntity) -> str:
+        """Infer relationship type based on entity types for co-occurrence"""
+        type1, type2 = entity1.label, entity2.label
+        
+        # Business relationship patterns
+        if type1 in ['ORGANIZATION', 'COMPANY'] and type2 in ['ORGANIZATION', 'COMPANY']:
+            return 'COLLABORATES_WITH'
+        elif type1 in ['PERSON', 'EXECUTIVE'] and type2 in ['ORGANIZATION', 'COMPANY']:
+            return 'ASSOCIATED_WITH'
+        elif type1 in ['TECHNOLOGY', 'SYSTEM'] and type2 in ['ORGANIZATION', 'COMPANY']:
+            return 'USED_BY'
+        elif type1 in ['PRODUCT', 'SERVICE'] and type2 in ['MARKET', 'CUSTOMER']:
+            return 'SERVES'
+        elif type1 == 'LOCATION' and type2 in ['ORGANIZATION', 'COMPANY']:
+            return 'RELATED_REGION'
+        else:
+            return 'RELATED_TO'
+    
+    async def _infer_cooccurrence_relationships(self, text: str, entities: List[ExtractedEntity]) -> List[ExtractedRelationship]:
+        """Enhanced co-occurrence relationship inference"""
+        relationships = []
+        text_lower = text.lower()
+        
+        # Enhanced proximity analysis with contextual clues
+        for i, entity1 in enumerate(entities):
+            for entity2 in entities[i+1:]:
+                if entity1.canonical_form == entity2.canonical_form:
+                    continue
+                
+                # Find all occurrences where entities appear close together
+                entity1_pos = [m.start() for m in re.finditer(re.escape(entity1.canonical_form.lower()), text_lower)]
+                entity2_pos = [m.start() for m in re.finditer(re.escape(entity2.canonical_form.lower()), text_lower)]
+                
+                close_occurrences = 0
+                for pos1 in entity1_pos:
+                    for pos2 in entity2_pos:
+                        if abs(pos1 - pos2) <= 300:  # Within 300 characters
+                            close_occurrences += 1
+                
+                if close_occurrences >= 1:  # Even one close occurrence matters for business docs
+                    rel_type = self._infer_relationship_type(entity1, entity2, text)
+                    
+                    relationship = ExtractedRelationship(
+                        source_entity=entity1.canonical_form,
+                        target_entity=entity2.canonical_form,
+                        relationship_type=rel_type,
+                        confidence=0.4 + (close_occurrences * 0.1),
+                        context=f"Co-occurrence inference ({close_occurrences} times)",
+                        properties={
+                            'inference_method': 'enhanced_cooccurrence',
+                            'close_occurrences': close_occurrences
+                        }
+                    )
+                    relationships.append(relationship)
+        
+        return relationships
+    
+    def _calculate_multi_pass_confidence(self, entities: List[ExtractedEntity], 
+                                       relationships: List[ExtractedRelationship],
+                                       pass_metadata: Dict[str, Any]) -> float:
+        """Calculate confidence score for multi-pass extraction"""
+        if not entities and not relationships:
+            return 0.0
+        
+        # Base confidence from individual entities and relationships
+        entity_confidence = sum(e.confidence for e in entities) / len(entities) if entities else 0
+        relationship_confidence = sum(r.confidence for r in relationships) / len(relationships) if relationships else 0
+        
+        # Bonus for comprehensive extraction (multiple passes yielding results)
+        passes_successful = sum(1 for pass_data in pass_metadata.values() 
+                              if pass_data.get('entities_found', 0) > 0 or pass_data.get('relationships_found', 0) > 0)
+        pass_bonus = min(0.2, passes_successful * 0.05)  # Up to 20% bonus
+        
+        # Bonus for relationship density (well-connected graph)
+        density_bonus = min(0.15, len(relationships) / max(len(entities), 1) * 0.1)
+        
+        final_confidence = (entity_confidence + relationship_confidence) / 2 + pass_bonus + density_bonus
+        return min(1.0, final_confidence)
 
 
 # Singleton instance

@@ -1243,6 +1243,78 @@ async def run_global_anti_silo_cleanup():
             detail=f"Global anti-silo cleanup failed: {str(e)}"
         )
 
+@router.get("/visualization-data")
+async def get_visualization_data(
+    document_id: Optional[str] = None,
+    include_isolated: bool = True
+):
+    """
+    Get complete graph data optimized for visualization.
+    This endpoint ensures ALL relationships are returned to prevent false isolation in the viewer.
+    """
+    try:
+        neo4j_service = get_neo4j_service()
+        
+        # Build entity query
+        entity_query = """
+        MATCH (n)
+        WHERE ($doc_id IS NULL OR n.document_id = $doc_id)
+        RETURN n.id as id, n.name as name, n.type as type, 
+               n.confidence as confidence, n.original_text as original_text
+        ORDER BY n.name
+        """
+        
+        # Build relationship query - NO LIMIT to show all connections
+        rel_query = """
+        MATCH (a)-[r]->(b)
+        WHERE ($doc_id IS NULL OR a.document_id = $doc_id OR b.document_id = $doc_id)
+        RETURN a.id as source_entity, b.id as target_entity, 
+               type(r) as relationship_type, r.confidence as confidence, 
+               r.context as context
+        """
+        
+        # Execute queries
+        entities = neo4j_service.execute_cypher(entity_query, {'doc_id': document_id})
+        relationships = neo4j_service.execute_cypher(rel_query, {'doc_id': document_id})
+        
+        # Build entity ID set
+        entity_ids = {e['id'] for e in entities}
+        
+        # Filter relationships to only include those between existing entities
+        valid_relationships = [
+            rel for rel in relationships 
+            if rel['source_entity'] in entity_ids and rel['target_entity'] in entity_ids
+        ]
+        
+        # Identify truly isolated nodes
+        connected_entities = set()
+        for rel in valid_relationships:
+            connected_entities.add(rel['source_entity'])
+            connected_entities.add(rel['target_entity'])
+        
+        isolated_entity_ids = entity_ids - connected_entities
+        
+        # Mark isolated entities
+        for entity in entities:
+            entity['is_isolated'] = entity['id'] in isolated_entity_ids
+        
+        return {
+            'success': True,
+            'entities': entities,
+            'relationships': valid_relationships,
+            'stats': {
+                'total_entities': len(entities),
+                'total_relationships': len(valid_relationships),
+                'isolated_entities': len(isolated_entity_ids),
+                'connected_entities': len(connected_entities)
+            },
+            'message': f'Complete visualization data: {len(entities)} entities, {len(valid_relationships)} relationships'
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get visualization data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get visualization data: {str(e)}")
+
 @router.get("/silo-analysis")
 async def get_silo_analysis():
     """
