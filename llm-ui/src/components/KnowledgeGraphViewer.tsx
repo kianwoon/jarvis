@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, ErrorInfo, Component } from 'react';
+import React, { useState, useEffect, useRef, ErrorInfo, Component, useMemo } from 'react';
 import * as d3 from 'd3';
 import {
   Box,
@@ -10,11 +10,21 @@ import {
   createTheme,
   CssBaseline,
   Tabs,
-  Tab
+  Tab,
+  TextField,
+  Chip,
+  Button,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails
 } from '@mui/material';
 import {
   LightMode as LightModeIcon,
-  DarkMode as DarkModeIcon
+  DarkMode as DarkModeIcon,
+  Search as SearchIcon,
+  ExpandMore as ExpandMoreIcon,
+  Visibility as VisibilityIcon,
+  VisibilityOff as VisibilityOffIcon
 } from '@mui/icons-material';
 
 // Error boundary for D3 visualization
@@ -114,10 +124,51 @@ const KnowledgeGraphViewer: React.FC = () => {
     return saved ? parseInt(saved) : 12;
   });
   
+  // Node diameter and layout configuration
+  const [nodeDiameter, setNodeDiameter] = useState(() => {
+    const saved = localStorage.getItem('jarvis-kg-node-diameter');
+    return saved ? parseInt(saved) : 40;
+  });
+  
+  const [layoutType, setLayoutType] = useState(() => {
+    const saved = localStorage.getItem('jarvis-kg-layout-type');
+    return saved || 'force-directed';
+  });
+  
+  const [forceStrength, setForceStrength] = useState(() => {
+    const saved = localStorage.getItem('jarvis-kg-force-strength');
+    return saved ? parseFloat(saved) : 1.0;
+  });
+  
+  // Performance optimization states
+  const [searchQuery, setSearchQuery] = useState('');
+  const [maxVisibleNodes, setMaxVisibleNodes] = useState(50);
+  const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
+  const [showIsolatedNodes, setShowIsolatedNodes] = useState(false);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  
   const handleFontSizeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     const newSize = parseInt(event.target.value);
     setFontSize(newSize);
     localStorage.setItem('jarvis-kg-font-size', newSize.toString());
+  };
+  
+  const handleNodeDiameterChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const newDiameter = parseInt(event.target.value);
+    setNodeDiameter(newDiameter);
+    localStorage.setItem('jarvis-kg-node-diameter', newDiameter.toString());
+  };
+  
+  const handleLayoutTypeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const newLayout = event.target.value;
+    setLayoutType(newLayout);
+    localStorage.setItem('jarvis-kg-layout-type', newLayout);
+  };
+  
+  const handleForceStrengthChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const newStrength = parseFloat(event.target.value);
+    setForceStrength(newStrength);
+    localStorage.setItem('jarvis-kg-force-strength', newStrength.toString());
   };
   
   const svgRef = useRef<SVGSVGElement>(null);
@@ -198,6 +249,97 @@ const KnowledgeGraphViewer: React.FC = () => {
   };
   
   const entityColors = getEntityColors(isDarkMode);
+
+  // Performance optimization: calculate node degree centrality
+  const calculateNodeDegrees = useMemo(() => {
+    const degrees = new Map<string, number>();
+    
+    // Initialize all entities with degree 0
+    entities.forEach(entity => {
+      degrees.set(entity.id, 0);
+    });
+    
+    // Count connections for each entity
+    relationships.forEach(rel => {
+      const sourceId = rel.source_entity;
+      const targetId = rel.target_entity;
+      degrees.set(sourceId, (degrees.get(sourceId) || 0) + 1);
+      degrees.set(targetId, (degrees.get(targetId) || 0) + 1);
+    });
+    
+    return degrees;
+  }, [entities, relationships]);
+
+  // Group entities by type for clustering
+  const entityClusters = useMemo(() => {
+    const clusters = new Map<string, Entity[]>();
+    
+    entities.forEach(entity => {
+      const type = entity.type || 'UNKNOWN';
+      if (!clusters.has(type)) {
+        clusters.set(type, []);
+      }
+      clusters.get(type)!.push(entity);
+    });
+    
+    return clusters;
+  }, [entities]);
+
+  // Filter entities based on search and visibility settings
+  const visibleEntities = useMemo(() => {
+    let filtered = entities;
+    
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(entity => 
+        entity.name.toLowerCase().includes(query) ||
+        entity.type.toLowerCase().includes(query)
+      );
+    }
+    
+    // Sort by degree centrality (most connected first)
+    filtered = filtered.sort((a, b) => {
+      const degreeA = calculateNodeDegrees.get(a.id) || 0;
+      const degreeB = calculateNodeDegrees.get(b.id) || 0;
+      return degreeB - degreeA;
+    });
+    
+    // Apply cluster visibility
+    filtered = filtered.filter(entity => {
+      if (collapsedClusters.has(entity.type)) {
+        return false;
+      }
+      return true;
+    });
+    
+    // Limit visible nodes for performance
+    if (!searchQuery.trim()) {
+      filtered = filtered.slice(0, maxVisibleNodes);
+    }
+    
+    return filtered;
+  }, [entities, searchQuery, calculateNodeDegrees, collapsedClusters, maxVisibleNodes]);
+
+  // Filter relationships to only show connections between visible entities
+  const visibleRelationships = useMemo(() => {
+    const visibleEntityIds = new Set(visibleEntities.map(e => e.id));
+    return relationships.filter(rel => 
+      visibleEntityIds.has(rel.source_entity) && 
+      visibleEntityIds.has(rel.target_entity)
+    );
+  }, [relationships, visibleEntities]);
+
+  // Identify isolated nodes
+  const isolatedEntities = useMemo(() => {
+    const connectedIds = new Set<string>();
+    visibleRelationships.forEach(rel => {
+      connectedIds.add(rel.source_entity);
+      connectedIds.add(rel.target_entity);
+    });
+    
+    return visibleEntities.filter(entity => !connectedIds.has(entity.id));
+  }, [visibleEntities, visibleRelationships]);
 
   // Enhanced color generator with accessibility features
   const generateColor = (entityType: string): string => {
@@ -394,8 +536,11 @@ const KnowledgeGraphViewer: React.FC = () => {
   // Create and update D3 visualization
   const createVisualization = () => {
     console.log('=== Starting D3 Visualization ===');
-    console.log('Entities:', entities.length, entities);
-    console.log('Relationships:', relationships.length, relationships);
+    console.log('Total Entities:', entities.length);
+    console.log('Visible Entities:', visibleEntities.length);
+    console.log('Total Relationships:', relationships.length);
+    console.log('Visible Relationships:', visibleRelationships.length);
+    console.log('Performance Mode: Showing top', maxVisibleNodes, 'most connected nodes');
     
     if (!svgRef.current) {
       console.error('SVG ref is null');
@@ -403,8 +548,8 @@ const KnowledgeGraphViewer: React.FC = () => {
       return;
     }
     
-    if (entities.length === 0) {
-      console.log('No entities to visualize');
+    if (visibleEntities.length === 0) {
+      console.log('No visible entities to visualize');
       return;
     }
 
@@ -417,8 +562,8 @@ const KnowledgeGraphViewer: React.FC = () => {
       svg.selectAll('*').remove();
       console.log('Cleared previous visualization');
 
-      // Prepare nodes with better error handling
-      const nodes: GraphNode[] = entities.map((entity, index) => {
+      // Prepare nodes with better error handling - using filtered visible entities
+      const nodes: GraphNode[] = visibleEntities.map((entity, index) => {
         const node = {
           id: entity.id || entity.name || `entity-${index}`,
           name: entity.name || `Entity ${index + 1}`,
@@ -430,80 +575,21 @@ const KnowledgeGraphViewer: React.FC = () => {
       });
 
       // Create entity lookup maps for both ID and name matching
-      const entityIds = new Set(nodes.map(n => n.id));
-      const entityNames = new Set(nodes.map(n => n.name));
-      const nameToIdMap = new Map(nodes.map(n => [n.name.toLowerCase(), n.id]));
-      const idToNameMap = new Map(nodes.map(n => [n.id, n.name]));
+      const nodeEntityIds = new Set(nodes.map(n => n.id));
+      const nodeEntityNames = new Set(nodes.map(n => n.name));
+      const nodeNameToIdMap = new Map(nodes.map(n => [n.name.toLowerCase(), n.id]));
+      const nodeIdToNameMap = new Map(nodes.map(n => [n.id, n.name]));
       
-      console.log('🔗 Entity IDs available:', Array.from(entityIds));
-      console.log('🔗 Entity names available:', Array.from(entityNames));
-      console.log('🔗 Raw relationships received:', relationships);
+      console.log('🔗 Entity IDs available:', Array.from(nodeEntityIds));
+      console.log('🔗 Entity names available:', Array.from(nodeEntityNames));
       console.log('🔍 DEBUGGING RELATIONSHIP FILTERING:');
       console.log(`   • Total relationships to process: ${relationships.length}`);
-      console.log(`   • Entity IDs available: ${entityIds.size}`);
-      console.log(`   • Sample relationship source/target IDs:`, relationships.slice(0, 10).map(r => ({
-        source: r.source_entity, 
-        target: r.target_entity,
-        sourceExists: entityIds.has(r.source_entity),
-        targetExists: entityIds.has(r.target_entity)
-      })));
-      
-      // Enhanced relationship filtering with fallback logic
-      let filteredOutCount = 0;
-      const validRelationships = relationships.filter((rel, index) => {
-        let sourceId = rel.source_entity;
-        let targetId = rel.target_entity;
-        
-        // If source_entity is not a valid ID, try to map from name
-        if (!entityIds.has(sourceId)) {
-          const sourceFromName = nameToIdMap.get(sourceId.toLowerCase());
-          if (sourceFromName) {
-            sourceId = sourceFromName;
-            console.log(`🔗 Mapped source "${rel.source_entity}" -> "${sourceId}"`);
-          }
-        }
-        
-        // If target_entity is not a valid ID, try to map from name
-        if (!entityIds.has(targetId)) {
-          const targetFromName = nameToIdMap.get(targetId.toLowerCase());
-          if (targetFromName) {
-            targetId = targetFromName;
-            console.log(`🔗 Mapped target "${rel.target_entity}" -> "${targetId}"`);
-          }
-        }
-        
-        const sourceValid = entityIds.has(sourceId);
-        const targetValid = entityIds.has(targetId);
-        
-        if (!sourceValid || !targetValid) {
-          filteredOutCount++;
-          console.warn(`❌ Invalid relationship #${filteredOutCount}:`, {
-            original: rel,
-            mappedSource: sourceId,
-            mappedTarget: targetId,
-            sourceValid,
-            targetValid,
-            index: index
-          });
-          return false;
-        }
-        
-        // Update the relationship with proper IDs
-        rel.source_entity = sourceId;
-        rel.target_entity = targetId;
-        
-        console.log('✅ Valid relationship:', {
-          source: sourceId,
-          target: targetId,
-          type: rel.relationship_type,
-          sourceName: idToNameMap.get(sourceId),
-          targetName: idToNameMap.get(targetId)
-        });
-        
-        return true;
-      });
+      console.log(`   • Entity IDs available: ${nodeEntityIds.size}`);
 
-      const links: GraphLink[] = validRelationships.map((rel, index) => {
+      // Use the already filtered visible relationships for better performance
+      console.log(`🎯 PERFORMANCE OPTIMIZATION: Reduced from ${relationships.length} to ${visibleRelationships.length} relationships`);
+      
+      const links: GraphLink[] = visibleRelationships.map((rel, index) => {
         const link = {
           source: rel.source_entity,
           target: rel.target_entity,
@@ -514,24 +600,18 @@ const KnowledgeGraphViewer: React.FC = () => {
         return link;
       });
       
-      console.log('📊 RELATIONSHIP PROCESSING SUMMARY:');
-      console.log(`   • Raw relationships received: ${relationships.length}`);
-      console.log(`   • Relationships filtered out: ${filteredOutCount}`);
-      console.log(`   • Valid relationships after filtering: ${validRelationships.length}`);
+      console.log('📊 PERFORMANCE-OPTIMIZED RELATIONSHIP PROCESSING:');
+      console.log(`   • Total relationships in dataset: ${relationships.length}`);
+      console.log(`   • Visible relationships after performance filtering: ${visibleRelationships.length}`);
       console.log(`   • Final D3 links created: ${links.length}`);
-      console.log(`   • Entities available: ${nodes.length}`);
+      console.log(`   • Total entities in dataset: ${entities.length}`);
+      console.log(`   • Visible entities after performance filtering: ${nodes.length}`);
+      console.log(`   • Performance improvement: ${Math.round((1 - (links.length / relationships.length)) * 100)}% reduction in rendered relationships`);
       
-      if (filteredOutCount > 0) {
-        console.error(`🚨 CRITICAL ISSUE: ${filteredOutCount} relationships were filtered out due to entity ID mismatches!`);
-        console.error('This suggests the backend is returning inconsistent entity IDs between entities and relationships data.');
-      }
-      
-      if (relationships.length > 0 && validRelationships.length === 0) {
-        console.error('🚨 CRITICAL: All relationships were filtered out!');
-        console.error('This usually means entity IDs don\'t match between entities and relationships');
-        setError(`No valid relationships found. Expected entity IDs but got mismatched data. Check backend API consistency.`);
-      } else if (validRelationships.length > 0) {
-        console.log(`✅ Successfully processed ${validRelationships.length} relationships`);
+      if (visibleRelationships.length > 0) {
+        console.log(`✅ Successfully processed ${visibleRelationships.length} visible relationships`);
+      } else if (relationships.length > 0) {
+        console.log(`⚠️ No visible relationships (filtered for performance)`);
       }
 
       // Set up SVG with safe dimensions
@@ -619,6 +699,14 @@ const KnowledgeGraphViewer: React.FC = () => {
         return { lines, maxWidth };
       };
 
+      // Calculate adaptive node sizing based on configuration and content
+      const calculateNodeRadius = (node: GraphNode, textInfo: any) => {
+        const baseRadius = nodeDiameter / 2;
+        const confidenceBonus = node.confidence * (nodeDiameter * 0.3);
+        const textSize = Math.max(textInfo.textWidth, textInfo.textHeight) / 2;
+        return Math.max(baseRadius + confidenceBonus, textSize + 10);
+      };
+      
       // Calculate text wrapping for all nodes to determine optimal sizing
       const nodeTextInfo = nodes.map(d => {
         // Dynamic max line length based on font size - smaller fonts can fit more characters
@@ -626,27 +714,147 @@ const KnowledgeGraphViewer: React.FC = () => {
         const { lines, maxWidth } = wrapText(d.name, maxLineLength);
         const estimatedWidth = maxWidth * (fontSize - 4) * 0.6; // Approximate character width
         const estimatedHeight = lines.length * (fontSize - 2); // Line height
-        return {
-          node: d,
+        const textInfo = {
           lines,
           textWidth: estimatedWidth,
-          textHeight: estimatedHeight,
-          radius: Math.max(20 + (d.confidence * 12), Math.max(estimatedWidth, estimatedHeight) / 2 + 10)
+          textHeight: estimatedHeight
+        };
+        return {
+          node: d,
+          ...textInfo,
+          radius: calculateNodeRadius(d, textInfo)
         };
       });
 
-      // Create simulation with better force configuration
-      const simulation = d3.forceSimulation<GraphNode>(nodes)
-        .force('link', d3.forceLink<GraphNode, GraphLink>(links)
-          .id(d => d.id)
-          .distance(180)  // Much larger distance for bigger nodes
-          .strength(0.8)  // Stronger links to keep connected nodes together
-        )
-        .force('charge', d3.forceManyBody().strength(-800))  // Much stronger repulsion for larger nodes
-        .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('collision', d3.forceCollide().radius((_, i) => nodeTextInfo[i]?.radius + 5 || 55))  // Dynamic collision based on actual node size
-        .force('x', d3.forceX(width / 2).strength(0.1))    // Gentle centering force
-        .force('y', d3.forceY(height / 2).strength(0.1));  // Gentle centering force
+      // Calculate adaptive force parameters based on viewport and node count
+      const calculateForceParameters = () => {
+        const nodeCount = nodes.length;
+        const viewportArea = width * height;
+        const idealNodeArea = viewportArea / nodeCount;
+        const idealNodeSpacing = Math.sqrt(idealNodeArea);
+        
+        // Adaptive link distance based on viewport size and node count
+        const baseLinkDistance = Math.max(100, idealNodeSpacing * 0.8);
+        const scaledLinkDistance = baseLinkDistance * Math.sqrt(forceStrength);
+        
+        // Adaptive charge strength - stronger repulsion for more nodes or smaller viewports
+        const baseChargeStrength = -Math.max(500, idealNodeSpacing * 3);
+        const scaledChargeStrength = baseChargeStrength * forceStrength;
+        
+        // Collision radius with proper spacing
+        const avgNodeRadius = nodeTextInfo.reduce((sum, info) => sum + info.radius, 0) / nodeTextInfo.length;
+        const collisionPadding = Math.max(10, avgNodeRadius * 0.2);
+        
+        return {
+          linkDistance: scaledLinkDistance,
+          chargeStrength: scaledChargeStrength,
+          collisionRadius: (d: GraphNode, i: number) => nodeTextInfo[i]?.radius + collisionPadding || avgNodeRadius + collisionPadding
+        };
+      };
+      
+      const forceParams = calculateForceParameters();
+      
+      // Apply layout-specific positioning
+      const applyLayoutPositioning = () => {
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const maxRadius = Math.min(width, height) * 0.4;
+        
+        switch (layoutType) {
+          case 'radial':
+            // Position nodes in concentric circles based on degree centrality
+            nodes.forEach((node, i) => {
+              const degree = calculateNodeDegrees.get(node.id) || 0;
+              const maxDegree = Math.max(...Array.from(calculateNodeDegrees.values()));
+              const normalizedDegree = maxDegree > 0 ? degree / maxDegree : 0;
+              
+              const radius = maxRadius * (0.2 + normalizedDegree * 0.8);
+              const angle = (i / nodes.length) * 2 * Math.PI;
+              
+              node.x = centerX + radius * Math.cos(angle);
+              node.y = centerY + radius * Math.sin(angle);
+              node.fx = node.x;
+              node.fy = node.y;
+            });
+            break;
+            
+          case 'grid':
+            // Arrange nodes in a grid pattern
+            const cols = Math.ceil(Math.sqrt(nodes.length));
+            const rows = Math.ceil(nodes.length / cols);
+            const cellWidth = (width - 100) / cols;
+            const cellHeight = (height - 100) / rows;
+            
+            nodes.forEach((node, i) => {
+              const col = i % cols;
+              const row = Math.floor(i / cols);
+              
+              node.x = 50 + col * cellWidth + cellWidth / 2;
+              node.y = 50 + row * cellHeight + cellHeight / 2;
+              node.fx = node.x;
+              node.fy = node.y;
+            });
+            break;
+            
+          case 'circular':
+            // Arrange nodes in a single circle
+            nodes.forEach((node, i) => {
+              const angle = (i / nodes.length) * 2 * Math.PI;
+              const radius = maxRadius;
+              
+              node.x = centerX + radius * Math.cos(angle);
+              node.y = centerY + radius * Math.sin(angle);
+              node.fx = node.x;
+              node.fy = node.y;
+            });
+            break;
+            
+          default: // force-directed
+            // Clear any fixed positions for force-directed layout
+            nodes.forEach(node => {
+              node.fx = null;
+              node.fy = null;
+            });
+            break;
+        }
+      };
+      
+      // Create simulation with adaptive force configuration
+      const simulation = d3.forceSimulation<GraphNode>(nodes);
+      
+      // Apply different forces based on layout type
+      if (layoutType === 'force-directed') {
+        simulation
+          .force('link', d3.forceLink<GraphNode, GraphLink>(links)
+            .id(d => d.id)
+            .distance(forceParams.linkDistance)
+            .strength(0.7)
+          )
+          .force('charge', d3.forceManyBody().strength(forceParams.chargeStrength))
+          .force('center', d3.forceCenter(width / 2, height / 2))
+          .force('collision', d3.forceCollide().radius(forceParams.collisionRadius))
+          .force('x', d3.forceX(width / 2).strength(0.05))
+          .force('y', d3.forceY(height / 2).strength(0.05));
+      } else {
+        // For fixed layouts, only use collision detection
+        simulation
+          .force('collision', d3.forceCollide().radius(forceParams.collisionRadius))
+          .alpha(0.1) // Lower alpha for less movement
+          .alphaDecay(0.1);
+        
+        // Apply the specific layout positioning
+        applyLayoutPositioning();
+      }
+        
+      console.log('🔧 Layout Configuration:', {
+        layoutType: layoutType,
+        nodeCount: nodes.length,
+        viewportSize: { width, height },
+        linkDistance: forceParams.linkDistance,
+        chargeStrength: forceParams.chargeStrength,
+        avgCollisionRadius: nodeTextInfo.reduce((sum, info) => sum + info.radius, 0) / nodeTextInfo.length,
+        forceStrength: forceStrength
+      });
 
       // Create links group (child of mainGroup for zoom/pan)
       const linkGroup = mainGroup.append('g').attr('class', 'links');
@@ -703,33 +911,71 @@ const KnowledgeGraphViewer: React.FC = () => {
         .selectAll('circle')
         .data(nodes)
         .join('circle')
-        .attr('r', d => 20 + (d.confidence * 12))  // Much larger nodes for better visibility
-        .attr('fill', d => generateColor(d.type))
-        .attr('stroke', '#fff')
-        .attr('stroke-width', 0.5)
+        .attr('r', (_, i) => nodeTextInfo[i]?.radius || nodeDiameter / 2)  // Use calculated adaptive radius
+        .attr('fill', d => {
+          // Highlight search matches
+          if (searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase()))) {
+            return '#FFD700'; // Gold for search matches
+          }
+          // Highlight focused node
+          if (focusedNodeId === d.id) {
+            return '#FF6B6B'; // Red for focused node
+          }
+          return generateColor(d.type);
+        })
+        .attr('stroke', d => {
+          if (searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase()))) {
+            return '#FF8C00'; // Dark orange stroke for search matches
+          }
+          if (focusedNodeId === d.id) {
+            return '#FF0000'; // Red stroke for focused node
+          }
+          return '#fff';
+        })
+        .attr('stroke-width', d => {
+          if (searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase()))) {
+            return 2; // Thicker stroke for search matches
+          }
+          if (focusedNodeId === d.id) {
+            return 3; // Thickest stroke for focused node
+          }
+          return 0.5;
+        })
         .style('cursor', 'pointer')
-        .style('filter', 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))')  // Add shadow for depth
+        .style('filter', d => {
+          if (searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase()))) {
+            return 'drop-shadow(0 4px 8px rgba(255,215,0,0.4))'; // Gold glow for search matches
+          }
+          if (focusedNodeId === d.id) {
+            return 'drop-shadow(0 4px 8px rgba(255,107,107,0.4))'; // Red glow for focused node
+          }
+          return 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))';
+        })
         .on('mouseenter', function(_, d) {
           const nodeIndex = nodes.findIndex(n => n.id === d.id);
-          const originalRadius = nodeTextInfo[nodeIndex]?.radius || (20 + (d.confidence * 12));
+          const originalRadius = nodeTextInfo[nodeIndex]?.radius || (nodeDiameter / 2);
           d3.select(this)
             .transition()
             .duration(200)
             .attr('r', originalRadius * 1.2)
-            .attr('stroke-width', 1);
+            .attr('stroke-width', 2);
         })
         .on('mouseleave', function(_, d) {
           const nodeIndex = nodes.findIndex(n => n.id === d.id);
-          const originalRadius = nodeTextInfo[nodeIndex]?.radius || (20 + (d.confidence * 12));
+          const originalRadius = nodeTextInfo[nodeIndex]?.radius || (nodeDiameter / 2);
+          const originalStrokeWidth = searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase())) ? 2 : (focusedNodeId === d.id ? 3 : 0.5);
           d3.select(this)
             .transition()
             .duration(200)
             .attr('r', originalRadius)
-            .attr('stroke-width', 0.5);
+            .attr('stroke-width', originalStrokeWidth);
+        })
+        .on('click', function(_, d) {
+          // Focus on clicked node
+          setFocusedNodeId(focusedNodeId === d.id ? null : d.id);
         });
 
-      // Update node radius based on text requirements
-      node.attr('r', (_, i) => nodeTextInfo[i].radius);
+      // Node radius is already set correctly above
 
       // Create node labels group with proper text wrapping
       const nodeLabelGroup = mainGroup.append('g').attr('class', 'node-labels');
@@ -762,18 +1008,22 @@ const KnowledgeGraphViewer: React.FC = () => {
         });
       });
 
-      // Add tooltips for nodes
+      // Add enhanced tooltips for nodes
       node.append('title')
-        .text(d => `${d.name}\nType: ${d.type}\nConfidence: ${(d.confidence * 100).toFixed(1)}%`);
+        .text((d, i) => {
+          const nodeInfo = nodeTextInfo[i];
+          const degree = calculateNodeDegrees.get(d.id) || 0;
+          return `${d.name}\nType: ${d.type}\nConfidence: ${(d.confidence * 100).toFixed(1)}%\nConnections: ${degree}\nRadius: ${Math.round(nodeInfo?.radius || 0)}px`;
+        });
 
       // Add tooltips for links with better entity name display
       link.append('title')
         .text(d => {
           const sourceName = typeof d.source === 'string' ? 
-            (idToNameMap.get(d.source) || d.source) : 
+            (nodeIdToNameMap.get(d.source) || d.source) : 
             (d.source as GraphNode).name;
           const targetName = typeof d.target === 'string' ? 
-            (idToNameMap.get(d.target) || d.target) : 
+            (nodeIdToNameMap.get(d.target) || d.target) : 
             (d.target as GraphNode).name;
           return `${d.relationship_type}\nFrom: ${sourceName}\nTo: ${targetName}\nConfidence: ${(d.confidence * 100).toFixed(1)}%`;
         });
@@ -821,17 +1071,29 @@ const KnowledgeGraphViewer: React.FC = () => {
         }
       });
 
-      // Run simulation longer for better layout
+      // Adaptive simulation duration based on layout type and node count
+      const getSimulationDuration = () => {
+        if (layoutType === 'force-directed') {
+          return Math.min(8000, Math.max(3000, nodes.length * 50));
+        } else {
+          // Fixed layouts need less simulation time
+          return Math.min(2000, Math.max(500, nodes.length * 10));
+        }
+      };
+      
+      const simulationDuration = getSimulationDuration();
+      
+      // Run simulation with adaptive duration for better layout
       setTimeout(() => {
         simulation.stop();
-        console.log('Simulation stopped after 8 seconds');
+        console.log(`${layoutType} layout simulation stopped after ${simulationDuration}ms`);
         
         // Auto-fit to view after simulation settles
         setTimeout(() => {
           fitToView();
         }, 100);
-        console.log(`Final layout: ${nodes.length} nodes, ${links.length} links`);
-      }, 8000);
+        console.log(`Final ${layoutType} layout: ${nodes.length} nodes, ${links.length} links`);
+      }, simulationDuration);
       
       console.log('=== Visualization created successfully ===');
       
@@ -900,9 +1162,9 @@ const KnowledgeGraphViewer: React.FC = () => {
     }
   }, [selectedDocument]);
 
-  // Update visualization when data changes
+  // Update visualization when visible data changes
   useEffect(() => {
-    if (entities.length > 0) {
+    if (visibleEntities.length > 0) {
       createVisualization();
       
       // Auto-fit to view after a short delay to let nodes settle
@@ -910,12 +1172,12 @@ const KnowledgeGraphViewer: React.FC = () => {
         fitToView();
       }, 1000);
     }
-  }, [entities, relationships, dimensions, isDarkMode, fontSize]);
+  }, [visibleEntities, visibleRelationships, dimensions, isDarkMode, fontSize, nodeDiameter, forceStrength, layoutType]);
 
   // Keyboard shortcuts for zoom controls
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (entities.length === 0) return;
+      if (visibleEntities.length === 0) return;
       
       switch (event.key) {
         case '+':
@@ -954,7 +1216,7 @@ const KnowledgeGraphViewer: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [entities.length]);
+  }, [visibleEntities.length]);
 
   // Store zoom behavior reference
   const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
@@ -982,7 +1244,7 @@ const KnowledgeGraphViewer: React.FC = () => {
   };
 
   const fitToView = () => {
-    if (svgRef.current && entities.length > 0 && zoomBehaviorRef.current) {
+    if (svgRef.current && visibleEntities.length > 0 && zoomBehaviorRef.current) {
       const svg = d3.select(svgRef.current);
       // Calculate bounds of all nodes
       const nodes = svg.selectAll('.nodes circle').nodes() as SVGCircleElement[];
@@ -999,19 +1261,44 @@ const KnowledgeGraphViewer: React.FC = () => {
         maxY = Math.max(maxY, y + r);
       });
       
-      const width = maxX - minX;
-      const height = maxY - minY;
-      const padding = 50;
+      const contentWidth = maxX - minX;
+      const contentHeight = maxY - minY;
       
-      const scale = Math.min(
-        (dimensions.width - padding * 2) / width,
-        (dimensions.height - padding * 2) / height
-      );
+      // Adaptive padding based on viewport size and node count
+      const basePadding = Math.min(50, Math.min(dimensions.width, dimensions.height) * 0.05);
+      const adaptivePadding = Math.max(basePadding, nodeDiameter);
       
-      const translateX = (dimensions.width - width * scale) / 2 - minX * scale;
-      const translateY = (dimensions.height - height * scale) / 2 - minY * scale;
+      // Calculate scale to fit with proper utilization of viewport space
+      const availableWidth = dimensions.width - adaptivePadding * 2;
+      const availableHeight = dimensions.height - adaptivePadding * 2;
       
-      const transform = d3.zoomIdentity.translate(translateX, translateY).scale(scale);
+      const scaleX = availableWidth / contentWidth;
+      const scaleY = availableHeight / contentHeight;
+      const optimalScale = Math.min(scaleX, scaleY, 2.0); // Cap max zoom to avoid over-scaling
+      
+      // Ensure minimum scale for readability
+      const finalScale = Math.max(0.1, optimalScale);
+      
+      // Center the content in the viewport
+      const scaledContentWidth = contentWidth * finalScale;
+      const scaledContentHeight = contentHeight * finalScale;
+      
+      const translateX = (dimensions.width - scaledContentWidth) / 2 - minX * finalScale;
+      const translateY = (dimensions.height - scaledContentHeight) / 2 - minY * finalScale;
+      
+      const transform = d3.zoomIdentity.translate(translateX, translateY).scale(finalScale);
+      
+      console.log('🎯 Enhanced Fit-to-View:', {
+        contentBounds: { width: contentWidth, height: contentHeight },
+        viewport: dimensions,
+        padding: adaptivePadding,
+        scale: finalScale,
+        utilization: {
+          width: (scaledContentWidth / dimensions.width * 100).toFixed(1) + '%',
+          height: (scaledContentHeight / dimensions.height * 100).toFixed(1) + '%'
+        }
+      });
+      
       svg.transition().duration(750).call(zoomBehaviorRef.current.transform, transform);
     }
   };
@@ -1364,6 +1651,149 @@ const KnowledgeGraphViewer: React.FC = () => {
           )}
         </div>
 
+        {/* Search Control */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <SearchIcon sx={{ color: themeColors.text, fontSize: '18px' }} />
+          <TextField
+            size="small"
+            placeholder="Search entities..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            sx={{
+              '& .MuiOutlinedInput-root': {
+                fontSize: '14px',
+                height: '32px',
+                minWidth: '200px',
+                '& fieldset': {
+                  borderColor: themeColors.border,
+                },
+                '&:hover fieldset': {
+                  borderColor: themeColors.text,
+                },
+              },
+              '& .MuiInputBase-input': {
+                color: themeColors.text,
+                padding: '8px 12px',
+              },
+            }}
+          />
+          {searchQuery && (
+            <Chip
+              size="small"
+              label={`${visibleEntities.length} found`}
+              color="primary"
+              variant="outlined"
+              onDelete={() => setSearchQuery('')}
+            />
+          )}
+        </div>
+
+        {/* Layout Type Control */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <label htmlFor="layoutType" style={{ fontSize: '14px', fontWeight: '500', color: themeColors.text }}>Layout:</label>
+          <select
+            id="layoutType"
+            value={layoutType}
+            onChange={handleLayoutTypeChange}
+            style={{ 
+              padding: '6px 10px', 
+              border: `1px solid ${themeColors.border}`, 
+              borderRadius: '4px',
+              fontSize: '14px',
+              background: themeColors.surface,
+              color: themeColors.text,
+              minWidth: '120px'
+            }}
+          >
+            <option value="force-directed">Force-Directed</option>
+            <option value="radial">Radial</option>
+            <option value="grid">Grid</option>
+            <option value="circular">Circular</option>
+          </select>
+        </div>
+
+        {/* Performance Controls */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <label style={{ fontSize: '14px', fontWeight: '500', color: themeColors.text }}>Max Nodes:</label>
+          <select
+            value={maxVisibleNodes}
+            onChange={(e) => setMaxVisibleNodes(parseInt(e.target.value))}
+            style={{ 
+              padding: '6px 10px', 
+              border: `1px solid ${themeColors.border}`, 
+              borderRadius: '4px',
+              fontSize: '14px',
+              background: themeColors.surface,
+              color: themeColors.text,
+              minWidth: '80px'
+            }}
+          >
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+            <option value={200}>200</option>
+            <option value={500}>500</option>
+            <option value={1000}>All</option>
+          </select>
+          {entities.length > maxVisibleNodes && !searchQuery && (
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => setMaxVisibleNodes(Math.min(maxVisibleNodes + 50, entities.length))}
+              sx={{ fontSize: '12px', minWidth: 'auto', padding: '4px 8px' }}
+            >
+              +50 More
+            </Button>
+          )}
+        </div>
+
+        {/* Node Diameter Control */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <label htmlFor="nodeDiameter" style={{ fontSize: '14px', fontWeight: '500', color: themeColors.text }}>Node Size:</label>
+          <select
+            id="nodeDiameter"
+            value={nodeDiameter}
+            onChange={handleNodeDiameterChange}
+            style={{ 
+              padding: '6px 10px', 
+              border: `1px solid ${themeColors.border}`, 
+              borderRadius: '4px',
+              fontSize: '14px',
+              background: themeColors.surface,
+              color: themeColors.text,
+              minWidth: '80px'
+            }}
+          >
+            <option value={20}>Small</option>
+            <option value={30}>Medium</option>
+            <option value={40}>Large</option>
+            <option value={60}>X-Large</option>
+            <option value={80}>Huge</option>
+          </select>
+        </div>
+
+        {/* Force Strength Control */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <label htmlFor="forceStrength" style={{ fontSize: '14px', fontWeight: '500', color: themeColors.text }}>Spacing:</label>
+          <input
+            id="forceStrength"
+            type="range"
+            min="0.1"
+            max="2.0"
+            step="0.1"
+            value={forceStrength}
+            onChange={handleForceStrengthChange}
+            style={{ 
+              width: '80px',
+              accentColor: '#2196f3'
+            }}
+            title={`Force Strength: ${forceStrength.toFixed(1)}x`}
+          />
+          <span style={{ fontSize: '12px', color: themeColors.secondaryText, minWidth: '30px' }}>
+            {forceStrength.toFixed(1)}x
+          </span>
+        </div>
+
         {/* Font Size Control */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <label htmlFor="fontSize" style={{ fontSize: '14px', fontWeight: '500', color: themeColors.text }}>Font Size:</label>
@@ -1392,10 +1822,13 @@ const KnowledgeGraphViewer: React.FC = () => {
         </div>
 
         {/* Navigation Controls */}
-        {entities.length > 0 && (
+        {visibleEntities.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
-            <div style={{ fontSize: '14px', color: themeColors.secondaryText, marginRight: '10px' }}>
-              Zoom: {Math.round(zoomTransform.k * 100)}%
+            <div style={{ fontSize: '14px', color: themeColors.secondaryText, marginRight: '10px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span>Zoom: {Math.round(zoomTransform.k * 100)}%</span>
+              <span title={`Layout: ${layoutType}, Node Size: ${nodeDiameter}px, Spacing: ${forceStrength}x`}>
+                📊 {layoutType.charAt(0).toUpperCase() + layoutType.slice(1).replace('-', ' ')}
+              </span>
             </div>
             <button onClick={zoomIn} style={getButtonStyle()} title="Zoom In (+ key)">🔍+</button>
             <button onClick={zoomOut} style={getButtonStyle()} title="Zoom Out (- key)">🔍-</button>
@@ -1497,7 +1930,7 @@ const KnowledgeGraphViewer: React.FC = () => {
       )}
 
       {/* Graph Visualization */}
-      {entities.length > 0 ? (
+      {visibleEntities.length > 0 ? (
         <VisualizationErrorBoundary onError={setError}>
           <div 
             ref={containerRef}
@@ -1522,18 +1955,28 @@ const KnowledgeGraphViewer: React.FC = () => {
               <h3 style={{ margin: '0', fontSize: '16px', fontWeight: '600' }}>
                 Knowledge Graph: {selectedDocument === 'ALL_ENTITIES' ? 'All Entities' : `Document ${selectedDocument}`}
               </h3>
-              <div style={{ fontSize: '12px', color: themeColors.secondaryText }}>
-                {entities.length} entities • {relationships.length} relationships
-                {relationships.length > 0 && (
+              <div style={{ fontSize: '12px', color: themeColors.secondaryText, display: 'flex', alignItems: 'center', gap: '15px' }}>
+                <span>
+                  {visibleEntities.length}/{entities.length} entities • {visibleRelationships.length}/{relationships.length} relationships
+                </span>
+                {(visibleEntities.length < entities.length || visibleRelationships.length < relationships.length) && (
+                  <Chip
+                    size="small"
+                    label={`Performance Mode: ${Math.round((1 - (visibleEntities.length / entities.length)) * 100)}% filtered`}
+                    color="info"
+                    variant="outlined"
+                    sx={{ fontSize: '10px', height: '20px' }}
+                  />
+                )}
+                {visibleRelationships.length > 0 && (
                   <span style={{ 
-                    marginLeft: '10px', 
                     padding: '2px 6px', 
                     borderRadius: '3px',
-                    background: relationships.length > 0 ? '#d4edda' : '#f8d7da',
-                    color: relationships.length > 0 ? '#155724' : '#721c24',
+                    background: visibleRelationships.length > 0 ? '#d4edda' : '#f8d7da',
+                    color: visibleRelationships.length > 0 ? '#155724' : '#721c24',
                     fontSize: '11px'
                   }}>
-                    {relationships.length === 0 ? 'No connections' : `${relationships.length} connections found`}
+                    {visibleRelationships.length === 0 ? 'No connections' : `${visibleRelationships.length} connections visible`}
                   </span>
                 )}
               </div>
@@ -1561,8 +2004,20 @@ const KnowledgeGraphViewer: React.FC = () => {
               gap: '15px',
               flexWrap: 'wrap'
             }}>
-              <strong style={{ fontSize: '12px', color: themeColors.text }}>Legend:</strong>
-              {Array.from(new Set(entities.map(entity => entity.type))).sort().map(type => (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <strong style={{ fontSize: '12px', color: themeColors.text }}>Legend ({Array.from(new Set(visibleEntities.map(entity => entity.type))).length} types visible):</strong>
+                {isolatedEntities.length > 0 && (
+                  <Button
+                    size="small" 
+                    variant="text"
+                    onClick={() => setShowIsolatedNodes(!showIsolatedNodes)}
+                    sx={{ fontSize: '10px', minWidth: 'auto', padding: '2px 6px' }}
+                  >
+                    {showIsolatedNodes ? 'Hide' : 'Show'} {isolatedEntities.length} Isolated
+                  </Button>
+                )}
+              </div>
+              {Array.from(new Set(visibleEntities.map(entity => entity.type))).sort().map(type => (
                 <span 
                   key={type}
                   style={{ 
@@ -1589,7 +2044,7 @@ const KnowledgeGraphViewer: React.FC = () => {
             </div>
             
             {/* Special message for entities without relationships */}
-            {entities.length > 0 && relationships.length === 0 && (
+            {visibleEntities.length > 0 && visibleRelationships.length === 0 && (
               <div style={{ 
                 padding: '15px', 
                 background: '#fff3cd', 
