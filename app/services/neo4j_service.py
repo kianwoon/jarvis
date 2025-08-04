@@ -633,6 +633,20 @@ class Neo4jService:
             logger.error(f"Failed to get relationship count: {e}")
             return 0
     
+    def get_total_entity_count(self) -> int:
+        """Get total number of entities in the graph"""
+        try:
+            if not self.is_enabled():
+                return 0
+                
+            with self.driver.session() as session:
+                result = session.run("MATCH (n) RETURN count(n) as count")
+                record = result.single()
+                return record['count'] if record else 0
+        except Exception as e:
+            logger.error(f"Failed to get entity count: {e}")
+            return 0
+    
     def clear_database(self) -> bool:
         """Clear all data from the database (use with caution!)"""
         try:

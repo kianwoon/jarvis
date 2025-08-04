@@ -91,36 +91,40 @@ def get_default_neo4j_config() -> Dict[str, Any]:
 
 def get_default_knowledge_graph_settings() -> Dict[str, Any]:
     """Get default knowledge graph settings with enhanced anti-silo configuration"""
+    import os
     return {
-        'mode': 'normal',
+        'mode': 'comprehensive',  # REBALANCED: Restore comprehensive extraction for business documents
         'model': 'qwen3:30b-a3b-q4_K_M',
         'max_tokens': 8192,
-        'model_server': 'http://localhost:11434',
+        'model_server': os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
         'system_prompt': 'You are an expert knowledge graph extraction system. Extract entities and relationships from the provided text with high precision.',
         'context_length': 40960,  # Conservative fallback - database should override
         'repeat_penalty': '1.05',
         'temperature': 0.3,
         'extraction_prompt': None,  # Use database-driven prompt from LLMPrompt table
-        'max_entities_per_chunk': 20,
+        'max_entities_per_chunk': 25,  # REBALANCED: Increased from 15 to 25 for better entity coverage
+        # OPTIMIZATION: Keep strict relationship limits to control graph density
+        'max_relationships_per_entity': 4,  # REBALANCED: Increased from 2 to 4 (still controlled)
+        'max_relationships_per_chunk': 6,  # REBALANCED: Increased from 3 to 6 (still controlled)
         'enable_coreference_resolution': True,
         'schema_mode': 'hybrid',  # 'static', 'dynamic', or 'hybrid'
         'entity_discovery': {
             'enabled': True,
-            'confidence_threshold': 0.75,
-            'max_entity_types': 50,
+            'confidence_threshold': 0.6,  # REBALANCED: Reduced from 0.8 to 0.6 for better entity coverage
+            'max_entity_types': 40,  # REBALANCED: Increased from 30 to 40 for business entity types
             'auto_categorize': True,
             'discovery_prompt': None,  # Use database-driven prompt from LLMPrompt table
-            'min_frequency': 2,
+            'min_frequency': 2,  # REBALANCED: Reduced from 3 to 2 for better discovery
             'enable_semantic_grouping': True
         },
         'relationship_discovery': {
             'enabled': True,
-            'confidence_threshold': 0.7,
-            'max_relationship_types': 30,
+            'confidence_threshold': 0.7,  # REBALANCED: Reduced from 0.8 to 0.7 (still conservative)
+            'max_relationship_types': 25,  # REBALANCED: Increased from 20 to 25 (controlled)
             'semantic_grouping': True,
             'discovery_prompt': None,  # Use database-driven prompt from LLMPrompt table
-            'min_frequency': 2,
-            'enable_inverse_relationships': True
+            'min_frequency': 2,  # REBALANCED: Reduced from 3 to 2 for better discovery
+            'enable_inverse_relationships': False  # OPTIMIZATION: Keep disabled to control relationships
         },
         # No static fallback - pure LLM discovery only
         'learning': {
@@ -132,73 +136,75 @@ def get_default_knowledge_graph_settings() -> Dict[str, Any]:
             'decay_factor': 0.95
         },
         'extraction': {
-            'min_entity_confidence': 0.7,
-            'min_relationship_confidence': 0.3,
+            'min_entity_confidence': 0.5,  # REBALANCED: Reduced from 0.8 to 0.5 for better entity coverage
+            'min_relationship_confidence': 0.6,  # REBALANCED: Reduced from 0.7 to 0.6 (still conservative)
             'enable_entity_deduplication': True,
             'enable_relationship_deduplication': True,
             'entity_merge_strategy': 'merge_by_canonical_name_and_type',
             'confidence_merge_strategy': 'highest',
             'enable_flexible_entity_matching': True,
-            'enable_semantic_relationship_inference': True,
+            'enable_semantic_relationship_inference': False,  # OPTIMIZATION: Disabled to reduce relationships
             'prioritize_pattern_relationships': True,
-            'max_proximity_distance': 30,
+            'max_proximity_distance': 20,  # OPTIMIZATION: Reduced from 30 to 20
             'enable_relationship_priority_deduplication': True,
-            'relationship_quality_threshold': 0.4,
-            'enable_llm_enhancement': True,
-            'llm_confidence_threshold': 0.6,
-            'enable_cross_document_linking': True,
-            'enable_multi_chunk_relationships': True,
-            # Enhanced anti-silo configuration
+            'relationship_quality_threshold': 0.7,  # OPTIMIZATION: Increased from 0.4 to 0.7
+            'enable_llm_enhancement': False,  # OPTIMIZATION: Disabled to reduce relationships
+            'llm_confidence_threshold': 0.8,  # OPTIMIZATION: Increased from 0.6 to 0.8
+            'enable_cross_document_linking': False,  # OPTIMIZATION: Disabled to reduce relationships
+            'enable_multi_chunk_relationships': False,  # OPTIMIZATION: Disabled to reduce relationships
+            # REBALANCED: Re-enable anti-silo analysis for entity discovery (controlled)
             'enable_anti_silo': True,
             'anti_silo_similarity_threshold': 0.75,
             'anti_silo_type_boost': 1.2,
-            'enable_cooccurrence_analysis': True,
-            'enable_type_based_clustering': True,
-            'enable_hub_entities': True,
+            # OPTIMIZATION: Disable all anti-silo features to reduce relationship creation
+            'enable_cooccurrence_analysis': False,
+            'enable_type_based_clustering': False,
+            'enable_hub_entities': False,
             'hub_entity_threshold': 3,
-            'enable_semantic_clustering': True,
+            'enable_semantic_clustering': False,
             'clustering_similarity_threshold': 0.8,
-            'enable_document_bridge_relationships': True,
+            'enable_document_bridge_relationships': False,
             'bridge_relationship_confidence': 0.6,
-            'enable_temporal_linking': True,
+            'enable_temporal_linking': False,
             'temporal_linking_window': 7,  # days
-            'enable_contextual_linking': True,
+            'enable_contextual_linking': False,
             'contextual_linking_threshold': 0.7,
-            'enable_fuzzy_matching': True,
+            'enable_fuzzy_matching': False,
             'fuzzy_matching_threshold': 0.85,
-            'enable_alias_detection': True,
+            'enable_alias_detection': False,
             'alias_detection_threshold': 0.9,
-            'enable_abbreviation_matching': True,
+            'enable_abbreviation_matching': False,
             'abbreviation_matching_threshold': 0.8,
-            'enable_synonym_detection': True,
+            'enable_synonym_detection': False,
             'synonym_detection_threshold': 0.75,
-            'enable_hierarchical_linking': True,
+            'enable_hierarchical_linking': False,
             'hierarchical_linking_depth': 2,
-            'enable_geographic_linking': True,
+            'enable_geographic_linking': False,
             'geographic_linking_threshold': 0.7,
-            'enable_temporal_coherence': True,
+            'enable_temporal_coherence': False,
             'temporal_coherence_threshold': 0.6,
-            'enable_semantic_bridge_entities': True,
+            'enable_semantic_bridge_entities': False,
             'semantic_bridge_threshold': 0.65,
-            'enable_cross_reference_analysis': True,
+            'enable_cross_reference_analysis': False,
             'cross_reference_threshold': 0.7,
-            'enable_relationship_propagation': True,
+            'enable_relationship_propagation': False,
             'relationship_propagation_depth': 2,
-            'enable_entity_consolidation': True,
+            # OPTIMIZATION: Disable more relationship-creating features
+            'enable_entity_consolidation': True,  # Keep this for deduplication
             'entity_consolidation_threshold': 0.85,
-            'enable_synthetic_relationships': True,
+            'enable_synthetic_relationships': False,  # OPTIMIZATION: Disabled synthetic relationships
             'synthetic_relationship_confidence': 0.5,
-            'enable_graph_enrichment': True,
+            'enable_graph_enrichment': False,  # OPTIMIZATION: Disabled graph enrichment
             'graph_enrichment_depth': 3,
-            'enable_connectivity_analysis': True,
+            'enable_connectivity_analysis': False,  # OPTIMIZATION: Disabled connectivity analysis
             'connectivity_analysis_threshold': 0.4,
-            'enable_isolation_detection': True,
+            'enable_isolation_detection': False,  # OPTIMIZATION: Disabled isolation detection
             'isolation_detection_threshold': 1,
-            'enable_relationship_recommendation': True,
+            'enable_relationship_recommendation': False,  # OPTIMIZATION: Disabled recommendations
             'relationship_recommendation_threshold': 0.6,
-            'enable_semantic_similarity_networks': True,
+            'enable_semantic_similarity_networks': False,  # OPTIMIZATION: Disabled semantic networks
             'semantic_network_threshold': 0.7,
-            'enable_multi_document_analysis': True,
+            'enable_multi_document_analysis': False,  # OPTIMIZATION: Disabled multi-document analysis
             'multi_document_analysis_threshold': 0.65,
             'enable_entity_lifecycle_tracking': True,
             'lifecycle_tracking_window': 30,  # days
@@ -476,6 +482,9 @@ def get_default_knowledge_graph_settings() -> Dict[str, Any]:
 
 def set_knowledge_graph_settings(settings_dict: Dict[str, Any]):
     """Set knowledge graph settings in cache and persist to database"""
+    # Synchronize model fields before saving
+    settings_dict = _synchronize_model_fields(settings_dict)
+    
     # Always save to cache first
     cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings_dict)
     
@@ -510,6 +519,26 @@ def set_knowledge_graph_settings(settings_dict: Dict[str, Any]):
     except Exception as e:
         print(f"Failed to persist knowledge graph settings to database: {e}")
         # Still return success since cache worked, but log the error
+
+def _synchronize_model_fields(settings_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Synchronize model fields to ensure consistency between main 'model' and 'model_config.model'"""
+    settings_copy = settings_dict.copy()
+    
+    # If model_config.model exists, sync it to main model field
+    if 'model_config' in settings_copy and isinstance(settings_copy['model_config'], dict):
+        if 'model' in settings_copy['model_config']:
+            settings_copy['model'] = settings_copy['model_config']['model']
+            print(f"[SYNC] Updated main model field to: {settings_copy['model']}")
+    
+    # If main model exists but model_config.model doesn't, sync it
+    elif 'model' in settings_copy:
+        if 'model_config' not in settings_copy:
+            settings_copy['model_config'] = {}
+        if isinstance(settings_copy['model_config'], dict):
+            settings_copy['model_config']['model'] = settings_copy['model']
+            print(f"[SYNC] Updated model_config.model field to: {settings_copy['model']}")
+    
+    return settings_copy
 
 def reload_knowledge_graph_settings() -> Dict[str, Any]:
     """Reload knowledge graph settings from database"""
@@ -558,6 +587,50 @@ def reload_knowledge_graph_settings() -> Dict[str, Any]:
     except Exception as e:
         print(f"Failed to load knowledge graph settings from database: {e}")
         return get_default_knowledge_graph_settings()
+
+def detect_business_document(filename: str = '', content: str = '') -> bool:
+    """Detect if document is business type for enhanced processing"""
+    business_keywords = [
+        'strategy', 'technology', 'financial', 'annual report', 'business plan',
+        'quarterly report', 'dbs bank', 'subsidiary', 'organization', 'enterprise',
+        'digital transformation', 'technology roadmap', 'competitive analysis'
+    ]
+    
+    text_to_check = (filename + ' ' + content[:1000]).lower()
+    return any(keyword in text_to_check for keyword in business_keywords)
+
+def get_business_optimized_settings() -> Dict[str, Any]:
+    """Get optimized settings for business documents"""
+    settings = get_knowledge_graph_settings().copy()
+    
+    # Business document optimizations
+    settings.update({
+        'max_entities_per_chunk': 35,  # Higher for business docs
+        'max_relationships_per_chunk': 10,  # More relationships for business context
+        'extraction': {
+            **settings.get('extraction', {}),
+            'min_entity_confidence': 0.55,  # Slightly lower for business entities
+            'min_relationship_confidence': 0.6,  # Lower for business relationships
+            'business_document_mode': True,
+            'extract_all_organizations': True,
+            'extract_business_concepts': True,
+            'extract_temporal_entities': True,
+            'enable_multi_pass': True,
+            'extraction_passes': ['core_entities', 'business_concepts', 'deep_relationships', 'temporal_causal']
+        },
+        'entity_discovery': {
+            **settings.get('entity_discovery', {}),
+            'confidence_threshold': 0.55,
+            'max_entity_types': 60,  # More types for business entities
+        },
+        'relationship_discovery': {
+            **settings.get('relationship_discovery', {}),
+            'confidence_threshold': 0.6,
+            'max_relationship_types': 35
+        }
+    })
+    
+    return settings
 
 def get_knowledge_graph_full_config(settings=None) -> Dict[str, Any]:
     """Construct full knowledge graph configuration by merging base config with mode parameters"""

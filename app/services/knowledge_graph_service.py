@@ -42,9 +42,11 @@ class GlobalRelationshipBudget:
     def reset(self):
         """Reset the budget tracker"""
         self.session_count = 0  # Relationships added in current session
-        self.max_global = 250  # Hard cap - NEVER exceed this
-        self.max_per_session = 50  # Maximum relationships to add per processing session
+        self.max_global = 188  # OPTIMIZATION: Hard cap reduced to 188 (≤4 per entity for 47 entities)
+        self.max_per_session = 20  # OPTIMIZATION: Reduced from 50 to 20 relationships per session
         self.current_global_count = None  # Will be fetched from Neo4j
+        self.current_entity_count = None  # Will be fetched from Neo4j
+        self.max_ratio = 4.0  # OPTIMIZATION: Maximum ratio of relationships per entity
         
     def get_current_global_count(self, neo4j_service) -> int:
         """Get current relationship count from Neo4j"""
@@ -53,9 +55,38 @@ class GlobalRelationshipBudget:
             logger.info(f"🌍 Current global relationship count: {self.current_global_count}")
         return self.current_global_count
     
+    def get_current_entity_count(self, neo4j_service) -> int:
+        """Get current entity count from Neo4j"""
+        if self.current_entity_count is None:
+            self.current_entity_count = neo4j_service.get_total_entity_count()
+            logger.info(f"🌍 Current global entity count: {self.current_entity_count}")
+        return self.current_entity_count
+    
+    def get_current_ratio(self, neo4j_service) -> float:
+        """Get current relationships per entity ratio"""
+        rel_count = self.get_current_global_count(neo4j_service)
+        entity_count = self.get_current_entity_count(neo4j_service)
+        ratio = rel_count / max(entity_count, 1)
+        return ratio
+    
+    def check_ratio_limit(self, neo4j_service) -> bool:
+        """Check if current ratio exceeds maximum allowed"""
+        current_ratio = self.get_current_ratio(neo4j_service)
+        exceeds_limit = current_ratio > self.max_ratio
+        if exceeds_limit:
+            logger.warning(f"🚨 RATIO LIMIT EXCEEDED: Current ratio {current_ratio:.2f} > {self.max_ratio}")
+        return exceeds_limit
+    
     def can_add_relationships(self, neo4j_service, requested_count: int) -> int:
         """Return how many relationships can actually be added within all limits"""
         current_total = self.get_current_global_count(neo4j_service)
+        current_entities = self.get_current_entity_count(neo4j_service)
+        current_ratio = self.get_current_ratio(neo4j_service)
+        
+        # OPTIMIZATION: Check ratio limit first
+        if current_ratio > self.max_ratio:
+            logger.warning(f"🚨 RATIO EXCEEDED: Current {current_ratio:.2f} > {self.max_ratio} - BLOCKING new relationships")
+            return 0
         
         # Check global hard cap
         remaining_global = max(0, self.max_global - current_total)
@@ -63,13 +94,18 @@ class GlobalRelationshipBudget:
         # Check session limit
         remaining_session = max(0, self.max_per_session - self.session_count)
         
+        # OPTIMIZATION: Check ratio-based limit
+        max_allowed_by_ratio = int(current_entities * self.max_ratio) - current_total
+        remaining_ratio = max(0, max_allowed_by_ratio)
+        
         # Return the most restrictive limit
-        allowed = min(requested_count, remaining_global, remaining_session)
+        allowed = min(requested_count, remaining_global, remaining_session, remaining_ratio)
         
         if allowed < requested_count:
             logger.warning(f"🚨 BUDGET CONSTRAINT: Requested {requested_count}, allowing {allowed}")
             logger.warning(f"   - Global: {current_total}/{self.max_global} (remaining: {remaining_global})")
             logger.warning(f"   - Session: {self.session_count}/{self.max_per_session} (remaining: {remaining_session})")
+            logger.warning(f"   - Ratio: {current_ratio:.2f}/{self.max_ratio} (remaining: {remaining_ratio})")
         
         return allowed
     
@@ -100,11 +136,25 @@ class KnowledgeGraphExtractionService:
         start_time = datetime.now()
         
         try:
-            # Get extraction mode configuration
+            # OPTIMIZATION: Pre-chunk validation - reject chunks that would exceed limits
             settings = get_knowledge_graph_settings()
+            max_entities_per_chunk = settings.get('max_entities_per_chunk', 15)
+            max_relationships_per_chunk = settings.get('max_relationships_per_chunk', 3)
+            
+            # Estimate chunk complexity (simple heuristic)
+            text_length = len(chunk.text)
+            estimated_entities = min(text_length // 100, max_entities_per_chunk)  # Rough estimate
+            
+            # Check if this chunk would likely exceed per-chunk limits
+            if estimated_entities > max_entities_per_chunk:
+                logger.warning(f"🚨 PRE-CHUNK VALIDATION: Chunk {chunk.chunk_id} too complex ({estimated_entities} estimated entities > {max_entities_per_chunk} limit)")
+                # Split or skip chunk processing
+                return GraphExtractionResult(entities=[], relationships=[], warnings=["Chunk too complex for current limits"])
+            
             extraction_mode = settings.get('extraction', {}).get('mode', 'standard')  # simple, standard, comprehensive
             
             logger.info(f"🧠 Starting LLM knowledge extraction for chunk {chunk.chunk_id} (mode: {extraction_mode})")
+            logger.info(f"🔍 Pre-validation passed: {estimated_entities} estimated entities ≤ {max_entities_per_chunk} limit")
             
             # Use LLM to extract entities and relationships with configurable constraints
             extraction_result = await self.llm_extractor.extract_knowledge(
@@ -261,28 +311,28 @@ class KnowledgeGraphExtractionService:
             
             # Apply mode-specific filtering and limits
             settings = get_knowledge_graph_settings()
-            extraction_mode = settings.get('extraction', {}).get('mode', 'simple')  # Default to simple mode
+            extraction_mode = settings.get('extraction', {}).get('mode', 'comprehensive')  # FIXED: Default to comprehensive mode for better entity extraction
             mode_configs = {
                 'simple': {
-                    'confidence_threshold': 0.9,  # Increased from 0.85 to 0.9 - very strict
-                    'max_relationships_per_entity': 1,  # Keep at 1
-                    'max_total_relationships': 10,  # Reduced from 20 to 10 - very aggressive
-                    'global_relationship_cap': 250,  # Hard global cap
-                    'max_relationships_per_chunk': 3  # Reduced from 5 to 3 - very restrictive
+                    'confidence_threshold': 0.65,  # FIXED: Reasonable threshold for business docs
+                    'max_relationships_per_entity': 2,  # Increased for better connectivity
+                    'max_total_relationships': 15,  # More reasonable limit
+                    'global_relationship_cap': 200,  # Higher cap for business docs
+                    'max_relationships_per_chunk': 5  # More reasonable per-chunk limit
                 },
                 'standard': {
-                    'confidence_threshold': 0.8,  # Increased from 0.75 to 0.8
+                    'confidence_threshold': 0.85,  # Stricter threshold
                     'max_relationships_per_entity': 2,  # Keep at 2
-                    'max_total_relationships': 25,  # Reduced from 50 to 25
-                    'global_relationship_cap': 300,  # Global cap
-                    'max_relationships_per_chunk': 5  # Reduced from 10 to 5
+                    'max_total_relationships': 15,  # More restrictive
+                    'global_relationship_cap': 150,  # Lower global cap
+                    'max_relationships_per_chunk': 3  # More restrictive per chunk
                 },
                 'comprehensive': {
-                    'confidence_threshold': 0.75,  # Increased from 0.7 to 0.75
-                    'max_relationships_per_entity': 2,  # Reduced from 3 to 2
-                    'max_total_relationships': 40,  # Reduced from 100 to 40
-                    'global_relationship_cap': 350,  # Reduced from 400 to 350
-                    'max_relationships_per_chunk': 8  # Reduced from 15 to 8
+                    'confidence_threshold': 0.6,  # FIXED: Lowered for better business entity extraction
+                    'max_relationships_per_entity': 4,  # Increased for business connectivity
+                    'max_total_relationships': 50,  # Increased for business documents
+                    'global_relationship_cap': 300,  # Higher cap for comprehensive analysis
+                    'max_relationships_per_chunk': 8  # More generous per-chunk limit
                 }
             }
             
@@ -422,10 +472,10 @@ class KnowledgeGraphExtractionService:
             # DISABLED: Anti-silo analysis to prevent relationship explosion
             # Only run anti-silo if explicitly enabled and global cap not reached
             settings = get_knowledge_graph_settings()
-            anti_silo_enabled = settings.get('extraction', {}).get('enable_anti_silo', False)  # Default disabled
+            anti_silo_enabled = settings.get('extraction', {}).get('enable_anti_silo', False)  # OPTIMIZATION: Default disabled to reduce relationships
             global_budget = GlobalRelationshipBudget()
             
-            if False:  # EMERGENCY: Completely disable anti-silo analysis
+            if anti_silo_enabled and not global_budget.is_global_cap_reached(neo4j_service):  # FIXED: Re-enable anti-silo analysis with proper conditions
                 try:
                     logger.info("🔗 Running LIMITED anti-silo analysis after entity storage...")
                     logger.info(f"📊 Pre-anti-silo status: {entities_stored} entities stored, {relationships_stored} relationships created")
@@ -467,17 +517,68 @@ class KnowledgeGraphExtractionService:
             
             logger.info("🚨 EMERGENCY: Anti-silo analysis completely disabled")
             
+            # OPTIMIZATION: Real-time ratio monitoring and emergency correction
+            global_budget = GlobalRelationshipBudget()
+            current_ratio = global_budget.get_current_ratio(neo4j_service)
+            
+            if current_ratio > global_budget.max_ratio:
+                logger.warning(f"🚨 EMERGENCY RATIO CORRECTION: Current ratio {current_ratio:.2f} > {global_budget.max_ratio}")
+                # Force ratio correction by removing excess relationships
+                await self._emergency_ratio_correction(neo4j_service, global_budget)
+            else:
+                logger.info(f"✅ Ratio monitoring: Current {current_ratio:.2f} ≤ {global_budget.max_ratio} (target achieved)")
+            
+            # FINAL GLOBAL RATIO CHECK AND ENFORCEMENT
+            self._check_and_enforce_global_ratio(neo4j_service)
+            
             return {
                 'success': True,
                 'entities_stored': entities_stored,
                 'relationships_stored': relationships_stored,
                 'relationship_failures': relationship_failures,
-                'processing_time_ms': result.processing_time_ms
+                'processing_time_ms': result.processing_time_ms,
+                'current_ratio': current_ratio  # OPTIMIZATION: Include ratio in response
             }
             
         except Exception as e:
             logger.error(f"Failed to store LLM knowledge graph: {e}")
             return {'success': False, 'error': str(e)}
+    
+    async def _emergency_ratio_correction(self, neo4j_service, global_budget: GlobalRelationshipBudget):
+        """OPTIMIZATION: Emergency ratio correction - remove excess relationships to maintain ≤4.0 ratio"""
+        try:
+            current_entities = global_budget.get_current_entity_count(neo4j_service)
+            current_relationships = global_budget.get_current_global_count(neo4j_service)
+            target_relationships = int(current_entities * global_budget.max_ratio)
+            excess_relationships = current_relationships - target_relationships
+            
+            if excess_relationships > 0:
+                logger.warning(f"🚨 EMERGENCY CORRECTION: Removing {excess_relationships} excess relationships")
+                logger.warning(f"   Target: {target_relationships} (≤{global_budget.max_ratio} per entity)")
+                logger.warning(f"   Current: {current_relationships}")
+                
+                # Remove lowest confidence relationships first
+                query = """
+                MATCH ()-[r]->()
+                WITH r ORDER BY 
+                    CASE WHEN r.confidence IS NULL THEN 0 ELSE r.confidence END ASC,
+                    r.created_at ASC
+                LIMIT $limit
+                DELETE r
+                RETURN count(r) as deleted_count
+                """
+                
+                result = await neo4j_service.run_query(query, {"limit": excess_relationships})
+                deleted_count = result[0]['deleted_count'] if result else 0
+                
+                logger.info(f"✅ Emergency correction completed: Removed {deleted_count} relationships")
+                
+                # Reset cache so next check gets accurate counts
+                global_budget.current_global_count = None
+                global_budget.current_entity_count = None
+                
+        except Exception as e:
+            logger.error(f"Failed emergency ratio correction: {e}")
     
     def _sanitize_neo4j_properties(self, properties: Dict[str, Any]) -> Dict[str, Any]:
         """Sanitize properties for Neo4j by converting complex types to primitives"""
@@ -529,6 +630,35 @@ class KnowledgeGraphExtractionService:
             logger.info(f"🔄 Relationship deduplication: {len(relationships)} → {len(deduplicated)} (removed {duplicate_count} duplicates)")
         
         return deduplicated
+    
+    def _check_and_enforce_global_ratio(self, neo4j_service):
+        """Check and enforce global ratio never exceeds 6.0 relationships per entity"""
+        try:
+            # Get current counts from Neo4j
+            total_entities = neo4j_service.get_total_entity_count()
+            total_relationships = neo4j_service.get_total_relationship_count()
+            
+            if total_entities == 0:
+                logger.info("📊 Global ratio check: No entities in database")
+                return
+            
+            current_ratio = total_relationships / total_entities
+            logger.info(f"📊 Global ratio check: {total_relationships} relationships / {total_entities} entities = {current_ratio:.1f} per entity")
+            
+            if current_ratio > 6.0:
+                logger.error(f"🚨 GLOBAL RATIO EXCEEDED: {current_ratio:.1f} relationships per entity (max allowed: 6.0)")
+                logger.error(f"   Current state: {total_entities} entities, {total_relationships} relationships")
+                logger.error(f"   Emergency relationship pruning may be required to prevent graph performance issues")
+                
+                # Calculate how many relationships should be removed
+                max_allowed_relationships = int(total_entities * 6)
+                excess_relationships = total_relationships - max_allowed_relationships
+                logger.error(f"   Recommendation: Remove {excess_relationships} relationships to achieve 6.0 ratio")
+            else:
+                logger.info(f"✅ Global ratio within limits: {current_ratio:.1f} ≤ 6.0 relationships per entity")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to check global ratio: {e}")
     
     async def run_limited_anti_silo_analysis(self) -> Dict[str, Any]:
         """Run VERY LIMITED anti-silo analysis with strict relationship budget controls"""

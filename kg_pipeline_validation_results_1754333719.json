@@ -1,0 +1,68 @@
+{
+  "llm_connectivity": {
+    "success": false,
+    "error": "cannot import name 'LLMInferenceService' from 'app.llm.inference' (/Users/kianwoonwong/Downloads/jarvis/app/llm/inference.py)",
+    "details": {
+      "exception_type": "ImportError"
+    }
+  },
+  "neo4j_connectivity": {
+    "success": false,
+    "error": "Neo4j connectivity test query failed",
+    "details": {
+      "query_result": []
+    }
+  },
+  "chunking_strategy": {
+    "success": false,
+    "error": "cannot import name 'DynamicChunkSizeCalculator' from 'app.services.dynamic_chunk_sizing' (/Users/kianwoonwong/Downloads/jarvis/app/services/dynamic_chunk_sizing.py)",
+    "details": {
+      "exception_type": "ImportError"
+    }
+  },
+  "entity_extraction": {
+    "success": false,
+    "entity_count": 0,
+    "expected_range": "5-15",
+    "within_range": false,
+    "extraction_time_ms": 6163.578271865845,
+    "entity_types_distribution": {},
+    "sample_entities": [],
+    "extraction_metadata": {
+      "confidence_score": 0.0,
+      "model_used": "qwen3:30b-a3b-instruct-2507-q4_K_M"
+    }
+  },
+  "relationship_extraction": {
+    "success": false,
+    "relationship_count": 0,
+    "expected_range": "3-10",
+    "within_range": false,
+    "extraction_time_ms": 6023.344993591309,
+    "relationship_types_distribution": {},
+    "sample_relationships": [],
+    "avg_confidence": 0.0
+  },
+  "relationship_ratio": {
+    "success": true,
+    "entities": 0,
+    "relationships": 0,
+    "ratio": 0.0,
+    "within_limit": true,
+    "note": "No entities in database - test not applicable"
+  },
+  "neo4j_storage": {
+    "success": false,
+    "error": "ExtractedEntity.__init__() missing 2 required positional arguments: 'start_char' and 'end_char'",
+    "details": {
+      "exception_type": "TypeError"
+    }
+  },
+  "end_to_end_pipeline": {
+    "success": false,
+    "error": "cannot import name 'DynamicChunkSizeCalculator' from 'app.services.dynamic_chunk_sizing' (/Users/kianwoonwong/Downloads/jarvis/app/services/dynamic_chunk_sizing.py)",
+    "details": {
+      "exception_type": "ImportError"
+    }
+  }
+}

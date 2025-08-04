@@ -31,21 +31,43 @@ class DynamicChunkSizer:
         logger.info(f"   Optimal chunk size: {self.optimal_chunk_size:,} characters")
     
     def _get_current_model(self) -> str:
-        """Get the current model from knowledge graph settings"""
-        # Check the model_config section first (most likely location)
+        """Get the current model from LLM settings (primary) or knowledge graph settings (fallback)"""
+        # PRIORITY 1: Check LLM settings for main_llm model (most reliable source)
+        try:
+            from app.core.llm_settings_cache import get_llm_settings
+            llm_settings = get_llm_settings()
+            
+            # Check main_llm configuration (primary location)
+            main_llm = llm_settings.get('main_llm', {})
+            if 'model' in main_llm:
+                model = main_llm['model']
+                logger.debug(f"🎯 Found model in main_llm config: {model}")
+                return str(model).lower()
+            
+            # Check knowledge_graph configuration in LLM settings
+            kg_llm = llm_settings.get('knowledge_graph', {})
+            if 'model' in kg_llm:
+                model = kg_llm['model']
+                logger.debug(f"🎯 Found model in knowledge_graph LLM config: {model}")
+                return str(model).lower()
+                
+        except Exception as e:
+            logger.debug(f"Could not load LLM settings for model: {e}")
+        
+        # PRIORITY 2: Check the model_config section in KG settings
         model_config = self.kg_settings.get('model_config', {})
         if 'model' in model_config:
             model = model_config['model']
-            logger.debug(f"🎯 Found model in model_config: {model}")
+            logger.debug(f"🎯 Found model in KG model_config: {model}")
             return str(model).lower()
         
-        # Check direct model field in settings
+        # PRIORITY 3: Check direct model field in KG settings
         if 'model' in self.kg_settings:
             model = self.kg_settings['model']
-            logger.debug(f"🎯 Found model in direct settings: {model}")
+            logger.debug(f"🎯 Found model in direct KG settings: {model}")
             return str(model).lower()
         
-        # Check for legacy locations
+        # PRIORITY 4: Check for legacy locations
         legacy_locations = [
             'llm_model',
             'extraction_model', 
@@ -59,7 +81,7 @@ class DynamicChunkSizer:
                 return str(model).lower()
         
         # Log available keys for debugging
-        logger.warning(f"⚠️  Model not found in knowledge graph settings. Available keys: {list(self.kg_settings.keys())}")
+        logger.warning(f"⚠️  Model not found in any configuration. KG settings keys: {list(self.kg_settings.keys())}")
         if model_config:
             logger.warning(f"⚠️  model_config keys: {list(model_config.keys())}")
         
@@ -71,23 +93,24 @@ class DynamicChunkSizer:
         # ARCHITECTURAL PRINCIPLE: Always use configured context_length from database
         # This ensures we adapt to ANY model without code changes
         
-        # PRIORITY 1: Check model_config section for context_length
-        model_config = self.kg_settings.get('model_config', {})
-        if 'context_length' in model_config:
-            context_length = int(model_config['context_length'])
-            logger.info(f"✅ Using DYNAMIC context_length from model_config: {context_length:,} tokens")
-            return context_length
-        
-        # PRIORITY 2: Check direct settings for context_length
-        if 'context_length' in self.kg_settings:
-            context_length = int(self.kg_settings['context_length'])
-            logger.info(f"✅ Using DYNAMIC context_length from settings: {context_length:,} tokens")
-            return context_length
-        
-        # PRIORITY 3: Try to get from LLM settings if available
+        # PRIORITY 1: Check LLM settings for main_llm context_length (most reliable source)
         try:
             from app.core.llm_settings_cache import get_llm_settings
             llm_settings = get_llm_settings()
+            
+            # Check main_llm configuration (primary location for 256k models)
+            main_llm = llm_settings.get('main_llm', {})
+            if 'context_length' in main_llm:
+                context_length = int(main_llm['context_length'])
+                logger.info(f"✅ Using DYNAMIC context_length from main_llm config: {context_length:,} tokens")
+                return context_length
+            
+            # Check knowledge_graph configuration in LLM settings
+            kg_llm = llm_settings.get('knowledge_graph', {})
+            if 'context_length' in kg_llm:
+                context_length = int(kg_llm['context_length'])
+                logger.info(f"✅ Using DYNAMIC context_length from knowledge_graph LLM config: {context_length:,} tokens")
+                return context_length
             
             # Check for model-specific configuration
             model_configs = llm_settings.get('model_configs', {})
@@ -95,20 +118,34 @@ class DynamicChunkSizer:
                 model_specific = model_configs[self.model_name]
                 if 'context_length' in model_specific:
                     context_length = int(model_specific['context_length'])
-                    logger.info(f"✅ Using DYNAMIC context_length from LLM model config: {context_length:,} tokens")
+                    logger.info(f"✅ Using DYNAMIC context_length from LLM model-specific config: {context_length:,} tokens")
                     return context_length
             
-            # Check global LLM settings
+            # Check global LLM settings fallback
             if 'context_length' in llm_settings:
                 context_length = int(llm_settings['context_length'])
                 logger.info(f"✅ Using DYNAMIC context_length from global LLM settings: {context_length:,} tokens")
                 return context_length
+                
         except Exception as e:
             logger.debug(f"Could not load LLM settings for context length: {e}")
         
+        # PRIORITY 2: Check KG model_config section for context_length
+        model_config = self.kg_settings.get('model_config', {})
+        if 'context_length' in model_config:
+            context_length = int(model_config['context_length'])
+            logger.info(f"✅ Using DYNAMIC context_length from KG model_config: {context_length:,} tokens")
+            return context_length
+        
+        # PRIORITY 3: Check direct KG settings for context_length
+        if 'context_length' in self.kg_settings:
+            context_length = int(self.kg_settings['context_length'])
+            logger.info(f"✅ Using DYNAMIC context_length from KG direct settings: {context_length:,} tokens")
+            return context_length
+        
         # CRITICAL: If no context_length is configured, this is a configuration error
         logger.error(f"❌ NO CONTEXT_LENGTH CONFIGURED for model {self.model_name}!")
-        logger.error(f"   Available settings keys: {list(self.kg_settings.keys())}")
+        logger.error(f"   Available KG settings keys: {list(self.kg_settings.keys())}")
         if model_config:
             logger.error(f"   model_config keys: {list(model_config.keys())}")
         
@@ -118,633 +155,208 @@ class DynamicChunkSizer:
         return self.ABSOLUTE_MINIMUM_CONTEXT
     
     def _calculate_optimal_chunk_size(self) -> int:
-        """Calculate optimal chunk size DYNAMICALLY based on actual model context"""
-        # DYNAMIC CALCULATION - scales with ANY model context size
+        """Calculate optimal chunk size using 50% MODEL UTILIZATION RULE"""
+        # **50% MODEL UTILIZATION RULE**: Use exactly 50% of model context length as target chunk size
+        # This is simple, predictable, and ensures we use the model's capacity efficiently
         
         # Token to character conversion (approximate)
         chars_per_token = 4  # 1 token ≈ 4 characters on average
         
-        # Dynamic overhead calculation based on context size
-        # Smaller models need more conservative overhead
-        # Larger models can use more of their context
-        if self.context_limit >= 200000:  # 200k+ tokens
-            prompt_overhead_ratio = 0.05  # Only 5% overhead for large models
-            safety_margin = 0.85  # Use 85% of context
-        elif self.context_limit >= 100000:  # 100k-200k tokens
-            prompt_overhead_ratio = 0.08  # 8% overhead
-            safety_margin = 0.80  # Use 80% of context
-        elif self.context_limit >= 50000:  # 50k-100k tokens
-            prompt_overhead_ratio = 0.10  # 10% overhead
-            safety_margin = 0.75  # Use 75% of context
-        else:  # < 50k tokens
-            prompt_overhead_ratio = 0.15  # 15% overhead for small models
-            safety_margin = 0.70  # Use 70% of context
+        # **CORE PRINCIPLE**: 50% of model context = target chunk size
+        target_utilization = 0.5  # Use exactly 50% of model context
+        target_tokens = int(self.context_limit * target_utilization)
+        target_chunk_size = int(target_tokens * chars_per_token)
         
-        # Calculate available tokens dynamically
-        prompt_overhead = int(self.context_limit * prompt_overhead_ratio)
-        available_tokens = (self.context_limit - prompt_overhead) * safety_margin
-        optimal_chars = int(available_tokens * chars_per_token)
+        # Minimum chunk size: 1KB (safety floor)
+        min_chunk_size = 1000
         
-        # DYNAMIC BOUNDS - scale with model capacity
-        # Minimum chunk size: 0.5% of context or 1KB, whichever is larger
-        min_chunk_size = max(1000, int(self.context_limit * chars_per_token * 0.005))
+        # Use 50% rule as the optimal size
+        optimal_chars = max(min_chunk_size, target_chunk_size)
         
-        # Maximum chunk size: Just use the calculated optimal size
-        # NO ARTIFICIAL LIMITS - let the model use its full capacity
-        max_chunk_size = optimal_chars
-        
-        logger.info(f"📊 Dynamic chunk calculation:")
+        logger.info(f"📊 50% Model Utilization Calculation:")
         logger.info(f"   Model context: {self.context_limit:,} tokens")
-        logger.info(f"   Overhead ratio: {prompt_overhead_ratio:.1%}")
-        logger.info(f"   Safety margin: {safety_margin:.1%}")
-        logger.info(f"   Available tokens: {available_tokens:,.0f}")
-        logger.info(f"   Optimal chunk size: {optimal_chars:,} chars")
-        logger.info(f"   Min chunk: {min_chunk_size:,} chars")
-        logger.info(f"   Max chunk: {max_chunk_size:,} chars")
+        logger.info(f"   Target utilization: {target_utilization:.0%}")
+        logger.info(f"   Target tokens: {target_tokens:,} tokens")
+        logger.info(f"   Target chunk size: {optimal_chars:,} chars")
+        logger.info(f"   Min chunk size: {min_chunk_size:,} chars")
         
-        return max(min_chunk_size, optimal_chars)
+        return optimal_chars
     
     def should_use_large_chunks(self) -> bool:
-        """Determine if large chunks should be used - DYNAMIC based on context"""
-        # DYNAMIC THRESHOLD: Models with 32K+ context can handle large chunks
-        # This scales automatically with any model
-        return self.context_limit >= 32768
+        """Always use 50% model utilization - no complex logic needed"""
+        return True
     
-    def get_chunk_configuration(self) -> Dict[str, Any]:
-        """Get chunk configuration - FULLY DYNAMIC based on model context"""
+    def get_chunk_configuration(self, document_type: str = 'general', processing_purpose: str = 'knowledge_graph') -> Dict[str, Any]:
+        """Get chunk configuration using 50% MODEL UTILIZATION RULE - SIMPLE AND PREDICTABLE
         
-        # DYNAMIC STRATEGY SELECTION based on context size
-        if self.context_limit >= 200000:  # 200k+ tokens
-            strategy = 'full_context_utilization'
-            target_chunks = 1  # Try to fit entire document in one chunk
-            max_consolidation = 1000  # Unlimited consolidation
-            preserve_granularity = False
-            min_chunk_size = 10000  # 10KB minimum for very large models
-        elif self.context_limit >= 100000:  # 100k-200k tokens
-            strategy = 'aggressive_consolidation'
-            target_chunks = 2  # Aim for 2 large chunks
-            max_consolidation = 50
-            preserve_granularity = False
-            min_chunk_size = 5000  # 5KB minimum
-        elif self.context_limit >= 50000:  # 50k-100k tokens
-            strategy = 'balanced_large_context'
-            target_chunks = 3  # Aim for 3-4 chunks
-            max_consolidation = 20
-            preserve_granularity = True
-            min_chunk_size = 3000  # 3KB minimum
-        elif self.context_limit >= 32768:  # 32k-50k tokens
-            strategy = 'moderate_consolidation'
-            target_chunks = 5  # Aim for 5-6 chunks
-            max_consolidation = 10
-            preserve_granularity = True
-            min_chunk_size = 2000  # 2KB minimum
-        else:  # < 32k tokens
-            strategy = 'traditional'
-            target_chunks = 10  # Traditional smaller chunks
-            max_consolidation = 2
-            preserve_granularity = True
-            min_chunk_size = 1000  # 1KB minimum
+        **CORE LOGIC**:
+        - Use 50% of model context as target chunk size
+        - If document fits in 50% capacity → Single chunk
+        - If document exceeds 50% → Split into multiple 50% chunks
+        - No complex business logic, no document type overrides
         
-        # DYNAMIC OVERLAP based on chunk size
-        chunk_overlap = min(1000, int(self.optimal_chunk_size * 0.1))  # 10% overlap, max 1000 chars
+        Args:
+            document_type: Type of document (preserved for compatibility but not used)
+            processing_purpose: Purpose of processing (preserved for compatibility but not used)
+        """
+        
+        # **50% MODEL UTILIZATION RULE** - Simple and consistent
+        target_chunk_size = self.optimal_chunk_size  # Already calculated as 50% of model context
+        min_chunk_size = 1000  # 1KB minimum
+        chunk_overlap = int(target_chunk_size * 0.1)  # 10% overlap
+        
+        # **SIMPLE STRATEGY**: No complex logic, just use 50% chunks
+        strategy = 'fifty_percent_utilization'
         
         config = {
-            'max_chunk_size': self.optimal_chunk_size,  # Use calculated optimal size
+            'max_chunk_size': target_chunk_size,
             'min_chunk_size': min_chunk_size,
             'chunk_overlap': chunk_overlap,
             'processing_strategy': strategy,
-            'combine_small_chunks': self.context_limit >= 32768,  # Combine for 32k+ models
-            'max_chunks_per_call': 1,  # Always process one chunk at a time
-            'enable_document_level_processing': self.context_limit >= 100000,  # 100k+ can do full docs
-            'preserve_granularity': preserve_granularity,
-            'target_chunks_per_document': target_chunks,
-            'max_consolidation_ratio': max_consolidation,
-            # Additional dynamic parameters
-            'context_utilization_target': 0.8 if self.context_limit >= 100000 else 0.7,
+            'combine_small_chunks': True,  # Always combine small chunks
+            'max_chunks_per_call': 1,  # Process one chunk at a time
+            'enable_document_level_processing': True,  # Always try single chunk first
+            'preserve_granularity': False,  # Prioritize efficiency over granularity
+            'target_chunks_per_document': 1,  # Always aim for single chunk if possible
+            'max_consolidation_ratio': 1000,  # Unlimited consolidation
+            # 50% utilization parameters
+            'context_utilization_target': 0.5,  # Exactly 50%
             'enable_intelligent_splitting': True,
             'respect_natural_boundaries': True,
-            'dynamic_overlap_adjustment': True
+            'dynamic_overlap_adjustment': False  # Keep overlap fixed at 10%
         }
         
-        logger.info(f"🎯 Dynamic chunk configuration for {self.context_limit:,} token model:")
+        logger.info(f"🎯 50% Model Utilization Configuration:")
+        logger.info(f"   Model context: {self.context_limit:,} tokens")
+        logger.info(f"   Target chunk size: {target_chunk_size:,} chars (50% utilization)")
+        logger.info(f"   Min chunk size: {min_chunk_size:,} chars")
+        logger.info(f"   Chunk overlap: {chunk_overlap:,} chars (10%)")
         logger.info(f"   Strategy: {strategy}")
-        logger.info(f"   Max chunk: {config['max_chunk_size']:,} chars")
-        logger.info(f"   Target chunks per doc: {target_chunks}")
-        logger.info(f"   Max consolidation ratio: {max_consolidation}:1")
         
         return config
     
-    def optimize_chunks(self, chunks: List[ExtractedChunk]) -> List[ExtractedChunk]:
-        """Optimize chunk sizes based on model capabilities - FULLY DYNAMIC"""
-        config = self.get_chunk_configuration()
-        strategy = config['processing_strategy']
+    def optimize_chunks(self, chunks: List[ExtractedChunk], document_type: str = 'general', processing_purpose: str = 'knowledge_graph') -> List[ExtractedChunk]:
+        """Optimize chunks using 50% MODEL UTILIZATION RULE - SIMPLE DECISION LOGIC"""
+        config = self.get_chunk_configuration(document_type, processing_purpose)
+        target_chunk_size = config['max_chunk_size']
         
-        logger.info(f"🔄 Optimizing {len(chunks)} chunks using '{strategy}' strategy")
-        
-        # DYNAMIC STRATEGY ROUTING
-        if strategy == 'full_context_utilization':
-            # For 200k+ models: Use entire context capacity
-            return self._create_full_context_chunks(chunks, config)
-        elif strategy == 'aggressive_consolidation':
-            # For 100k-200k models: Aggressive but not full consolidation
-            return self._create_aggressive_chunks(chunks, config)
-        elif strategy in ['balanced_large_context', 'moderate_consolidation']:
-            # For 32k-100k models: Balanced approach
-            return self._create_balanced_chunks(chunks, config)
-        else:  # 'traditional'
-            # For <32k models: Traditional chunking
-            return self._resize_traditional_chunks(chunks, config)
-    
-    def _create_full_context_chunks(self, chunks: List[ExtractedChunk], config: Dict[str, Any]) -> List[ExtractedChunk]:
-        """Create minimal chunks for 256k+ context models - USE FULL CAPACITY"""
-        if not chunks:
-            return chunks
-        
-        max_size = config['max_chunk_size']
-        overlap = config['chunk_overlap']
-        
-        # Calculate total content size
+        # Calculate total document size
         total_content_size = sum(len(chunk.content) for chunk in chunks)
         
-        logger.info(f"🚀 FULL CONTEXT UTILIZATION MODE:")
-        logger.info(f"   Model context: {self.context_limit:,} tokens (~{self.context_limit * 4:,} chars)")
-        logger.info(f"   Document size: {total_content_size:,} chars")
-        logger.info(f"   Max chunk size: {max_size:,} chars")
+        logger.info(f"🔄 50% Model Utilization Optimization:")
+        logger.info(f"   Input chunks: {len(chunks)}")
+        logger.info(f"   Total document size: {total_content_size:,} chars")
+        logger.info(f"   Target chunk size: {target_chunk_size:,} chars (50% of {self.context_limit:,} tokens)")
         
-        # If the entire document fits in one chunk, DO IT
-        if total_content_size <= max_size:
-            logger.info(f"✅ ENTIRE DOCUMENT FITS IN ONE CHUNK! Using full context capacity.")
-            # Combine ALL chunks into one massive chunk
-            combined_content = "\n\n".join(chunk.content.strip() for chunk in chunks)
-            
-            mega_chunk = ExtractedChunk(
-                content=combined_content,
-                metadata={
-                    **chunks[0].metadata,
-                    'chunk_id': 'full_document_chunk',
-                    'combined_from': [c.chunk_id for c in chunks],
-                    'optimization': 'full_context_utilization',
-                    'original_chunk_count': len(chunks),
-                    'utilization_ratio': f"{(total_content_size / (self.context_limit * 4)):.1%}"
-                },
-                quality_score=sum(c.quality_score for c in chunks) / len(chunks) if chunks else 1.0
-            )
-            
-            logger.info(f"✅ Created 1 MEGA CHUNK using {(total_content_size / (self.context_limit * 4)):.1%} of model capacity")
-            return [mega_chunk]
+        # **SIMPLE DECISION LOGIC**:
+        # If document fits in 50% capacity → Single chunk
+        # If document exceeds 50% → Split into multiple 50% chunks
         
-        # If document is larger than max chunk size, create minimal chunks
-        optimized_chunks = []
-        current_content = ""
-        chunk_sources = []
-        
-        for chunk in chunks:
-            chunk_content = chunk.content.strip()
-            potential_size = len(current_content) + len(chunk_content) + overlap
-            
-            if potential_size > max_size and current_content:
-                # Create a massive chunk
-                optimized_chunk = ExtractedChunk(
-                    content=current_content.strip(),
-                    metadata={
-                        **chunk.metadata,
-                        'chunk_id': f"full_context_chunk_{len(optimized_chunks)}",
-                        'combined_from': chunk_sources,
-                        'optimization': 'full_context_utilization',
-                        'original_chunk_count': len(chunk_sources)
-                    },
-                    quality_score=sum(c.quality_score for c in chunks[:len(chunk_sources)]) / len(chunk_sources) if chunk_sources else 1.0
-                )
-                optimized_chunks.append(optimized_chunk)
-                
-                # Start new chunk with overlap
-                current_content = current_content[-overlap:] + "\n\n" + chunk_content if overlap > 0 else chunk_content
-                chunk_sources = [chunk.chunk_id]
-            else:
-                # Add to current chunk
-                current_content += ("\n\n" + chunk_content) if current_content else chunk_content
-                chunk_sources.append(chunk.chunk_id)
-        
-        # Add final chunk
-        if current_content.strip():
-            optimized_chunk = ExtractedChunk(
-                content=current_content.strip(),
-                metadata={
-                    **chunks[-1].metadata,
-                    'chunk_id': f"full_context_chunk_{len(optimized_chunks)}",
-                    'combined_from': chunk_sources,
-                    'optimization': 'full_context_utilization',
-                    'original_chunk_count': len(chunk_sources)
-                },
-                quality_score=sum(c.quality_score for c in chunks[-len(chunk_sources):]) / len(chunk_sources) if chunk_sources else 1.0
-            )
-            optimized_chunks.append(optimized_chunk)
-        
-        consolidation_ratio = len(chunks) / len(optimized_chunks) if optimized_chunks else 1
-        logger.info(f"✅ Full context optimization: {len(chunks)} → {len(optimized_chunks)} chunks (ratio: {consolidation_ratio:.1f}:1)")
-        logger.info(f"   Average chunk size: {sum(len(c.content) for c in optimized_chunks) // len(optimized_chunks):,} chars")
-        
-        return optimized_chunks
+        if total_content_size <= target_chunk_size:
+            logger.info(f"✅ SINGLE CHUNK: Document fits in 50% model capacity")
+            return self._create_single_mega_chunk(chunks, config)
+        else:
+            logger.info(f"✅ MULTIPLE CHUNKS: Document exceeds 50% capacity, splitting into {target_chunk_size:,} char chunks")
+            return self._create_fifty_percent_chunks(chunks, config)
     
-    def _create_aggressive_chunks(self, chunks: List[ExtractedChunk], config: Dict[str, Any]) -> List[ExtractedChunk]:
-        """Create aggressively consolidated chunks for 100k-200k context models"""
+    def _create_single_mega_chunk(self, chunks: List[ExtractedChunk], config: Dict[str, Any]) -> List[ExtractedChunk]:
+        """Create single chunk when document fits in 50% model capacity"""
         if not chunks:
             return chunks
         
-        max_size = config['max_chunk_size']
-        target_chunks = config['target_chunks_per_document']
+        # Combine ALL chunks into one chunk
+        combined_content = "\n\n".join(chunk.content.strip() for chunk in chunks)
+        total_content_size = len(combined_content)
         
-        # Calculate total content size
-        total_content_size = sum(len(chunk.content) for chunk in chunks)
+        mega_chunk = ExtractedChunk(
+            content=combined_content,
+            metadata={
+                **chunks[0].metadata,
+                'chunk_id': 'single_document_chunk',
+                'combined_from': [c.chunk_id for c in chunks],
+                'optimization': 'fifty_percent_single_chunk',
+                'original_chunk_count': len(chunks),
+                'utilization_ratio': f"{(total_content_size / (self.context_limit * 4)):.1%}"
+            },
+            quality_score=sum(c.quality_score for c in chunks) / len(chunks) if chunks else 1.0
+        )
         
-        logger.info(f"🚀 AGGRESSIVE CONSOLIDATION MODE:")
-        logger.info(f"   Model context: {self.context_limit:,} tokens (~{self.context_limit * 4:,} chars)")
-        logger.info(f"   Document size: {total_content_size:,} chars")
-        logger.info(f"   Target chunks: {target_chunks}")
-        
-        # If entire document fits in max_size, return as single chunk
-        if total_content_size <= max_size:
-            combined_content = "\n\n".join(chunk.content.strip() for chunk in chunks)
-            
-            mega_chunk = ExtractedChunk(
-                content=combined_content,
-                metadata={
-                    **chunks[0].metadata,
-                    'chunk_id': 'aggressive_full_document',
-                    'combined_from': [c.chunk_id for c in chunks],
-                    'optimization': 'aggressive_consolidation',
-                    'original_chunk_count': len(chunks),
-                    'utilization_ratio': f"{(total_content_size / (self.context_limit * 4)):.1%}"
-                },
-                quality_score=sum(c.quality_score for c in chunks) / len(chunks) if chunks else 1.0
-            )
-            
-            logger.info(f"✅ Created 1 LARGE CHUNK using {(total_content_size / (self.context_limit * 4)):.1%} of model capacity")
-            return [mega_chunk]
-        
-        # Otherwise, create target number of chunks
-        target_chunk_size = total_content_size // target_chunks
-        working_max_size = min(max_size, max(target_chunk_size, config['min_chunk_size']))
-        
-        return self._consolidate_to_target_size(chunks, working_max_size, config)
+        logger.info(f"✅ Created 1 SINGLE CHUNK using {(total_content_size / (self.context_limit * 4)):.1%} of model capacity")
+        return [mega_chunk]
     
-    def _create_balanced_chunks(self, chunks: List[ExtractedChunk], config: Dict[str, Any]) -> List[ExtractedChunk]:
-        """Create balanced chunks that maintain granularity while utilizing large context - FIXED consolidation"""
+    def _create_fifty_percent_chunks(self, chunks: List[ExtractedChunk], config: Dict[str, Any]) -> List[ExtractedChunk]:
+        """Create multiple chunks when document exceeds 50% model capacity"""
         if not chunks:
             return chunks
         
-        max_size = config['max_chunk_size']
-        min_size = config['min_chunk_size']
+        target_chunk_size = config['max_chunk_size']
         overlap = config['chunk_overlap']
-        target_chunk_count = config.get('target_chunks_per_document', 5)
-        max_consolidation_ratio = config.get('max_consolidation_ratio', 5)
         
-        # Calculate total content size
-        total_content_size = sum(len(chunk.content) for chunk in chunks)
+        # First, combine all input chunks into one text
+        all_content = "\n\n".join(chunk.content.strip() for chunk in chunks)
         
-        # CRITICAL FIX: Don't over-consolidate if we already have reasonable-sized chunks
-        if len(chunks) <= target_chunk_count:
-            logger.info(f"🎯 Already have {len(chunks)} chunks (target: {target_chunk_count}), minimal consolidation")
-            return self._minimal_consolidation(chunks, config)
+        # If total content is smaller than target, something went wrong in the decision logic
+        if len(all_content) <= target_chunk_size:
+            logger.warning("Content smaller than target but routed to splitting - using single chunk")
+            return self._create_single_mega_chunk(chunks, config)
         
-        # Calculate optimal chunk size to reach target count
-        optimal_size_for_target = total_content_size // target_chunk_count
-        working_max_size = min(max_size, max(optimal_size_for_target, min_size))
-        
-        logger.info(f"🔄 Balanced chunking: {len(chunks)} → target ~{target_chunk_count} chunks")
-        logger.info(f"   Total content: {total_content_size:,} chars, working max size: {working_max_size:,}")
-        
+        # Split the content into target-sized chunks
         optimized_chunks = []
-        current_content = ""
-        current_metadata = chunks[0].metadata.copy()
-        chunk_sources = []
-        chunks_consolidated = 0
+        start_pos = 0
+        chunk_index = 0
         
-        for i, chunk in enumerate(chunks):
-            chunk_content = chunk.content.strip()
+        while start_pos < len(all_content):
+            # Calculate end position for this chunk
+            end_pos = start_pos + target_chunk_size
             
-            # Check if adding this chunk would exceed the working limit
-            potential_size = len(current_content) + len(chunk_content) + overlap
+            # If this is not the last chunk and we have overlap, adjust for overlap
+            if end_pos < len(all_content) and overlap > 0:
+                # Find a good breaking point near the target size
+                # Look for sentence ending within last 10% of chunk
+                search_start = max(start_pos + int(target_chunk_size * 0.9), start_pos + 1000)
+                search_end = min(end_pos, len(all_content))
+                
+                # Look for sentence boundaries
+                for i in range(search_end - 1, search_start - 1, -1):
+                    if all_content[i:i+1] in '.!?':
+                        end_pos = i + 1
+                        break
             
-            # ANTI-CONSOLIDATION CHECK: Don't consolidate too many chunks
-            would_exceed_consolidation = chunks_consolidated >= max_consolidation_ratio
+            # Extract chunk content
+            chunk_content = all_content[start_pos:end_pos].strip()
             
-            if (potential_size > working_max_size or would_exceed_consolidation) and current_content:
-                # Create the balanced chunk
+            if chunk_content:  # Only create non-empty chunks
                 optimized_chunk = ExtractedChunk(
-                    content=current_content.strip(),
+                    content=chunk_content,
                     metadata={
-                        **current_metadata,
-                        'chunk_id': f"balanced_chunk_{len(optimized_chunks)}",
-                        'combined_from': chunk_sources,
-                        'optimization': 'balanced_large_context',
-                        'original_chunk_count': len(chunk_sources)
+                        **chunks[0].metadata,
+                        'chunk_id': f"fifty_percent_chunk_{chunk_index}",
+                        'combined_from': [c.chunk_id for c in chunks],
+                        'optimization': 'fifty_percent_utilization',
+                        'original_chunk_count': len(chunks),
+                        'split_index': chunk_index
                     },
-                    quality_score=sum(c.quality_score for c in chunks[max(0, i-len(chunk_sources)):i]) / len(chunk_sources) if chunk_sources else 1.0
+                    quality_score=sum(c.quality_score for c in chunks) / len(chunks) if chunks else 1.0
                 )
                 optimized_chunks.append(optimized_chunk)
-                
-                # Start new chunk with overlap
-                if overlap > 0 and len(current_content) > overlap:
-                    current_content = current_content[-overlap:] + "\n\n" + chunk_content
-                else:
-                    current_content = chunk_content
-                
-                chunk_sources = [chunk.chunk_id]
-                current_metadata = chunk.metadata.copy()
-                chunks_consolidated = 1
-            else:
-                # Add to current chunk
-                if current_content:
-                    current_content += "\n\n" + chunk_content
-                else:
-                    current_content = chunk_content
-                chunk_sources.append(chunk.chunk_id)
-                chunks_consolidated += 1
+                chunk_index += 1
+            
+            # Move to next chunk with overlap
+            if end_pos >= len(all_content):
+                break
+            
+            # Apply overlap for next chunk
+            start_pos = max(start_pos + 1, end_pos - overlap)
         
-        # Add final chunk if there's remaining content
-        if current_content.strip():
-            optimized_chunk = ExtractedChunk(
-                content=current_content.strip(),
-                metadata={
-                    **current_metadata,
-                    'chunk_id': f"balanced_chunk_{len(optimized_chunks)}",
-                    'combined_from': chunk_sources,
-                    'optimization': 'balanced_large_context',
-                    'original_chunk_count': len(chunk_sources)
-                },
-                quality_score=sum(c.quality_score for c in chunks[-len(chunk_sources):]) / len(chunk_sources) if chunk_sources else 1.0
-            )
-            optimized_chunks.append(optimized_chunk)
-        
-        actual_ratio = len(chunks) / len(optimized_chunks) if optimized_chunks else 1
-        
-        logger.info(f"✅ Balanced chunk optimization: {len(chunks)} → {len(optimized_chunks)} chunks (ratio: {actual_ratio:.1f}:1)")
-        logger.info(f"   Average chunk size: {sum(len(c.content) for c in optimized_chunks) // len(optimized_chunks):,} chars")
+        logger.info(f"✅ 50% utilization splitting: {len(all_content):,} chars → {len(optimized_chunks)} chunks")
+        if optimized_chunks:
+            avg_size = sum(len(c.content) for c in optimized_chunks) // len(optimized_chunks)
+            logger.info(f"   Average chunk size: {avg_size:,} chars")
         
         return optimized_chunks
     
-    def _minimal_consolidation(self, chunks: List[ExtractedChunk], config: Dict[str, Any]) -> List[ExtractedChunk]:
-        """Minimal consolidation for chunks that are already reasonable size"""
-        min_size = config['min_chunk_size']
-        max_size = config['max_chunk_size']
-        
-        optimized_chunks = []
-        i = 0
-        
-        while i < len(chunks):
-            chunk = chunks[i]
-            content_length = len(chunk.content.strip())
-            
-            if content_length < min_size and i + 1 < len(chunks):
-                # Only combine if current chunk is too small
-                next_chunk = chunks[i + 1]
-                combined_content = chunk.content + "\n\n" + next_chunk.content
-                
-                if len(combined_content) <= max_size:
-                    # Combine these two chunks
-                    combined_chunk = ExtractedChunk(
-                        content=combined_content,
-                        metadata={
-                            **chunk.metadata,
-                            'chunk_id': f"minimal_combined_{len(optimized_chunks)}",
-                            'combined_from': [chunk.chunk_id, next_chunk.chunk_id],
-                            'optimization': 'minimal_consolidation',
-                            'original_chunk_count': 2
-                        },
-                        quality_score=(chunk.quality_score + next_chunk.quality_score) / 2
-                    )
-                    optimized_chunks.append(combined_chunk)
-                    i += 2  # Skip next chunk as it's been combined
-                else:
-                    # Can't combine, keep as is
-                    chunk.metadata['optimization'] = 'kept_as_is'
-                    optimized_chunks.append(chunk)
-                    i += 1
-            else:
-                # Chunk is good size, keep as is
-                chunk.metadata['optimization'] = 'kept_as_is'
-                optimized_chunks.append(chunk)
-                i += 1
-        
-        logger.info(f"🔧 Minimal consolidation: {len(chunks)} → {len(optimized_chunks)} chunks")
-        return optimized_chunks
+    # Removed complex chunking methods - using simple 50% utilization strategy only
     
-    def _create_large_chunks(self, chunks: List[ExtractedChunk], config: Dict[str, Any]) -> List[ExtractedChunk]:
-        """Combine small chunks into large ones for high-context models"""
-        if not chunks:
-            return chunks
-        
-        max_size = config['max_chunk_size']
-        overlap = config['chunk_overlap']
-        optimized_chunks = []
-        
-        current_content = ""
-        current_metadata = chunks[0].metadata.copy()
-        chunk_sources = []
-        
-        for i, chunk in enumerate(chunks):
-            chunk_content = chunk.content.strip()
-            
-            # Check if adding this chunk would exceed the limit
-            potential_size = len(current_content) + len(chunk_content) + overlap
-            
-            if potential_size > max_size and current_content:
-                # Create the large chunk
-                optimized_chunk = ExtractedChunk(
-                    content=current_content.strip(),
-                    metadata={
-                        **current_metadata,
-                        'chunk_id': f"large_chunk_{len(optimized_chunks)}",
-                        'combined_from': chunk_sources,
-                        'optimization': 'large_context',
-                        'original_chunk_count': len(chunk_sources)
-                    },
-                    quality_score=sum(c.quality_score for c in chunks[max(0, i-len(chunk_sources)):i]) / len(chunk_sources) if chunk_sources else 1.0
-                )
-                optimized_chunks.append(optimized_chunk)
-                
-                # Start new chunk with overlap
-                if overlap > 0 and len(current_content) > overlap:
-                    current_content = current_content[-overlap:] + "\n\n" + chunk_content
-                else:
-                    current_content = chunk_content
-                
-                chunk_sources = [chunk.chunk_id]
-                current_metadata = chunk.metadata.copy()
-            else:
-                # Add to current chunk
-                if current_content:
-                    current_content += "\n\n" + chunk_content
-                else:
-                    current_content = chunk_content
-                chunk_sources.append(chunk.chunk_id)
-        
-        # Add final chunk if there's remaining content
-        if current_content.strip():
-            optimized_chunk = ExtractedChunk(
-                content=current_content.strip(),
-                metadata={
-                    **current_metadata,
-                    'chunk_id': f"large_chunk_{len(optimized_chunks)}",
-                    'combined_from': chunk_sources,
-                    'optimization': 'large_context',
-                    'original_chunk_count': len(chunk_sources)
-                },
-                quality_score=sum(c.quality_score for c in chunks[-len(chunk_sources):]) / len(chunk_sources) if chunk_sources else 1.0
-            )
-            optimized_chunks.append(optimized_chunk)
-        
-        logger.info(f"🔄 Large chunk optimization: {len(chunks)} → {len(optimized_chunks)} chunks")
-        logger.info(f"   Average chunk size: {sum(len(c.content) for c in optimized_chunks) // len(optimized_chunks):,} chars")
-        
-        return optimized_chunks
-    
-    def _resize_traditional_chunks(self, chunks: List[ExtractedChunk], config: Dict[str, Any]) -> List[ExtractedChunk]:
-        """Resize chunks for traditional models with smaller context windows"""
-        max_size = config['max_chunk_size']
-        min_size = config['min_chunk_size']
-        optimized_chunks = []
-        
-        for chunk in chunks:
-            content_length = len(chunk.content.strip())
-            
-            if content_length < min_size:
-                # Too small - combine with next chunk if possible
-                chunk.metadata['optimization'] = 'too_small'
-                optimized_chunks.append(chunk)
-                
-            elif content_length > max_size:
-                # Too large - split into smaller chunks
-                split_chunks = self._split_large_chunk_smart(chunk, max_size)
-                optimized_chunks.extend(split_chunks)
-                
-            else:
-                # Good size - keep as is
-                chunk.metadata['optimization'] = 'optimal'
-                optimized_chunks.append(chunk)
-        
-        logger.info(f"🔄 Traditional chunk optimization: {len(chunks)} → {len(optimized_chunks)} chunks")
-        return optimized_chunks
-    
-    def _split_large_chunk_smart(self, chunk: ExtractedChunk, max_size: int) -> List[ExtractedChunk]:
-        """Smart splitting that respects sentence boundaries"""
-        content = chunk.content
-        sentences = self._split_into_sentences(content)
-        
-        sub_chunks = []
-        current_chunk_text = ""
-        current_sentences = []
-        
-        for sentence in sentences:
-            potential_length = len(current_chunk_text) + len(sentence) + 1
-            
-            if potential_length > max_size and current_chunk_text:
-                # Create sub-chunk
-                sub_chunk = ExtractedChunk(
-                    content=current_chunk_text.strip(),
-                    metadata={
-                        **chunk.metadata,
-                        'parent_chunk_id': chunk.chunk_id,
-                        'sub_chunk_index': len(sub_chunks),
-                        'sentences': current_sentences,
-                        'optimization': 'split_large'
-                    },
-                    quality_score=chunk.quality_score
-                )
-                sub_chunks.append(sub_chunk)
-                
-                # Reset for next chunk
-                current_chunk_text = sentence
-                current_sentences = [sentence]
-            else:
-                current_chunk_text += (" " + sentence if current_chunk_text else sentence)
-                current_sentences.append(sentence)
-        
-        # Add final chunk if there's remaining content
-        if current_chunk_text.strip():
-            sub_chunk = ExtractedChunk(
-                content=current_chunk_text.strip(),
-                metadata={
-                    **chunk.metadata,
-                    'parent_chunk_id': chunk.chunk_id,
-                    'sub_chunk_index': len(sub_chunks),
-                    'sentences': current_sentences,
-                    'optimization': 'split_large'
-                },
-                quality_score=chunk.quality_score
-            )
-            sub_chunks.append(sub_chunk)
-        
-        return sub_chunks
-    
-    def _split_into_sentences(self, text: str) -> List[str]:
-        """Split text into sentences for better processing"""
-        import re
-        
-        # Simple sentence splitting - can be enhanced with more sophisticated methods
-        sentences = re.split(r'[.!?]+', text)
-        sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
-        
-        return sentences
-    
-    def _consolidate_to_target_size(self, chunks: List[ExtractedChunk], target_size: int, config: Dict[str, Any]) -> List[ExtractedChunk]:
-        """Consolidate chunks to reach target size - DYNAMIC helper method"""
-        optimized_chunks = []
-        current_content = ""
-        chunk_sources = []
-        overlap = config.get('chunk_overlap', 0)
-        
-        for chunk in chunks:
-            chunk_content = chunk.content.strip()
-            potential_size = len(current_content) + len(chunk_content) + (overlap if current_content else 0)
-            
-            if potential_size > target_size and current_content:
-                # Create consolidated chunk
-                optimized_chunk = ExtractedChunk(
-                    content=current_content.strip(),
-                    metadata={
-                        **chunk.metadata,
-                        'chunk_id': f"consolidated_chunk_{len(optimized_chunks)}",
-                        'combined_from': chunk_sources,
-                        'optimization': 'dynamic_consolidation',
-                        'original_chunk_count': len(chunk_sources)
-                    },
-                    quality_score=sum(c.quality_score for c in chunks[:len(chunk_sources)]) / len(chunk_sources) if chunk_sources else 1.0
-                )
-                optimized_chunks.append(optimized_chunk)
-                
-                # Start new chunk with overlap if configured
-                if overlap > 0 and len(current_content) > overlap:
-                    current_content = current_content[-overlap:] + "\n\n" + chunk_content
-                else:
-                    current_content = chunk_content
-                
-                chunk_sources = [chunk.chunk_id]
-            else:
-                # Add to current chunk
-                if current_content:
-                    current_content += "\n\n" + chunk_content
-                else:
-                    current_content = chunk_content
-                chunk_sources.append(chunk.chunk_id)
-        
-        # Add final chunk
-        if current_content.strip():
-            optimized_chunk = ExtractedChunk(
-                content=current_content.strip(),
-                metadata={
-                    **chunks[-1].metadata,
-                    'chunk_id': f"consolidated_chunk_{len(optimized_chunks)}",
-                    'combined_from': chunk_sources,
-                    'optimization': 'dynamic_consolidation',
-                    'original_chunk_count': len(chunk_sources)
-                },
-                quality_score=sum(c.quality_score for c in chunks[-len(chunk_sources):]) / len(chunk_sources) if chunk_sources else 1.0
-            )
-            optimized_chunks.append(optimized_chunk)
-        
-        return optimized_chunks
 
 # Singleton instance
 _chunk_sizer: Optional[DynamicChunkSizer] = None
@@ -756,12 +368,12 @@ def get_dynamic_chunk_sizer() -> DynamicChunkSizer:
         _chunk_sizer = DynamicChunkSizer()
     return _chunk_sizer
 
-def get_optimal_chunk_config() -> Dict[str, Any]:
-    """Get optimal chunk configuration for current model"""
+def get_optimal_chunk_config(document_type: str = 'general', processing_purpose: str = 'knowledge_graph') -> Dict[str, Any]:
+    """Get optimal chunk configuration for current model, document type, and processing purpose"""
     sizer = get_dynamic_chunk_sizer()
-    return sizer.get_chunk_configuration()
+    return sizer.get_chunk_configuration(document_type, processing_purpose)
 
-def optimize_chunks_for_model(chunks: List[ExtractedChunk]) -> List[ExtractedChunk]:
-    """Optimize chunks for the current model's capabilities"""
+def optimize_chunks_for_model(chunks: List[ExtractedChunk], document_type: str = 'general', processing_purpose: str = 'knowledge_graph') -> List[ExtractedChunk]:
+    """Optimize chunks for the current model's capabilities, document type, and processing purpose"""
     sizer = get_dynamic_chunk_sizer()
-    return sizer.optimize_chunks(chunks)
+    return sizer.optimize_chunks(chunks, document_type, processing_purpose)

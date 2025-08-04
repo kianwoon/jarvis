@@ -710,11 +710,28 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
             logger.error(f"Error writing to .env file: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to update .env file: {str(e)}")
     
-    # If updating knowledge graph settings, reload cache
+    # If updating knowledge graph settings, sync model fields and reload cache
     if category == 'knowledge_graph':
         logger.info("Processing knowledge graph settings")
-        # The settings are already saved to database above
-        # Just reload the cache
+        
+        # Synchronize model fields: ensure both main 'model' and 'model_config.model' are consistent
+        if 'model_config' in settings_for_db and 'model' in settings_for_db['model_config']:
+            # Update the main model field to match model_config.model
+            settings_for_db['model'] = settings_for_db['model_config']['model']
+            logger.info(f"Synchronized main model field to: {settings_for_db['model']}")
+        elif 'model' in settings_for_db and 'model_config' in settings_for_db:
+            # Update model_config.model to match main model field
+            if 'model' not in settings_for_db['model_config']:
+                settings_for_db['model_config']['model'] = settings_for_db['model']
+                logger.info(f"Synchronized model_config.model field to: {settings_for_db['model']}")
+        
+        # Update the database with synchronized settings
+        settings_row.settings = settings_for_db
+        db.commit()
+        db.refresh(settings_row)
+        logger.info("Knowledge graph settings synchronized and saved")
+        
+        # Reload the cache
         reload_knowledge_graph_settings()
         logger.info("Knowledge graph settings saved and cache reloaded")
     

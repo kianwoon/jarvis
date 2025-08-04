@@ -18,7 +18,9 @@ from app.services.knowledge_graph_types import (
     ExtractedEntity,
     ExtractedRelationship
 )
-from app.core.knowledge_graph_settings_cache import get_knowledge_graph_settings
+from app.core.knowledge_graph_settings_cache import (
+    get_knowledge_graph_settings, detect_business_document, get_business_optimized_settings
+)
 from app.services.dynamic_chunk_sizing import get_dynamic_chunk_sizer, optimize_chunks_for_model
 
 logger = logging.getLogger(__name__)
@@ -69,17 +71,22 @@ class GraphDocumentProcessor:
         self.kg_service = get_knowledge_graph_service()
         self.config = get_knowledge_graph_settings()
         self.chunk_sizer = get_dynamic_chunk_sizer()
+        self.document_type = 'general'  # Will be set per document
         
-        # Get dynamic chunk configuration based on current model
-        chunk_config = self.chunk_sizer.get_chunk_configuration()
+        # Get dynamic chunk configuration based on current model and document type
+        chunk_config = self.chunk_sizer.get_chunk_configuration(self.document_type)
         
         # Graph processing settings with dynamic chunk sizing
+        # CRITICAL FIX: Use the actual dynamic chunk configuration values, not hardcoded defaults
         self.min_chunk_length = chunk_config.get('min_chunk_size', 100)
         self.max_chunk_length = chunk_config.get('max_chunk_size', 2000)
         self.chunk_overlap = chunk_config.get('chunk_overlap', 200)
         self.processing_strategy = chunk_config.get('processing_strategy', 'traditional')
         self.entity_threshold = self.config.get('extraction', {}).get('min_entity_confidence', 0.7)
         self.relationship_threshold = self.config.get('extraction', {}).get('min_relationship_confidence', 0.6)
+        
+        # Store the dynamic configuration for consistent filtering
+        self._dynamic_chunk_config = chunk_config
         
         logger.info(f"🧠 Graph processor initialized with dynamic chunk sizing:")
         logger.info(f"   Strategy: {self.processing_strategy}")
@@ -91,7 +98,9 @@ class GraphDocumentProcessor:
         chunks: List[ExtractedChunk], 
         document_id: str,
         store_in_neo4j: bool = True,
-        progressive_storage: bool = True
+        progressive_storage: bool = True,
+        filename: str = '',
+        document_content: str = ''
     ) -> GraphProcessingResult:
         """
         Process document chunks for knowledge graph extraction with multi-chunk overlap detection.
@@ -107,7 +116,24 @@ class GraphDocumentProcessor:
         start_time = datetime.now()
         
         try:
-            logger.info(f"Processing {len(chunks)} chunks for knowledge graph extraction (doc: {document_id})")
+            # BUSINESS DOCUMENT DETECTION: Check if this is a business document
+            self.document_type = self._detect_document_type(filename, document_content, chunks)
+            is_business_doc = self.document_type != 'general'
+            
+            if is_business_doc:
+                logger.info(f"🏢 Business document detected: {self.document_type}")
+                # Use business-optimized settings
+                self.config = get_business_optimized_settings()
+                logger.info(f"📊 Applied business document settings: max_entities={self.config.get('max_entities_per_chunk', 30)}")
+                
+                # CRITICAL: Update chunk size limits based on business document detection
+                # This ensures filtering uses the correct thresholds
+                business_chunk_config = self.chunk_sizer.get_chunk_configuration(self.document_type, 'knowledge_graph')
+                self.min_chunk_length = business_chunk_config.get('min_chunk_size', 3000)
+                self.max_chunk_length = business_chunk_config.get('max_chunk_size', 6000)
+                logger.info(f"📏 Updated chunk limits for business doc: {self.min_chunk_length:,} - {self.max_chunk_length:,} chars")
+            
+            logger.info(f"Processing {len(chunks)} chunks for knowledge graph extraction (doc: {document_id}, type: {self.document_type})")
             
             # Check if multi-chunk processing is enabled
             enable_multi_chunk = self.config.get('extraction', {}).get('enable_multi_chunk_relationships', True)
@@ -148,7 +174,7 @@ class GraphDocumentProcessor:
             from app.services.multi_chunk_processor import get_multi_chunk_processor
             multi_chunk_processor = get_multi_chunk_processor()
             
-            # Filter chunks suitable for graph processing
+            # Filter chunks suitable for graph processing with document type awareness
             suitable_chunks = self._filter_chunks_for_graph_processing(chunks)
             
             if not suitable_chunks:
@@ -257,9 +283,9 @@ class GraphDocumentProcessor:
         start_time = datetime.now()
         
         try:
-            # Filter chunks suitable for graph processing
+            # Filter chunks suitable for graph processing with document type awareness
             suitable_chunks = self._filter_chunks_for_graph_processing(chunks)
-            logger.info(f"Filtered to {len(suitable_chunks)} suitable chunks for graph extraction")
+            logger.info(f"Filtered to {len(suitable_chunks)} suitable chunks for graph extraction (type: {self.document_type})")
             
             # Process chunks serially with optional progressive storage
             extraction_results = []
@@ -357,28 +383,37 @@ class GraphDocumentProcessor:
             )
     
     def _filter_chunks_for_graph_processing(self, chunks: List[ExtractedChunk]) -> List[ExtractedChunk]:
-        """Filter and optimize chunks for graph processing based on model capabilities"""
-        logger.info(f"🔧 Optimizing {len(chunks)} chunks for model: {self.chunk_sizer.model_name}")
+        """Filter and optimize chunks for graph processing based on model capabilities and document type"""
+        logger.info(f"🔧 Optimizing {len(chunks)} chunks for model: {self.chunk_sizer.model_name} (doc type: {self.document_type})")
         
-        # Use dynamic chunk sizing to optimize chunks for the current model
-        optimized_chunks = optimize_chunks_for_model(chunks)
+        # Get configuration based on the 50% model utilization rule
+        current_config = self.chunk_sizer.get_chunk_configuration(self.document_type, 'knowledge_graph')
+        current_min_size = current_config.get('min_chunk_size', 1000)
+        current_max_size = current_config.get('max_chunk_size', 524288)
+        
+        logger.info(f"📊 Using 50% model utilization configuration:")
+        logger.info(f"   Min size: {current_min_size:,} chars")
+        logger.info(f"   Max size: {current_max_size:,} chars (50% of model capacity)")
+        
+        # Use dynamic chunk sizing to optimize chunks for the current model and document type
+        optimized_chunks = optimize_chunks_for_model(chunks, self.document_type)
         
         # Apply additional filtering based on content quality
         suitable_chunks = []
-        logger.debug(f"🔍 Chunk filtering: min_chunk_length={self.min_chunk_length}, max_chunk_length={self.max_chunk_length}")
+        logger.debug(f"🔍 Chunk filtering with document-specific limits: min={current_min_size}, max={current_max_size}")
         
         for chunk in optimized_chunks:
             content_length = len(chunk.content.strip())
             logger.debug(f"🔍 Checking chunk: {content_length} chars")
             
-            # Check minimum length requirement  
-            if content_length < self.min_chunk_length:
-                logger.debug(f"⏭️  Skipping short chunk: {content_length} chars < {self.min_chunk_length}")
+            # Check minimum length requirement with document-specific limit
+            if content_length < current_min_size:
+                logger.debug(f"⏭️  Skipping short chunk: {content_length} chars < {current_min_size}")
                 continue
             
-            # Check maximum length (should be handled by optimizer, but safety check)
-            if content_length > self.max_chunk_length * 1.1:  # 10% tolerance
-                logger.warning(f"⚠️  Chunk too large after optimization: {content_length} chars > {self.max_chunk_length}")
+            # Check maximum length with document-specific limit (should be handled by optimizer, but safety check)
+            if content_length > current_max_size * 1.1:  # 10% tolerance
+                logger.warning(f"⚠️  Chunk too large after optimization: {content_length} chars > {current_max_size}")
                 # Split if still too large
                 split_chunks = self._split_large_chunk(chunk)
                 suitable_chunks.extend(split_chunks)
@@ -390,8 +425,34 @@ class GraphDocumentProcessor:
             avg_size = sum(len(c.content) for c in suitable_chunks) // len(suitable_chunks)
             logger.info(f"   Average chunk size: {avg_size:,} characters")
             logger.info(f"   Size range: {min(len(c.content) for c in suitable_chunks):,} - {max(len(c.content) for c in suitable_chunks):,} characters")
+        else:
+            # CRITICAL WARNING: No chunks passed filtering
+            logger.error(f"❌ CRITICAL: All chunks filtered out! Document type: {self.document_type}")
+            logger.error(f"   Original chunks: {len(chunks)}")
+            logger.error(f"   Optimized chunks: {len(optimized_chunks)}")
+            logger.error(f"   Size limits: {current_min_size:,} - {current_max_size:,} chars")
+            if optimized_chunks:
+                chunk_sizes = [len(c.content.strip()) for c in optimized_chunks]
+                logger.error(f"   Chunk sizes: min={min(chunk_sizes)}, max={max(chunk_sizes)}, avg={sum(chunk_sizes)//len(chunk_sizes)}")
+                logger.error(f"   All chunks failed filtering - check size configuration!")
         
         return suitable_chunks
+    
+    def _detect_document_type(self, filename: str, document_content: str, chunks: List[ExtractedChunk]) -> str:
+        """Detect document type for optimized processing"""
+        # Check filename and content first
+        if detect_business_document(filename, document_content):
+            return 'technology_strategy'  # Specific type for DBS-like documents
+        
+        # Check chunk content for business indicators
+        sample_content = ''
+        for chunk in chunks[:3]:  # Check first 3 chunks
+            sample_content += chunk.content[:500] + ' '
+        
+        if detect_business_document('', sample_content):
+            return 'business_document'
+        
+        return 'general'
     
     def _create_empty_result(self, document_id: str, total_chunks: int) -> GraphProcessingResult:
         """Create an empty result when no suitable chunks are found"""

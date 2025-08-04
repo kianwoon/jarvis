@@ -126,7 +126,7 @@ class LLMKnowledgeExtractor:
         # Enhanced relationship taxonomy with comprehensive business relationships
         self.relationship_taxonomy = {
             'organizational': {
-                'RELATED_TO', 'PART_OF', 'CONTAINS', 'MEMBER_OF', 'OWNS', 'OWNED_BY',
+                'PART_OF', 'CONTAINS', 'MEMBER_OF', 'OWNS', 'OWNED_BY',  # REMOVED: RELATED_TO (generic)
                 'MANAGES', 'MANAGED_BY', 'REPORTS_TO', 'SUPERVISES', 'WORKS_FOR', 
                 'EMPLOYS', 'SUBSIDIARY_OF', 'PARENT_OF', 'DIVISION_OF', 'UNIT_OF',
                 'DEPARTMENT_OF', 'TEAM_MEMBER', 'BOARD_MEMBER', 'EXECUTIVE_OF',
@@ -199,7 +199,7 @@ class LLMKnowledgeExtractor:
             'core_entities': {
                 'focus': ['ORGANIZATION', 'PERSON', 'TECHNOLOGY', 'LOCATION', 'PRODUCT', 'SERVICE', 
                          'BANK', 'FINTECH', 'SUBSIDIARY', 'DIVISION', 'BUSINESS_UNIT'],
-                'min_confidence': 0.4,  # Lowered for business entities
+                'min_confidence': 0.6,  # BALANCED: Set to 0.6 for quality entities with reasonable volume
                 'aggressive_matching': True,
                 'business_context_boost': True
             },
@@ -207,41 +207,41 @@ class LLMKnowledgeExtractor:
                 'focus': ['STRATEGY', 'INITIATIVE', 'MARKET', 'REVENUE', 'INVESTMENT', 'RISK',
                          'DIGITAL_TRANSFORMATION', 'COMPETITIVE_ADVANTAGE', 'MARKET_SHARE',
                          'CUSTOMER_JOURNEY', 'INNOVATION', 'GROWTH', 'EXPANSION'],
-                'min_confidence': 0.3,  # Very aggressive for business concepts
+                'min_confidence': 0.6,  # BALANCED: Set to 0.6 for quality concepts with reasonable volume
                 'contextual_enhancement': True,
                 'pattern_recognition': True
             },
             'financial_metrics': {
                 'focus': ['KPI', 'METRIC', 'TARGET', 'GOAL', 'ROI', 'COST_SAVINGS', 'REVENUE',
                          'PROFIT', 'INVESTMENT', 'FUNDING', 'BUDGET', 'FINANCIAL_METRIC'],
-                'min_confidence': 0.3,
+                'min_confidence': 0.6,  # BALANCED: Set to 0.6 for quality metrics with reasonable volume
                 'number_pattern_extraction': True,
                 'percentage_extraction': True
             },
             'operational_entities': {
                 'focus': ['PROCESS', 'WORKFLOW', 'OPERATION', 'CAPABILITY', 'PLATFORM_TECH',
                          'CORE_BANKING', 'PAYMENT_SYSTEM', 'MOBILE_BANKING', 'AUTOMATION'],
-                'min_confidence': 0.4,
+                'min_confidence': 0.6,  # BALANCED: Set to 0.6 for quality operations with reasonable volume
                 'system_integration_focus': True
             },
             'market_competitive': {
                 'focus': ['COMPETITOR', 'MARKET_POSITION', 'COMPETITIVE_ADVANTAGE', 'MARKET_LEADER',
                          'DIFFERENTIATION', 'VALUE_PROPOSITION', 'MARKET_SEGMENT'],
-                'min_confidence': 0.4,
+                'min_confidence': 0.6,  # BALANCED: Set to 0.6 for quality competitive entities with reasonable volume
                 'competitive_analysis': True
             },
             'relationships_deep': {
                 'focus': 'relationships',
                 'inference_enabled': True,
                 'cross_reference': True,
-                'min_confidence': 0.2,  # Very aggressive relationship extraction
+                'min_confidence': 0.6,  # BALANCED: Set to 0.6 for quality relationships with reasonable volume
                 'business_relationship_patterns': True
             },
             'temporal_causal': {
                 'focus': ['temporal_business', 'strategic', 'TIMELINE', 'MILESTONE', 'PHASE'],
                 'causal_inference': True,
                 'timeline_analysis': True,
-                'min_confidence': 0.3
+                'min_confidence': 0.6  # BALANCED: Set to 0.6 for quality temporal relationships with reasonable volume
             }
         }
     
@@ -403,7 +403,7 @@ Be concise but accurate. Extract only the most critical entities.
                     relationships.append(ExtractedRelationship(
                         source_entity=rel_data.get('source', 'Unknown'),
                         target_entity=rel_data.get('target', 'Unknown'),
-                        relationship_type=rel_data.get('type', 'RELATED_TO'),
+                        relationship_type=rel_data.get('type', 'USES'),  # CHANGED: Default to specific type
                         confidence=0.6,  # Lower confidence for simplified extraction
                         properties=rel_data.get('properties', {})
                     ))
@@ -467,7 +467,7 @@ Be concise but accurate. Extract only the most important business concepts.
                     relationships.append(ExtractedRelationship(
                         source_entity=rel_data.get('source', 'Unknown'),
                         target_entity=rel_data.get('target', 'Unknown'),
-                        relationship_type=rel_data.get('type', 'RELATED_TO'),
+                        relationship_type=rel_data.get('type', 'USES'),  # CHANGED: Default to specific type
                         confidence=0.5,  # Lower confidence for simplified extraction
                         properties=rel_data.get('properties', {})
                     ))
@@ -686,12 +686,24 @@ Be concise but accurate. Extract only the most important business concepts.
         consolidated_entities = self._consolidate_entities(all_entities)
         consolidated_relationships = self._consolidate_relationships(all_relationships, consolidated_entities)
         
-        # Final enhancement: Co-occurrence relationships for high-frequency entities
-        logger.info("💡 Generating co-occurrence relationships for frequently mentioned entities")
-        cooccurrence_relationships = await self._generate_cooccurrence_relationships(
-            text, consolidated_entities, consolidated_relationships
-        )
-        consolidated_relationships.extend(cooccurrence_relationships)
+        # EMERGENCY FIX: DISABLE duplicate co-occurrence generation to prevent exponential explosion
+        # This was causing 244 → 1238 → 3764 relationship explosion
+        # Co-occurrence relationships are already generated in Pass 3 via _infer_cooccurrence_relationships()
+        logger.info("🚑 SKIPPING duplicate co-occurrence generation to prevent relationship explosion")
+        # cooccurrence_relationships = await self._generate_cooccurrence_relationships(
+        #     text, consolidated_entities, consolidated_relationships
+        # )
+        # consolidated_relationships.extend(cooccurrence_relationships)
+        
+        # NUCLEAR HARD CAP: Absolute maximum relationships to prevent system overload
+        NUCLEAR_RELATIONSHIP_LIMIT = 150  # Absolute maximum that cannot be bypassed
+        if len(consolidated_relationships) > NUCLEAR_RELATIONSHIP_LIMIT:
+            original_count = len(consolidated_relationships)
+            # Keep highest confidence relationships
+            consolidated_relationships.sort(key=lambda r: r.confidence, reverse=True)
+            consolidated_relationships = consolidated_relationships[:NUCLEAR_RELATIONSHIP_LIMIT]
+            logger.warning(f"🚑 NUCLEAR CAP APPLIED: Reduced relationships from {original_count} to {NUCLEAR_RELATIONSHIP_LIMIT}")
+            logger.warning(f"🚑 This prevents system overload from exponential relationship explosion")
         
         # Calculate processing time and metrics
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
@@ -1265,9 +1277,24 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
                     logger.warning(f"  ❌ Skipping single non-alphabetic character [{i}]: '{entity_name}'")
                     continue
                 
-                # Filter out common stop words or meaningless terms
-                if entity_name.lower().strip() in ['the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by']:
-                    logger.warning(f"  ❌ Skipping stop word [{i}]: '{entity_name}'")
+                # ENHANCED BUSINESS VALUE FILTERING with dynamic thresholds
+                business_value_score = self._calculate_business_value_score(entity_name, entity_type)
+                
+                # REBALANCED: Lower thresholds for better entity coverage, especially organizations
+                if entity_type in ['ORGANIZATION', 'ORG', 'COMPANY', 'BANK', 'CORPORATION']:
+                    threshold = 0.4  # Lower threshold for organization entities
+                elif entity_type == 'TECHNOLOGY':
+                    threshold = 0.45  # Keep current threshold for technology
+                else:
+                    threshold = 0.5  # Reduced from 0.6 to 0.5 for general entities
+                
+                if business_value_score < threshold:
+                    logger.warning(f"  ❌ Skipping low business value entity [{i}]: '{entity_name}' (score: {business_value_score:.2f}, threshold: {threshold})")
+                    continue
+                
+                # Enhanced stop words including business-generic terms
+                if self._is_generic_business_term(entity_name):
+                    logger.warning(f"  ❌ Skipping generic business term [{i}]: '{entity_name}'")
                     continue
                 
                 # Normalize canonical form
@@ -1280,18 +1307,23 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
                     inferred_type = self._infer_entity_type_from_name(entity_name)
                     entity_type = inferred_type if inferred_type in self.hierarchical_entity_types else 'CONCEPT'
                 
-                # Create enhanced entity
+                # Create enhanced entity with business value score
                 entity = ExtractedEntity(
                     text=entity_name.strip(),
                     label=entity_type,
                     start_char=raw_entity.get('start_char', 0) if isinstance(raw_entity, dict) else 0,
                     end_char=raw_entity.get('end_char', len(entity_name)) if isinstance(raw_entity, dict) else len(entity_name),
                     confidence=confidence,
-                    canonical_form=canonical_form
+                    canonical_form=canonical_form,
+                    properties={
+                        'business_value_score': business_value_score,
+                        'strategic_relevance': raw_entity.get('strategic_relevance', '') if isinstance(raw_entity, dict) else '',
+                        'evidence': raw_entity.get('evidence', '') if isinstance(raw_entity, dict) else ''
+                    }
                 )
                 
                 enhanced_entities.append(entity)
-                logger.debug(f"  ✅ Created entity [{i}]: '{entity_name}' (type: {entity_type}, canonical: '{canonical_form}')")
+                logger.debug(f"  ✅ Created entity [{i}]: '{entity_name}' (type: {entity_type}, business_value: {business_value_score:.2f}, canonical: '{canonical_form}')")
                 
             except Exception as e:
                 logger.error(f"  ❌ Failed to process entity [{i}] {raw_entity}: {e}")
@@ -1330,40 +1362,321 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
         return enhanced_entities
     
     def _infer_entity_type_from_name(self, entity_name: str) -> str:
-        """Infer entity type from entity name using business intelligence patterns"""
+        """Enhanced entity type inference with high-value business pattern matching"""
         name_lower = entity_name.lower()
         
-        # Organization patterns
-        org_patterns = ['bank', 'corp', 'company', 'ltd', 'inc', 'group', 'holdings', 'division', 'subsidiary']
-        if any(pattern in name_lower for pattern in org_patterns):
-            return 'ORGANIZATION'
+        # HIGH-VALUE PATTERN MATCHING
         
-        # Technology patterns  
-        tech_patterns = ['system', 'platform', 'api', 'database', 'cloud', 'ai', 'ml', 'blockchain']
-        if any(pattern in name_lower for pattern in tech_patterns):
-            return 'TECHNOLOGY'
-        
-        # Financial patterns
-        financial_patterns = ['revenue', 'profit', 'investment', 'funding', 'capital', 'budget', 'cost']
-        if any(pattern in name_lower for pattern in financial_patterns):
+        # Executive patterns with names (highest value)
+        if re.search(r'\b(ceo|chief executive officer|president|chairman|founder)\b', name_lower) and \
+           len(name_lower.split()) >= 3:  # Must include actual name
+            return 'EXECUTIVE'
+            
+        # Financial metrics with specific amounts (highest value)
+        if re.search(r'\$[\d,.]+(billion|million|k|thousand)', name_lower) or \
+           re.search(r'\d+(\.\d+)?%', name_lower) or \
+           re.search(r'(revenue|profit|earnings|income|cost|investment|funding|capital|budget)', name_lower) and \
+           (re.search(r'\$', name_lower) or re.search(r'\d', name_lower)):
             return 'FINANCIAL_METRIC'
         
-        # Strategy patterns
-        strategy_patterns = ['strategy', 'initiative', 'program', 'project', 'transformation', 'modernization']
-        if any(pattern in name_lower for pattern in strategy_patterns):
-            return 'STRATEGY'
+        # TECHNOLOGY PATTERNS (Enhanced to properly classify tech entities)
         
-        # Location patterns
-        location_patterns = ['singapore', 'hong kong', 'asia', 'china', 'thailand', 'indonesia', 'office', 'headquarters']
-        if any(pattern in name_lower for pattern in location_patterns):
-            return 'LOCATION'
+        # Specific database and data technologies
+        database_patterns = [
+            r'\b(oceanbase|sofastack|tdsql|redis|mongodb|postgresql|mysql|oracle|cassandra)\b',
+            r'\b(elasticsearch|clickhouse|snowflake|databricks|neo4j|dynamodb|bigquery)\b',
+            r'\b(hadoop|spark|flink|kafka|apache kafka|rabbitmq|activemq)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in database_patterns):
+            return 'TECHNOLOGY'
+            
+        # Cloud and infrastructure technologies
+        cloud_tech_patterns = [
+            r'\b(aws|amazon web services|azure|microsoft azure|google cloud|gcp)\b',
+            r'\b(kubernetes|docker|terraform|ansible|jenkins|gitlab|github)\b',
+            r'\b(openstack|vmware|citrix|alibaba cloud|tencent cloud)\b',
+            r'\b(microservices|serverless|containerization|service mesh)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in cloud_tech_patterns):
+            return 'TECHNOLOGY'
+            
+        # AI/ML and strategic technologies
+        ai_ml_patterns = [
+            r'\b(artificial intelligence|machine learning|deep learning|neural network)\b',
+            r'\b(natural language processing|computer vision|blockchain|smart contract)\b',
+            r'\b(quantum computing|edge computing|iot|internet of things)\b',
+            r'\b(augmented reality|virtual reality|ar|vr|digital identity|biometric)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in ai_ml_patterns):
+            return 'TECHNOLOGY'
+            
+        # Business technology strategies and methodologies
+        tech_strategy_patterns = [
+            r'\b(cloud migration|digital transformation|devops|cicd|api economy)\b',
+            r'\b(cloud native|hybrid cloud|multi-cloud|data lake|data warehouse)\b',
+            r'\b(real-time analytics|stream processing|event-driven architecture)\b',
+            r'\b(mainframe decommissioning|legacy modernization|innovation strategy)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in tech_strategy_patterns):
+            return 'TECHNOLOGY'
+            
+        # Fintech and banking technologies
+        fintech_patterns = [
+            r'\b(core banking|payment gateway|digital wallet|mobile banking|open banking)\b',
+            r'\b(api banking|regtech|compliance automation|fraud detection|kyc|aml)\b',
+            r'\b(risk management system|pci dss|cryptocurrency|digital payment)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in fintech_patterns):
+            return 'TECHNOLOGY'
+            
+        # Programming languages and frameworks (in business context)
+        programming_patterns = [
+            r'\b(java|python|javascript|typescript|react|angular|vue)\s+\w+\b',  # Must be compound
+            r'\b(spring boot|node\.js|express|\.net|microservice)\b',
+            r'\b\w+\s+(framework|library|runtime|sdk|api)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in programming_patterns):
+            return 'TECHNOLOGY'
         
-        # Product/Service patterns
-        product_patterns = ['banking', 'payment', 'loan', 'credit', 'mobile app', 'service', 'product']
-        if any(pattern in name_lower for pattern in product_patterns):
+        # Specific organization names (must be complete)
+        org_patterns = [
+            r'\b\w+\s+(bank|corp|corporation|company|ltd|inc|group|holdings|division|subsidiary)\b',
+            r'\b(dbs|ant financial|grab|gojek|shopee|lazada|sea limited)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in org_patterns):
+            return 'ORGANIZATION'
+        
+        # Branded products/services (must be specific)
+        product_patterns = [
+            r'\b\w+\s+(app|platform|service|system|solution)\b',  # Like "PayLah! app"
+            r'\b(payLah|grabpay|shopeepay|gojek|grab|uber)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in product_patterns):
             return 'PRODUCT'
         
+        # Strategic initiatives (must be named)
+        strategy_patterns = [
+            r'\b\w+\s+(strategy|initiative|program|project|transformation)\b',  # Like "Digital Transformation 2025"
+            r'\b(business transformation|organizational change|process improvement)\s+\w+\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in strategy_patterns):
+            return 'STRATEGY'
+        
+        # Specific geographic markets
+        location_patterns = [
+            r'\b(singapore|hong kong|indonesia|thailand|malaysia|philippines|vietnam)\b',
+            r'\b(southeast asia|asia pacific|asean|greater china)\b',
+            r'\b\w+\s+(market|region|office|headquarters|branch|operations)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in location_patterns):
+            return 'LOCATION'
+        
+        # Technology stacks (must be specific)
+        tech_patterns = [
+            r'\b(aws|azure|google cloud|kubernetes|docker|microservices)\b',
+            r'\b\w+\s+(api|database|system|platform|infrastructure)\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in tech_patterns):
+            return 'TECHNOLOGY'
+        
+        # Temporal events (must be specific)
+        temporal_patterns = [
+            r'\b(q[1-4]\s+20\d{2}|quarter\s+[1-4]|h[12]\s+20\d{2})\b',  # Q3 2024, Quarter 1, H1 2024
+            r'\b(20\d{2}\s+(earnings|results|launch|announcement))\b'
+        ]
+        if any(re.search(pattern, name_lower) for pattern in temporal_patterns):
+            return 'TEMPORAL'
+        
+        # Default to CONCEPT for anything else
         return 'CONCEPT'
+    
+    def _calculate_business_value_score(self, entity_name: str, entity_type: str) -> float:
+        """Calculate business value score for an entity (0.0 to 1.0)"""
+        name_lower = entity_name.lower().strip()
+        score = 0.5  # Base score
+        
+        # HIGH VALUE PATTERNS (Add significant points)
+        
+        # Financial metrics with specific amounts
+        if re.search(r'\$[\d,.]+(billion|million|k|thousand)', name_lower) or \
+           re.search(r'\d+%|\d+\.\d+%', name_lower):
+            score += 0.4  # Financial specificity is highly valuable
+            
+        # Named executives with titles
+        if any(title in name_lower for title in ['ceo ', 'cto ', 'cfo ', 'coo ', 'cmo ', 'president ', 'chairman ']):
+            if len(name_lower.split()) >= 3:  # Must have actual name, not just title
+                score += 0.3
+            else:
+                score -= 0.2  # Generic title without name is low value
+                
+        # Specific company/organization names with qualifiers
+        if any(org_type in name_lower for org_type in ['bank', 'corp', 'company', 'ltd', 'inc', 'group']):
+            if len(name_lower.split()) >= 2:  # Must be specific, not just "bank"
+                score += 0.3
+                
+        # Branded products/services
+        if any(brand_indicator in name_lower for brand_indicator in ['app', 'platform', 'service']) and \
+           len(name_lower.split()) >= 2:  # Must be specific like "PayLah! app"
+            score += 0.2
+            
+        # Strategic initiatives with specific names
+        if any(initiative in name_lower for initiative in ['project ', 'initiative', 'program', 'transformation']) and \
+           len(name_lower.split()) >= 2:
+            score += 0.2
+            
+        # Specific geographic markets
+        specific_locations = ['singapore', 'hong kong', 'southeast asia', 'asia pacific', 'indonesia', 'thailand']
+        if any(loc in name_lower for loc in specific_locations):
+            score += 0.2
+            
+        # TECHNOLOGY VALUE BOOST PATTERNS (Critical for business strategy documents)
+        
+        # Specific technology names and databases (High business value)
+        specific_tech_names = [
+            'oceanbase', 'sofastack', 'tdsql', 'apache kafka', 'kafka', 'redis', 'mongodb', 'postgresql', 
+            'mysql', 'oracle', 'elasticsearch', 'kubernetes', 'docker', 'terraform', 'ansible',
+            'hadoop', 'spark', 'flink', 'cassandra', 'clickhouse', 'snowflake', 'databricks'
+        ]
+        if any(tech in name_lower for tech in specific_tech_names):
+            score += 0.3  # Specific tech names are highly valuable
+            
+        # Strategic technology terms (Medium-high business value)
+        strategic_tech_terms = [
+            'artificial intelligence', 'machine learning', 'deep learning', 'neural network',
+            'blockchain', 'smart contract', 'cryptocurrency', 'digital identity', 'biometric',
+            'quantum computing', 'edge computing', 'iot', 'internet of things', 'ar', 'vr',
+            'augmented reality', 'virtual reality', 'natural language processing', 'computer vision'
+        ]
+        if any(term in name_lower for term in strategic_tech_terms):
+            score += 0.2  # Strategic tech concepts are valuable
+            
+        # Business technology strategies (Medium business value)
+        business_tech_strategies = [
+            'cloud migration', 'digital transformation', 'devops', 'cicd', 'microservices',
+            'api economy', 'api gateway', 'service mesh', 'containerization', 'serverless',
+            'cloud native', 'hybrid cloud', 'multi-cloud', 'data lake', 'data warehouse',
+            'real-time analytics', 'stream processing', 'event-driven architecture',
+            'mainframe decommissioning', 'legacy modernization', 'innovation strategy'
+        ]
+        if any(strategy in name_lower for strategy in business_tech_strategies):
+            score += 0.25  # Business tech strategies are valuable
+            
+        # Cloud platforms and major tech stacks
+        cloud_platforms = [
+            'aws', 'amazon web services', 'azure', 'microsoft azure', 'google cloud', 'gcp',
+            'alibaba cloud', 'tencent cloud', 'openstack', 'vmware', 'citrix'
+        ]
+        if any(platform in name_lower for platform in cloud_platforms):
+            score += 0.3  # Cloud platforms are highly strategic
+            
+        # Fintech and banking technologies
+        fintech_tech = [
+            'core banking', 'payment gateway', 'digital wallet', 'mobile banking', 
+            'open banking', 'api banking', 'regtech', 'compliance automation',
+            'risk management system', 'fraud detection', 'kyc', 'aml', 'pci dss'
+        ]
+        if any(tech in name_lower for tech in fintech_tech):
+            score += 0.25  # Fintech tech is valuable for financial institutions
+            
+        # Programming languages and frameworks (when mentioned in business context)
+        programming_tech = [
+            'java', 'python', 'javascript', 'typescript', 'react', 'angular', 'vue',
+            'spring boot', 'node.js', 'express', '.net', 'c#', 'go', 'rust', 'scala'
+        ]
+        # Only boost if it's part of a larger tech discussion (compound terms)
+        if any(tech in name_lower for tech in programming_tech) and len(name_lower.split()) >= 2:
+            score += 0.15  # Programming tech in business context gets modest boost
+            
+        # LOW VALUE PATTERNS (Subtract points)
+        
+        # Generic business terms without specificity
+        generic_terms = [
+            'system', 'platform', 'technology', 'solution', 'approach', 'way', 'method',
+            'process', 'business', 'digital', 'innovation', 'growth', 'development',
+            'management', 'operation', 'service', 'product', 'application'
+        ]
+        if name_lower in generic_terms:
+            score -= 0.4
+            
+        # Pronouns and articles
+        meaningless_terms = ['the', 'this', 'that', 'these', 'those', 'it', 'they', 'we', 'us']
+        if name_lower in meaningless_terms:
+            score -= 0.6
+            
+        # Single character or very short generic terms
+        if len(name_lower) <= 2:
+            score -= 0.4
+            
+        # Common stop words
+        stop_words = ['and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by']
+        if name_lower in stop_words:
+            score -= 0.6
+            
+        # REBALANCED: Enhanced entity type multipliers for business entities
+        if entity_type in ['ORGANIZATION', 'ORG', 'COMPANY', 'BANK', 'CORPORATION', 'FINTECH']:
+            score *= 1.3  # Higher boost for organization entities
+        elif entity_type in ['EXECUTIVE', 'FINANCIAL_METRIC', 'PRODUCT']:
+            score *= 1.2  # Boost business-relevant types
+        elif entity_type in ['CONCEPT', 'GENERIC']:
+            score *= 0.8  # Reduce generic concepts
+            
+        # Ensure score is within bounds
+        return max(0.0, min(1.0, score))
+    
+    def _is_generic_business_term(self, entity_name: str) -> bool:
+        """Check if entity is a generic business term that should be filtered out"""
+        name_lower = entity_name.lower().strip()
+        
+        # Comprehensive list of generic business terms
+        generic_business_terms = {
+            # Generic roles without names
+            'ceo', 'cto', 'cfo', 'coo', 'cmo', 'president', 'chairman', 'director', 'manager',
+            'executive', 'leader', 'team', 'staff', 'employee', 'consultant', 'advisor',
+            
+            # Vague technology concepts
+            'system', 'platform', 'technology', 'solution', 'software', 'hardware', 'application',
+            'tool', 'framework', 'infrastructure', 'architecture', 'implementation',
+            
+            # Generic business concepts
+            'business', 'company', 'organization', 'enterprise', 'corporation', 'firm',
+            'strategy', 'initiative', 'program', 'project', 'approach', 'method', 'process',
+            'operation', 'function', 'activity', 'service', 'product', 'offering',
+            
+            # Vague descriptors
+            'digital', 'innovation', 'transformation', 'modernization', 'optimization',
+            'improvement', 'enhancement', 'development', 'growth', 'expansion',
+            'management', 'governance', 'compliance', 'quality', 'performance',
+            
+            # Common words that are never meaningful as entities
+            'the', 'this', 'that', 'these', 'those', 'they', 'it', 'we', 'us', 'our',
+            'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+            'way', 'thing', 'something', 'anything', 'everything', 'nothing',
+            
+            # Generic time/location without specificity
+            'today', 'tomorrow', 'yesterday', 'now', 'then', 'here', 'there', 'where',
+            'market', 'industry', 'sector', 'region', 'area', 'location', 'place'
+        }
+        
+        # Check exact match
+        if name_lower in generic_business_terms:
+            return True
+            
+        # Check for very short non-specific terms
+        if len(name_lower) <= 2 and name_lower not in ['ai', 'ml', 'db', 'ui', 'ux']:
+            return True
+            
+        # REBALANCED: Less aggressive filtering of business terms - allow many business entity types
+        if len(name_lower.split()) == 1:
+            # Only filter extremely generic terms, keep business entity types
+            extremely_generic_words = {
+                'data', 'analytics', 'security', 'mobile', 'web'
+                # REMOVED: 'bank', 'finance', 'payment', 'credit', 'loan', 'investment', 'cloud'
+                # These are legitimate business entity types and should not be filtered
+            }
+            if name_lower in extremely_generic_words:
+                return True
+                
+        return False
     
     def _validate_and_score_relationships(self, raw_relationships: List[Dict[str, Any]], 
                                         entities: List[ExtractedEntity]) -> List[ExtractedRelationship]:
@@ -1430,8 +1743,8 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
                 
                 # Validate relationship type
                 if not self._is_valid_relationship_type(rel_type):
-                    logger.debug(f"  ⚠️ Invalid relationship type '{rel_type}', using 'RELATED_TO'")
-                    rel_type = 'RELATED_TO'
+                    logger.debug(f"  ⚠️ Invalid relationship type '{rel_type}', using 'USES'")
+                    rel_type = 'USES'  # CHANGED: Default to specific type instead of generic
                 
                 # Create relationship with enhanced properties
                 relationship = ExtractedRelationship(
@@ -1468,7 +1781,86 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
             logger.warning(f"Raw relationship sample: {raw_relationships[0] if raw_relationships else 'None'}")
             logger.warning(f"Available entities sample: {list(entity_names_exact.keys())[:5]}")
         
-        return validated_relationships
+        # Apply relationship filtering to reduce by 25% while preserving quality
+        filtered_relationships = self._filter_relationships_for_quality(validated_relationships)
+        
+        if len(filtered_relationships) != len(validated_relationships):
+            logger.info(f"Relationship filtering applied: {len(validated_relationships)} -> {len(filtered_relationships)} "
+                       f"({len(validated_relationships) - len(filtered_relationships)} removed)")
+        
+        return filtered_relationships
+    
+    def _filter_relationships_for_quality(self, relationships: List[ExtractedRelationship]) -> List[ExtractedRelationship]:
+        """Filter relationships to reduce count by ~25% while preserving quality"""
+        if not relationships:
+            return relationships
+            
+        # Calculate relationship quality scores
+        scored_relationships = []
+        for rel in relationships:
+            score = self._calculate_relationship_quality_score(rel)
+            scored_relationships.append((rel, score))
+        
+        # Sort by quality score (descending - highest quality first)
+        scored_relationships.sort(key=lambda x: x[1], reverse=True)
+        
+        # Target reduction: keep top 75% (remove bottom 25%)
+        target_count = max(1, int(len(relationships) * 0.75))
+        
+        # Keep the highest quality relationships
+        filtered_relationships = [rel for rel, score in scored_relationships[:target_count]]
+        
+        return filtered_relationships
+    
+    def _calculate_relationship_quality_score(self, rel: ExtractedRelationship) -> float:
+        """Calculate quality score for a relationship (0.0 to 1.0)"""
+        score = rel.confidence  # Start with base confidence
+        
+        # Boost high-value relationship types
+        high_value_types = [
+            'IMPLEMENTS', 'USES', 'MANAGES', 'OPERATES', 'DEVELOPS', 'COLLABORATES_WITH',
+            'PARTNERS_WITH', 'ACQUIRED_BY', 'INVESTS_IN', 'COMPETES_WITH', 'SUPPLIES_TO',
+            'MIGRATES_TO', 'REPLACES', 'INTEGRATES_WITH', 'DEPENDS_ON'
+        ]
+        if rel.relationship_type in high_value_types:
+            score += 0.2
+            
+        # Boost relationships with specific context/evidence
+        if rel.context and len(rel.context.strip()) > 20:
+            score += 0.15
+            
+        # Boost relationships between technology entities (strategic importance)
+        tech_indicators = ['platform', 'system', 'service', 'technology', 'database', 'cloud', 'api']
+        source_is_tech = any(indicator in rel.source_entity.lower() for indicator in tech_indicators)
+        target_is_tech = any(indicator in rel.target_entity.lower() for indicator in tech_indicators)
+        
+        if source_is_tech and target_is_tech:
+            score += 0.25  # Tech-to-tech relationships are highly valuable
+        elif source_is_tech or target_is_tech:
+            score += 0.15  # Mixed tech relationships are moderately valuable
+            
+        # Penalize generic relationship types
+        generic_types = ['RELATED_TO', 'ASSOCIATED_WITH', 'CONNECTED_TO']
+        if rel.relationship_type in generic_types:
+            score -= 0.15
+            
+        # Penalize fuzzy matched relationships (less reliable)
+        if rel.properties.get('fuzzy_matched', False):
+            score -= 0.1
+            
+        # Boost relationships with temporal information
+        if rel.properties.get('temporal_info'):
+            score += 0.1
+            
+        # Boost relationships with detailed attributes
+        if rel.properties.get('attributes') and len(rel.properties.get('attributes', {})) > 0:
+            score += 0.1
+            
+        # Penalize very short entity names (likely generic)
+        if len(rel.source_entity) <= 3 or len(rel.target_entity) <= 3:
+            score -= 0.2
+            
+        return max(0.0, min(1.0, score))
     
     def _find_matching_entity(self, entity_name: str, entity_names_exact: Dict[str, str], 
                              entity_names_text: Dict[str, str], entity_words: Dict[str, List[str]]) -> Optional[str]:
@@ -1520,19 +1912,29 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
         return None
     
     def _entities_similar(self, entity1: str, entity2: str) -> bool:
-        """Check if two entities are similar using simple heuristics"""
-        # Remove common suffixes/prefixes
-        entity1_clean = entity1.replace(' inc', '').replace(' ltd', '').replace(' corp', '').replace(' company', '')
-        entity2_clean = entity2.replace(' inc', '').replace(' ltd', '').replace(' corp', '').replace(' company', '')
+        """Check if two entities are similar using STRICTER heuristics to preserve more entities"""
+        # Only consider them similar if they are VERY close matches
         
-        # Check cleaned versions
-        if entity1_clean == entity2_clean:
+        # Exact match after stripping whitespace
+        if entity1.strip() == entity2.strip():
             return True
             
-        # Check for abbreviations (e.g., "DBS" vs "DBS Bank")
-        if entity1_clean in entity2_clean or entity2_clean in entity1_clean:
-            return True
-            
+        # Check for abbreviations only if one is exactly contained in the other
+        # AND the shorter one is at least 3 characters (to avoid false matches)
+        if len(entity1) >= 3 and len(entity2) >= 3:
+            if entity1 == entity2[:len(entity1)] or entity2 == entity1[:len(entity2)]:
+                # Additional check: the longer one should be reasonably close in length
+                if abs(len(entity1) - len(entity2)) <= 5:
+                    return True
+        
+        # Very strict suffix check - only for exact company suffixes
+        suffixes = [' inc.', ' ltd.', ' corp.', ' co.']
+        for suffix in suffixes:
+            if entity1.endswith(suffix) and entity2 == entity1[:-len(suffix)]:
+                return True
+            if entity2.endswith(suffix) and entity1 == entity2[:-len(suffix)]:
+                return True
+                
         return False
     
     def _is_valid_relationship_type(self, rel_type: str) -> bool:
@@ -1617,8 +2019,8 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
         if type1 == 'CONCEPT' or type2 == 'CONCEPT':
             return 'IMPLEMENTS'
         
-        # Default fallback
-        return 'RELATED_TO'
+        # Default fallback - use specific type instead of generic
+        return 'COLLABORATES_WITH'
     
     def _infer_pattern_relationships(self, entities: List[ExtractedEntity], text: str) -> List[ExtractedRelationship]:
         """Infer relationships based on textual patterns"""
@@ -2125,7 +2527,12 @@ Output JSON with temporal entities and causal/temporal relationships.
                     valid_relationships.append(clean_rel)
         
         logger.info(f"🔧 Relationship consolidation: {len(all_relationships)} -> {len(valid_relationships)} relationships")
-        return valid_relationships
+        
+        # AGGRESSIVE FILTERING: Apply hard caps and quality filtering
+        filtered_relationships = self._apply_aggressive_relationship_filtering(valid_relationships, final_entities)
+        logger.info(f"🚨 AGGRESSIVE FILTERING: {len(valid_relationships)} -> {len(filtered_relationships)} relationships")
+        
+        return filtered_relationships
     
     def _find_entity_match(self, normalized_name: str, entity_names: Dict[str, str]) -> Optional[str]:
         """Find matching entity name with fuzzy matching"""
@@ -2139,6 +2546,121 @@ Output JSON with temporal entities and causal/temporal relationships.
                 return canonical
         
         return None
+    
+    def _apply_aggressive_relationship_filtering(self, relationships: List[ExtractedRelationship], 
+                                               entities: List[ExtractedEntity]) -> List[ExtractedRelationship]:
+        """Apply aggressive filtering to reduce relationship count from 1238 to 150-300 maximum"""
+        if not relationships:
+            return relationships
+            
+        logger.info(f"🚨 Starting aggressive relationship filtering on {len(relationships)} relationships")
+        
+        # Step 1: Remove generic/low-value relationship types
+        high_value_types = {
+            'IMPLEMENTS', 'USES', 'MANAGES', 'OPERATES', 'DEVELOPS', 'WORKS_FOR',
+            'LOCATED_IN', 'PART_OF', 'OWNS', 'COLLABORATES_WITH', 'COMPETES_WITH',
+            'PROVIDES', 'REQUIRES', 'DEPENDS_ON', 'INTEGRATES_WITH', 'SUPPORTS',
+            'LEADS', 'REPORTS_TO', 'SERVES', 'PARTNERS_WITH', 'ACQUIRED_BY'
+        }
+        
+        filtered_rels = []
+        for rel in relationships:
+            # Remove generic relationship types
+            if rel.relationship_type in ['RELATED_TO', 'ASSOCIATED_WITH', 'CONNECTED_TO', 'MENTIONED_WITH']:
+                continue
+                
+            # Keep only high-value relationship types
+            if rel.relationship_type in high_value_types:
+                filtered_rels.append(rel)
+                
+        logger.info(f"🚨 After removing generic types: {len(relationships)} -> {len(filtered_rels)} relationships")
+        
+        # Step 2: Apply confidence threshold filtering (minimum 0.5 - ADJUSTED for balance)
+        confidence_filtered = []
+        for rel in filtered_rels:
+            try:
+                confidence = float(rel.confidence) if rel.confidence is not None else 0.0
+                if confidence >= 0.5:  # ADJUSTED: Lowered from 0.7 to 0.5 for better balance
+                    confidence_filtered.append(rel)
+            except (TypeError, ValueError):
+                # Skip relationships with invalid confidence values
+                continue
+        logger.info(f"🚨 After confidence filtering (>=0.5): {len(filtered_rels)} -> {len(confidence_filtered)} relationships")
+        
+        # Step 3: OPTIMIZATION - Limit relationships per entity (max 2 per entity for ≤4.0 ratio)
+        entity_relationship_count = {}
+        entity_limited_rels = []
+        
+        # Sort by confidence to prioritize highest quality relationships
+        confidence_filtered.sort(key=lambda r: float(r.confidence) if r.confidence is not None else 0.0, reverse=True)
+        
+        for rel in confidence_filtered:
+            source_count = entity_relationship_count.get(rel.source_entity, 0)
+            target_count = entity_relationship_count.get(rel.target_entity, 0)
+            
+            # OPTIMIZATION: Maximum 2 relationships per entity to maintain ≤4.0 ratio
+            if source_count < 2 and target_count < 2:
+                entity_limited_rels.append(rel)
+                entity_relationship_count[rel.source_entity] = source_count + 1
+                entity_relationship_count[rel.target_entity] = target_count + 1
+                
+        logger.info(f"🚨 OPTIMIZATION - After per-entity limits (max 2): {len(confidence_filtered)} -> {len(entity_limited_rels)} relationships")
+        
+        # Step 4: OPTIMIZATION - Apply dynamic hard cap based on entity count (max 4 relationships per entity)
+        HARD_CAP = min(200, len(entities) * 4)  # OPTIMIZATION: Reduced from entities * 6 to entities * 4
+        if len(entity_limited_rels) > HARD_CAP:
+            # Keep only the highest quality relationships up to the cap
+            final_rels = entity_limited_rels[:HARD_CAP]
+            logger.info(f"🚨 Applied hard cap: {len(entity_limited_rels)} -> {HARD_CAP} relationships")
+        else:
+            final_rels = entity_limited_rels
+            
+        # Step 5: Final optimization - If we have too many relationships per entity, reduce further
+        total_entities = len(entities)
+        final_count = len(final_rels)
+        relationships_per_entity = final_count / max(total_entities, 1)
+        
+        # OPTIMIZATION: If ratio is still too high (>4 per entity), apply stricter per-entity limits
+        if relationships_per_entity > 4.0:
+            logger.info(f"🚨 OPTIMIZATION - Ratio too high ({relationships_per_entity:.1f}), applying stricter per-entity limits")
+            logger.info(f"🚨 Entity analysis: {total_entities} entities, {final_count} relationships")
+            
+            # OPTIMIZATION: Calculate optimal relationships per entity for target ≤4.0 ratio
+            target_ratio = min(4.0, max(2.0, 200 / total_entities))  # Changed from 6.0 to 4.0, 300 to 200
+            max_rels_per_entity = int(target_ratio)
+            
+            # Re-apply per-entity limits with stricter caps
+            entity_relationship_count = {}
+            ultra_filtered_rels = []
+            
+            for rel in final_rels:
+                source_count = entity_relationship_count.get(rel.source_entity, 0)
+                target_count = entity_relationship_count.get(rel.target_entity, 0)
+                
+                if source_count < max_rels_per_entity and target_count < max_rels_per_entity:
+                    ultra_filtered_rels.append(rel)
+                    entity_relationship_count[rel.source_entity] = source_count + 1
+                    entity_relationship_count[rel.target_entity] = target_count + 1
+            
+            final_rels = ultra_filtered_rels
+            final_count = len(final_rels)
+            relationships_per_entity = final_count / max(total_entities, 1)
+            
+            logger.info(f"🚨 Ultra-filtering applied: max {max_rels_per_entity} relationships per entity")
+        
+        logger.info(f"✅ OPTIMIZATION FILTERING COMPLETE:")
+        logger.info(f"   📊 Final: {final_count} relationships for {total_entities} entities")
+        logger.info(f"   📊 Ratio: {relationships_per_entity:.1f} relationships per entity")
+        logger.info(f"   📊 Target achieved: {final_count <= 200 and relationships_per_entity <= 4.0}")
+        
+        # OPTIMIZATION: FINAL ENFORCEMENT - Ensure ratio never exceeds 4.0
+        final_ratio = len(final_rels) / max(total_entities, 1)
+        if final_ratio > 4.0:
+            max_allowed_relationships = int(total_entities * 4)  # OPTIMIZATION: Changed from * 6 to * 4
+            final_rels = final_rels[:max_allowed_relationships]
+            logger.info(f"🚨 OPTIMIZATION - FINAL RATIO ENFORCEMENT: Cut to {max_allowed_relationships} relationships (4.0 per entity ratio)")
+        
+        return final_rels
     
     async def _generate_cooccurrence_relationships(self, text: str, entities: List[ExtractedEntity],
                                                  existing_relationships: List[ExtractedRelationship]) -> List[ExtractedRelationship]:
@@ -2166,8 +2688,8 @@ Output JSON with temporal entities and causal/temporal relationships.
                 start = pos + 1
             entity_positions[entity.canonical_form] = positions
         
-        # Find entities that co-occur within proximity windows
-        proximity_threshold = 500  # characters
+        # AGGRESSIVE FILTERING: Much stricter proximity and co-occurrence requirements
+        proximity_threshold = 200  # REDUCED from 500 to 200 characters for tighter proximity
         
         for i, entity1 in enumerate(entities):
             for entity2 in entities[i+1:]:
@@ -2184,8 +2706,8 @@ Output JSON with temporal entities and causal/temporal relationships.
                         if abs(pos1 - pos2) <= proximity_threshold:
                             cooccurrences += 1
                 
-                # If entities co-occur frequently, create relationship
-                if cooccurrences >= 1:  # More aggressive - even single co-occurrence matters for business docs
+                # NUCLEAR FIX: Require extremely frequent co-occurrence to prevent explosion
+                if cooccurrences >= 100:  # OPTIMIZATION: Increased from 50 to 100 co-occurrences minimum for ≤4.0 ratio
                     rel_type = self._infer_cooccurrence_relationship_type(entity1, entity2)
                     rel_key = (entity1.canonical_form.lower(), entity2.canonical_form.lower(), rel_type)
                     
@@ -2194,7 +2716,7 @@ Output JSON with temporal entities and causal/temporal relationships.
                             source_entity=entity1.canonical_form,
                             target_entity=entity2.canonical_form,
                             relationship_type=rel_type,
-                            confidence=0.5 + (cooccurrences * 0.1),  # Higher confidence for more co-occurrences
+                            confidence=0.8 + (cooccurrences * 0.02),  # AGGRESSIVE: Start at 0.8 confidence minimum
                             context=f"Co-occurs {cooccurrences} times in document",
                             properties={
                                 'inference_method': 'cooccurrence',
@@ -2203,6 +2725,11 @@ Output JSON with temporal entities and causal/temporal relationships.
                             }
                         )
                         cooccurrence_relationships.append(cooccurrence_rel)
+                        
+                        # NUCLEAR SAFETY: Hard cap on co-occurrence relationships to prevent explosion
+                        if len(cooccurrence_relationships) >= 25:  # Maximum 25 co-occurrence relationships
+                            logger.warning("🚑 NUCLEAR CAP: Stopping co-occurrence generation at 25 relationships")
+                            return cooccurrence_relationships
         
         logger.info(f"💡 Generated {len(cooccurrence_relationships)} co-occurrence relationships")
         return cooccurrence_relationships
@@ -2215,7 +2742,7 @@ Output JSON with temporal entities and causal/temporal relationships.
         if type1 in ['ORGANIZATION', 'COMPANY'] and type2 in ['ORGANIZATION', 'COMPANY']:
             return 'COLLABORATES_WITH'
         elif type1 in ['PERSON', 'EXECUTIVE'] and type2 in ['ORGANIZATION', 'COMPANY']:
-            return 'ASSOCIATED_WITH'
+            return 'WORKS_FOR'  # CHANGED: More specific than ASSOCIATED_WITH
         elif type1 in ['TECHNOLOGY', 'SYSTEM'] and type2 in ['ORGANIZATION', 'COMPANY']:
             return 'USED_BY'
         elif type1 in ['PRODUCT', 'SERVICE'] and type2 in ['MARKET', 'CUSTOMER']:
@@ -2223,7 +2750,7 @@ Output JSON with temporal entities and causal/temporal relationships.
         elif type1 == 'LOCATION' and type2 in ['ORGANIZATION', 'COMPANY']:
             return 'RELATED_REGION'
         else:
-            return 'RELATED_TO'
+            return 'COLLABORATES_WITH'  # CHANGED: More specific than RELATED_TO
     
     async def _infer_cooccurrence_relationships(self, text: str, entities: List[ExtractedEntity]) -> List[ExtractedRelationship]:
         """Enhanced co-occurrence relationship inference"""
@@ -2243,17 +2770,17 @@ Output JSON with temporal entities and causal/temporal relationships.
                 close_occurrences = 0
                 for pos1 in entity1_pos:
                     for pos2 in entity2_pos:
-                        if abs(pos1 - pos2) <= 300:  # Within 300 characters
+                        if abs(pos1 - pos2) <= 100:  # AGGRESSIVE: Further reduced to 100 characters for ultra-tight proximity
                             close_occurrences += 1
                 
-                if close_occurrences >= 1:  # Even one close occurrence matters for business docs
+                if close_occurrences >= 25:  # NUCLEAR FIX: Require 25+ close occurrences to prevent explosion
                     rel_type = self._infer_relationship_type(entity1, entity2, text)
                     
                     relationship = ExtractedRelationship(
                         source_entity=entity1.canonical_form,
                         target_entity=entity2.canonical_form,
                         relationship_type=rel_type,
-                        confidence=0.4 + (close_occurrences * 0.1),
+                        confidence=0.8 + (close_occurrences * 0.02),  # AGGRESSIVE: Start at 0.8 confidence
                         context=f"Co-occurrence inference ({close_occurrences} times)",
                         properties={
                             'inference_method': 'enhanced_cooccurrence',
@@ -2261,6 +2788,11 @@ Output JSON with temporal entities and causal/temporal relationships.
                         }
                     )
                     relationships.append(relationship)
+                    
+                    # NUCLEAR SAFETY: Hard cap on co-occurrence relationships to prevent explosion
+                    if len(relationships) >= 50:  # Maximum 50 co-occurrence relationships
+                        logger.warning("🚑 NUCLEAR CAP: Stopping co-occurrence generation at 50 relationships")
+                        return relationships
         
         return relationships
     

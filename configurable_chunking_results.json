@@ -1,0 +1,53 @@
+{
+  "timestamp": "2025-08-05T03:17:04.912464",
+  "model_info": {
+    "name": "qwen3:30b-a3b-instruct-2507-q4_k_m",
+    "context_limit": 262144,
+    "optimal_chunk_size": 846725
+  },
+  "document_info": {
+    "size_chars": 7365,
+    "initial_chunks": 3
+  },
+  "processing_strategies": {
+    "knowledge_graph": {
+      "strategy": "balanced_large_context",
+      "initial_chunks": 3,
+      "optimized_chunks": 3,
+      "consolidation_ratio": 1.0,
+      "size_range": [
+        2499,
+        4002
+      ],
+      "average_size": 3455,
+      "context_utilization_percent": 0.9886741638183594,
+      "target_chunks": 6
+    },
+    "rag": {
+      "strategy": "balanced_large_context",
+      "initial_chunks": 3,
+      "optimized_chunks": 3,
+      "consolidation_ratio": 1.0,
+      "size_range": [
+        2499,
+        4002
+      ],
+      "average_size": 3455,
+      "context_utilization_percent": 0.9886741638183594,
+      "target_chunks": 3
+    },
+    "general_processing": {
+      "strategy": "full_context_utilization",
+      "initial_chunks": 3,
+      "optimized_chunks": 1,
+      "consolidation_ratio": 3.0,
+      "size_range": [
+        7367,
+        7367
+      ],
+      "average_size": 7367,
+      "context_utilization_percent": 0.7025718688964844,
+      "target_chunks": 1
+    }
+  }
+}

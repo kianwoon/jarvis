@@ -23,10 +23,20 @@ class Settings(BaseSettings):
     QDRANT_HOST: Optional[str] = "qdrant"
     QDRANT_PORT: Optional[int] = 6333
     
+    # Neo4j
+    NEO4J_HOST: Optional[str] = "neo4j"
+    NEO4J_PORT: Optional[int] = 7687
+    NEO4J_HTTP_PORT: Optional[int] = 7474
+    NEO4J_USER: Optional[str] = "neo4j"
+    NEO4J_PASSWORD: Optional[str] = "jarvis_neo4j_password"
+    NEO4J_DATABASE: Optional[str] = "neo4j"
+    NEO4J_URI: Optional[str] = "bolt://neo4j:7687"
+    
     # LLM Configuration
     LLM_MODEL: Optional[str] = "llama2"
     LLM_API_KEY: Optional[str] = None
     LLM_BASE_URL: Optional[str] = None
+    OLLAMA_BASE_URL: Optional[str] = "http://host.docker.internal:11434"
     
     # Memory Service
     MEMORY_SERVICE_URL: Optional[str] = "http://memory:8000"

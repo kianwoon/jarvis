@@ -419,12 +419,13 @@ def _get_emergency_fallback_settings():
     # Use the working model that we know generates proper responses
     working_model = "qwen3:30b-a3b-q4_K_M"
     
+    import os
     emergency_settings = {
         "main_llm": {
             "mode": "thinking",
             "model": working_model,  # Use the working model
             "max_tokens": 196608,
-            "model_server": "http://localhost:11434",
+            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
             "system_prompt": "You are Jarvis, an AI assistant. Always provide detailed, comprehensive responses with thorough explanations, examples, and step-by-step breakdowns when appropriate. Be verbose and informative.",
             "context_length": 262144,
             "repeat_penalty": 1.1

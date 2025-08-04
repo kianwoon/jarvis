@@ -1,5 +1,70 @@
-import React, { useState, useEffect, useRef, ErrorInfo, Component, useMemo } from 'react';
+import React, { useState, useEffect, useRef, ErrorInfo, Component, useMemo, useCallback, memo } from 'react';
 import * as d3 from 'd3';
+
+// OPTIMIZATION: Enhanced throttling utility with RAF for smooth animations
+const throttleRAF = (func: Function) => {
+  let rafId: number | null = null;
+  return function(this: any, ...args: any[]) {
+    if (rafId === null) {
+      rafId = requestAnimationFrame(() => {
+        func.apply(this, args);
+        rafId = null;
+      });
+    }
+  };
+};
+
+// OPTIMIZATION: Throttling utility for better performance
+const throttle = (func: Function, limit: number) => {
+  let inThrottle: boolean;
+  return function(this: any, ...args: any[]) {
+    if (!inThrottle) {
+      func.apply(this, args);
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  }
+};
+
+// OPTIMIZATION: Debouncing utility for better performance
+const debounce = (func: Function, wait: number) => {
+  let timeout: NodeJS.Timeout;
+  return function(this: any, ...args: any[]) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+};
+
+// OPTIMIZATION: Viewport culling for performance
+const isNodeInViewport = (node: GraphNode, transform: d3.ZoomTransform, width: number, height: number, margin: number = 100): boolean => {
+  if (!node.x || !node.y) return true; // Always render nodes without position
+  
+  const screenX = node.x * transform.k + transform.x;
+  const screenY = node.y * transform.k + transform.y;
+  
+  return screenX >= -margin && screenX <= width + margin &&
+         screenY >= -margin && screenY <= height + margin;
+};
+
+// OPTIMIZATION: Performance monitoring
+const PerformanceMonitor = {
+  startTime: 0,
+  
+  start(label: string) {
+    this.startTime = performance.now();
+    console.time(label);
+  },
+  
+  end(label: string) {
+    const endTime = performance.now();
+    console.timeEnd(label);
+    const duration = endTime - this.startTime;
+    if (duration > 16) { // Flag operations taking more than one frame (16ms)
+      console.warn(`Performance warning: ${label} took ${duration.toFixed(2)}ms`);
+    }
+    return duration;
+  }
+};
 import {
   Box,
   AppBar,
@@ -145,31 +210,73 @@ const KnowledgeGraphViewer: React.FC = () => {
   const [maxVisibleNodes, setMaxVisibleNodes] = useState(50);
   const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
   const [showIsolatedNodes, setShowIsolatedNodes] = useState(false);
+
+  // Enhanced search results tracking
+  const [searchResults, setSearchResults] = useState<{
+    directMatches: Set<string>;
+    associatedNodes: Set<string>;
+    searchRelationships: Set<string>;
+  }>({
+    directMatches: new Set(),
+    associatedNodes: new Set(),
+    searchRelationships: new Set()
+  });
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   
-  const handleFontSizeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+  // Theme state
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const saved = localStorage.getItem('jarvis-dark-mode');
+    return saved ? JSON.parse(saved) : false;
+  });
+  
+  // OPTIMIZATION: Memoized entity color generation
+  const generateColor = useCallback((type: string): string => {
+    const colors = getEntityColors(isDarkMode);
+    const typeKey = type.toUpperCase();
+    
+    if (colors[typeKey]) {
+      return colors[typeKey];
+    }
+    
+    // Generate consistent color for unknown types
+    let hash = 0;
+    for (let i = 0; i < typeKey.length; i++) {
+      hash = typeKey.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    
+    const hue = Math.abs(hash) % 360;
+    const adjustedHue = (hue >= 60 && hue <= 120) ? (hue + 60) % 360 : hue;
+    
+    const saturation = isDarkMode ? 85 : 75;
+    const lightness = isDarkMode ? 70 : 40;
+    
+    return `hsl(${adjustedHue}, ${saturation}%, ${lightness}%)`;
+  }, [isDarkMode]);
+  
+  // OPTIMIZATION: Memoized event handlers to prevent unnecessary re-renders
+  const handleFontSizeChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
     const newSize = parseInt(event.target.value);
     setFontSize(newSize);
     localStorage.setItem('jarvis-kg-font-size', newSize.toString());
-  };
+  }, []);
   
-  const handleNodeDiameterChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleNodeDiameterChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
     const newDiameter = parseInt(event.target.value);
     setNodeDiameter(newDiameter);
     localStorage.setItem('jarvis-kg-node-diameter', newDiameter.toString());
-  };
+  }, []);
   
-  const handleLayoutTypeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleLayoutTypeChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
     const newLayout = event.target.value;
     setLayoutType(newLayout);
     localStorage.setItem('jarvis-kg-layout-type', newLayout);
-  };
+  }, []);
   
-  const handleForceStrengthChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleForceStrengthChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const newStrength = parseFloat(event.target.value);
     setForceStrength(newStrength);
     localStorage.setItem('jarvis-kg-force-strength', newStrength.toString());
-  };
+  }, []);
   
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -181,12 +288,6 @@ const KnowledgeGraphViewer: React.FC = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [notification, setNotification] = useState<{type: 'success' | 'error', message: string} | null>(null);
-  
-  // Theme state
-  const [isDarkMode, setIsDarkMode] = useState(() => {
-    const saved = localStorage.getItem('jarvis-dark-mode');
-    return saved ? JSON.parse(saved) : false;
-  });
 
   // Entity type colors matching backend LLM extractor types
   // Enhanced color system with accessibility and theme support
@@ -291,37 +392,86 @@ const KnowledgeGraphViewer: React.FC = () => {
   const visibleEntities = useMemo(() => {
     let filtered = entities;
     
-    // Apply search filter
+    // ENHANCEMENT: Apply search filter with associated nodes
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(entity => 
+      
+      // Find directly matching entities
+      const directMatches = entities.filter(entity => 
         entity.name.toLowerCase().includes(query) ||
-        entity.type.toLowerCase().includes(query)
+        (entity.type && entity.type.toLowerCase().includes(query))
       );
+      
+      // ENHANCEMENT: Find associated nodes (connected entities)
+      const directMatchIds = new Set(directMatches.map(e => e.id));
+      const associatedIds = new Set<string>();
+      const searchRelationshipIds = new Set<string>();
+      
+      // Add entities that have relationships with the direct matches
+      relationships.forEach(rel => {
+        const relId = `${rel.source_entity}-${rel.target_entity}`;
+        
+        if (directMatchIds.has(rel.source_entity)) {
+          associatedIds.add(rel.target_entity);
+          searchRelationshipIds.add(relId);
+        }
+        if (directMatchIds.has(rel.target_entity)) {
+          associatedIds.add(rel.source_entity);
+          searchRelationshipIds.add(relId);
+        }
+      });
+      
+      // Remove direct matches from associated nodes to avoid duplicates
+      directMatchIds.forEach(id => associatedIds.delete(id));
+      
+      // Update search results state
+      setSearchResults({
+        directMatches: directMatchIds,
+        associatedNodes: associatedIds,
+        searchRelationships: searchRelationshipIds
+      });
+      
+      // Include direct matches and their associated nodes
+      filtered = entities.filter(entity => 
+        directMatchIds.has(entity.id) || associatedIds.has(entity.id)
+      );
+      
+      console.log(`🔍 Search enhanced: "${query}" found ${directMatches.length} direct matches and ${associatedIds.size} associated nodes`);
+    } else {
+      // Clear search results when no search query
+      setSearchResults({
+        directMatches: new Set(),
+        associatedNodes: new Set(),
+        searchRelationships: new Set()
+      });
     }
     
-    // Sort by degree centrality (most connected first)
-    filtered = filtered.sort((a, b) => {
-      const degreeA = calculateNodeDegrees.get(a.id) || 0;
-      const degreeB = calculateNodeDegrees.get(b.id) || 0;
-      return degreeB - degreeA;
-    });
-    
-    // Apply cluster visibility
+    // OPTIMIZATION: Efficient clustering with performance-aware sorting
+    // First apply cluster visibility filter (cheaper operation)
     filtered = filtered.filter(entity => {
-      if (collapsedClusters.has(entity.type)) {
+      if (entity.type && collapsedClusters.has(entity.type)) {
         return false;
       }
       return true;
     });
     
-    // Limit visible nodes for performance
+    // OPTIMIZATION: Only sort and limit if not searching (expensive operations)
     if (!searchQuery.trim()) {
-      filtered = filtered.slice(0, maxVisibleNodes);
+      // Sort by degree centrality (most connected first) only when needed
+      filtered = filtered
+        .map(entity => ({
+          entity,
+          degree: calculateNodeDegrees.get(entity.id) || 0
+        }))
+        .sort((a, b) => b.degree - a.degree)
+        .slice(0, maxVisibleNodes) // Apply limit early to reduce downstream processing
+        .map(item => item.entity);
+      
+      console.log(`🎯 Performance clustering: Limited to top ${Math.min(filtered.length, maxVisibleNodes)} most connected nodes`);
     }
     
     return filtered;
-  }, [entities, searchQuery, calculateNodeDegrees, collapsedClusters, maxVisibleNodes]);
+  }, [entities, relationships, searchQuery, calculateNodeDegrees, collapsedClusters, maxVisibleNodes]);
 
   // Filter relationships to only show connections between visible entities
   const visibleRelationships = useMemo(() => {
@@ -343,35 +493,9 @@ const KnowledgeGraphViewer: React.FC = () => {
     return visibleEntities.filter(entity => !connectedIds.has(entity.id));
   }, [visibleEntities, visibleRelationships]);
 
-  // Enhanced color generator with accessibility features
-  const generateColor = (entityType: string): string => {
-    if (entityColors[entityType]) {
-      return entityColors[entityType];
-    }
-    
-    // Generate consistent color based on entity type string
-    let hash = 0;
-    for (let i = 0; i < entityType.length; i++) {
-      const char = entityType.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    
-    // Enhanced HSL generation with better accessibility
-    const hue = Math.abs(hash) % 360;
-    
-    // Avoid problematic hue ranges (yellow-green that's hard to see)
-    const adjustedHue = (hue >= 60 && hue <= 120) ? (hue + 60) % 360 : hue;
-    
-    // Higher saturation and better contrast for accessibility
-    const saturation = isDarkMode ? 85 : 75; // Higher saturation for visibility
-    const lightness = isDarkMode ? 70 : 40;  // Better contrast ratios
-    
-    return `hsl(${adjustedHue}, ${saturation}%, ${lightness}%)`;
-  };
 
-  // Theme-aware colors
-  const getThemeColors = () => ({
+  // OPTIMIZATION: Memoized theme colors to prevent recalculation on every render
+  const themeColors = useMemo(() => ({
     background: isDarkMode ? '#121212' : '#fafafa',
     surface: isDarkMode ? '#1e1e1e' : '#ffffff',
     text: isDarkMode ? '#ffffff' : '#333333',
@@ -380,7 +504,7 @@ const KnowledgeGraphViewer: React.FC = () => {
     linkColor: isDarkMode ? '#999999' : '#666666',
     linkLabelColor: isDarkMode ? '#ffffff' : '#333333',
     nodeLabelColor: isDarkMode ? '#ffffff' : '#222222'
-  });
+  }), [isDarkMode]);
 
   // Listen for theme changes from localStorage
   useEffect(() => {
@@ -396,8 +520,8 @@ const KnowledgeGraphViewer: React.FC = () => {
     return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
-  // Fetch available document IDs or entity types
-  const fetchAvailableDocuments = async () => {
+  // OPTIMIZATION: Memoized fetch functions to prevent recreation on every render
+  const fetchAvailableDocuments = useCallback(async () => {
     try {
       // First try to get documents with document_id
       const response = await fetch('/api/v1/knowledge-graph/query', {
@@ -437,10 +561,10 @@ const KnowledgeGraphViewer: React.FC = () => {
         setSelectedDocument('ALL_ENTITIES');
       }
     }
-  };
+  }, [selectedDocument]);
 
   // Fetch graph statistics
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async () => {
     try {
       const response = await fetch('/api/v1/knowledge-graph/stats');
       if (response.ok) {
@@ -453,10 +577,10 @@ const KnowledgeGraphViewer: React.FC = () => {
       setError('Error connecting to knowledge graph service');
       console.error('Stats fetch error:', err);
     }
-  };
+  }, []);
 
   // Fetch entities for a specific document or all entities
-  const fetchEntities = async (documentId: string) => {
+  const fetchEntities = useCallback(async (documentId: string) => {
     if (!documentId) return;
     
     console.log('🔍 fetchEntities called with documentId:', documentId);
@@ -509,10 +633,10 @@ const KnowledgeGraphViewer: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   // Fetch relationships for a specific document or all relationships
-  const fetchRelationships = async (documentId: string) => {
+  const fetchRelationships = useCallback(async (documentId: string) => {
     if (!documentId) return;
     
     try {
@@ -533,10 +657,10 @@ const KnowledgeGraphViewer: React.FC = () => {
       setError('Error fetching relationships');
       console.error('Relationships fetch error:', err);
     }
-  };
+  }, []);
 
-  // Create and update D3 visualization
-  const createVisualization = () => {
+  // OPTIMIZATION: Memoized visualization function
+  const createVisualization = useCallback(() => {
     console.log('=== Starting D3 Visualization ===');
     console.log('Total Entities:', entities.length);
     console.log('Visible Entities:', visibleEntities.length);
@@ -619,7 +743,6 @@ const KnowledgeGraphViewer: React.FC = () => {
       // Set up SVG with safe dimensions
       const width = Math.max(400, dimensions.width);
       const height = Math.max(300, dimensions.height);
-      const themeColors = getThemeColors();
       
       svg
         .attr('width', width)
@@ -631,28 +754,54 @@ const KnowledgeGraphViewer: React.FC = () => {
       // Create main container group for zoom/pan transforms
       const mainGroup = svg.append('g').attr('class', 'main-group');
 
-      // Set up zoom behavior
+      // OPTIMIZATION: Enhanced zoom behavior with RAF throttling and viewport culling updates
+      const throttledZoomUpdate = throttleRAF((transform: any) => {
+        PerformanceMonitor.start('zoom-update');
+        
+        // Update viewport culling when zoom changes significantly
+        const visibleNodes = nodes.filter(d => isNodeInViewport(d, transform, width, height));
+        const visibleNodeIds = new Set(visibleNodes.map(d => d.id));
+        
+        // Update node visibility based on viewport
+        mainGroup.selectAll('circle')
+          .style('display', (d: any) => isNodeInViewport(d, transform, width, height) ? 'block' : 'none');
+        
+        // Update link visibility based on viewport
+        mainGroup.selectAll('.links line')
+          .style('display', (d: any) => {
+            const sourceVisible = visibleNodeIds.has((d.source as GraphNode).id);
+            const targetVisible = visibleNodeIds.has((d.target as GraphNode).id);
+            return (sourceVisible || targetVisible) ? 'block' : 'none';
+          });
+        
+        // Adjust font sizes based on zoom level for better readability (only for significant changes)
+        if (Math.abs(transform.k - 1) > 0.2) { // Increased threshold to reduce updates
+          const scaledFontSize = Math.max(8, (fontSize - 4) / Math.sqrt(transform.k));
+          const scaledLinkFontSize = Math.max(6, Math.max(fontSize - 10, 6) / Math.sqrt(transform.k));
+          
+          // Update node label font sizes
+          mainGroup.selectAll('.node-label-group text')
+            .attr('font-size', `${scaledFontSize}px`);
+            
+          // Update link label font sizes
+          mainGroup.selectAll('.link-labels text')
+            .attr('font-size', `${scaledLinkFontSize}px`);
+        }
+        
+        PerformanceMonitor.end('zoom-update');
+      });
+
       const zoom = d3.zoom<SVGSVGElement, unknown>()
         .scaleExtent([0.1, 10])
         .on('zoom', (event) => {
+          PerformanceMonitor.start('zoom-event');
           const transform = event.transform;
           setZoomTransform(transform);
           mainGroup.attr('transform', transform.toString());
           
-          // Adjust font sizes based on zoom level for better readability
-          // Only update font sizes if zoom level changes significantly to improve performance
-          if (Math.abs(transform.k - 1) > 0.1) {
-            const scaledFontSize = Math.max(8, (fontSize - 4) / Math.sqrt(transform.k));
-            const scaledLinkFontSize = Math.max(6, Math.max(fontSize - 10, 6) / Math.sqrt(transform.k));
-            
-            // Update node label font sizes
-            mainGroup.selectAll('.node-label-group text')
-              .attr('font-size', `${scaledFontSize}px`);
-              
-            // Update link label font sizes
-            mainGroup.selectAll('.link-labels text')
-              .attr('font-size', `${scaledLinkFontSize}px`);
-          }
+          // OPTIMIZATION: Use RAF-throttled viewport and font updates
+          throttledZoomUpdate(transform);
+          PerformanceMonitor.end('zoom-event');
         });
 
       // Apply zoom behavior to SVG and store reference
@@ -871,10 +1020,10 @@ const KnowledgeGraphViewer: React.FC = () => {
               return nodeRadius + 7; // 7px padding = 12-15px spacing between nodes
             })
             .strength(1.0) // Maximum collision strength to prevent overlap - PRIORITY FORCE
-            .iterations(3) // Multiple iterations for better collision detection
+            .iterations(1) // OPTIMIZATION: Further reduced iterations from 2 to 1 for better performance
           )
           .force('center', d3.forceCenter(width / 2, height / 2).strength(0.1)) // Very weak centering only
-          .alphaDecay(0.01) // Very slow decay to allow tight settling
+          .alphaDecay(0.05) // OPTIMIZATION: Even faster alpha decay (was 0.03, now 0.05) for quicker settling
           .velocityDecay(0.8); // High velocity decay to prevent excessive movement
           // Link force restored but weak - collision force dominates for tight spacing
       } else {
@@ -883,7 +1032,7 @@ const KnowledgeGraphViewer: React.FC = () => {
           .force('collision', d3.forceCollide()
             .radius(forceParams.collisionRadius) // Individual node radius + padding
             .strength(1.0) // Maximum collision strength
-            .iterations(3) // Multiple iterations for better detection
+            .iterations(1) // OPTIMIZATION: Further reduced iterations from 2 to 1 for better performance
           )
           .alpha(0.3) // Higher alpha for better collision resolution
           .alphaDecay(0.05); // Slower decay for more separation time
@@ -895,13 +1044,13 @@ const KnowledgeGraphViewer: React.FC = () => {
       // Extended simulation duration for collision detection and spreading
       const getSimulationDuration = () => {
         if (layoutType === 'force-directed') {
-          // EXTREMELY LONG simulation time to ensure collision detection works
-          const baseTime = Math.max(15000, nodes.length * 200); // Even longer for collision detection
-          const maxTime = Math.min(30000, baseTime); // Increased max time for collision resolution
+          // OPTIMIZATION: Reduced simulation time for better performance
+          const baseTime = Math.max(5000, nodes.length * 50); // Further reduced from 8000 and nodes * 100
+          const maxTime = Math.min(10000, baseTime); // Further reduced max time from 15000 to 10000
           return maxTime;
         } else {
-          // Fixed layouts need time for collision detection too
-          return Math.max(5000, nodes.length * 100); // Longer for collision resolution
+          // OPTIMIZATION: Reduced time for fixed layouts too
+          return Math.max(2000, nodes.length * 30); // Further reduced from 3000 and nodes * 50
         }
       };
 
@@ -948,7 +1097,7 @@ const KnowledgeGraphViewer: React.FC = () => {
           d3.select(this)
             .transition()
             .duration(200)
-            .attr('stroke-width', Math.max(1.2, d.confidence * 1.8))
+            .attr('stroke-width', Math.max(1.0, d.confidence * 1.5))
             .attr('stroke-opacity', 1.0);
         })
         .on('mouseleave', function(_, d) {
@@ -990,9 +1139,15 @@ const KnowledgeGraphViewer: React.FC = () => {
         .join('circle')
         .attr('r', (_, i) => nodeTextInfo[i]?.radius || nodeDiameter / 2)  // Use calculated adaptive radius
         .attr('fill', d => {
-          // Highlight search matches
-          if (searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase()))) {
-            return '#FFD700'; // Gold for search matches
+          // ENHANCEMENT: Highlight search matches and associated nodes
+          if (searchQuery) {
+            if (searchResults.directMatches.has(d.id)) {
+              return isDarkMode ? '#1565C0' : '#0D47A1'; // Dark blue for direct search matches with theme support
+            } else if (searchResults.associatedNodes.has(d.id)) {
+              return isDarkMode ? '#26A69A' : '#00695C'; // Teal for associated nodes with theme support
+            } else {
+              return generateColor(d.type); // Normal color for visible but non-search nodes
+            }
           }
           // Highlight focused node
           if (focusedNodeId === d.id) {
@@ -1001,8 +1156,15 @@ const KnowledgeGraphViewer: React.FC = () => {
           return generateColor(d.type);
         })
         .attr('stroke', d => {
-          if (searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase()))) {
-            return '#FF8C00'; // Dark orange stroke for search matches
+          // ENHANCEMENT: Different strokes for direct matches vs associated nodes
+          if (searchQuery) {
+            if (searchResults.directMatches.has(d.id)) {
+              return isDarkMode ? '#42A5F5' : '#1976D2'; // Professional blue stroke for direct search matches
+            } else if (searchResults.associatedNodes.has(d.id)) {
+              return '#1976D2'; // Deep blue stroke for associated nodes
+            } else {
+              return '#999'; // Gray stroke for non-search nodes
+            }
           }
           if (focusedNodeId === d.id) {
             return '#FF0000'; // Red stroke for focused node
@@ -1010,18 +1172,43 @@ const KnowledgeGraphViewer: React.FC = () => {
           return '#fff';
         })
         .attr('stroke-width', d => {
-          if (searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase()))) {
-            return 2; // Thicker stroke for search matches
+          // ENHANCEMENT: Different stroke widths for direct matches vs associated nodes
+          if (searchQuery) {
+            if (searchResults.directMatches.has(d.id)) {
+              return 3; // Moderate stroke for direct search matches
+            } else if (searchResults.associatedNodes.has(d.id)) {
+              return 2; // Medium stroke for associated nodes
+            } else {
+              return 1; // Thin stroke for non-search nodes
+            }
           }
           if (focusedNodeId === d.id) {
-            return 3; // Thickest stroke for focused node
+            return 3; // Thick stroke for focused node
           }
           return 0.5;
         })
+        .style('opacity', d => {
+          // ENHANCEMENT: Dim non-search-related nodes when searching
+          if (searchQuery) {
+            if (searchResults.directMatches.has(d.id) || searchResults.associatedNodes.has(d.id)) {
+              return 1.0; // Full opacity for search-related nodes
+            } else {
+              return 0.4; // Dimmed for non-search nodes
+            }
+          }
+          return 1.0; // Full opacity when not searching
+        })
         .style('cursor', 'pointer')
         .style('filter', d => {
-          if (searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase()))) {
-            return 'drop-shadow(0 4px 8px rgba(255,215,0,0.4))'; // Gold glow for search matches
+          // ENHANCEMENT: Different glows for direct matches vs associated nodes
+          if (searchQuery) {
+            if (searchResults.directMatches.has(d.id)) {
+              return 'drop-shadow(0 4px 8px rgba(255,215,0,0.6)) drop-shadow(0 0 12px rgba(255,140,0,0.4))'; // Enhanced gold glow for direct matches
+            } else if (searchResults.associatedNodes.has(d.id)) {
+              return 'drop-shadow(0 2px 4px rgba(79,195,247,0.4)) drop-shadow(0 0 8px rgba(25,118,210,0.3))'; // Blue glow for associated nodes
+            } else {
+              return 'none'; // No glow for non-search nodes
+            }
           }
           if (focusedNodeId === d.id) {
             return 'drop-shadow(0 4px 8px rgba(255,107,107,0.4))'; // Red glow for focused node
@@ -1040,7 +1227,10 @@ const KnowledgeGraphViewer: React.FC = () => {
         .on('mouseleave', function(_, d) {
           const nodeIndex = nodes.findIndex(n => n.id === d.id);
           const originalRadius = nodeTextInfo[nodeIndex]?.radius || (nodeDiameter / 2);
-          const originalStrokeWidth = searchQuery && (d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.type.toLowerCase().includes(searchQuery.toLowerCase())) ? 2 : (focusedNodeId === d.id ? 3 : 0.5);
+          const originalStrokeWidth = searchQuery ? 
+            (searchResults.directMatches.has(d.id) ? 4 : 
+             searchResults.associatedNodes.has(d.id) ? 2.5 : 1) : 
+            (focusedNodeId === d.id ? 3 : 0.5);
           d3.select(this)
             .transition()
             .duration(200)
@@ -1063,7 +1253,18 @@ const KnowledgeGraphViewer: React.FC = () => {
         .data(nodeTextInfo)
         .join('g')
         .attr('class', 'node-label-group')
-        .style('pointer-events', 'none');
+        .style('pointer-events', 'none')
+        .style('opacity', d => {
+          // ENHANCEMENT: Dim text for non-search-related nodes
+          if (searchQuery) {
+            if (searchResults.directMatches.has(d.id) || searchResults.associatedNodes.has(d.id)) {
+              return 1.0; // Full opacity for search-related node labels
+            } else {
+              return 0.4; // Dimmed for non-search node labels
+            }
+          }
+          return 1.0; // Full opacity when not searching
+        });
 
       // Add text lines for each node
       nodeLabelGroups.each(function(d) {
@@ -1105,17 +1306,19 @@ const KnowledgeGraphViewer: React.FC = () => {
           return `${d.relationship_type}\nFrom: ${sourceName}\nTo: ${targetName}\nConfidence: ${(d.confidence * 100).toFixed(1)}%`;
         });
 
-      // Add drag behavior with error handling
+      // OPTIMIZATION: Add drag behavior with RAF throttling for smoother performance
+      const throttledDragUpdate = throttleRAF((event: any, d: GraphNode) => {
+        d.fx = event.x;
+        d.fy = event.y;
+      });
+
       const dragHandler = d3.drag<SVGCircleElement, GraphNode>()
         .on('start', (event, d) => {
           if (!event.active) simulation.alphaTarget(0.3).restart();
           d.fx = d.x;
           d.fy = d.y;
         })
-        .on('drag', (event, d) => {
-          d.fx = event.x;
-          d.fy = event.y;
-        })
+        .on('drag', throttledDragUpdate) // OPTIMIZATION: Use throttled drag handler
         .on('end', (event, d) => {
           if (!event.active) simulation.alphaTarget(0);
           d.fx = null;
@@ -1124,29 +1327,61 @@ const KnowledgeGraphViewer: React.FC = () => {
 
       node.call(dragHandler);
 
-      // Update positions on simulation tick
-      simulation.on('tick', () => {
+      // OPTIMIZATION: Throttled tick updates with viewport culling for better performance
+      let tickCount = 0;
+      const throttledTick = throttleRAF(() => {
         try {
+          PerformanceMonitor.start('tick-update');
+          
+          // OPTIMIZATION: Only update every 2nd tick for better performance
+          tickCount++;
+          if (tickCount % 2 !== 0) return;
+          
+          // OPTIMIZATION: Batch DOM updates with viewport culling
+          const visibleNodes = nodes.filter(d => isNodeInViewport(d, zoomTransform, width, height));
+          const visibleNodeIds = new Set(visibleNodes.map(d => d.id));
+          
+          // Update links (only for visible nodes)
           link
+            .style('display', d => {
+              const sourceVisible = visibleNodeIds.has((d.source as GraphNode).id);
+              const targetVisible = visibleNodeIds.has((d.target as GraphNode).id);
+              return (sourceVisible || targetVisible) ? 'block' : 'none';
+            })
             .attr('x1', d => (d.source as GraphNode).x || 0)
             .attr('y1', d => (d.source as GraphNode).y || 0)
             .attr('x2', d => (d.target as GraphNode).x || 0)
             .attr('y2', d => (d.target as GraphNode).y || 0);
 
+          // Update link labels (only for visible links)
           linkLabels
+            .style('display', d => {
+              const sourceVisible = visibleNodeIds.has((d.source as GraphNode).id);
+              const targetVisible = visibleNodeIds.has((d.target as GraphNode).id);
+              return (sourceVisible || targetVisible) ? 'block' : 'none';
+            })
             .attr('x', d => ((d.source as GraphNode).x! + (d.target as GraphNode).x!) / 2)
             .attr('y', d => ((d.source as GraphNode).y! + (d.target as GraphNode).y!) / 2);
 
+          // Update nodes (with viewport culling)
           node
+            .style('display', d => isNodeInViewport(d, zoomTransform, width, height) ? 'block' : 'none')
             .attr('cx', d => d.x || 0)
             .attr('cy', d => d.y || 0);
 
+          // Update node labels (with viewport culling)
           nodeLabelGroups
+            .style('display', (_, i) => isNodeInViewport(nodeTextInfo[i].node, zoomTransform, width, height) ? 'block' : 'none')
             .attr('transform', (_, i) => `translate(${nodeTextInfo[i].node.x || 0}, ${nodeTextInfo[i].node.y || 0})`);
+          
+          PerformanceMonitor.end('tick-update');
         } catch (tickError) {
           console.error('Error in simulation tick:', tickError);
         }
       });
+      
+      // Update positions on simulation tick
+      simulation.on('tick', throttledTick);
 
       const simulationDuration = getSimulationDuration();
       
@@ -1158,10 +1393,16 @@ const KnowledgeGraphViewer: React.FC = () => {
         // Update node references after simulation completes
         nodesRef.current = nodes;
         
-        // Skip auto-fit to preserve full viewport distribution
-        // setTimeout(() => {
-        //   fitToView();
-        // }, 100);
+        // Auto-fit to view after simulation settles with improved timing
+        setTimeout(() => {
+          // Only auto-fit if user hasn't manually interacted with zoom/pan
+          if (Math.abs(zoomTransform.k - 1) < 0.1 && 
+              Math.abs(zoomTransform.x) < 10 && 
+              Math.abs(zoomTransform.y) < 10) {
+            console.log('Auto-fitting to view after simulation completion');
+            fitToView();
+          }
+        }, 200); // Slight delay to ensure all positions are finalized
         console.log(`Final ${layoutType} layout: ${nodes.length} nodes, ${links.length} links`);
       }, simulationDuration);
       
@@ -1185,7 +1426,7 @@ const KnowledgeGraphViewer: React.FC = () => {
           .text('Visualization Error - Check Console');
       }
     }
-  };
+  }, [visibleEntities, visibleRelationships, dimensions, isDarkMode, fontSize, nodeDiameter, forceStrength, layoutType, themeColors, generateColor, zoomTransform, searchQuery, searchResults, focusedNodeId, maxVisibleNodes]);
 
   // Dynamic sizing and window resize handler
   useEffect(() => {
@@ -1221,7 +1462,7 @@ const KnowledgeGraphViewer: React.FC = () => {
   useEffect(() => {
     fetchStats();
     fetchAvailableDocuments();
-  }, []);
+  }, [fetchStats, fetchAvailableDocuments]);
 
   // Auto-fetch entities when selectedDocument changes to ALL_ENTITIES
   useEffect(() => {
@@ -1230,17 +1471,23 @@ const KnowledgeGraphViewer: React.FC = () => {
       fetchEntities('ALL_ENTITIES');
       fetchRelationships('ALL_ENTITIES');
     }
-  }, [selectedDocument]);
+  }, [selectedDocument, fetchEntities, fetchRelationships]);
 
   // Update visualization when visible data changes
   useEffect(() => {
     if (visibleEntities.length > 0) {
       createVisualization();
       
-      // Skip auto-fit to preserve full viewport distribution  
-      // setTimeout(() => {
-      //   fitToView();
-      // }, 1000);
+      // Auto-fit after visualization is created and settled
+      // Only if user hasn't made manual zoom/pan adjustments
+      setTimeout(() => {
+        if (Math.abs(zoomTransform.k - 1) < 0.1 && 
+            Math.abs(zoomTransform.x) < 10 && 
+            Math.abs(zoomTransform.y) < 10) {
+          console.log('Auto-fitting to view after data change');
+          fitToView();
+        }
+      }, 1200); // Longer delay to allow simulation to complete
     }
   }, [visibleEntities, visibleRelationships, dimensions, isDarkMode, fontSize, nodeDiameter, forceStrength, layoutType]);
 
@@ -1314,79 +1561,169 @@ const KnowledgeGraphViewer: React.FC = () => {
   };
 
   const fitToView = () => {
-    if (svgRef.current && nodesRef.current.length > 0 && zoomBehaviorRef.current) {
-      const svg = d3.select(svgRef.current);
-      const nodes = nodesRef.current;
-      
-      // Calculate bounds of ALL nodes using simulation data
-      if (nodes.length === 0) return;
-      
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      nodes.forEach(node => {
-        // Use simulation node positions (x, y properties) instead of DOM attributes
-        const x = node.x || 0;
-        const y = node.y || 0;
-        const r = nodeDiameter / 2; // Use actual node radius
-        
-        minX = Math.min(minX, x - r);
-        minY = Math.min(minY, y - r);
-        maxX = Math.max(maxX, x + r);
-        maxY = Math.max(maxY, y + r);
-      });
-      
-      const contentWidth = maxX - minX;
-      const contentHeight = maxY - minY;
-      
-      // Ensure we have valid dimensions
-      if (contentWidth <= 0 || contentHeight <= 0) return;
-      
-      // Conservative padding to use available space effectively
-      const basePadding = Math.min(50, Math.min(dimensions.width, dimensions.height) * 0.05);
-      const adaptivePadding = Math.max(basePadding, nodeDiameter * 0.5);
-      
-      // Calculate scale to fit ALL node groups in viewport
-      const availableWidth = dimensions.width - adaptivePadding * 2;
-      const availableHeight = dimensions.height - adaptivePadding * 2;
-      
-      const scaleX = availableWidth / contentWidth;
-      const scaleY = availableHeight / contentHeight;
-      const optimalScale = Math.min(scaleX, scaleY, 2.0); // Max zoom 2x for readability
-      
-      // Ensure minimum scale for very spread out graphs
-      const finalScale = Math.max(0.1, optimalScale);
-      
-      // Center ALL content in viewport
-      const centerX = (minX + maxX) / 2;
-      const centerY = (minY + maxY) / 2;
-      
-      const translateX = dimensions.width / 2 - centerX * finalScale;
-      const translateY = dimensions.height / 2 - centerY * finalScale;
-      
-      const transform = d3.zoomIdentity.translate(translateX, translateY).scale(finalScale);
-      
-      console.log('🎯 Fixed Fit-to-View (All Groups):', {
-        totalNodes: nodes.length,
-        contentBounds: { 
-          minX: minX.toFixed(1), 
-          minY: minY.toFixed(1), 
-          maxX: maxX.toFixed(1), 
-          maxY: maxY.toFixed(1),
-          width: contentWidth.toFixed(1), 
-          height: contentHeight.toFixed(1) 
-        },
-        viewport: dimensions,
-        padding: adaptivePadding,
-        scale: finalScale.toFixed(3),
-        center: { x: centerX.toFixed(1), y: centerY.toFixed(1) },
-        translate: { x: translateX.toFixed(1), y: translateY.toFixed(1) },
-        utilization: {
-          width: ((contentWidth * finalScale) / dimensions.width * 100).toFixed(1) + '%',
-          height: ((contentHeight * finalScale) / dimensions.height * 100).toFixed(1) + '%'
-        }
-      });
-      
-      svg.transition().duration(750).call(zoomBehaviorRef.current.transform, transform);
+    if (!svgRef.current || !zoomBehaviorRef.current) {
+      console.warn('fitToView: SVG or zoom behavior not available');
+      return;
     }
+
+    const svg = d3.select(svgRef.current);
+    const nodes = nodesRef.current;
+    
+    if (!nodes || nodes.length === 0) {
+      console.warn('fitToView: No nodes available');
+      return;
+    }
+
+    // Filter nodes with valid positions - essential for accurate bounds
+    const validNodes = nodes.filter(node => 
+      typeof node.x === 'number' && 
+      typeof node.y === 'number' && 
+      !isNaN(node.x) && 
+      !isNaN(node.y)
+    );
+
+    if (validNodes.length === 0) {
+      console.warn('fitToView: No nodes have valid positions yet. Waiting for simulation to settle...');
+      
+      // If simulation is still running, wait for it to settle
+      if (simulationRef.current && simulationRef.current.alpha() > 0.1) {
+        setTimeout(() => fitToView(), 100);
+        return;
+      } else {
+        // Fallback: try to get positions from DOM elements
+        const nodeElements = svg.selectAll('circle').nodes() as SVGCircleElement[];
+        if (nodeElements.length === 0) {
+          console.warn('fitToView: No rendered nodes found in DOM');
+          return;
+        }
+        
+        // Use DOM positions as fallback
+        const domNodes = nodeElements.map((el, i) => ({
+          x: parseFloat(el.getAttribute('cx') || '0'),
+          y: parseFloat(el.getAttribute('cy') || '0'),
+          id: nodes[i]?.id || `node-${i}`
+        }));
+        
+        return fitToViewWithNodes(domNodes, svg);
+      }
+    }
+
+    return fitToViewWithNodes(validNodes, svg);
+  };
+
+  // Extracted helper function for actual fit-to-view calculation
+  const fitToViewWithNodes = (validNodes: any[], svg: d3.Selection<SVGSVGElement, unknown, null, undefined>) => {
+    // Calculate bounds with proper node radius consideration
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let hasValidBounds = false;
+
+    validNodes.forEach(node => {
+      const x = node.x;
+      const y = node.y;
+      const r = nodeDiameter / 2;
+      
+      minX = Math.min(minX, x - r);
+      minY = Math.min(minY, y - r);
+      maxX = Math.max(maxX, x + r);
+      maxY = Math.max(maxY, y + r);
+      hasValidBounds = true;
+    });
+
+    if (!hasValidBounds) {
+      console.warn('fitToView: Unable to calculate valid bounds');
+      return;
+    }
+
+    const contentWidth = maxX - minX;
+    const contentHeight = maxY - minY;
+
+    // Handle edge cases
+    if (validNodes.length === 1) {
+      // Single node: center it with moderate zoom
+      const singleNode = validNodes[0];
+      const transform = d3.zoomIdentity
+        .translate(dimensions.width / 2 - singleNode.x, dimensions.height / 2 - singleNode.y)
+        .scale(1.0);
+      
+      console.log('🎯 Fit-to-View (Single Node):', {
+        node: { x: singleNode.x, y: singleNode.y },
+        transform: { x: dimensions.width / 2 - singleNode.x, y: dimensions.height / 2 - singleNode.y, k: 1.0 }
+      });
+      
+      svg.transition().duration(750).call(zoomBehaviorRef.current!.transform, transform);
+      return;
+    }
+
+    // Handle very small content (all nodes clustered)
+    const minContentSize = nodeDiameter * 2;
+    const effectiveWidth = Math.max(contentWidth, minContentSize);
+    const effectiveHeight = Math.max(contentHeight, minContentSize);
+
+    // Calculate padding based on viewport and content size
+    const viewportSize = Math.min(dimensions.width, dimensions.height);
+    const basePadding = Math.max(40, viewportSize * 0.08); // Minimum 40px, or 8% of viewport
+    const nodePadding = nodeDiameter * 1.5; // Extra space around nodes
+    const adaptivePadding = Math.max(basePadding, nodePadding);
+
+    // Calculate optimal scale with improved logic
+    const availableWidth = Math.max(100, dimensions.width - adaptivePadding * 2);
+    const availableHeight = Math.max(100, dimensions.height - adaptivePadding * 2);
+    
+    const scaleX = availableWidth / effectiveWidth;
+    const scaleY = availableHeight / effectiveHeight;
+    let optimalScale = Math.min(scaleX, scaleY);
+    
+    // Apply scale constraints
+    const maxScale = Math.min(3.0, viewportSize / 200); // Adaptive max scale based on viewport
+    const minScale = Math.max(0.05, Math.min(1.0, viewportSize / 2000)); // Adaptive min scale
+    optimalScale = Math.max(minScale, Math.min(maxScale, optimalScale));
+
+    // Calculate center position
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    
+    // Calculate translation to center the content
+    const translateX = dimensions.width / 2 - centerX * optimalScale;
+    const translateY = dimensions.height / 2 - centerY * optimalScale;
+    
+    const transform = d3.zoomIdentity
+      .translate(translateX, translateY)
+      .scale(optimalScale);
+
+    // Enhanced logging for debugging
+    console.log('🎯 Enhanced Fit-to-View:', {
+      totalNodes: validNodes.length,
+      viewport: { width: dimensions.width, height: dimensions.height },
+      contentBounds: { 
+        minX: minX.toFixed(1), 
+        minY: minY.toFixed(1), 
+        maxX: maxX.toFixed(1), 
+        maxY: maxY.toFixed(1),
+        width: contentWidth.toFixed(1), 
+        height: contentHeight.toFixed(1),
+        effectiveWidth: effectiveWidth.toFixed(1),
+        effectiveHeight: effectiveHeight.toFixed(1)
+      },
+      scaling: {
+        scaleX: scaleX.toFixed(3),
+        scaleY: scaleY.toFixed(3),
+        optimal: optimalScale.toFixed(3),
+        constraints: { min: minScale.toFixed(3), max: maxScale.toFixed(3) }
+      },
+      center: { x: centerX.toFixed(1), y: centerY.toFixed(1) },
+      translation: { x: translateX.toFixed(1), y: translateY.toFixed(1) },
+      padding: adaptivePadding.toFixed(1),
+      utilization: {
+        width: ((effectiveWidth * optimalScale) / dimensions.width * 100).toFixed(1) + '%',
+        height: ((effectiveHeight * optimalScale) / dimensions.height * 100).toFixed(1) + '%'
+      }
+    });
+
+    // Apply transform with smooth transition
+    svg.transition()
+      .duration(750)
+      .ease(d3.easeQuadInOut)
+      .call(zoomBehaviorRef.current!.transform, transform);
   };
 
   // Handle document selection
@@ -1473,7 +1810,6 @@ const KnowledgeGraphViewer: React.FC = () => {
     document.body.setAttribute('data-theme', newDarkMode ? 'dark' : 'light');
   };
 
-  const themeColors = getThemeColors();
 
   // Create Material-UI theme
   const theme = createTheme({
@@ -1764,13 +2100,51 @@ const KnowledgeGraphViewer: React.FC = () => {
             }}
           />
           {searchQuery && (
-            <Chip
-              size="small"
-              label={`${visibleEntities.length} found`}
-              color="primary"
-              variant="outlined"
-              onDelete={() => setSearchQuery('')}
-            />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-start' }}>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                <Chip
+                  size="small"
+                  label={`${searchResults.directMatches.size} direct`}
+                  sx={{ 
+                    backgroundColor: isDarkMode ? '#1565C0' : '#0D47A1', 
+                    color: '#FFFFFF',
+                    fontWeight: 'bold',
+                    '& .MuiChip-deleteIcon': { color: '#FFFFFF' }
+                  }}
+                  variant="filled"
+                  onDelete={() => setSearchQuery('')}
+                />
+                <Chip
+                  size="small"
+                  label={`${searchResults.associatedNodes.size} connected`}
+                  sx={{ 
+                    backgroundColor: isDarkMode ? '#26A69A' : '#00695C', 
+                    color: '#FFFFFF',
+                    fontWeight: 'bold'
+                  }}
+                  variant="filled"
+                />
+                <Chip
+                  size="small"
+                  label={`${searchResults.searchRelationships.size} links`}
+                  sx={{ 
+                    backgroundColor: isDarkMode ? '#66BB6A' : '#388E3C', 
+                    color: '#FFFFFF',
+                    fontWeight: 'bold'
+                  }}
+                  variant="filled"
+                />
+              </div>
+              <Typography variant="caption" sx={{ 
+                color: themeColors.text, 
+                fontSize: '10px',
+                opacity: 0.8,
+                maxWidth: '250px',
+                lineHeight: 1.2
+              }}>
+                🟡 Direct matches • 🔵 Connected nodes • 🟠 Active relationships
+              </Typography>
+            </div>
           )}
         </div>
 
@@ -1968,6 +2342,11 @@ const KnowledgeGraphViewer: React.FC = () => {
                   setTimeout(() => {
                     simulation.stop();
                     createVisualization(); // Recreate visualization with tight positions
+                    
+                    // Auto-fit after tight layout is applied
+                    setTimeout(() => {
+                      fitToView();
+                    }, 500);
                   }, 3000);
                 }
               }}
@@ -2147,7 +2526,7 @@ const KnowledgeGraphViewer: React.FC = () => {
               flexWrap: 'wrap'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <strong style={{ fontSize: '12px', color: themeColors.text }}>Legend ({Array.from(new Set(visibleEntities.map(entity => entity.type))).length} types visible):</strong>
+                <strong style={{ fontSize: '12px', color: themeColors.text }}>Legend ({Array.from(new Set(visibleEntities.map(entity => entity.type).filter(type => type && typeof type === 'string'))).length} types visible):</strong>
                 {isolatedEntities.length > 0 && (
                   <Button
                     size="small" 
@@ -2159,7 +2538,7 @@ const KnowledgeGraphViewer: React.FC = () => {
                   </Button>
                 )}
               </div>
-              {Array.from(new Set(visibleEntities.map(entity => entity.type))).sort().map(type => (
+              {Array.from(new Set(visibleEntities.map(entity => entity.type).filter(type => type && typeof type === 'string'))).sort().map(type => (
                 <span 
                   key={type}
                   style={{ 
@@ -2367,4 +2746,5 @@ const KnowledgeGraphViewer: React.FC = () => {
   );
 };
 
-export default KnowledgeGraphViewer;
+// OPTIMIZATION: Memoize the entire component to prevent unnecessary re-renders
+export default memo(KnowledgeGraphViewer);

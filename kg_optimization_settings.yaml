@@ -1,0 +1,51 @@
+# Knowledge Graph Optimization Settings
+# Target: ≤4 relationships per entity for optimal performance
+
+extraction:
+  mode: "simple"  # Changed from "comprehensive"
+  min_relationship_confidence: 0.7  # Increased from 0.6
+  max_relationships_per_entity: 2  # Strict limit
+  max_relationships_per_chunk: 3  # Prevent chunk-level explosion
+  enable_anti_silo: false  # CRITICAL: Disable anti-silo
+  enable_nuclear_option: false  # CRITICAL: Disable nuclear option
+
+relationship_limits:
+  global_relationship_cap: 150  # Hard limit for 47 entities
+  max_per_session: 20  # Limit per processing session
+  
+  # Type-specific limits
+  type_limits:
+    COMPETES_WITH: 30  # Max total of this type
+    RELATED_TECHNOLOGY: 20  # Max total of this type
+    USED_BY: 40  # Max total of this type
+    
+  # Entity-type specific limits
+  entity_type_limits:
+    ORGANIZATION:
+      max_relationships: 4
+      allowed_types: ["COMPETES_WITH", "PARTNERS_WITH", "USES"]
+    TECHNOLOGY:
+      max_relationships: 3
+      allowed_types: ["RELATED_TECHNOLOGY", "USED_BY", "INTEGRATES_WITH"]
+    PRODUCT:
+      max_relationships: 2
+      allowed_types: ["OFFERED_BY", "USES"]
+
+# Business relationship rules (more restrictive)
+business_rules:
+  organization_connections:
+    require_explicit_evidence: true
+    min_confidence: 0.8
+    max_competitors_per_org: 2
+    
+  technology_connections:
+    require_compatibility_evidence: true
+    min_confidence: 0.7
+    max_related_tech_per_entity: 2
+
+# Performance optimizations
+performance:
+  batch_size: 50
+  enable_deduplication: true
+  enable_post_processing_cleanup: true
+  enforce_ratio_check_after_each_chunk: true

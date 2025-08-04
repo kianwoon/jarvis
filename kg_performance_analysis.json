@@ -1,0 +1,122 @@
+{
+  "timestamp": "2025-08-04T20:43:14.532154",
+  "current_state": {
+    "entity_count": 0,
+    "relationship_count": 0,
+    "ratio": 0,
+    "distribution": {},
+    "high_degree_nodes": [],
+    "relationship_types": [],
+    "duplicate_relationships": 0,
+    "timestamp": "2025-08-04T20:43:14.507755"
+  },
+  "enforcement_failures": {
+    "creation_sources": [],
+    "confidence_distribution": [],
+    "anti_silo_relationships": []
+  },
+  "optimization_plan": {
+    "current_state": {
+      "entities": 0,
+      "relationships": 0,
+      "ratio": 0
+    },
+    "target_state": {
+      "entities": 0,
+      "relationships": 0,
+      "ratio": 4.0
+    },
+    "reduction_required": 0,
+    "strategies": [
+      {
+        "name": "Remove Low-Confidence Relationships",
+        "potential_reduction": 0,
+        "query": "\n                MATCH ()-[r]->()\n                WHERE r.confidence < 0.6\n                DELETE r\n            "
+      },
+      {
+        "name": "Remove Duplicate Relationships",
+        "potential_reduction": 0,
+        "query": "\n                MATCH (a)-[r1]->(b)\n                MATCH (a)-[r2]->(b)\n                WHERE id(r1) < id(r2) AND type(r1) = type(r2)\n                DELETE r2\n            "
+      },
+      {
+        "name": "Remove Nuclear Anti-Silo Relationships",
+        "potential_reduction": 0,
+        "query": "\n                MATCH ()-[r]->()\n                WHERE r.nuclear_connection = true OR r.created_by CONTAINS 'nuclear'\n                DELETE r\n            "
+      },
+      {
+        "name": "Cap High-Degree Nodes",
+        "potential_reduction": 0,
+        "query": "\n                MATCH (n)-[r]-()\n                WITH n, collect(r) as rels\n                WHERE size(rels) > 8\n                WITH n, rels, [i in range(0, size(rels)-8) | rels[i]] as to_delete\n                UNWIND to_delete as r\n                DELETE r\n            "
+      }
+    ],
+    "total_potential_reduction": 0,
+    "sufficient": true
+  },
+  "settings_recommendations": {
+    "extraction_mode": {
+      "current": "comprehensive",
+      "recommended": "simple",
+      "reason": "Simple mode enforces strictest limits"
+    },
+    "relationship_limits": {
+      "max_relationships_per_entity": 2,
+      "max_relationships_per_chunk": 3,
+      "global_relationship_cap": 150,
+      "reason": "Aggressive limits to maintain performance"
+    },
+    "confidence_thresholds": {
+      "min_relationship_confidence": 0.7,
+      "reason": "Higher threshold reduces low-quality relationships"
+    },
+    "anti_silo_settings": {
+      "enable_anti_silo": false,
+      "enable_nuclear_option": false,
+      "reason": "Anti-silo analysis creates excessive relationships"
+    },
+    "enforcement_improvements": {
+      "enforce_chunk_limits_first": true,
+      "apply_global_budget_strictly": true,
+      "post_process_ratio_check": true,
+      "reason": "Multiple enforcement layers to prevent ratio explosion"
+    }
+  },
+  "browser_optimizations": {
+    "force_simulation": {
+      "reduce_iterations": {
+        "current": 300,
+        "recommended": 150,
+        "reason": "Fewer iterations = faster initial render"
+      },
+      "optimize_forces": {
+        "charge_strength": -300,
+        "link_distance": 50,
+        "collision_radius": 30,
+        "reason": "Balanced forces for dense graphs"
+      }
+    },
+    "rendering": {
+      "use_canvas_instead_of_svg": true,
+      "implement_node_culling": true,
+      "viewport_based_rendering": true,
+      "reason": "Canvas performs better for >100 nodes"
+    },
+    "interaction": {
+      "debounce_drag_events": 16,
+      "throttle_zoom_events": 50,
+      "disable_animations_on_drag": true,
+      "reason": "Reduce computation during interaction"
+    },
+    "data_management": {
+      "implement_relationship_filtering": true,
+      "default_filter": "confidence >= 0.7",
+      "progressive_loading": true,
+      "reason": "Show high-quality relationships first"
+    },
+    "ui_features": {
+      "relationship_visibility_toggle": true,
+      "node_clustering_option": true,
+      "performance_mode_toggle": true,
+      "reason": "User control over visualization complexity"
+    }
+  }
+}

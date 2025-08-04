@@ -1,0 +1,41 @@
+{
+  "timestamp": "2025-08-05T03:14:34.145161",
+  "model_info": {
+    "name": "qwen3:30b-a3b-instruct-2507-q4_k_m",
+    "context_limit": 262144,
+    "optimal_chunk_size": 846725
+  },
+  "business_document": {
+    "initial_chunks": 24,
+    "optimized_chunks": 24,
+    "consolidation_ratio": 1.0,
+    "size_range": [
+      2499,
+      4002
+    ],
+    "average_size": 3894,
+    "validation": {
+      "no_mega_chunks": true,
+      "multiple_chunks": true,
+      "balanced_sizes": true,
+      "entity_friendly_size": true
+    },
+    "success": true
+  },
+  "general_document": {
+    "initial_chunks": 24,
+    "optimized_chunks": 1,
+    "consolidation_ratio": 24.0,
+    "size_range": [
+      58958,
+      58958
+    ],
+    "average_size": 58958,
+    "validation": {
+      "can_use_large_chunks": true,
+      "consolidates_effectively": true
+    },
+    "success": true
+  },
+  "overall_success": true
+}

@@ -1,0 +1,104 @@
+{
+  "ollama_connectivity": {
+    "success": false,
+    "error": "Generation failed: 404",
+    "details": "{\"error\":\"model 'qwen2.5:7b' not found\"}"
+  },
+  "neo4j_connectivity": {
+    "success": true,
+    "connection_uri": "bolt://localhost:7687",
+    "auth_user": "neo4j",
+    "test_query_result": "CONNECTED",
+    "timestamp": "2025-08-04T18:58:31.176000000+00:00",
+    "database_stats": {
+      "entities": 17,
+      "relationships": 17,
+      "ratio": 1.0
+    }
+  },
+  "document_chunking": {
+    "success": false,
+    "chunk_count": 4,
+    "target_range": "5-10 chunks",
+    "chunk_stats": {
+      "count": 4,
+      "avg_size": 638,
+      "min_size": 154,
+      "max_size": 800,
+      "target_size": 800,
+      "overlap": 100
+    },
+    "validation": {
+      "reasonable_count": false,
+      "no_mega_chunks": true,
+      "no_tiny_chunks": true
+    },
+    "sample_chunks": [
+      {
+        "id": "chunk_1",
+        "size": 800,
+        "preview": "Test Knowledge Graph Pipeline Validation Document\n\nIntroduction\nThis is a comprehensive test documen..."
+      },
+      {
+        "id": "chunk_2",
+        "size": 800,
+        "preview": "nt methodologies with sprint-based delivery cycles. Project management is coordinated through Jira w..."
+      },
+      {
+        "id": "chunk_3",
+        "size": 799,
+        "preview": "Data analytics enhancement includes machine learning model deployment for predictive analytics.\n\nTec..."
+      }
+    ]
+  },
+  "llm_extraction": {
+    "success": false,
+    "extraction_stats": {
+      "entities": 0,
+      "relationships": 0,
+      "confidence_score": 0.0,
+      "processing_time_ms": 6059.374809265137,
+      "model_used": "qwen3:30b-a3b-instruct-2507-q4_K_M"
+    },
+    "validation": {
+      "reasonable_entity_count": false,
+      "found_relationships": false,
+      "good_confidence": false
+    },
+    "sample_entities": [],
+    "sample_relationships": [],
+    "entity_type_distribution": {}
+  },
+  "neo4j_storage": {
+    "success": false,
+    "storage_operation": {
+      "success": true,
+      "entities_stored": 0,
+      "relationships_stored": 0
+    },
+    "database_changes": {
+      "entities_before": 0,
+      "entities_after": 0,
+      "entities_added": 0,
+      "relationships_before": 0,
+      "relationships_after": 0,
+      "relationships_added": 0
+    },
+    "test_data": {
+      "test_entities_count": 2,
+      "test_relationships_count": 1
+    },
+    "validation": {
+      "storage_succeeded": true,
+      "entities_were_added": false,
+      "within_budget_limits": true
+    }
+  },
+  "full_pipeline": {
+    "success": false,
+    "error": "ExtractedChunk.__init__() got an unexpected keyword argument 'chunk_id'",
+    "details": {
+      "exception_type": "TypeError"
+    }
+  }
+}

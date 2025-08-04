@@ -1,0 +1,273 @@
+{
+  "timestamp": "2025-08-05T00:51:52.657320",
+  "test_document": "/Users/kianwoonwong/Downloads/jarvis/DBS Technology Strategy (Confidential).pdf",
+  "business_detection": {
+    "filename_detection": true,
+    "content_detection": true,
+    "keywords_found": [
+      "strategy",
+      "technology",
+      "financial",
+      "dbs bank",
+      "digital transformation"
+    ],
+    "sample_content_length": 1502
+  },
+  "chunking_strategy": {
+    "general_config": {
+      "max_chunk_size": 9749,
+      "min_chunk_size": 1000,
+      "chunk_overlap": 974,
+      "processing_strategy": "traditional",
+      "combine_small_chunks": false,
+      "max_chunks_per_call": 1,
+      "enable_document_level_processing": false,
+      "preserve_granularity": true,
+      "target_chunks_per_document": 10,
+      "max_consolidation_ratio": 2,
+      "context_utilization_target": 0.7,
+      "enable_intelligent_splitting": true,
+      "respect_natural_boundaries": true,
+      "dynamic_overlap_adjustment": true
+    },
+    "business_config": {
+      "max_chunk_size": 9749,
+      "min_chunk_size": 1000,
+      "chunk_overlap": 1462,
+      "processing_strategy": "traditional",
+      "combine_small_chunks": false,
+      "max_chunks_per_call": 1,
+      "enable_document_level_processing": false,
+      "preserve_granularity": true,
+      "target_chunks_per_document": 10,
+      "max_consolidation_ratio": 2,
+      "context_utilization_target": 0.7,
+      "enable_intelligent_splitting": true,
+      "respect_natural_boundaries": true,
+      "dynamic_overlap_adjustment": true
+    },
+    "model_info": {
+      "name": "unknown",
+      "context_limit": 4096,
+      "optimal_chunk_size": 9749
+    }
+  },
+  "business_settings": {
+    "default_settings": {
+      "mode": "comprehensive",
+      "learning": {
+        "decay_factor": 0.95,
+        "learning_rate": 0.15,
+        "frequency_tracking": true,
+        "enable_user_feedback": true,
+        "auto_accept_threshold": 0.7,
+        "manual_review_threshold": 0.4
+      },
+      "extraction": {
+        "mode": "comprehensive",
+        "enable_anti_silo": true,
+        "enable_nuclear_option": false,
+        "min_entity_confidence": 0.6,
+        "enable_llm_enhancement": true,
+        "max_entities_per_chunk": 30,
+        "enable_temporal_linking": true,
+        "llm_confidence_threshold": 0.5,
+        "enable_contextual_linking": true,
+        "enable_semantic_clustering": true,
+        "hierarchical_linking_depth": 3,
+        "enable_entity_deduplication": true,
+        "enable_hierarchical_linking": true,
+        "min_relationship_confidence": 0.4,
+        "enable_cooccurrence_analysis": true,
+        "enable_type_based_clustering": true,
+        "enable_cross_document_linking": true,
+        "enable_relationship_inference": true,
+        "enable_multi_chunk_relationships": true,
+        "relationship_inference_threshold": 0.4,
+        "enable_relationship_deduplication": true,
+        "enable_semantic_relationship_inference": true
+      },
+      "max_tokens": 8192,
+      "temperature": 0.3,
+      "entity_discovery": {
+        "enabled": true,
+        "min_frequency": 1,
+        "auto_categorize": true,
+        "max_entity_types": 100,
+        "confidence_threshold": 0.6,
+        "enable_semantic_grouping": true
+      },
+      "relationship_discovery": {
+        "enabled": true,
+        "min_frequency": 1,
+        "semantic_grouping": true,
+        "confidence_threshold": 0.4,
+        "max_relationship_types": 50,
+        "enable_inverse_relationships": true
+      },
+      "neo4j": {
+        "enabled": true,
+        "host": "neo4j",
+        "port": 7687,
+        "http_port": 7474,
+        "database": "neo4j",
+        "username": "neo4j",
+        "password": "jarvis_neo4j_password",
+        "uri": "bolt://neo4j:7687",
+        "connection_pool": {
+          "max_connections": 50,
+          "connection_timeout": 30,
+          "max_transaction_retry_time": 30
+        },
+        "memory_config": {
+          "heap_initial": "512m",
+          "heap_max": "2g",
+          "pagecache": "1g"
+        },
+        "plugins": {
+          "apoc_enabled": true,
+          "gds_enabled": true
+        },
+        "security": {
+          "encrypted": false,
+          "trust_strategy": "TRUST_ALL_CERTIFICATES"
+        }
+      }
+    },
+    "business_settings": {
+      "mode": "comprehensive",
+      "learning": {
+        "decay_factor": 0.95,
+        "learning_rate": 0.15,
+        "frequency_tracking": true,
+        "enable_user_feedback": true,
+        "auto_accept_threshold": 0.7,
+        "manual_review_threshold": 0.4
+      },
+      "extraction": {
+        "mode": "comprehensive",
+        "enable_anti_silo": true,
+        "enable_nuclear_option": false,
+        "min_entity_confidence": 0.55,
+        "enable_llm_enhancement": true,
+        "max_entities_per_chunk": 30,
+        "enable_temporal_linking": true,
+        "llm_confidence_threshold": 0.5,
+        "enable_contextual_linking": true,
+        "enable_semantic_clustering": true,
+        "hierarchical_linking_depth": 3,
+        "enable_entity_deduplication": true,
+        "enable_hierarchical_linking": true,
+        "min_relationship_confidence": 0.6,
+        "enable_cooccurrence_analysis": true,
+        "enable_type_based_clustering": true,
+        "enable_cross_document_linking": true,
+        "enable_relationship_inference": true,
+        "enable_multi_chunk_relationships": true,
+        "relationship_inference_threshold": 0.4,
+        "enable_relationship_deduplication": true,
+        "enable_semantic_relationship_inference": true,
+        "business_document_mode": true,
+        "extract_all_organizations": true,
+        "extract_business_concepts": true,
+        "extract_temporal_entities": true,
+        "enable_multi_pass": true,
+        "extraction_passes": [
+          "core_entities",
+          "business_concepts",
+          "deep_relationships",
+          "temporal_causal"
+        ]
+      },
+      "max_tokens": 8192,
+      "temperature": 0.3,
+      "entity_discovery": {
+        "enabled": true,
+        "min_frequency": 1,
+        "auto_categorize": true,
+        "max_entity_types": 60,
+        "confidence_threshold": 0.55,
+        "enable_semantic_grouping": true
+      },
+      "relationship_discovery": {
+        "enabled": true,
+        "min_frequency": 1,
+        "semantic_grouping": true,
+        "confidence_threshold": 0.6,
+        "max_relationship_types": 35,
+        "enable_inverse_relationships": true
+      },
+      "neo4j": {
+        "enabled": true,
+        "host": "neo4j",
+        "port": 7687,
+        "http_port": 7474,
+        "database": "neo4j",
+        "username": "neo4j",
+        "password": "jarvis_neo4j_password",
+        "uri": "bolt://neo4j:7687",
+        "connection_pool": {
+          "max_connections": 50,
+          "connection_timeout": 30,
+          "max_transaction_retry_time": 30
+        },
+        "memory_config": {
+          "heap_initial": "512m",
+          "heap_max": "2g",
+          "pagecache": "1g"
+        },
+        "plugins": {
+          "apoc_enabled": true,
+          "gds_enabled": true
+        },
+        "security": {
+          "encrypted": false,
+          "trust_strategy": "TRUST_ALL_CERTIFICATES"
+        }
+      },
+      "max_entities_per_chunk": 35,
+      "max_relationships_per_chunk": 10
+    },
+    "optimizations_applied": true
+  },
+  "document_processing": {
+    "success": true,
+    "processing_time_seconds": 0.1722397804260254,
+    "initial_chunks": 38,
+    "processed_chunks": 0,
+    "total_entities": 0,
+    "total_relationships": 0,
+    "relationship_ratio": 0,
+    "target_ratio_achieved": true,
+    "business_document_detected": true,
+    "entity_types": 0,
+    "organization_entities_found": 0,
+    "errors": []
+  },
+  "comparison": {
+    "previous_results": {
+      "entities": 14,
+      "organizations": 0,
+      "chunks": 1,
+      "strategy": "full_context_utilization"
+    },
+    "current_results": {
+      "entities": 0,
+      "organizations": 0,
+      "chunks": 0
+    },
+    "improvements": {
+      "entity_improvement_percent": -100.0,
+      "organization_improvement": 0,
+      "chunk_improvement_percent": -100.0
+    },
+    "success_criteria": {
+      "entities_60_to_100": false,
+      "organizations_found": false,
+      "relationship_ratio_ok": true,
+      "multiple_chunks": false
+    },
+    "overall_success": false
+  },
+  "overall_success": false
+}
