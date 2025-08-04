@@ -285,6 +285,7 @@ const KnowledgeGraphViewer: React.FC = () => {
   const [dimensions, setDimensions] = useState({ width: window.innerWidth, height: window.innerHeight - 200 });
   const [isStatsCollapsed, setIsStatsCollapsed] = useState(false);
   const [zoomTransform, setZoomTransform] = useState(d3.zoomIdentity);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [notification, setNotification] = useState<{type: 'success' | 'error', message: string} | null>(null);
@@ -798,6 +799,12 @@ const KnowledgeGraphViewer: React.FC = () => {
           const transform = event.transform;
           setZoomTransform(transform);
           mainGroup.attr('transform', transform.toString());
+          
+          // If this is a user-initiated zoom (has sourceEvent), disable initial load auto-fit
+          if (event.sourceEvent && isInitialLoad) {
+            console.log('User interaction detected - disabling initial load auto-fit');
+            setIsInitialLoad(false);
+          }
           
           // OPTIMIZATION: Use RAF-throttled viewport and font updates
           throttledZoomUpdate(transform);
@@ -1395,12 +1402,20 @@ const KnowledgeGraphViewer: React.FC = () => {
         
         // Auto-fit to view after simulation settles with improved timing
         setTimeout(() => {
-          // Only auto-fit if user hasn't manually interacted with zoom/pan
-          if (Math.abs(zoomTransform.k - 1) < 0.1 && 
-              Math.abs(zoomTransform.x) < 10 && 
-              Math.abs(zoomTransform.y) < 10) {
-            console.log('Auto-fitting to view after simulation completion');
+          // Always auto-fit on initial load, or if user hasn't made manual zoom/pan adjustments
+          const shouldAutoFit = isInitialLoad || 
+            (Math.abs(zoomTransform.k - 1) < 0.1 && 
+             Math.abs(zoomTransform.x) < 10 && 
+             Math.abs(zoomTransform.y) < 10);
+          
+          if (shouldAutoFit) {
+            console.log(`Auto-fitting to view after simulation completion - ${isInitialLoad ? 'initial load' : 'normal'}`);
             fitToView();
+            
+            // Mark initial load as complete after first auto-fit
+            if (isInitialLoad) {
+              setIsInitialLoad(false);
+            }
           }
         }, 200); // Slight delay to ensure all positions are finalized
         console.log(`Final ${layoutType} layout: ${nodes.length} nodes, ${links.length} links`);
@@ -1479,17 +1494,25 @@ const KnowledgeGraphViewer: React.FC = () => {
       createVisualization();
       
       // Auto-fit after visualization is created and settled
-      // Only if user hasn't made manual zoom/pan adjustments
       setTimeout(() => {
-        if (Math.abs(zoomTransform.k - 1) < 0.1 && 
-            Math.abs(zoomTransform.x) < 10 && 
-            Math.abs(zoomTransform.y) < 10) {
-          console.log('Auto-fitting to view after data change');
+        // Always auto-fit on initial load, or if user hasn't made manual zoom/pan adjustments
+        const shouldAutoFit = isInitialLoad || 
+          (Math.abs(zoomTransform.k - 1) < 0.1 && 
+           Math.abs(zoomTransform.x) < 10 && 
+           Math.abs(zoomTransform.y) < 10);
+        
+        if (shouldAutoFit) {
+          console.log(`Auto-fitting to view - ${isInitialLoad ? 'initial load' : 'data change'}`);
           fitToView();
+          
+          // Mark initial load as complete after first auto-fit
+          if (isInitialLoad) {
+            setIsInitialLoad(false);
+          }
         }
       }, 1200); // Longer delay to allow simulation to complete
     }
-  }, [visibleEntities, visibleRelationships, dimensions, isDarkMode, fontSize, nodeDiameter, forceStrength, layoutType]);
+  }, [visibleEntities, visibleRelationships, dimensions, isDarkMode, fontSize, nodeDiameter, forceStrength, layoutType, isInitialLoad]);
 
   // Keyboard shortcuts for zoom controls
   useEffect(() => {
@@ -1542,14 +1565,14 @@ const KnowledgeGraphViewer: React.FC = () => {
   const zoomIn = () => {
     if (svgRef.current && zoomBehaviorRef.current) {
       const svg = d3.select(svgRef.current);
-      svg.transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 1.5);
+      svg.transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 1.1);
     }
   };
 
   const zoomOut = () => {
     if (svgRef.current && zoomBehaviorRef.current) {
       const svg = d3.select(svgRef.current);
-      svg.transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 0.67);
+      svg.transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 0.91);
     }
   };
 
@@ -1661,7 +1684,7 @@ const KnowledgeGraphViewer: React.FC = () => {
 
     // Calculate padding based on viewport and content size
     const viewportSize = Math.min(dimensions.width, dimensions.height);
-    const basePadding = Math.max(40, viewportSize * 0.08); // Minimum 40px, or 8% of viewport
+    const basePadding = Math.max(30, viewportSize * 0.03); // Minimum 30px, or 3% of viewport
     const nodePadding = nodeDiameter * 1.5; // Extra space around nodes
     const adaptivePadding = Math.max(basePadding, nodePadding);
 
