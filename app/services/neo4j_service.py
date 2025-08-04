@@ -55,6 +55,16 @@ class Neo4jService:
             
             logger.info(f"Neo4j driver initialized successfully for {uri}")
             
+            # Create performance indexes on initialization
+            try:
+                index_result = self.create_performance_indexes()
+                if index_result.get('success'):
+                    logger.info(f"🚀 Performance indexes initialized: {index_result.get('total_created', 0)} created")
+                else:
+                    logger.warning(f"Index creation had issues: {index_result.get('error', 'Unknown error')}")
+            except Exception as idx_error:
+                logger.warning(f"Failed to create performance indexes: {idx_error}")
+            
         except Exception as e:
             logger.error(f"Failed to initialize Neo4j driver: {str(e)}")
             self.driver = None
@@ -289,6 +299,244 @@ class Neo4jService:
             logger.error(f"Failed to create relationship: {str(e)}")
             return False
     
+    async def batch_create_entities_async(self, entities: List[Tuple[str, Dict[str, Any]]], batch_size: int = 50) -> List[Optional[str]]:
+        """Create multiple entities in batches asynchronously for better performance"""
+        import asyncio
+        return await asyncio.to_thread(self.batch_create_entities, entities, batch_size)
+    
+    def batch_create_entities(self, entities: List[Tuple[str, Dict[str, Any]]], batch_size: int = 50) -> List[Optional[str]]:
+        """Create multiple entities in batches for better performance"""
+        try:
+            if not self.is_enabled():
+                return [None] * len(entities)
+            
+            results = []
+            import hashlib
+            
+            # Process entities in batches
+            for i in range(0, len(entities), batch_size):
+                batch = entities[i:i + batch_size]
+                batch_results = []
+                
+                with self.driver.session() as session:
+                    # Prepare batch data
+                    batch_data = []
+                    for entity_type, properties in batch:
+                        canonical_name = properties.get('name', '').strip().lower()
+                        if not canonical_name:
+                            batch_results.append(None)
+                            continue
+                        
+                        # Generate deterministic ID
+                        name_hash = hashlib.md5(f"{entity_type}_{canonical_name}".encode()).hexdigest()[:8]
+                        deterministic_id = f"{entity_type}_{canonical_name.replace(' ', '_')}_{name_hash}"
+                        properties['id'] = deterministic_id
+                        
+                        batch_data.append({
+                            'entity_type': entity_type,
+                            'entity_id': deterministic_id,
+                            'properties': properties,
+                            'confidence': properties.get('confidence', 0.0),
+                            'original_text': properties.get('original_text', '')
+                        })
+                        batch_results.append(deterministic_id)
+                    
+                    if not batch_data:
+                        continue
+                    
+                    # Execute batch query using standard Cypher without APOC dependency
+                    batch_query = """
+                    UNWIND $batch as item
+                    CALL {
+                        WITH item
+                        MERGE (n {id: item.entity_id})
+                        SET n += item.properties,
+                            n.created_at = CASE WHEN n.created_at IS NULL THEN datetime() ELSE n.created_at END,
+                            n.confidence = CASE 
+                                WHEN item.confidence > COALESCE(n.confidence, 0) THEN item.confidence 
+                                ELSE COALESCE(n.confidence, item.confidence)
+                            END,
+                            n.last_updated = datetime(),
+                            n.document_count = COALESCE(n.document_count, 0) + 1
+                        RETURN n.id as entity_id
+                    } IN TRANSACTIONS OF 10 ROWS
+                    RETURN count(*) as entities_created
+                    """
+                    
+                    try:
+                        session.run(batch_query, batch=batch_data)
+                        logger.info(f"✅ Batch created {len(batch_data)} entities")
+                    except Exception as e:
+                        # Fallback to individual creation if batch fails
+                        logger.warning(f"Batch entity creation failed, falling back to individual: {e}")
+                        batch_results = []
+                        for entity_type, properties in batch:
+                            result = self.create_entity(entity_type, properties)
+                            batch_results.append(result)
+                
+                results.extend(batch_results)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to batch create entities: {str(e)}")
+            return [None] * len(entities)
+    
+    async def batch_create_relationships_async(self, relationships: List[Tuple[str, str, str, Dict[str, Any]]], batch_size: int = 100) -> int:
+        """Create multiple relationships in batches asynchronously for better performance"""
+        import asyncio
+        return await asyncio.to_thread(self.batch_create_relationships, relationships, batch_size)
+    
+    def batch_create_relationships(self, relationships: List[Tuple[str, str, str, Dict[str, Any]]], batch_size: int = 100) -> int:
+        """FIXED: Actually batch create relationships with TRUE batching"""
+        try:
+            if not self.is_enabled():
+                return 0
+            
+            # EMERGENCY LIMIT CHECK
+            current_count = self.get_total_relationship_count()
+            if current_count >= 50:  # Emergency hard limit
+                logger.error(f"🚨 EMERGENCY: Relationship limit reached {current_count}/50")
+                return 0
+            
+            success_count = 0
+            
+            # Process in ACTUAL batches using UNWIND
+            for i in range(0, len(relationships), batch_size):
+                batch = relationships[i:i + batch_size]
+                
+                with self.driver.session() as session:
+                    # Prepare batch data
+                    batch_data = []
+                    for from_id, to_id, rel_type, properties in batch:
+                        safe_properties = self._validate_neo4j_properties(properties or {})
+                        batch_data.append({
+                            'from_id': from_id,
+                            'to_id': to_id,
+                            'rel_type': rel_type,
+                            'properties': safe_properties
+                        })
+                    
+                    if not batch_data:
+                        continue
+                    
+                    # TRUE BATCH CREATION with UNWIND (not individual calls)
+                    batch_query = """
+                    UNWIND $batch as item
+                    MATCH (a {id: item.from_id}), (b {id: item.to_id})
+                    WHERE a IS NOT NULL AND b IS NOT NULL
+                    CREATE (a)-[r:RELATIONSHIP]->(b)
+                    SET r = item.properties, r.type = item.rel_type
+                    RETURN count(r) as created_count
+                    """
+                    
+                    try:
+                        result = session.run(batch_query, batch=batch_data)
+                        record = result.single()
+                        batch_success = record['created_count'] if record else 0
+                        success_count += batch_success
+                        logger.info(f"✅ TRUE BATCH: Created {batch_success} relationships")
+                        
+                        # Emergency check after each batch
+                        new_count = self.get_total_relationship_count()
+                        if new_count >= 50:
+                            logger.error(f"🚨 EMERGENCY STOP: Hit limit during batch processing")
+                            return success_count
+                            
+                    except Exception as e:
+                        logger.error(f"❌ Batch relationship creation failed: {e}")
+                        # Do NOT fall back to individual creation - that's what caused the explosion
+                        continue
+            
+            return success_count
+            
+        except Exception as e:
+            logger.error(f"Failed to batch create relationships: {str(e)}")
+            return 0
+    
+    def create_performance_indexes(self) -> Dict[str, Any]:
+        """Create essential indexes for knowledge graph performance using correct Neo4j 5.x syntax"""
+        try:
+            if not self.is_enabled():
+                return {'success': False, 'error': 'Neo4j not enabled'}
+            
+            indexes_created = []
+            indexes_failed = []
+            
+            # Common entity types used in the knowledge graph system
+            common_entity_types = [
+                'PERSON', 'EXECUTIVE', 'ORGANIZATION', 'COMPANY', 'TECHNOLOGY', 
+                'LOCATION', 'CONCEPT', 'EVENT', 'PRODUCT', 'SERVICE'
+            ]
+            
+            with self.driver.session() as session:
+                # Create indexes for each common entity type on essential properties
+                for entity_type in common_entity_types:
+                    # Essential property indexes for each entity type
+                    essential_properties = ['id', 'name', 'document_id', 'chunk_id', 'confidence', 'created_at']
+                    
+                    for prop in essential_properties:
+                        try:
+                            index_name = f"{entity_type.lower()}_{prop}_index"
+                            query = f"CREATE INDEX {index_name} IF NOT EXISTS FOR (n:{entity_type}) ON (n.{prop})"
+                            session.run(query)
+                            indexes_created.append(index_name)
+                            logger.debug(f"✅ Created index: {index_name}")
+                        except Exception as e:
+                            error_msg = f"{entity_type}.{prop}: {str(e)}"
+                            indexes_failed.append(error_msg)
+                            logger.debug(f"❌ Failed to create index {entity_type}.{prop}: {e}")
+                
+                # Create composite indexes for common query patterns
+                composite_indexes = [
+                    ("document_type_composite", "ORGANIZATION", ["document_id", "type"]),
+                    ("name_confidence_composite", "PERSON", ["name", "confidence"]),
+                    ("created_doc_composite", "CONCEPT", ["created_at", "document_id"])
+                ]
+                
+                for index_name, entity_type, properties in composite_indexes:
+                    try:
+                        props_str = ", ".join([f"n.{prop}" for prop in properties])
+                        query = f"CREATE INDEX {index_name} IF NOT EXISTS FOR (n:{entity_type}) ON ({props_str})"
+                        session.run(query)
+                        indexes_created.append(index_name)
+                        logger.debug(f"✅ Created composite index: {index_name}")
+                    except Exception as e:
+                        error_msg = f"{index_name}: {str(e)}"
+                        indexes_failed.append(error_msg)
+                        logger.debug(f"❌ Failed to create composite index {index_name}: {e}")
+                        
+                # Create text indexes for name-based searching (useful for fuzzy matching)
+                try:
+                    for entity_type in ['PERSON', 'ORGANIZATION', 'CONCEPT']:
+                        text_index_name = f"{entity_type.lower()}_name_text_index"
+                        query = f"CREATE TEXT INDEX {text_index_name} IF NOT EXISTS FOR (n:{entity_type}) ON (n.name)"
+                        session.run(query)
+                        indexes_created.append(text_index_name)
+                        logger.debug(f"✅ Created text index: {text_index_name}")
+                except Exception as e:
+                    error_msg = f"Text indexes: {str(e)}"
+                    indexes_failed.append(error_msg)
+                    logger.debug(f"❌ Failed to create text indexes: {e}")
+            
+            success_count = len(indexes_created)
+            failed_count = len(indexes_failed)
+            
+            logger.info(f"🚀 Index Creation Summary: {success_count} created, {failed_count} failed")
+            
+            return {
+                'success': True,
+                'indexes_created': indexes_created,
+                'indexes_failed': indexes_failed,
+                'total_created': success_count,
+                'total_failed': failed_count,
+                'entity_types_indexed': common_entity_types
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to create performance indexes: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
     def find_entities(self, entity_type: Optional[str] = None, 
                      properties: Optional[Dict[str, Any]] = None, 
                      limit: int = 100) -> List[Dict[str, Any]]:
@@ -370,6 +618,20 @@ class Neo4jService:
         except Exception as e:
             logger.error(f"Failed to execute Cypher query: {str(e)}")
             return []
+    
+    def get_total_relationship_count(self) -> int:
+        """Get total number of relationships in the graph"""
+        try:
+            if not self.is_enabled():
+                return 0
+                
+            with self.driver.session() as session:
+                result = session.run("MATCH ()-[r]->() RETURN count(r) as count")
+                record = result.single()
+                return record['count'] if record else 0
+        except Exception as e:
+            logger.error(f"Failed to get relationship count: {e}")
+            return 0
     
     def clear_database(self) -> bool:
         """Clear all data from the database (use with caution!)"""

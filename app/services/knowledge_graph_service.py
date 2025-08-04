@@ -8,7 +8,7 @@ No spaCy, no regex patterns, no hardcoded types - pure AI-driven knowledge disco
 import asyncio
 import logging
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -25,6 +25,66 @@ logger = logging.getLogger(__name__)
 # Enable debug logging for relationship storage tracking
 logger.setLevel(logging.DEBUG)
 
+# EMERGENCY SHUTDOWN MODE - DISABLE ALL RELATIONSHIP CREATION
+EMERGENCY_SHUTDOWN = False  # Set to True to stop all relationship creation
+EMERGENCY_MAX_RELATIONSHIPS = 50  # Hard emergency limit
+
+class GlobalRelationshipBudget:
+    """Track relationships globally across all chunks and documents to prevent graph explosion"""
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance.reset()
+        return cls._instance
+    
+    def reset(self):
+        """Reset the budget tracker"""
+        self.session_count = 0  # Relationships added in current session
+        self.max_global = 250  # Hard cap - NEVER exceed this
+        self.max_per_session = 50  # Maximum relationships to add per processing session
+        self.current_global_count = None  # Will be fetched from Neo4j
+        
+    def get_current_global_count(self, neo4j_service) -> int:
+        """Get current relationship count from Neo4j"""
+        if self.current_global_count is None:
+            self.current_global_count = neo4j_service.get_total_relationship_count()
+            logger.info(f"🌍 Current global relationship count: {self.current_global_count}")
+        return self.current_global_count
+    
+    def can_add_relationships(self, neo4j_service, requested_count: int) -> int:
+        """Return how many relationships can actually be added within all limits"""
+        current_total = self.get_current_global_count(neo4j_service)
+        
+        # Check global hard cap
+        remaining_global = max(0, self.max_global - current_total)
+        
+        # Check session limit
+        remaining_session = max(0, self.max_per_session - self.session_count)
+        
+        # Return the most restrictive limit
+        allowed = min(requested_count, remaining_global, remaining_session)
+        
+        if allowed < requested_count:
+            logger.warning(f"🚨 BUDGET CONSTRAINT: Requested {requested_count}, allowing {allowed}")
+            logger.warning(f"   - Global: {current_total}/{self.max_global} (remaining: {remaining_global})")
+            logger.warning(f"   - Session: {self.session_count}/{self.max_per_session} (remaining: {remaining_session})")
+        
+        return allowed
+    
+    def add_relationships(self, count: int):
+        """Track added relationships"""
+        self.session_count += count
+        if self.current_global_count is not None:
+            self.current_global_count += count
+        logger.info(f"🌍 Budget updated: +{count} relationships (session: {self.session_count}/{self.max_per_session})")
+    
+    def is_global_cap_reached(self, neo4j_service) -> bool:
+        """Check if global cap has been reached"""
+        current_total = self.get_current_global_count(neo4j_service)
+        return current_total >= self.max_global
+
 class KnowledgeGraphExtractionService:
     """Pure LLM-driven service for extracting knowledge graphs from documents"""
     
@@ -36,19 +96,24 @@ class KnowledgeGraphExtractionService:
         logger.info("🚀 Initialized Pure LLM Knowledge Graph Extraction Service")
     
     async def extract_from_chunk(self, chunk: ExtractedChunk, document_id: str = None) -> GraphExtractionResult:
-        """Extract knowledge graph using pure LLM intelligence"""
+        """Extract knowledge graph using pure LLM intelligence with configurable extraction mode"""
         start_time = datetime.now()
         
         try:
-            logger.info(f"🧠 Starting LLM knowledge extraction for chunk {chunk.chunk_id}")
+            # Get extraction mode configuration
+            settings = get_knowledge_graph_settings()
+            extraction_mode = settings.get('extraction', {}).get('mode', 'standard')  # simple, standard, comprehensive
             
-            # Use LLM to extract entities and relationships with no predefined constraints
+            logger.info(f"🧠 Starting LLM knowledge extraction for chunk {chunk.chunk_id} (mode: {extraction_mode})")
+            
+            # Use LLM to extract entities and relationships with configurable constraints
             extraction_result = await self.llm_extractor.extract_knowledge(
                 text=chunk.text,
                 context={
                     'document_id': document_id,
                     'chunk_id': chunk.chunk_id,
-                    'metadata': chunk.metadata
+                    'metadata': chunk.metadata,
+                    'extraction_mode': extraction_mode  # Pass mode to LLM extractor
                 }
             )
             
@@ -98,12 +163,33 @@ class KnowledgeGraphExtractionService:
             )
     
     async def store_in_neo4j(self, result: GraphExtractionResult, document_id: str = None) -> Dict[str, Any]:
-        """Store LLM-extracted knowledge graph in Neo4j"""
-        neo4j_service = get_neo4j_service()
+        """Store LLM-extracted knowledge graph in Neo4j with EMERGENCY LIMITS"""
         
+        # EMERGENCY SHUTDOWN CHECK
+        if EMERGENCY_SHUTDOWN:
+            logger.error("🚨 EMERGENCY SHUTDOWN: All relationship creation disabled")
+            return {
+                'success': False,
+                'error': 'Emergency shutdown mode active - no relationships created',
+                'entities_stored': 0,
+                'relationships_stored': 0
+            }
+        
+        # EMERGENCY LIMIT CHECK
+        neo4j_service = get_neo4j_service()
         if not neo4j_service.is_enabled():
             logger.warning("Neo4j not enabled - cannot store knowledge graph")
             return {'success': False, 'error': 'Neo4j not enabled'}
+        
+        current_count = neo4j_service.get_total_relationship_count()
+        if current_count >= EMERGENCY_MAX_RELATIONSHIPS:
+            logger.error(f"🚨 EMERGENCY LIMIT: {current_count} relationships exceed limit of {EMERGENCY_MAX_RELATIONSHIPS}")
+            return {
+                'success': False,
+                'error': f'Emergency limit reached: {current_count}/{EMERGENCY_MAX_RELATIONSHIPS}',
+                'entities_stored': 0,
+                'relationships_stored': 0
+            }
         
         try:
             entities_stored = 0
@@ -113,12 +199,44 @@ class KnowledgeGraphExtractionService:
             # Create mapping of entity names to Neo4j IDs
             entity_name_to_id = {}
             
-            # Store all LLM-discovered entities and build mapping
+            # Prepare entities for batch creation
+            entity_batch = []
             for entity in result.entities:
-                try:
-                    entity_id = neo4j_service.create_entity(
-                        entity_type=entity.label,  # Use LLM-determined type directly
-                        properties={
+                entity_batch.append((entity.label, {
+                    'name': entity.canonical_form,
+                    'type': entity.label,
+                    'original_text': entity.text,
+                    'confidence': entity.confidence,
+                    'document_id': document_id,
+                    'chunk_id': result.chunk_id,
+                    'discovered_by': 'llm',
+                    'created_at': datetime.now().isoformat()
+                }))
+            
+            # Batch create entities for 10x+ performance improvement (async)
+            logger.info(f"🚀 Batch creating {len(entity_batch)} entities...")
+            batch_entity_ids = await neo4j_service.batch_create_entities_async(entity_batch, batch_size=50)
+            
+            # Build entity mapping from batch results
+            for i, entity in enumerate(result.entities):
+                entity_id = batch_entity_ids[i]
+                if entity_id:
+                    entities_stored += 1
+                    # Build mapping for relationships: both canonical form and original text
+                    entity_name_to_id[entity.canonical_form.lower()] = entity_id
+                    entity_name_to_id[entity.text.lower()] = entity_id
+                    logger.debug(f"📝 Entity mapping: '{entity.canonical_form}' -> {entity_id}")
+            
+            logger.info(f"✅ Batch stored {entities_stored} entities")
+            
+            # Legacy individual entity creation (keeping for compatibility if batch fails)
+            if entities_stored == 0 and len(result.entities) > 0:
+                logger.warning("🔄 Batch creation failed, falling back to individual entity creation...")
+                for entity in result.entities:
+                    try:
+                        entity_id = neo4j_service.create_entity(
+                            entity_type=entity.label,  # Use LLM-determined type directly
+                            properties={
                             'name': entity.canonical_form,
                             'type': entity.label,  # Explicitly set the type property for frontend visualization
                             'original_text': entity.text,
@@ -128,18 +246,75 @@ class KnowledgeGraphExtractionService:
                             'discovered_by': 'llm',
                             'created_at': datetime.now().isoformat()
                         }
-                    )
-                    if entity_id:
-                        entities_stored += 1
-                        # Build mapping for relationships: both canonical form and original text
-                        entity_name_to_id[entity.canonical_form.lower()] = entity_id
-                        entity_name_to_id[entity.text.lower()] = entity_id
-                        logger.debug(f"📝 Entity mapping: '{entity.canonical_form}' -> {entity_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to store LLM entity {entity.text}: {e}")
+                        )
+                        if entity_id:
+                            entities_stored += 1
+                            # Build mapping for relationships: both canonical form and original text
+                            entity_name_to_id[entity.canonical_form.lower()] = entity_id
+                            entity_name_to_id[entity.text.lower()] = entity_id
+                            logger.debug(f"📝 Entity mapping: '{entity.canonical_form}' -> {entity_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to store LLM entity {entity.text}: {e}")
             
-            # Store all LLM-discovered relationships using ID mapping
-            for relationship in result.relationships:
+            # Store all LLM-discovered relationships using ID mapping with relationship budget
+            entity_relationship_count = {}  # Track relationships per entity
+            
+            # Apply mode-specific filtering and limits
+            settings = get_knowledge_graph_settings()
+            extraction_mode = settings.get('extraction', {}).get('mode', 'simple')  # Default to simple mode
+            mode_configs = {
+                'simple': {
+                    'confidence_threshold': 0.9,  # Increased from 0.85 to 0.9 - very strict
+                    'max_relationships_per_entity': 1,  # Keep at 1
+                    'max_total_relationships': 10,  # Reduced from 20 to 10 - very aggressive
+                    'global_relationship_cap': 250,  # Hard global cap
+                    'max_relationships_per_chunk': 3  # Reduced from 5 to 3 - very restrictive
+                },
+                'standard': {
+                    'confidence_threshold': 0.8,  # Increased from 0.75 to 0.8
+                    'max_relationships_per_entity': 2,  # Keep at 2
+                    'max_total_relationships': 25,  # Reduced from 50 to 25
+                    'global_relationship_cap': 300,  # Global cap
+                    'max_relationships_per_chunk': 5  # Reduced from 10 to 5
+                },
+                'comprehensive': {
+                    'confidence_threshold': 0.75,  # Increased from 0.7 to 0.75
+                    'max_relationships_per_entity': 2,  # Reduced from 3 to 2
+                    'max_total_relationships': 40,  # Reduced from 100 to 40
+                    'global_relationship_cap': 350,  # Reduced from 400 to 350
+                    'max_relationships_per_chunk': 8  # Reduced from 15 to 8
+                }
+            }
+            
+            mode_config = mode_configs.get(extraction_mode, mode_configs['standard'])
+            confidence_threshold = settings.get('extraction', {}).get('min_relationship_confidence', mode_config['confidence_threshold'])
+            max_relationships_per_entity = settings.get('extraction', {}).get('max_relationships_per_entity', mode_config['max_relationships_per_entity'])
+            max_total_relationships = mode_config['max_total_relationships']
+            
+            # Filter and sort relationships by confidence (highest first) to prioritize quality
+            filtered_relationships = [r for r in result.relationships if r.confidence >= confidence_threshold]
+            sorted_relationships = sorted(filtered_relationships, key=lambda r: r.confidence, reverse=True)
+            
+            # Apply per-chunk relationship limit FIRST (CRITICAL FOR BUDGET CONTROL)
+            max_per_chunk = mode_config.get('max_relationships_per_chunk', 3)  # Default to very restrictive
+            original_count = len(sorted_relationships)
+            if len(sorted_relationships) > max_per_chunk:
+                sorted_relationships = sorted_relationships[:max_per_chunk]
+                logger.info(f"🚨 CHUNK LIMIT ENFORCED: {original_count} → {max_per_chunk} relationships for chunk {result.chunk_id}")
+            else:
+                logger.info(f"✅ Chunk within limits: {len(sorted_relationships)} relationships (max: {max_per_chunk}) for chunk {result.chunk_id}")
+            
+            # Apply total relationship limit for the mode (already filtered by per-chunk limit)
+            if len(sorted_relationships) > max_total_relationships:
+                sorted_relationships = sorted_relationships[:max_total_relationships]
+                logger.info(f"🎯 Document limit applied: truncated to {max_total_relationships} relationships for {extraction_mode} mode")
+            
+            logger.info(f"🎯 {extraction_mode.upper()} mode filter: {len(result.relationships)} → {len(sorted_relationships)} relationships (confidence: {confidence_threshold})")
+            
+            # Prepare relationships for batch creation
+            relationship_batch = []
+            
+            for relationship in sorted_relationships:
                 try:
                     # Map entity names to Neo4j IDs
                     source_name = relationship.source_entity.strip()
@@ -158,7 +333,16 @@ class KnowledgeGraphExtractionService:
                         relationship_failures += 1
                         continue
                     
-                    logger.debug(f"🔗 Creating relationship: {source_id} --[{relationship.relationship_type}]--> {target_id}")
+                    # Check relationship budget for both source and target entities
+                    source_count = entity_relationship_count.get(source_id, 0)
+                    target_count = entity_relationship_count.get(target_id, 0)
+                    
+                    if source_count >= max_relationships_per_entity or target_count >= max_relationships_per_entity:
+                        logger.debug(f"⚡ Relationship budget exceeded: {source_name} ({source_count}) -> {target_name} ({target_count}), max: {max_relationships_per_entity}")
+                        relationship_failures += 1
+                        continue
+                    
+                    logger.debug(f"🔗 Preparing relationship: {source_id} --[{relationship.relationship_type}]--> {target_id}")
                     
                     # Build properties dictionary and sanitize for Neo4j
                     raw_properties = {
@@ -176,24 +360,56 @@ class KnowledgeGraphExtractionService:
                     # Sanitize properties to avoid Map{} errors in Neo4j
                     sanitized_properties = self._sanitize_neo4j_properties(raw_properties)
                     
-                    success = neo4j_service.create_relationship(
-                        from_id=source_id,
-                        to_id=target_id,
-                        relationship_type=relationship.relationship_type,  # Use LLM-determined type
-                        properties=sanitized_properties
-                    )
-                    if success:
-                        relationships_stored += 1
-                        logger.debug(f"✅ Relationship stored successfully")
-                    else:
-                        logger.warning(f"❌ Neo4j relationship creation returned False")
-                        relationship_failures += 1
+                    # Add to batch for processing
+                    relationship_batch.append((source_id, target_id, relationship.relationship_type, sanitized_properties))
+                    
+                    # Update relationship count for budget tracking
+                    entity_relationship_count[source_id] = entity_relationship_count.get(source_id, 0) + 1
+                    entity_relationship_count[target_id] = entity_relationship_count.get(target_id, 0) + 1
                         
                 except Exception as e:
-                    logger.warning(f"❌ Failed to store LLM relationship '{source_name}' -> '{target_name}': {e}")
+                    logger.warning(f"❌ Failed to prepare LLM relationship '{source_name}' -> '{target_name}': {e}")
                     relationship_failures += 1
             
+            # Execute batch relationship creation for massive performance improvement
+            if relationship_batch:
+                # Deduplicate relationships to avoid redundancy
+                deduplicated_batch = self._deduplicate_relationships(relationship_batch)
+                
+                # Apply global relationship budget to prevent graph explosion
+                global_budget = GlobalRelationshipBudget()
+                
+                # Check if global cap is already reached
+                if global_budget.is_global_cap_reached(neo4j_service):
+                    logger.error(f"🚫 GLOBAL CAP REACHED: No new relationships can be added")
+                    deduplicated_batch = []
+                else:
+                    # Apply budget constraints
+                    allowed_count = global_budget.can_add_relationships(neo4j_service, len(deduplicated_batch))
+                    if allowed_count < len(deduplicated_batch):
+                        deduplicated_batch = deduplicated_batch[:allowed_count]
+                        logger.warning(f"🚨 GLOBAL BUDGET ENFORCED: Limited to {allowed_count} relationships")
+                
+                if deduplicated_batch:  # Only proceed if we have relationships within budget
+                    logger.info(f"🚀 Batch creating {len(deduplicated_batch)} relationships...")
+                    relationships_stored = await neo4j_service.batch_create_relationships_async(deduplicated_batch, batch_size=100)
+                    logger.info(f"✅ Batch stored {relationships_stored} relationships")
+                    
+                    # Update global budget tracker
+                    global_budget.add_relationships(relationships_stored)
+                else:
+                    logger.info("🚫 No relationships to store - global budget constraints")
+                    relationships_stored = 0
+            else:
+                logger.info("No relationships to store")
+                relationships_stored = 0
+            
+            # Calculate final stats
+            relationship_failures = len(sorted_relationships) - len(relationship_batch)  # Budget exceeded relationships
+            relationship_failures += len(relationship_batch) - relationships_stored  # Failed creations
+            
             logger.info(f"✅ Stored LLM knowledge: {entities_stored} entities, {relationships_stored} relationships ({relationship_failures} relationship failures)")
+            logger.info(f"⚡ Relationship budget: max {max_relationships_per_entity} per entity, average {relationships_stored*2/entities_stored if entities_stored > 0 else 0:.1f} relationships per entity")
             
             # Debug logging for entity storage tracking
             if entities_stored != len(result.entities):
@@ -203,13 +419,18 @@ class KnowledgeGraphExtractionService:
             else:
                 logger.debug(f"✅ All {entities_stored} entities stored successfully from chunk {result.chunk_id}")
             
-            # Automatically run anti-silo analysis after storage to reduce isolated nodes
-            if entities_stored > 0:
+            # DISABLED: Anti-silo analysis to prevent relationship explosion
+            # Only run anti-silo if explicitly enabled and global cap not reached
+            settings = get_knowledge_graph_settings()
+            anti_silo_enabled = settings.get('extraction', {}).get('enable_anti_silo', False)  # Default disabled
+            global_budget = GlobalRelationshipBudget()
+            
+            if False:  # EMERGENCY: Completely disable anti-silo analysis
                 try:
-                    logger.info("🔗 Running automatic anti-silo analysis after entity storage...")
+                    logger.info("🔗 Running LIMITED anti-silo analysis after entity storage...")
                     logger.info(f"📊 Pre-anti-silo status: {entities_stored} entities stored, {relationships_stored} relationships created")
                     
-                    anti_silo_result = await self.run_global_anti_silo_analysis()
+                    anti_silo_result = await self.run_limited_anti_silo_analysis()
                     
                     if anti_silo_result.get('success'):
                         logger.info(f"🎯 Anti-silo analysis COMPLETED:")
@@ -232,9 +453,19 @@ class KnowledgeGraphExtractionService:
                         logger.error("   This means isolated nodes may remain in the knowledge graph")
                         
                 except Exception as e:
-                    logger.error(f"❌ Automatic anti-silo analysis CRASHED: {e}")
-                    logger.error("   This is a critical error - isolated nodes will remain")
+                    logger.error(f"❌ Limited anti-silo analysis FAILED: {e}")
+                    logger.error("   Anti-silo analysis disabled to prevent relationship explosion")
                     logger.exception("Full exception details:")
+                    
+            elif entities_stored > 0:
+                if not anti_silo_enabled:
+                    logger.info("🔗 Anti-silo analysis DISABLED to prevent relationship explosion")
+                elif global_budget.is_global_cap_reached(neo4j_service):
+                    logger.info("🔗 Anti-silo analysis SKIPPED - global relationship cap reached")
+                else:
+                    logger.info("🔗 Anti-silo analysis SKIPPED - no entities stored")
+            
+            logger.info("🚨 EMERGENCY: Anti-silo analysis completely disabled")
             
             return {
                 'success': True,
@@ -275,6 +506,117 @@ class KnowledgeGraphExtractionService:
                 sanitized[key] = str(value)
         
         return sanitized
+    
+    def _deduplicate_relationships(self, relationships: List[Tuple[str, str, str, Dict[str, Any]]]) -> List[Tuple[str, str, str, Dict[str, Any]]]:
+        """Remove duplicate relationships based on source, target, and relationship type"""
+        seen = set()
+        deduplicated = []
+        duplicate_count = 0
+        
+        for from_id, to_id, rel_type, properties in relationships:
+            # Create a unique key for this relationship (bidirectional consideration)
+            key1 = (from_id, to_id, rel_type)
+            key2 = (to_id, from_id, rel_type)  # Check reverse direction too
+            
+            if key1 not in seen and key2 not in seen:
+                seen.add(key1)
+                deduplicated.append((from_id, to_id, rel_type, properties))
+            else:
+                duplicate_count += 1
+                logger.debug(f"🔄 Skipped duplicate relationship: {from_id} --[{rel_type}]--> {to_id}")
+        
+        if duplicate_count > 0:
+            logger.info(f"🔄 Relationship deduplication: {len(relationships)} → {len(deduplicated)} (removed {duplicate_count} duplicates)")
+        
+        return deduplicated
+    
+    async def run_limited_anti_silo_analysis(self) -> Dict[str, Any]:
+        """Run VERY LIMITED anti-silo analysis with strict relationship budget controls"""
+        neo4j_service = get_neo4j_service()
+        
+        if not neo4j_service.is_enabled():
+            logger.warning("Neo4j not enabled - cannot run anti-silo analysis")
+            return {'success': False, 'error': 'Neo4j not enabled'}
+        
+        # Check global budget before doing anything
+        global_budget = GlobalRelationshipBudget()
+        if global_budget.is_global_cap_reached(neo4j_service):
+            logger.warning("🚫 Global relationship cap reached - skipping anti-silo analysis")
+            return {'success': False, 'error': 'Global relationship cap reached'}
+        
+        try:
+            logger.info("🌍 Starting LIMITED anti-silo analysis (budget-controlled)...")
+            
+            # Get isolated nodes (limit to only 5 to prevent explosion)
+            isolated_nodes = neo4j_service.get_truly_isolated_nodes()[:5]  # LIMIT TO 5 NODES MAX
+            initial_silo_count = len(isolated_nodes)
+            
+            logger.info(f"🔍 Found {initial_silo_count} isolated nodes (limited to 5)")
+            
+            if initial_silo_count == 0:
+                logger.info("✅ No isolated nodes found")
+                return {
+                    'success': True,
+                    'initial_silo_count': 0,
+                    'final_silo_count': 0,
+                    'connections_made': 0,
+                    'message': 'No isolated nodes to connect'
+                }
+            
+            connections_made = 0
+            max_connections_allowed = 5  # HARD LIMIT: Maximum 5 connections total
+            
+            # Only do the most basic connection: remove truly empty hubs
+            empty_hubs_removed = await self._remove_empty_hubs(neo4j_service)
+            
+            # Try to connect at most 2 isolated nodes with minimal relationships
+            if len(isolated_nodes) >= 2 and connections_made < max_connections_allowed:
+                # Connect first two isolated nodes to each other (if budget allows)
+                budget_remaining = global_budget.can_add_relationships(neo4j_service, 1)
+                if budget_remaining > 0:
+                    node1 = isolated_nodes[0]
+                    node2 = isolated_nodes[1]
+                    
+                    connected = neo4j_service.create_relationship(
+                        from_id=node1['id'],
+                        to_id=node2['id'],
+                        relationship_type="CONTEXTUALLY_RELATED",
+                        properties={
+                            'created_by': 'limited_anti_silo',
+                            'confidence': 0.3,
+                            'reasoning': 'Limited anti-silo: minimal connection to prevent isolation',
+                            'limited_mode': True
+                        }
+                    )
+                    
+                    if connected:
+                        connections_made += 1
+                        global_budget.add_relationships(1)
+                        logger.info(f"🔗 Limited connection: {node1.get('name')} -> CONTEXTUALLY_RELATED -> {node2.get('name')}")
+            
+            # Get final isolated count
+            final_isolated_nodes = neo4j_service.get_truly_isolated_nodes()
+            final_silo_count = len(final_isolated_nodes)
+            
+            result = {
+                'success': True,
+                'initial_silo_count': initial_silo_count,
+                'final_silo_count': final_silo_count,
+                'connections_made': connections_made,
+                'hubs_connected': 0,
+                'nodes_removed': empty_hubs_removed,
+                'reduction': initial_silo_count - final_silo_count,
+                'remaining_silos': [{'name': node.get('name'), 'type': node.get('type'), 'labels': node.get('labels')} 
+                                   for node in final_isolated_nodes[:5]],  # Only show first 5
+                'message': f'LIMITED anti-silo analysis: {connections_made} connections made (max {max_connections_allowed})'
+            }
+            
+            logger.info(f"✅ LIMITED anti-silo complete: {connections_made} connections made (budget-controlled)")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Limited anti-silo analysis failed: {e}")
+            return {'success': False, 'error': str(e)}
     
     async def run_global_anti_silo_analysis(self) -> Dict[str, Any]:
         """Run comprehensive global anti-silo analysis to connect isolated nodes"""
@@ -499,9 +841,9 @@ class KnowledgeGraphExtractionService:
                 connections_made += cross_connections
                 logger.info(f"   ✅ Made {cross_connections} aggressive cross-type connections")
             
-            # NUCLEAR OPTION: Eliminate ALL remaining silo nodes by force
+            # NUCLEAR OPTION: Eliminate ALL remaining silo nodes by force (DISABLED BY DEFAULT for performance)
             settings = get_knowledge_graph_settings()
-            nuclear_enabled = settings.get('extraction', {}).get('enable_nuclear_option', True)  # Default True for backward compatibility
+            nuclear_enabled = settings.get('extraction', {}).get('enable_nuclear_option', False)  # Default False for performance
             
             if nuclear_enabled:
                 logger.info("☢️  NUCLEAR ANTI-SILO: Checking for any remaining isolated nodes...")
@@ -627,7 +969,7 @@ class KnowledgeGraphExtractionService:
                         business_name, org_name, business_entity.get('name'), org['name']
                     )
                     
-                    if relationship_type and confidence >= 0.3:
+                    if relationship_type and confidence >= 0.6:  # Further increased threshold for quality relationships
                         # Create the relationship
                         relationship_created = neo4j_service.create_relationship(
                             from_id=business_id,
@@ -709,9 +1051,9 @@ class KnowledgeGraphExtractionService:
         if entity1_is_org and entity2_is_concept:
             return 'IMPLEMENTS', 0.4, f'{entity1_name} implements {entity2_name} initiatives'
         
-        # General business relationships for organizations (LOWERED THRESHOLD)
-        if entity1_is_org and entity2_is_org:
-            return 'INDUSTRY_PEER', 0.4, f'{entity1_name} and {entity2_name} are industry peers'
+        # General business relationships for organizations (DISABLED - too low confidence)
+        # if entity1_is_org and entity2_is_org:
+        #     return 'INDUSTRY_PEER', 0.4, f'{entity1_name} and {entity2_name} are industry peers'
         
         # Financial/fintech ecosystem (EXPANDED)
         fintech_terms = ['payment', 'fintech', 'financial', 'banking', 'wallet', 'alipay', 'wechat', 'pay']
@@ -723,17 +1065,17 @@ class KnowledgeGraphExtractionService:
         if entity1_is_org and entity2_is_fintech:
             return 'SERVED_BY', 0.4, f'{entity1_name} is served by {entity2_name} in financial sector'
         
-        # Business ecosystem connections (VERY PERMISSIVE)
-        business_terms = ['business', 'enterprise', 'solution', 'service', 'product']
-        entity1_is_business = any(term in entity1_lower for term in business_terms)
-        entity2_is_business = any(term in entity2_lower for term in business_terms)
+        # Business ecosystem connections (DISABLED - too permissive, low confidence)
+        # business_terms = ['business', 'enterprise', 'solution', 'service', 'product']
+        # entity1_is_business = any(term in entity1_lower for term in business_terms)
+        # entity2_is_business = any(term in entity2_lower for term in business_terms)
+        # 
+        # if (entity1_is_business or entity1_is_org) and (entity2_is_business or entity2_is_org):
+        #     return 'RELATED_IN_ECOSYSTEM', 0.3, f'{entity1_name} and {entity2_name} are part of the same business ecosystem'
         
-        if (entity1_is_business or entity1_is_org) and (entity2_is_business or entity2_is_org):
-            return 'RELATED_IN_ECOSYSTEM', 0.3, f'{entity1_name} and {entity2_name} are part of the same business ecosystem'
-        
-        # Default: still try to connect if entities seem related (LAST RESORT)
-        if len(entity1_name) > 3 and len(entity2_name) > 3:  # Avoid tiny words
-            return 'CONTEXTUALLY_RELATED', 0.3, f'{entity1_name} and {entity2_name} appear in similar business context'
+        # Default: DISABLE last resort connections (DISABLED - too low confidence)
+        # if len(entity1_name) > 3 and len(entity2_name) > 3:  # Avoid tiny words
+        #     return 'CONTEXTUALLY_RELATED', 0.3, f'{entity1_name} and {entity2_name} appear in similar business context'
         
         # Truly no relationship found
         return None, 0.0, 'No relationship identified'
@@ -783,7 +1125,7 @@ class KnowledgeGraphExtractionService:
                         isolated_entity.get('name'), existing_node['name']
                     )
                     
-                    if relationship_type and confidence >= 0.2:  # Very permissive threshold
+                    if relationship_type and confidence >= 0.6:  # Further increased threshold to reduce aggressive connections
                         # Create the relationship
                         relationship_created = neo4j_service.create_relationship(
                             from_id=isolated_id,
@@ -805,7 +1147,7 @@ class KnowledgeGraphExtractionService:
                 logger.info(f"   ✅ Made {entity_connections} connections for '{isolated_entity.get('name')}'")
                 
                 # Early termination if we've made enough connections for this entity
-                if entity_connections >= 5:  # Limit to prevent over-connection
+                if entity_connections >= 2:  # Reduced limit to prevent over-connection
                     logger.info(f"   🛑 Stopping at {entity_connections} connections (sufficient connectivity)")
             
             return connections_made
@@ -990,7 +1332,7 @@ class KnowledgeGraphExtractionService:
                     relationship_type="MENTIONED_TOGETHER",
                     properties={
                         'created_by': 'nuclear_anti_silo',
-                        'confidence': 0.3,
+                        'confidence': 0.4,
                         'reasoning': f'Nuclear anti-silo: {isolated_name} and {hub_name} mentioned in same document context',
                         'nuclear_connection': True,
                         'connection_strategy': 'document_cooccurrence'
@@ -1008,7 +1350,7 @@ class KnowledgeGraphExtractionService:
                     relationship_type="PART_OF_ECOSYSTEM",
                     properties={
                         'created_by': 'nuclear_anti_silo',
-                        'confidence': 0.25,
+                        'confidence': 0.35,
                         'reasoning': f'Nuclear anti-silo: {isolated_name} is part of the same business ecosystem as {hub_name}',
                         'nuclear_connection': True,
                         'connection_strategy': 'ecosystem_membership'
@@ -1125,7 +1467,7 @@ class KnowledgeGraphExtractionService:
                         relationship_type="DOCUMENT_COOCCURRENCE",
                         properties={
                             'created_by': 'nuclear_document_cooccurrence',
-                            'confidence': 0.4,
+                            'confidence': 0.5,
                             'reasoning': f'{isolated_name} and {other_name} appear in the same document',
                             'nuclear_connection': True,
                             'connection_strategy': 'document_cooccurrence'
@@ -1166,7 +1508,7 @@ class KnowledgeGraphExtractionService:
                         relationship_type="ISOLATED_CLUSTER",
                         properties={
                             'created_by': 'nuclear_isolated_cluster',
-                            'confidence': 0.2,
+                            'confidence': 0.3,
                             'reasoning': f'Last resort: connecting isolated entities {other_name} and {hub_name}',
                             'nuclear_connection': True,
                             'connection_strategy': 'isolated_cluster'

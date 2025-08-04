@@ -15,6 +15,7 @@ from datetime import datetime
 
 from app.core.knowledge_graph_settings_cache import get_knowledge_graph_settings
 from app.core.llm_settings_cache import get_llm_settings
+from app.core.timeout_settings_cache import get_knowledge_graph_timeout, get_kg_base_timeout, get_kg_max_timeout, get_kg_fallback_timeout
 from app.services.knowledge_graph_types import ExtractedEntity, ExtractedRelationship
 from app.services.dynamic_schema_manager import dynamic_schema_manager
 
@@ -257,6 +258,232 @@ class LLMKnowledgeExtractor:
         }
         return config
     
+    def _calculate_dynamic_timeout(self, text_length: int, extraction_mode: str = "standard", 
+                                  pass_number: int = 1) -> int:
+        """Calculate dynamic timeout based on content size, complexity, and extraction mode"""
+        try:
+            # Get base timeout from configuration
+            base_timeout = get_kg_base_timeout()
+            max_timeout = get_kg_max_timeout()
+            
+            # Get configuration parameters
+            large_threshold = get_knowledge_graph_timeout("large_document_threshold", 20000)
+            ultra_threshold = get_knowledge_graph_timeout("ultra_large_document_threshold", 50000)
+            content_multiplier = get_knowledge_graph_timeout("content_size_multiplier", 0.01)
+            complexity_multiplier = get_knowledge_graph_timeout("complexity_multiplier", 1.2)
+            pass_multiplier = get_knowledge_graph_timeout("pass_timeout_multiplier", 1.5)
+            
+            # Calculate base timeout with content size scaling
+            size_factor = max(1.0, text_length * content_multiplier / 1000)  # Scale per 1000 chars
+            calculated_timeout = int(base_timeout * size_factor)
+            
+            # Apply extraction mode multipliers
+            if extraction_mode in ["ULTRA-AGGRESSIVE", "ultra_aggressive"]:
+                calculated_timeout = int(calculated_timeout * complexity_multiplier * 1.5)
+            elif extraction_mode in ["AGGRESSIVE", "aggressive"]:
+                calculated_timeout = int(calculated_timeout * complexity_multiplier)
+            
+            # Apply pass-specific scaling (later passes may need more time for relationship analysis)
+            if pass_number > 1:
+                calculated_timeout = int(calculated_timeout * (pass_multiplier ** (pass_number - 1)))
+            
+            # Apply document size thresholds
+            if text_length > ultra_threshold:
+                calculated_timeout = int(calculated_timeout * 2.0)  # Double for ultra-large documents
+                logger.info(f"📊 Ultra-large document detected ({text_length:,} chars), applying 2x timeout multiplier")
+            elif text_length > large_threshold:
+                calculated_timeout = int(calculated_timeout * 1.5)  # 1.5x for large documents
+                logger.info(f"📊 Large document detected ({text_length:,} chars), applying 1.5x timeout multiplier")
+            
+            # Ensure we don't exceed maximum timeout
+            final_timeout = min(calculated_timeout, max_timeout)
+            
+            # Log timeout calculation for debugging
+            logger.info(f"⏱️  Dynamic timeout calculation:")
+            logger.info(f"   📄 Text length: {text_length:,} characters")
+            logger.info(f"   🎯 Extraction mode: {extraction_mode}")
+            logger.info(f"   🔢 Pass number: {pass_number}")
+            logger.info(f"   ⚡ Base timeout: {base_timeout}s")
+            logger.info(f"   📈 Calculated timeout: {calculated_timeout}s")
+            logger.info(f"   ✅ Final timeout: {final_timeout}s")
+            
+            return final_timeout
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Error calculating dynamic timeout: {e}, using fallback")
+            return get_kg_fallback_timeout()
+    
+    async def _fallback_extraction_strategy(self, text: str, context: Optional[Dict[str, Any]], 
+                                          domain_hints: Optional[List[str]], pass_number: int) -> Optional[Dict[str, Any]]:
+        """Progressive fallback strategy when extraction passes time out"""
+        try:
+            # Get fallback timeout (shorter than original)
+            fallback_timeout = get_kg_fallback_timeout()
+            logger.info(f"🔄 Attempting fallback extraction for Pass {pass_number} with {fallback_timeout}s timeout")
+            
+            # Use simplified extraction with reduced content if text is very large
+            simplified_text = text
+            if len(text) > 50000:  # Ultra-large document
+                # Take first 70% and last 15% to preserve context and conclusion
+                split_point1 = int(len(text) * 0.7)
+                split_point2 = int(len(text) * 0.85)
+                simplified_text = text[:split_point1] + "\n\n[CONTENT TRUNCATED FOR PROCESSING]\n\n" + text[split_point2:]
+                logger.info(f"📊 Text simplified from {len(text):,} to {len(simplified_text):,} characters for fallback")
+            
+            # Try simplified extraction based on pass number
+            if pass_number == 1:
+                result = await asyncio.wait_for(
+                    self._simplified_core_entities_extraction(simplified_text, context, domain_hints),
+                    timeout=fallback_timeout
+                )
+            elif pass_number == 2:
+                # For Pass 2, we need existing entities, use empty list if none available
+                result = await asyncio.wait_for(
+                    self._simplified_business_concepts_extraction(simplified_text, [], context, domain_hints),
+                    timeout=fallback_timeout
+                )
+            else:
+                logger.warning(f"⚠️ No fallback strategy defined for Pass {pass_number}")
+                return None
+            
+            logger.info(f"✅ Fallback extraction succeeded for Pass {pass_number}")
+            return result
+            
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Fallback extraction also timed out for Pass {pass_number} after {fallback_timeout}s")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Fallback extraction failed for Pass {pass_number}: {e}")
+            return None
+    
+    async def _simplified_core_entities_extraction(self, text: str, context: Optional[Dict[str, Any]], 
+                                                 domain_hints: Optional[List[str]]) -> Dict[str, Any]:
+        """Simplified core entity extraction for fallback scenarios"""
+        start_time = datetime.now()
+        
+        # Use a much simpler prompt focused on just the most critical entities
+        simplified_prompt = f"""
+Extract the most important business entities from this text. Focus only on:
+- Companies/Organizations
+- Key People (executives, leaders)
+- Main Products/Services
+- Technologies mentioned
+
+TEXT ({len(text):,} characters):
+{text}
+
+Return ONLY a JSON object with:
+{{"entities": [list of entities], "relationships": [list of relationships], "reasoning": "brief explanation"}}
+
+Be concise but accurate. Extract only the most critical entities.
+"""
+        
+        try:
+            # Use the fallback timeout for API calls too
+            fallback_api_timeout = get_kg_fallback_timeout()
+            response = await self._call_llm_for_extraction(simplified_prompt, fallback_api_timeout)
+            parsed_result = self.extract_json_from_response(response)
+            
+            # Convert to proper format
+            entities = []
+            relationships = []
+            
+            for entity_data in parsed_result.get('entities', []):
+                if isinstance(entity_data, dict):
+                    entities.append(ExtractedEntity(
+                        canonical_form=entity_data.get('name', 'Unknown'),
+                        entity_type=entity_data.get('type', 'ENTITY'),
+                        confidence=0.7,  # Lower confidence for simplified extraction
+                        aliases=entity_data.get('aliases', []),
+                        properties=entity_data.get('properties', {})
+                    ))
+            
+            for rel_data in parsed_result.get('relationships', []):
+                if isinstance(rel_data, dict):
+                    relationships.append(ExtractedRelationship(
+                        source_entity=rel_data.get('source', 'Unknown'),
+                        target_entity=rel_data.get('target', 'Unknown'),
+                        relationship_type=rel_data.get('type', 'RELATED_TO'),
+                        confidence=0.6,  # Lower confidence for simplified extraction
+                        properties=rel_data.get('properties', {})
+                    ))
+            
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            return {
+                'entities': entities,
+                'relationships': relationships,
+                'processing_time_ms': processing_time
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Simplified core entity extraction failed: {e}")
+            return {'entities': [], 'relationships': [], 'processing_time_ms': 0}
+    
+    async def _simplified_business_concepts_extraction(self, text: str, existing_entities: List[ExtractedEntity],
+                                                     context: Optional[Dict[str, Any]], domain_hints: Optional[List[str]]) -> Dict[str, Any]:
+        """Simplified business concepts extraction for fallback scenarios"""
+        start_time = datetime.now()
+        
+        # Use a much simpler prompt focused on just key business concepts
+        simplified_prompt = f"""
+Extract key business concepts from this text. Focus only on:
+- Business strategies/initiatives
+- Financial metrics/KPIs
+- Market segments
+- Key processes
+
+TEXT ({len(text):,} characters):
+{text}
+
+Return ONLY a JSON object with:
+{{"entities": [list of business concept entities], "relationships": [list of relationships], "reasoning": "brief explanation"}}
+
+Be concise but accurate. Extract only the most important business concepts.
+"""
+        
+        try:
+            # Use the fallback timeout for API calls too
+            fallback_api_timeout = get_kg_fallback_timeout()
+            response = await self._call_llm_for_extraction(simplified_prompt, fallback_api_timeout)
+            parsed_result = self.extract_json_from_response(response)
+            
+            # Convert to proper format (similar to simplified_core_entities_extraction)
+            entities = []
+            relationships = []
+            
+            for entity_data in parsed_result.get('entities', []):
+                if isinstance(entity_data, dict):
+                    entities.append(ExtractedEntity(
+                        canonical_form=entity_data.get('name', 'Unknown'),
+                        entity_type=entity_data.get('type', 'BUSINESS_CONCEPT'),
+                        confidence=0.6,  # Lower confidence for simplified extraction
+                        aliases=entity_data.get('aliases', []),
+                        properties=entity_data.get('properties', {})
+                    ))
+            
+            for rel_data in parsed_result.get('relationships', []):
+                if isinstance(rel_data, dict):
+                    relationships.append(ExtractedRelationship(
+                        source_entity=rel_data.get('source', 'Unknown'),
+                        target_entity=rel_data.get('target', 'Unknown'),
+                        relationship_type=rel_data.get('type', 'RELATED_TO'),
+                        confidence=0.5,  # Lower confidence for simplified extraction
+                        properties=rel_data.get('properties', {})
+                    ))
+            
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            return {
+                'entities': entities,
+                'relationships': relationships,
+                'processing_time_ms': processing_time
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Simplified business concepts extraction failed: {e}")
+            return {'entities': [], 'relationships': [], 'processing_time_ms': 0}
+    
     async def extract_knowledge(self, text: str, context: Optional[Dict[str, Any]] = None) -> LLMExtractionResult:
         """Wrapper method to maintain compatibility with existing code"""
         return await self.extract_with_llm(text, context)
@@ -380,16 +607,24 @@ class LLMKnowledgeExtractor:
         logger.info(f"🔄 Starting {pass_count}-pass business extraction on {text_length:,} character text")
         logger.info(f"   📊 Performance optimization: {text_length:,} chars → {pass_count} passes")
         
+        # Calculate dynamic timeout for Pass 1 with ULTRA-AGGRESSIVE mode
+        pass1_timeout = self._calculate_dynamic_timeout(text_length, "ULTRA-AGGRESSIVE", 1)
+        
         # Pass 1: Core Business Entities (Organizations, People, Technologies, Products)
         logger.info("🎯 Pass 1: Core business entities extraction")
         try:
             pass1_result = await asyncio.wait_for(
-                self._extraction_pass_core_entities(text, context, domain_hints),
-                timeout=180  # 3-minute timeout per pass
+                self._extraction_pass_core_entities(text, context, domain_hints, pass1_timeout),
+                timeout=pass1_timeout
             )
         except asyncio.TimeoutError:
-            logger.error("⏰ Pass 1 timed out after 3 minutes")
-            pass1_result = {'entities': [], 'relationships': [], 'processing_time_ms': 180000}
+            logger.error(f"⏰ Pass 1 timed out after {pass1_timeout} seconds")
+            # Implement progressive fallback strategy
+            logger.warning("🔄 Activating fallback strategy for Pass 1 timeout")
+            pass1_result = await self._fallback_extraction_strategy(text, context, domain_hints, pass_number=1)
+            if pass1_result is None:
+                logger.error("❌ Fallback strategy also failed, using empty result")
+                pass1_result = {'entities': [], 'relationships': [], 'processing_time_ms': pass1_timeout * 1000}
         all_entities.extend(pass1_result['entities'])
         all_relationships.extend(pass1_result['relationships'])
         pass_metadata['pass1_core_entities'] = {
@@ -398,16 +633,24 @@ class LLMKnowledgeExtractor:
             'processing_time_ms': pass1_result['processing_time_ms']
         }
         
+        # Calculate dynamic timeout for Pass 2 with ULTRA-AGGRESSIVE mode
+        pass2_timeout = self._calculate_dynamic_timeout(text_length, "ULTRA-AGGRESSIVE", 2)
+        
         # Pass 2: Business Concepts and Strategic Elements
         logger.info("📈 Pass 2: Business concepts and strategic elements")
         try:
             pass2_result = await asyncio.wait_for(
-                self._extraction_pass_business_concepts(text, all_entities, context, domain_hints),
-                timeout=180  # 3-minute timeout per pass
+                self._extraction_pass_business_concepts(text, all_entities, context, domain_hints, pass2_timeout),
+                timeout=pass2_timeout
             )
         except asyncio.TimeoutError:
-            logger.error("⏰ Pass 2 timed out after 3 minutes")
-            pass2_result = {'entities': [], 'relationships': [], 'processing_time_ms': 180000}
+            logger.error(f"⏰ Pass 2 timed out after {pass2_timeout} seconds")
+            # Implement progressive fallback strategy
+            logger.warning("🔄 Activating fallback strategy for Pass 2 timeout")
+            pass2_result = await self._fallback_extraction_strategy(text, context, domain_hints, pass_number=2)
+            if pass2_result is None:
+                logger.error("❌ Fallback strategy also failed, using empty result")
+                pass2_result = {'entities': [], 'relationships': [], 'processing_time_ms': pass2_timeout * 1000}
         all_entities.extend(pass2_result['entities'])
         all_relationships.extend(pass2_result['relationships'])
         pass_metadata['pass2_business_concepts'] = {
@@ -603,14 +846,21 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
             }
         )
     
-    async def _call_llm_for_extraction(self, prompt: str) -> str:
+    async def _call_llm_for_extraction(self, prompt: str, dynamic_timeout: Optional[int] = None) -> str:
         """Call LLM API for knowledge extraction with robust timeout and retry logic"""
         import aiohttp
         import asyncio
         
         max_retries = 3
-        timeout_seconds = 180  # Increased timeout for large documents
+        # Use dynamic timeout if provided, otherwise get from configuration
+        if dynamic_timeout is not None:
+            timeout_seconds = dynamic_timeout
+        else:
+            timeout_seconds = get_knowledge_graph_timeout("api_call_timeout", 180)
+        
         retry_delays = [1, 5, 10]  # Progressive backoff
+        
+        logger.debug(f"🔄 LLM API call with {timeout_seconds}s timeout")
         
         for attempt in range(max_retries):
             try:
@@ -687,6 +937,27 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
         # Should never reach here due to raises above, but safety net
         raise Exception(f"LLM API call failed after {max_retries} attempts")
     
+    def extract_json_from_response(self, response: str) -> dict:
+        """Extract JSON from LLM response, handling markdown and extra text"""
+        try:
+            # Remove markdown code blocks
+            clean_response = re.sub(r'```json\s*|\s*```', '', response.strip())
+            
+            # Find JSON object boundaries
+            start = clean_response.find('{')
+            end = clean_response.rfind('}') + 1
+            
+            if start >= 0 and end > start:
+                json_str = clean_response[start:end]
+                return json.loads(json_str)
+            else:
+                raise ValueError("No JSON object found in response")
+                
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"JSON parsing failed: {e}")
+            # Fall back to existing emergency parser
+            return self._emergency_parse_response(response)
+
     def _parse_llm_response(self, response: str) -> Dict[str, Any]:
         """Parse and validate LLM JSON response with enhanced robustness and debugging"""
         original_response = response
@@ -735,6 +1006,17 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
                         logger.debug("✅ Bulletproof JSON extraction successful")
                     except json.JSONDecodeError as e2:
                         logger.debug(f"Bulletproof extraction failed: {e2}")
+                        
+                        # Strategy 3: Handle JSON with explanatory text - clean invalid JSON keys
+                        try:
+                            # Remove keys that contain explanatory text (parentheses, special chars)
+                            cleaned_content = re.sub(r'"[^"]*\([^)]*\)[^"]*":\s*"[^"]*"[,\s]*', '', json_content)
+                            # Remove trailing commas before closing braces/brackets  
+                            cleaned_content = re.sub(r',(\s*[}\]])', r'\1', cleaned_content)
+                            parsed = json.loads(cleaned_content)
+                            logger.debug("✅ Cleaned JSON parsing successful")
+                        except json.JSONDecodeError as e3:
+                            logger.debug(f"Cleaned JSON parsing failed: {e3}")
             
             if not parsed:
                 logger.error(f"All JSON parsing failed. Response preview: {response[:200]}...")
@@ -758,18 +1040,34 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
             relationships_count = len(parsed.get('relationships', []))
             logger.info(f"JSON parsing successful: {entities_count} entities, {relationships_count} relationships")
             
-            # Enhanced debugging for entity names
+            # Enhanced debugging for entity names - handle both string and dict entities
             if entities_count > 0:
                 sample_entities = parsed.get('entities', [])[:5]
                 entity_names = []
                 for e in sample_entities:
-                    name = e.get('text', '') or e.get('name', '') or e.get('canonical_form', '') or e.get('entity', '')
-                    entity_names.append(name.strip() if name else 'EMPTY_NAME')
+                    if isinstance(e, str):
+                        # Handle string entities from emergency parsing
+                        entity_names.append(e.strip() if e else 'EMPTY_NAME')
+                    elif isinstance(e, dict):
+                        # Handle dict entities from normal parsing
+                        name = e.get('text', '') or e.get('name', '') or e.get('canonical_form', '') or e.get('entity', '')
+                        entity_names.append(name.strip() if name else 'EMPTY_NAME')
+                    else:
+                        entity_names.append('INVALID_ENTITY_TYPE')
                 logger.debug(f"Sample entity names: {entity_names}")
                 
-                # Check for empty entity names
-                empty_names = [e for e in parsed.get('entities', []) 
-                             if not (e.get('text', '') or e.get('name', '') or e.get('canonical_form', '') or e.get('entity', '')).strip()]
+                # Check for empty entity names - handle both string and dict entities
+                empty_names = []
+                for e in parsed.get('entities', []):
+                    if isinstance(e, str):
+                        if not e.strip():
+                            empty_names.append(e)
+                    elif isinstance(e, dict):
+                        if not (e.get('text', '') or e.get('name', '') or e.get('canonical_form', '') or e.get('entity', '')).strip():
+                            empty_names.append(e)
+                    else:
+                        empty_names.append(e)  # Invalid type
+                        
                 if empty_names:
                     logger.error(f"🚨 FOUND {len(empty_names)} ENTITIES WITH EMPTY NAMES!")
                     logger.error(f"Empty entities sample: {empty_names[:3]}")
@@ -1438,7 +1736,7 @@ DOMAIN FOCUS: Pay special attention to {', '.join(domain_hints)} related entitie
             logger.error(f"Error processing discoveries: {e}")
 
     async def _extraction_pass_core_entities(self, text: str, context: Optional[Dict[str, Any]], 
-                                           domain_hints: Optional[List[str]]) -> Dict[str, Any]:
+                                           domain_hints: Optional[List[str]], dynamic_timeout: Optional[int] = None) -> Dict[str, Any]:
         """Pass 1: AGGRESSIVE core business entities extraction - 4x more comprehensive"""
         start_time = datetime.now()
         
@@ -1519,7 +1817,7 @@ BE AGGRESSIVE - Extract 4x more entities than you normally would!
 """
         
         try:
-            llm_response = await self._call_llm_for_extraction(specialized_prompt)
+            llm_response = await self._call_llm_for_extraction(specialized_prompt, dynamic_timeout)
             parsed_result = self._parse_llm_response(llm_response)
             
             entities = self._enhance_entities_with_hierarchy(parsed_result.get('entities', []))
@@ -1540,7 +1838,8 @@ BE AGGRESSIVE - Extract 4x more entities than you normally would!
             return {'entities': [], 'relationships': [], 'processing_time_ms': 0}
     
     async def _extraction_pass_business_concepts(self, text: str, existing_entities: List[ExtractedEntity],
-                                               context: Optional[Dict[str, Any]], domain_hints: Optional[List[str]]) -> Dict[str, Any]:
+                                               context: Optional[Dict[str, Any]], domain_hints: Optional[List[str]],
+                                               dynamic_timeout: Optional[int] = None) -> Dict[str, Any]:
         """Pass 2: ULTRA-AGGRESSIVE business concepts, strategies, metrics extraction"""
         start_time = datetime.now()
         
@@ -1623,7 +1922,7 @@ BE ULTRA-AGGRESSIVE - This is a business strategy document, every concept matter
 """
         
         try:
-            llm_response = await self._call_llm_for_extraction(business_concepts_prompt)
+            llm_response = await self._call_llm_for_extraction(business_concepts_prompt, dynamic_timeout)
             parsed_result = self._parse_llm_response(llm_response)
             
             entities = self._enhance_entities_with_hierarchy(parsed_result.get('entities', []))

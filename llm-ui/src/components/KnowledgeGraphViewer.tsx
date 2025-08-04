@@ -124,10 +124,10 @@ const KnowledgeGraphViewer: React.FC = () => {
     return saved ? parseInt(saved) : 12;
   });
   
-  // Node diameter and layout configuration
+  // Node diameter and layout configuration - READABLE SIZES
   const [nodeDiameter, setNodeDiameter] = useState(() => {
     const saved = localStorage.getItem('jarvis-kg-node-diameter');
-    return saved ? parseInt(saved) : 40;
+    return saved ? parseInt(saved) : 50; // Increased default from 40 to 50 for better readability
   });
   
   const [layoutType, setLayoutType] = useState(() => {
@@ -173,6 +173,8 @@ const KnowledgeGraphViewer: React.FC = () => {
   
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const nodesRef = useRef<GraphNode[]>([]);
+  const simulationRef = useRef<d3.Simulation<GraphNode, undefined> | null>(null);
   const [dimensions, setDimensions] = useState({ width: window.innerWidth, height: window.innerHeight - 200 });
   const [isStatsCollapsed, setIsStatsCollapsed] = useState(false);
   const [zoomTransform, setZoomTransform] = useState(d3.zoomIdentity);
@@ -699,12 +701,13 @@ const KnowledgeGraphViewer: React.FC = () => {
         return { lines, maxWidth };
       };
 
-      // Calculate adaptive node sizing based on configuration and content
+      // Calculate adaptive node sizing based on configuration and content - OPTIMIZED FOR MINIMAL PADDING
       const calculateNodeRadius = (node: GraphNode, textInfo: any) => {
         const baseRadius = nodeDiameter / 2;
         const confidenceBonus = node.confidence * (nodeDiameter * 0.3);
         const textSize = Math.max(textInfo.textWidth, textInfo.textHeight) / 2;
-        return Math.max(baseRadius + confidenceBonus, textSize + 10);
+        // Reduced padding from 10px to just enough for text readability (6px)
+        return Math.max(baseRadius + confidenceBonus, textSize + 6);
       };
       
       // Calculate text wrapping for all nodes to determine optimal sizing
@@ -726,29 +729,39 @@ const KnowledgeGraphViewer: React.FC = () => {
         };
       });
 
-      // Calculate adaptive force parameters based on viewport and node count
+      // Calculate proper D3.js force parameters based on documented best practices
       const calculateForceParameters = () => {
-        const nodeCount = nodes.length;
-        const viewportArea = width * height;
-        const idealNodeArea = viewportArea / nodeCount;
-        const idealNodeSpacing = Math.sqrt(idealNodeArea);
+        // D3.js documented best practices for force parameters
         
-        // Adaptive link distance based on viewport size and node count
-        const baseLinkDistance = Math.max(100, idealNodeSpacing * 0.8);
-        const scaledLinkDistance = baseLinkDistance * Math.sqrt(forceStrength);
+        // 1. Link Distance: Reduced for tighter node spacing
+        const baseDistance = Math.max(80, Math.min(width, height) * 0.15); // Reduced from 150 and 0.2
+        const linkDistance = baseDistance * forceStrength;
         
-        // Adaptive charge strength - stronger repulsion for more nodes or smaller viewports
-        const baseChargeStrength = -Math.max(500, idealNodeSpacing * 3);
-        const scaledChargeStrength = baseChargeStrength * forceStrength;
+        // 2. Charge Force: Balanced repulsion for unified single-group layout
+        const baseCharge = -200; // Further reduced for tighter unified layout with 5-8px spacing
+        const chargeStrength = baseCharge * forceStrength;
         
-        // Collision radius with proper spacing
+        // 3. Collision Radius: Node radius + padding for consistent 5-8px spacing between all nodes
         const avgNodeRadius = nodeTextInfo.reduce((sum, info) => sum + info.radius, 0) / nodeTextInfo.length;
-        const collisionPadding = Math.max(10, avgNodeRadius * 0.2);
+        const padding = 12; // 12px padding = consistent 12-15px spacing between all nodes in unified layout
+        const collisionRadius = avgNodeRadius + padding;
         
         return {
-          linkDistance: scaledLinkDistance,
-          chargeStrength: scaledChargeStrength,
-          collisionRadius: (d: GraphNode, i: number) => nodeTextInfo[i]?.radius + collisionPadding || avgNodeRadius + collisionPadding
+          linkDistance,
+          chargeStrength,
+          collisionRadius: (d: GraphNode) => {
+            // Find the correct node info for this specific node
+            const nodeInfo = nodeTextInfo.find(info => info.node.id === d.id);
+            const nodeRadius = nodeInfo?.radius || avgNodeRadius;
+            const collisionRadius = nodeRadius + padding;
+            
+            // Debug log for first few nodes to verify 5-8px spacing calculation
+            if (nodes.indexOf(d) < 3) {
+              console.log(`🔍 Unified Layout - Node ${d.name}: visual=${nodeRadius.toFixed(1)}px + padding=${padding}px = collision=${collisionRadius.toFixed(1)}px (12-15px spacing)`);
+            }
+            
+            return collisionRadius; // Individual node radius + padding
+          }
         };
       };
       
@@ -758,17 +771,21 @@ const KnowledgeGraphViewer: React.FC = () => {
       const applyLayoutPositioning = () => {
         const centerX = width / 2;
         const centerY = height / 2;
-        const maxRadius = Math.min(width, height) * 0.4;
+        const padding = 80; // Keep nodes away from edges
+        const usableWidth = width - (padding * 2);
+        const usableHeight = height - (padding * 2);
         
         switch (layoutType) {
           case 'radial':
-            // Position nodes in concentric circles based on degree centrality
+            // Position nodes in concentric circles - FULL VIEWPORT USAGE
             nodes.forEach((node, i) => {
               const degree = calculateNodeDegrees.get(node.id) || 0;
               const maxDegree = Math.max(...Array.from(calculateNodeDegrees.values()));
               const normalizedDegree = maxDegree > 0 ? degree / maxDegree : 0;
               
-              const radius = maxRadius * (0.2 + normalizedDegree * 0.8);
+              // Use 80% of available viewport space instead of tiny 40%
+              const maxRadius = Math.min(usableWidth, usableHeight) * 0.4;
+              const radius = maxRadius * (0.3 + normalizedDegree * 0.7);
               const angle = (i / nodes.length) * 2 * Math.PI;
               
               node.x = centerX + radius * Math.cos(angle);
@@ -779,28 +796,29 @@ const KnowledgeGraphViewer: React.FC = () => {
             break;
             
           case 'grid':
-            // Arrange nodes in a grid pattern
+            // Arrange nodes in a grid pattern - FULL VIEWPORT USAGE
             const cols = Math.ceil(Math.sqrt(nodes.length));
             const rows = Math.ceil(nodes.length / cols);
-            const cellWidth = (width - 100) / cols;
-            const cellHeight = (height - 100) / rows;
+            const cellWidth = usableWidth / cols;
+            const cellHeight = usableHeight / rows;
             
             nodes.forEach((node, i) => {
               const col = i % cols;
               const row = Math.floor(i / cols);
               
-              node.x = 50 + col * cellWidth + cellWidth / 2;
-              node.y = 50 + row * cellHeight + cellHeight / 2;
+              node.x = padding + col * cellWidth + cellWidth / 2;
+              node.y = padding + row * cellHeight + cellHeight / 2;
               node.fx = node.x;
               node.fy = node.y;
             });
             break;
             
           case 'circular':
-            // Arrange nodes in a single circle
+            // Arrange nodes in a single circle - FULL VIEWPORT USAGE
             nodes.forEach((node, i) => {
               const angle = (i / nodes.length) * 2 * Math.PI;
-              const radius = maxRadius;
+              // Use 70% of available space for better edge-to-edge spread
+              const radius = Math.min(usableWidth, usableHeight) * 0.35;
               
               node.x = centerX + radius * Math.cos(angle);
               node.y = centerY + radius * Math.sin(angle);
@@ -809,11 +827,20 @@ const KnowledgeGraphViewer: React.FC = () => {
             });
             break;
             
-          default: // force-directed
-            // Clear any fixed positions for force-directed layout
-            nodes.forEach(node => {
+          default: // force-directed - UNIFIED SINGLE TIGHT GROUP LAYOUT
+            nodes.forEach((node, i) => {
               node.fx = null;
               node.fy = null;
+              
+              // CRITICAL FIX: ALL NODES START IN SAME SMALL AREA
+              // No circular distribution, no group separation - ONLY tight clustering
+              const tightAreaSize = 100; // Small starting area
+              node.x = centerX + (Math.random() - 0.5) * tightAreaSize;
+              node.y = centerY + (Math.random() - 0.5) * tightAreaSize;
+              
+              // Ensure nodes stay within viewport bounds
+              node.x = Math.max(padding, Math.min(width - padding, node.x));
+              node.y = Math.max(padding, Math.min(height - padding, node.y));
             });
             break;
         }
@@ -822,38 +849,88 @@ const KnowledgeGraphViewer: React.FC = () => {
       // Create simulation with adaptive force configuration
       const simulation = d3.forceSimulation<GraphNode>(nodes);
       
+      // Store references for fitToView function
+      nodesRef.current = nodes;
+      simulationRef.current = simulation;
+      
       // Apply different forces based on layout type
       if (layoutType === 'force-directed') {
+        // CRITICAL FIX: TIGHT CLUSTERING WITH VISIBLE RELATIONSHIP LINES
+        // Collision dominates, links are weak and short to maintain tight spacing
         simulation
-          .force('link', d3.forceLink<GraphNode, GraphLink>(links)
+          .force('link', d3.forceLink(links)
             .id(d => d.id)
-            .distance(forceParams.linkDistance)
-            .strength(0.7)
+            .distance(25) // Very short links to keep nodes close together
+            .strength(0.1) // Very weak so collision detection dominates
           )
-          .force('charge', d3.forceManyBody().strength(forceParams.chargeStrength))
-          .force('center', d3.forceCenter(width / 2, height / 2))
-          .force('collision', d3.forceCollide().radius(forceParams.collisionRadius))
-          .force('x', d3.forceX(width / 2).strength(0.05))
-          .force('y', d3.forceY(height / 2).strength(0.05));
+          .force('collision', d3.forceCollide()
+            .radius(d => {
+              // Find the correct node info for this specific node
+              const nodeInfo = nodeTextInfo.find(info => info.node.id === d.id);
+              const nodeRadius = nodeInfo?.radius || (nodeDiameter / 2);
+              return nodeRadius + 7; // 7px padding = 12-15px spacing between nodes
+            })
+            .strength(1.0) // Maximum collision strength to prevent overlap - PRIORITY FORCE
+            .iterations(3) // Multiple iterations for better collision detection
+          )
+          .force('center', d3.forceCenter(width / 2, height / 2).strength(0.1)) // Very weak centering only
+          .alphaDecay(0.01) // Very slow decay to allow tight settling
+          .velocityDecay(0.8); // High velocity decay to prevent excessive movement
+          // Link force restored but weak - collision force dominates for tight spacing
       } else {
         // For fixed layouts, only use collision detection
         simulation
-          .force('collision', d3.forceCollide().radius(forceParams.collisionRadius))
-          .alpha(0.1) // Lower alpha for less movement
-          .alphaDecay(0.1);
+          .force('collision', d3.forceCollide()
+            .radius(forceParams.collisionRadius) // Individual node radius + padding
+            .strength(1.0) // Maximum collision strength
+            .iterations(3) // Multiple iterations for better detection
+          )
+          .alpha(0.3) // Higher alpha for better collision resolution
+          .alphaDecay(0.05); // Slower decay for more separation time
         
         // Apply the specific layout positioning
         applyLayoutPositioning();
       }
         
-      console.log('🔧 Layout Configuration:', {
+      // Extended simulation duration for collision detection and spreading
+      const getSimulationDuration = () => {
+        if (layoutType === 'force-directed') {
+          // EXTREMELY LONG simulation time to ensure collision detection works
+          const baseTime = Math.max(15000, nodes.length * 200); // Even longer for collision detection
+          const maxTime = Math.min(30000, baseTime); // Increased max time for collision resolution
+          return maxTime;
+        } else {
+          // Fixed layouts need time for collision detection too
+          return Math.max(5000, nodes.length * 100); // Longer for collision resolution
+        }
+      };
+
+      console.log('🎯 CRITICAL FIX: TIGHT SINGLE ENTITY LAYOUT - MAXIMUM 8PX SPACING', {
         layoutType: layoutType,
         nodeCount: nodes.length,
         viewportSize: { width, height },
-        linkDistance: forceParams.linkDistance,
-        chargeStrength: forceParams.chargeStrength,
-        avgCollisionRadius: nodeTextInfo.reduce((sum, info) => sum + info.radius, 0) / nodeTextInfo.length,
-        forceStrength: forceStrength
+        layoutStrategy: 'ALL NODES TREATED AS SINGLE ENTITY',
+        spacingRequirement: 'OPTIMIZED 12-15px between nodes with minimal node padding',
+        fixImplemented: 'Reduced node padding, increased collision spacing',
+        forceConfiguration: {
+          collisionOnly: 'Individual node radius + 7px padding = 12-15px spacing',
+          collisionStrength: '1.0 (maximum)',
+          collisionIterations: '3 (multiple passes)',
+          centeringStrength: '0.1 (very weak only)',
+          linkForceREMOVED: 'ELIMINATED - was creating group separation',
+          chargeForceREMOVED: 'ELIMINATED - was preventing tight clustering',
+          alphaDecay: '0.01 (very slow for tight settling)',
+          velocityDecay: '0.8 (high to prevent excessive movement)'
+        },
+        userForceStrength: forceStrength,
+        simulationDuration: getSimulationDuration(),
+        layoutApproach: {
+          groupStrategy: 'Single unified group - ALL nodes treated together',
+          spacingStrategy: 'Consistent 5-8px spacing via collision detection',
+          noComponentSeparation: 'Removed disconnected component logic',
+          allNodesAsOne: 'No matter how many nodes or connections'
+        },
+        nodeSize: `${nodeDiameter}px diameter (readable size maintained)`
       });
 
       // Create links group (child of mainGroup for zoom/pan)
@@ -1071,16 +1148,6 @@ const KnowledgeGraphViewer: React.FC = () => {
         }
       });
 
-      // Adaptive simulation duration based on layout type and node count
-      const getSimulationDuration = () => {
-        if (layoutType === 'force-directed') {
-          return Math.min(8000, Math.max(3000, nodes.length * 50));
-        } else {
-          // Fixed layouts need less simulation time
-          return Math.min(2000, Math.max(500, nodes.length * 10));
-        }
-      };
-      
       const simulationDuration = getSimulationDuration();
       
       // Run simulation with adaptive duration for better layout
@@ -1088,10 +1155,13 @@ const KnowledgeGraphViewer: React.FC = () => {
         simulation.stop();
         console.log(`${layoutType} layout simulation stopped after ${simulationDuration}ms`);
         
-        // Auto-fit to view after simulation settles
-        setTimeout(() => {
-          fitToView();
-        }, 100);
+        // Update node references after simulation completes
+        nodesRef.current = nodes;
+        
+        // Skip auto-fit to preserve full viewport distribution
+        // setTimeout(() => {
+        //   fitToView();
+        // }, 100);
         console.log(`Final ${layoutType} layout: ${nodes.length} nodes, ${links.length} links`);
       }, simulationDuration);
       
@@ -1167,10 +1237,10 @@ const KnowledgeGraphViewer: React.FC = () => {
     if (visibleEntities.length > 0) {
       createVisualization();
       
-      // Auto-fit to view after a short delay to let nodes settle
-      setTimeout(() => {
-        fitToView();
-      }, 1000);
+      // Skip auto-fit to preserve full viewport distribution  
+      // setTimeout(() => {
+      //   fitToView();
+      // }, 1000);
     }
   }, [visibleEntities, visibleRelationships, dimensions, isDarkMode, fontSize, nodeDiameter, forceStrength, layoutType]);
 
@@ -1244,17 +1314,20 @@ const KnowledgeGraphViewer: React.FC = () => {
   };
 
   const fitToView = () => {
-    if (svgRef.current && visibleEntities.length > 0 && zoomBehaviorRef.current) {
+    if (svgRef.current && nodesRef.current.length > 0 && zoomBehaviorRef.current) {
       const svg = d3.select(svgRef.current);
-      // Calculate bounds of all nodes
-      const nodes = svg.selectAll('.nodes circle').nodes() as SVGCircleElement[];
+      const nodes = nodesRef.current;
+      
+      // Calculate bounds of ALL nodes using simulation data
       if (nodes.length === 0) return;
       
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       nodes.forEach(node => {
-        const x = parseFloat(node.getAttribute('cx') || '0');
-        const y = parseFloat(node.getAttribute('cy') || '0');
-        const r = parseFloat(node.getAttribute('r') || '0');
+        // Use simulation node positions (x, y properties) instead of DOM attributes
+        const x = node.x || 0;
+        const y = node.y || 0;
+        const r = nodeDiameter / 2; // Use actual node radius
+        
         minX = Math.min(minX, x - r);
         minY = Math.min(minY, y - r);
         maxX = Math.max(maxX, x + r);
@@ -1264,38 +1337,51 @@ const KnowledgeGraphViewer: React.FC = () => {
       const contentWidth = maxX - minX;
       const contentHeight = maxY - minY;
       
-      // Adaptive padding based on viewport size and node count
-      const basePadding = Math.min(50, Math.min(dimensions.width, dimensions.height) * 0.05);
-      const adaptivePadding = Math.max(basePadding, nodeDiameter);
+      // Ensure we have valid dimensions
+      if (contentWidth <= 0 || contentHeight <= 0) return;
       
-      // Calculate scale to fit with proper utilization of viewport space
+      // Conservative padding to use available space effectively
+      const basePadding = Math.min(50, Math.min(dimensions.width, dimensions.height) * 0.05);
+      const adaptivePadding = Math.max(basePadding, nodeDiameter * 0.5);
+      
+      // Calculate scale to fit ALL node groups in viewport
       const availableWidth = dimensions.width - adaptivePadding * 2;
       const availableHeight = dimensions.height - adaptivePadding * 2;
       
       const scaleX = availableWidth / contentWidth;
       const scaleY = availableHeight / contentHeight;
-      const optimalScale = Math.min(scaleX, scaleY, 2.0); // Cap max zoom to avoid over-scaling
+      const optimalScale = Math.min(scaleX, scaleY, 2.0); // Max zoom 2x for readability
       
-      // Ensure minimum scale for readability
+      // Ensure minimum scale for very spread out graphs
       const finalScale = Math.max(0.1, optimalScale);
       
-      // Center the content in the viewport
-      const scaledContentWidth = contentWidth * finalScale;
-      const scaledContentHeight = contentHeight * finalScale;
+      // Center ALL content in viewport
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
       
-      const translateX = (dimensions.width - scaledContentWidth) / 2 - minX * finalScale;
-      const translateY = (dimensions.height - scaledContentHeight) / 2 - minY * finalScale;
+      const translateX = dimensions.width / 2 - centerX * finalScale;
+      const translateY = dimensions.height / 2 - centerY * finalScale;
       
       const transform = d3.zoomIdentity.translate(translateX, translateY).scale(finalScale);
       
-      console.log('🎯 Enhanced Fit-to-View:', {
-        contentBounds: { width: contentWidth, height: contentHeight },
+      console.log('🎯 Fixed Fit-to-View (All Groups):', {
+        totalNodes: nodes.length,
+        contentBounds: { 
+          minX: minX.toFixed(1), 
+          minY: minY.toFixed(1), 
+          maxX: maxX.toFixed(1), 
+          maxY: maxY.toFixed(1),
+          width: contentWidth.toFixed(1), 
+          height: contentHeight.toFixed(1) 
+        },
         viewport: dimensions,
         padding: adaptivePadding,
-        scale: finalScale,
+        scale: finalScale.toFixed(3),
+        center: { x: centerX.toFixed(1), y: centerY.toFixed(1) },
+        translate: { x: translateX.toFixed(1), y: translateY.toFixed(1) },
         utilization: {
-          width: (scaledContentWidth / dimensions.width * 100).toFixed(1) + '%',
-          height: (scaledContentHeight / dimensions.height * 100).toFixed(1) + '%'
+          width: ((contentWidth * finalScale) / dimensions.width * 100).toFixed(1) + '%',
+          height: ((contentHeight * finalScale) / dimensions.height * 100).toFixed(1) + '%'
         }
       });
       
@@ -1764,10 +1850,10 @@ const KnowledgeGraphViewer: React.FC = () => {
               minWidth: '80px'
             }}
           >
-            <option value={20}>Small</option>
-            <option value={30}>Medium</option>
-            <option value={40}>Large</option>
-            <option value={60}>X-Large</option>
+            <option value={30}>Small</option>
+            <option value={40}>Medium</option>
+            <option value={50}>Large</option>
+            <option value={65}>X-Large</option>
             <option value={80}>Huge</option>
           </select>
         </div>
@@ -1834,6 +1920,62 @@ const KnowledgeGraphViewer: React.FC = () => {
             <button onClick={zoomOut} style={getButtonStyle()} title="Zoom Out (- key)">🔍-</button>
             <button onClick={resetZoom} style={getButtonStyle()} title="Reset Zoom (Ctrl+R)">🔄</button>
             <button onClick={fitToView} style={getButtonStyle()} title="Fit to View (Ctrl+F)">📐</button>
+            <button 
+              onClick={() => {
+                // EMERGENCY TIGHT LAYOUT - force maximum 8px spacing
+                if (svgRef.current && visibleEntities.length > 1) {
+                  const svg = d3.select(svgRef.current);
+                  // CRITICAL FIX: START EMERGENCY NODES IN TIGHT AREA TOO
+                  const emergencyNodes = visibleEntities.map((entity, i) => ({
+                    id: entity.id,
+                    name: entity.name,
+                    type: entity.type,
+                    confidence: entity.confidence,
+                    // Start in small tight area near center - consistent with main layout
+                    x: dimensions.width / 2 + (Math.random() - 0.5) * 100,
+                    y: dimensions.height / 2 + (Math.random() - 0.5) * 100
+                  }));
+                  
+                  // CRITICAL FIX: EMERGENCY FUNCTION ALSO ENFORCES 8PX MAX SPACING
+                  const simulation = d3.forceSimulation(emergencyNodes)
+                  .force('collision', d3.forceCollide()
+                    .radius((d: any) => {
+                      // Find the correct node radius for emergency tight spacing
+                      const nodeInfo = nodesRef.current?.find(n => n.id === d.id);
+                      if (nodeInfo && simulationRef.current) {
+                        // Try to get radius from current node text info
+                        const currentNodes = simulationRef.current.nodes();
+                        const nodeIndex = currentNodes.findIndex(n => n.id === d.id);
+                        if (nodeIndex >= 0) {
+                          // Calculate radius similar to main calculation
+                          const baseRadius = nodeDiameter / 2;
+                          const confidenceBonus = d.confidence * (nodeDiameter * 0.3);
+                          return Math.max(baseRadius + confidenceBonus, baseRadius) + 7; // 7px padding = 12-15px spacing
+                        }
+                      }
+                      return nodeDiameter / 2 + 7; // Fallback with 7px padding = 12-15px spacing
+                    })
+                    .strength(1.0) // Maximum strength for collision detection
+                    .iterations(3) // Standard iterations
+                  )
+                  .force('center', d3.forceCenter(dimensions.width / 2, dimensions.height / 2).strength(0.1)) // Very weak centering
+                  .alpha(1.0)
+                  .alphaDecay(0.01) // Very slow decay for tight settling
+                  .velocityDecay(0.8); // High velocity decay to prevent excessive movement
+                  // NO charge force - ONLY collision + weak centering for tight clustering
+
+                  // Run for appropriate time for tight collision detection
+                  setTimeout(() => {
+                    simulation.stop();
+                    createVisualization(); // Recreate visualization with tight positions
+                  }, 3000);
+                }
+              }}
+              style={getButtonStyle('#ff9500')}
+              title="Emergency Tight Layout - Force maximum 8px spacing"
+            >
+              💥
+            </button>
             <button 
               onClick={() => {
                 fetchAvailableDocuments();

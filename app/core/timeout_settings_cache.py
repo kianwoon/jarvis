@@ -75,6 +75,20 @@ DEFAULT_TIMEOUT_SETTINGS = {
         "chunk_generation_timeout": 90
     },
     
+    # Knowledge graph processing timeouts
+    "knowledge_graph": {
+        "base_extraction_timeout": 360,  # Doubled from 180 as immediate safety net
+        "max_extraction_timeout": 900,
+        "pass_timeout_multiplier": 1.5,
+        "large_document_threshold": 20000,
+        "ultra_large_document_threshold": 50000,
+        "content_size_multiplier": 0.01,
+        "complexity_multiplier": 1.2,
+        "fallback_timeout": 360,
+        "api_call_timeout": 360,  # Doubled from 180 as immediate safety net
+        "multi_pass_timeout": 600
+    },
+    
     # Session & cache timeouts (in seconds)
     "session_cache": {
         "redis_ttl_seconds": 3600,
@@ -337,3 +351,19 @@ def get_agent_timeout() -> int:
 def get_redis_timeout() -> int:
     """Get Redis operation timeout"""
     return get_timeout_value("api_network", "redis_operation_timeout", 5)
+
+def get_knowledge_graph_timeout(setting_key: str, default: int = 180) -> int:
+    """Get knowledge graph specific timeout"""
+    return get_timeout_value("knowledge_graph", setting_key, default)
+
+def get_kg_base_timeout() -> int:
+    """Get base knowledge graph extraction timeout"""
+    return get_knowledge_graph_timeout("base_extraction_timeout", 180)
+
+def get_kg_max_timeout() -> int:
+    """Get maximum knowledge graph extraction timeout"""
+    return get_knowledge_graph_timeout("max_extraction_timeout", 900)
+
+def get_kg_fallback_timeout() -> int:
+    """Get knowledge graph fallback timeout"""
+    return get_knowledge_graph_timeout("fallback_timeout", 360)

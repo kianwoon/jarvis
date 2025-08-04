@@ -1,0 +1,22 @@
+{
+  "knowledge_graph": {
+    "enabled": false,
+    "extraction": {
+      "mode": "disabled",
+      "enable_anti_silo": false,
+      "enable_nuclear_option": false,
+      "min_confidence": 0.95,
+      "max_relationships_per_entity": 1,
+      "max_relationships_per_chunk": 2,
+      "max_relationships_per_document": 10
+    },
+    "global_limits": {
+      "max_total_relationships": 100,
+      "max_entities": 100,
+      "emergency_stop": true
+    }
+  },
+  "neo4j": {
+    "enabled": false
+  }
+}
