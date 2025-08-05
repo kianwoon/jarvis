@@ -103,7 +103,8 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT settings->''extraction''->>''enable_anti_silo'' as anti_silo, settings->''extraction''->>''enable_cooccurrence_analysis'' as cooccurrence, settings->''extraction''->>''enable_multi_chunk_relationships'' as multi_chunk, settings->''extraction''->>''min_relationship_confidence'' as min_rel_conf, settings->>''max_relationships_per_chunk'' as max_rels_chunk FROM settings WHERE category = ''knowledge_graph'';\")",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -f /tmp/restore_two_step_prompts.sql)",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''extraction'') FROM settings WHERE category = ''knowledge_graph'';\")",
-      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -f /tmp/complete_kg_restore.sql)"
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -f /tmp/complete_kg_restore.sql)",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''extraction'') FROM settings WHERE category = ''knowledge_graph'';\")"
     ],
     "deny": []
   },

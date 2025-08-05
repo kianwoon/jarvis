@@ -39,7 +39,24 @@ import {
   Refresh as RefreshIcon,
   Cached as CacheIcon,
   Visibility as VisibilityIcon,
-  VisibilityOff as VisibilityOffIcon
+  VisibilityOff as VisibilityOffIcon,
+  Tune as TuneIcon,
+  AccountTree as NetworkIcon,
+  Psychology as EntityIcon,
+  Link as RelationshipIcon,
+  Timeline as TemporalIcon,
+  Place as GeographicIcon,
+  Speed as PerformanceIcon,
+  ExpandMore as ExpandMoreIcon,
+  Search as SearchIcon,
+  FilterList as FilterIcon,
+  FlashOn as QuickSetupIcon,
+  Memory as ModelIcon,
+  Storage as DatabaseIcon,
+  Schema as SchemaIcon,
+  Code as PromptsIcon,
+  BugReport as TestIcon,
+  Hub as AntiSiloIcon
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import PromptManagement from './PromptManagement';
@@ -84,6 +101,97 @@ interface KnowledgeGraphSettingsProps {
   onChange: (field: string, value: any) => void;
   onShowSuccess?: (message?: string) => void;
 }
+
+// Comprehensive Extraction Settings Interfaces
+interface EntityProcessingSettings {
+  enable_entity_consolidation: boolean;
+  entity_consolidation_threshold: number;
+  enable_entity_deduplication: boolean;
+  enable_flexible_entity_matching: boolean;
+  enable_alias_detection: boolean;
+  alias_detection_threshold: number;
+  enable_abbreviation_matching: boolean;
+  abbreviation_matching_threshold: number;
+  enable_hub_entities: boolean;
+  hub_entity_threshold: number;
+  enable_fuzzy_matching: boolean;
+  fuzzy_matching_threshold: number;
+  entity_merge_strategy: string;
+  min_entity_confidence: number;
+  confidence_merge_strategy: string;
+}
+
+interface RelationshipProcessingSettings {
+  enable_relationship_deduplication: boolean;
+  enable_relationship_propagation: boolean;
+  relationship_propagation_depth: number;
+  enable_synthetic_relationships: boolean;
+  synthetic_relationship_confidence: number;
+  enable_cross_reference_analysis: boolean;
+  cross_reference_threshold: number;
+  enable_multi_chunk_relationships: boolean;
+  enable_semantic_relationship_inference: boolean;
+  min_relationship_confidence: number;
+  relationship_quality_threshold: number;
+  prioritize_pattern_relationships: boolean;
+  enable_relationship_priority_deduplication: boolean;
+  enable_relationship_recommendation: boolean;
+  relationship_recommendation_threshold: number;
+  bridge_relationship_confidence: number;
+}
+
+interface AdvancedLinkingSettings {
+  enable_temporal_linking: boolean;
+  temporal_linking_window: number;
+  enable_temporal_coherence: boolean;
+  temporal_coherence_threshold: number;
+  enable_geographic_linking: boolean;
+  geographic_linking_threshold: number;
+  enable_contextual_linking: boolean;
+  contextual_linking_threshold: number;
+  enable_semantic_clustering: boolean;
+  clustering_similarity_threshold: number;
+  enable_hierarchical_linking: boolean;
+  hierarchical_linking_depth: number;
+  enable_synonym_detection: boolean;
+  synonym_detection_threshold: number;
+  enable_semantic_similarity_networks: boolean;
+  semantic_network_threshold: number;
+}
+
+interface NetworkAnalysisSettings {
+  enable_connectivity_analysis: boolean;
+  connectivity_analysis_threshold: number;
+  enable_isolation_detection: boolean;
+  isolation_detection_threshold: number;
+  enable_semantic_bridge_entities: boolean;
+  semantic_bridge_threshold: number;
+  enable_cross_document_linking: boolean;
+  enable_multi_document_analysis: boolean;
+  multi_document_analysis_threshold: number;
+  enable_document_bridge_relationships: boolean;
+  enable_anti_silo: boolean;
+  anti_silo_similarity_threshold: number;
+  anti_silo_type_boost: number;
+}
+
+interface QualityPerformanceSettings {
+  enable_llm_enhancement: boolean;
+  llm_confidence_threshold: number;
+  enable_graph_enrichment: boolean;
+  graph_enrichment_depth: number;
+  max_proximity_distance: number;
+  enable_type_based_clustering: boolean;
+  enable_cooccurrence_analysis: boolean;
+  extraction_prompt: string;
+}
+
+interface ExtractionSettings extends 
+  EntityProcessingSettings, 
+  RelationshipProcessingSettings, 
+  AdvancedLinkingSettings, 
+  NetworkAnalysisSettings, 
+  QualityPerformanceSettings {}
 
 // Knowledge Graph Model Selector Component
 const KnowledgeGraphModelSelector: React.FC<{
@@ -534,13 +642,14 @@ const KnowledgeGraphSettings: React.FC<KnowledgeGraphSettingsProps> = ({
       </Box>
 
       <Tabs value={tabValue} onChange={handleTabChange} sx={{ mb: 3 }}>
-        <Tab label="Quick Setup" />
-        <Tab label="Model Config" />
-        <Tab label="Neo4j Database" />
-        <Tab label="Schema & Discovery" />
-        <Tab label="Prompts" />
-        <Tab label="Test & Validate" />
-        <Tab label="Anti-Silo" />
+        <Tab label="Quick Setup" icon={<QuickSetupIcon />} />
+        <Tab label="Model Config" icon={<ModelIcon />} />
+        <Tab label="Neo4j Database" icon={<DatabaseIcon />} />
+        <Tab label="Schema & Discovery" icon={<SchemaIcon />} />
+        <Tab label="Prompts" icon={<PromptsIcon />} />
+        <Tab label="Test & Validate" icon={<TestIcon />} />
+        <Tab label="Anti-Silo" icon={<AntiSiloIcon />} />
+        <Tab label="Extraction Controls" icon={<TuneIcon />} />
       </Tabs>
 
       {tabValue === 0 && (
@@ -1755,6 +1864,1069 @@ const KnowledgeGraphSettings: React.FC<KnowledgeGraphSettingsProps> = ({
             onChange={onChange}
             onShowSuccess={onShowSuccess}
           />
+        </Box>
+      )}
+
+      {tabValue === 7 && (
+        <Box>
+          <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
+            Extraction Controls
+          </Typography>
+          
+          <Alert severity="info" sx={{ mb: 3 }}>
+            <Typography variant="body2">
+              <strong>Advanced Extraction Settings:</strong> Fine-tune how entities and relationships are extracted, 
+              processed, and linked. These settings control the sophisticated knowledge graph processing pipeline.
+            </Typography>
+          </Alert>
+
+          {/* Search/Filter Box */}
+          <Box sx={{ mb: 3 }}>
+            <TextField
+              fullWidth
+              placeholder="Search extraction settings..."
+              variant="outlined"
+              size="small"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon />
+                  </InputAdornment>
+                ),
+              }}
+              sx={{ maxWidth: 400 }}
+            />
+          </Box>
+
+          <Grid container spacing={3}>
+            {/* Entity Processing Controls */}
+            <Grid item xs={12}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <EntityIcon color="primary" />
+                      Entity Processing Controls
+                    </Box>
+                  }
+                  subheader="Configure how entities are identified, consolidated, and processed"
+                />
+                <CardContent>
+                  <Grid container spacing={3}>
+                    {/* Entity Consolidation */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_entity_consolidation ?? true}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_entity_consolidation: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Entity Consolidation"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Merge similar entities across document chunks
+                        </Typography>
+                        
+                        {data?.extraction?.enable_entity_consolidation && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              Consolidation Threshold: {(data?.extraction?.entity_consolidation_threshold ?? 0.85).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.entity_consolidation_threshold ?? 0.85}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  entity_consolidation_threshold: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Entity Deduplication */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_entity_deduplication ?? true}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_entity_deduplication: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Entity Deduplication"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Remove duplicate entities within the same document
+                        </Typography>
+                      </Box>
+                    </Grid>
+
+                    {/* Alias Detection */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_alias_detection ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_alias_detection: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Alias Detection"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Detect alternative names for the same entity
+                        </Typography>
+
+                        {data?.extraction?.enable_alias_detection && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              Alias Detection Threshold: {(data?.extraction?.alias_detection_threshold ?? 0.9).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.alias_detection_threshold ?? 0.9}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  alias_detection_threshold: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Fuzzy Matching */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_fuzzy_matching ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_fuzzy_matching: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Fuzzy Matching"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Match entities with slight spelling variations
+                        </Typography>
+
+                        {data?.extraction?.enable_fuzzy_matching && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              Fuzzy Matching Threshold: {(data?.extraction?.fuzzy_matching_threshold ?? 0.85).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.fuzzy_matching_threshold ?? 0.85}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  fuzzy_matching_threshold: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Hub Entities */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_hub_entities ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_hub_entities: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Hub Entity Detection"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Identify central entities with many connections
+                        </Typography>
+
+                        {data?.extraction?.enable_hub_entities && (
+                          <Box sx={{ mt: 2 }}>
+                            <TextField
+                              label="Hub Entity Threshold"
+                              type="number"
+                              value={data?.extraction?.hub_entity_threshold ?? 3}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  hub_entity_threshold: parseInt(e.target.value) || 3
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              size="small"
+                              helperText="Minimum connections to be considered a hub"
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Entity Confidence */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                          Minimum Entity Confidence: {(data?.extraction?.min_entity_confidence ?? 0.5).toFixed(2)}
+                        </Typography>
+                        <Slider
+                          value={data?.extraction?.min_entity_confidence ?? 0.5}
+                          onChange={(_, value) => {
+                            const updatedExtraction = { 
+                              ...data?.extraction, 
+                              min_entity_confidence: value as number 
+                            };
+                            onChange('extraction', updatedExtraction);
+                          }}
+                          min={0.1}
+                          max={1}
+                          step={0.05}
+                          valueLabelDisplay="auto"
+                          sx={{ mb: 1 }}
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                          Filter out low-confidence entity extractions
+                        </Typography>
+                      </Box>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Relationship Processing Controls */}
+            <Grid item xs={12}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <RelationshipIcon color="secondary" />
+                      Relationship Processing Controls
+                    </Box>
+                  }
+                  subheader="Configure how relationships are identified, validated, and enhanced"
+                />
+                <CardContent>
+                  <Grid container spacing={3}>
+                    {/* Relationship Deduplication */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_relationship_deduplication ?? true}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_relationship_deduplication: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Relationship Deduplication"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Remove duplicate relationships between same entities
+                        </Typography>
+                      </Box>
+                    </Grid>
+
+                    {/* Multi-chunk Relationships */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_multi_chunk_relationships ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_multi_chunk_relationships: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Multi-Chunk Relationships"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Detect relationships spanning across document chunks
+                        </Typography>
+                      </Box>
+                    </Grid>
+
+                    {/* Synthetic Relationships */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_synthetic_relationships ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_synthetic_relationships: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Synthetic Relationships"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Infer implicit relationships based on patterns
+                        </Typography>
+
+                        {data?.extraction?.enable_synthetic_relationships && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              Synthetic Confidence: {(data?.extraction?.synthetic_relationship_confidence ?? 0.5).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.synthetic_relationship_confidence ?? 0.5}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  synthetic_relationship_confidence: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Relationship Confidence */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                          Minimum Relationship Confidence: {(data?.extraction?.min_relationship_confidence ?? 0.6).toFixed(2)}
+                        </Typography>
+                        <Slider
+                          value={data?.extraction?.min_relationship_confidence ?? 0.6}
+                          onChange={(_, value) => {
+                            const updatedExtraction = { 
+                              ...data?.extraction, 
+                              min_relationship_confidence: value as number 
+                            };
+                            onChange('extraction', updatedExtraction);
+                          }}
+                          min={0.1}
+                          max={1}
+                          step={0.05}
+                          valueLabelDisplay="auto"
+                          sx={{ mb: 1 }}
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                          Filter out low-confidence relationship extractions
+                        </Typography>
+                      </Box>
+                    </Grid>
+
+                    {/* Relationship Quality */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                          Relationship Quality Threshold: {(data?.extraction?.relationship_quality_threshold ?? 0.7).toFixed(2)}
+                        </Typography>
+                        <Slider
+                          value={data?.extraction?.relationship_quality_threshold ?? 0.7}
+                          onChange={(_, value) => {
+                            const updatedExtraction = { 
+                              ...data?.extraction, 
+                              relationship_quality_threshold: value as number 
+                            };
+                            onChange('extraction', updatedExtraction);
+                          }}
+                          min={0.1}
+                          max={1}
+                          step={0.05}
+                          valueLabelDisplay="auto"
+                          sx={{ mb: 1 }}
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                          Overall quality score threshold for relationships
+                        </Typography>
+                      </Box>
+                    </Grid>
+
+                    {/* Pattern Relationships */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.prioritize_pattern_relationships ?? true}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  prioritize_pattern_relationships: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Prioritize Pattern Relationships"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Give higher weight to relationships matching known patterns
+                        </Typography>
+                      </Box>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Advanced Linking Features */}
+            <Grid item xs={12}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <TemporalIcon color="info" />
+                      Advanced Linking Features
+                    </Box>
+                  }
+                  subheader="Enable sophisticated linking capabilities across time, space, and semantics"
+                />
+                <CardContent>
+                  <Grid container spacing={3}>
+                    {/* Temporal Linking */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_temporal_linking ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_temporal_linking: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Temporal Linking"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Link entities based on temporal proximity
+                        </Typography>
+
+                        {data?.extraction?.enable_temporal_linking && (
+                          <Box sx={{ mt: 2 }}>
+                            <TextField
+                              label="Temporal Window (days)"
+                              type="number"
+                              value={data?.extraction?.temporal_linking_window ?? 7}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  temporal_linking_window: parseInt(e.target.value) || 7
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              size="small"
+                              helperText="Days within which events are considered related"
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Geographic Linking */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_geographic_linking ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_geographic_linking: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Geographic Linking"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Link entities based on geographic proximity
+                        </Typography>
+
+                        {data?.extraction?.enable_geographic_linking && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              Geographic Threshold: {(data?.extraction?.geographic_linking_threshold ?? 0.7).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.geographic_linking_threshold ?? 0.7}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  geographic_linking_threshold: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Semantic Clustering */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_semantic_clustering ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_semantic_clustering: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Semantic Clustering"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Group semantically similar entities and relationships
+                        </Typography>
+
+                        {data?.extraction?.enable_semantic_clustering && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              Clustering Similarity: {(data?.extraction?.clustering_similarity_threshold ?? 0.8).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.clustering_similarity_threshold ?? 0.8}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  clustering_similarity_threshold: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Contextual Linking */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_contextual_linking ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_contextual_linking: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Contextual Linking"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Link entities appearing in similar contexts
+                        </Typography>
+
+                        {data?.extraction?.enable_contextual_linking && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              Contextual Threshold: {(data?.extraction?.contextual_linking_threshold ?? 0.7).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.contextual_linking_threshold ?? 0.7}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  contextual_linking_threshold: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Network Analysis & Anti-Silo */}
+            <Grid item xs={12}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <NetworkIcon color="warning" />
+                      Network Analysis & Anti-Silo
+                    </Box>
+                  }
+                  subheader="Advanced network analysis and cross-document connectivity features"
+                />
+                <CardContent>
+                  <Grid container spacing={3}>
+                    {/* Connectivity Analysis */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_connectivity_analysis ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_connectivity_analysis: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Connectivity Analysis"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Analyze entity connectivity patterns and network structure
+                        </Typography>
+
+                        {data?.extraction?.enable_connectivity_analysis && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              Connectivity Threshold: {(data?.extraction?.connectivity_analysis_threshold ?? 0.4).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.connectivity_analysis_threshold ?? 0.4}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  connectivity_analysis_threshold: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Isolation Detection */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_isolation_detection ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_isolation_detection: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Isolation Detection"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Identify and connect isolated entities in the graph
+                        </Typography>
+                      </Box>
+                    </Grid>
+
+                    {/* Cross-Document Linking */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_cross_document_linking ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_cross_document_linking: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Cross-Document Linking"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Link related entities across different documents
+                        </Typography>
+                      </Box>
+                    </Grid>
+
+                    {/* Anti-Silo Mode */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_anti_silo ?? true}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_anti_silo: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Anti-Silo Mode"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Prevent knowledge silos by linking related concepts
+                        </Typography>
+
+                        {data?.extraction?.enable_anti_silo && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              Anti-Silo Similarity: {(data?.extraction?.anti_silo_similarity_threshold ?? 0.75).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.anti_silo_similarity_threshold ?? 0.75}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  anti_silo_similarity_threshold: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Quality & Performance Controls */}
+            <Grid item xs={12}>
+              <Card variant="outlined">
+                <CardHeader 
+                  title={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <PerformanceIcon color="success" />
+                      Quality & Performance Controls
+                    </Box>
+                  }
+                  subheader="Fine-tune extraction quality and system performance"
+                />
+                <CardContent>
+                  <Grid container spacing={3}>
+                    {/* LLM Enhancement */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_llm_enhancement ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_llm_enhancement: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable LLM Enhancement"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Use LLM to enhance and validate extracted relationships
+                        </Typography>
+
+                        {data?.extraction?.enable_llm_enhancement && (
+                          <Box sx={{ mt: 2 }}>
+                            <Typography gutterBottom sx={{ fontWeight: 600 }}>
+                              LLM Confidence Threshold: {(data?.extraction?.llm_confidence_threshold ?? 0.8).toFixed(2)}
+                            </Typography>
+                            <Slider
+                              value={data?.extraction?.llm_confidence_threshold ?? 0.8}
+                              onChange={(_, value) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  llm_confidence_threshold: value as number 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              valueLabelDisplay="auto"
+                              sx={{ mb: 1 }}
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Graph Enrichment */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_graph_enrichment ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_graph_enrichment: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Graph Enrichment"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Enrich the graph with additional inferred connections
+                        </Typography>
+
+                        {data?.extraction?.enable_graph_enrichment && (
+                          <Box sx={{ mt: 2 }}>
+                            <TextField
+                              label="Enrichment Depth"
+                              type="number"
+                              value={data?.extraction?.graph_enrichment_depth ?? 3}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  graph_enrichment_depth: parseInt(e.target.value) || 3
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                              size="small"
+                              helperText="How many hops to traverse for enrichment"
+                            />
+                          </Box>
+                        )}
+                      </Box>
+                    </Grid>
+
+                    {/* Co-occurrence Analysis */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_cooccurrence_analysis ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_cooccurrence_analysis: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Co-occurrence Analysis"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Analyze which entities frequently appear together
+                        </Typography>
+                      </Box>
+                    </Grid>
+
+                    {/* Type-based Clustering */}
+                    <Grid item xs={12} md={6}>
+                      <Box>
+                        <FormControlLabel 
+                          control={
+                            <Switch
+                              checked={data?.extraction?.enable_type_based_clustering ?? false}
+                              onChange={(e) => {
+                                const updatedExtraction = { 
+                                  ...data?.extraction, 
+                                  enable_type_based_clustering: e.target.checked 
+                                };
+                                onChange('extraction', updatedExtraction);
+                              }}
+                            />
+                          }
+                          label="Enable Type-based Clustering"
+                        />
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Group entities by type for better organization
+                        </Typography>
+                      </Box>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+
+          {/* Configuration Summary */}
+          <Card sx={{ mt: 3, backgroundColor: 'action.hover' }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <SettingsIcon color="primary" />
+                Extraction Configuration Summary
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={3}>
+                  <Typography variant="subtitle2" gutterBottom>Entity Processing</Typography>
+                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    <Chip 
+                      label={data?.extraction?.enable_entity_consolidation ? 'Consolidation ✓' : 'Consolidation ✗'} 
+                      size="small" 
+                      color={data?.extraction?.enable_entity_consolidation ? 'success' : 'default'}
+                    />
+                    <Chip 
+                      label={data?.extraction?.enable_entity_deduplication ? 'Deduplication ✓' : 'Deduplication ✗'} 
+                      size="small" 
+                      color={data?.extraction?.enable_entity_deduplication ? 'success' : 'default'}
+                    />
+                  </Box>
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <Typography variant="subtitle2" gutterBottom>Advanced Linking</Typography>
+                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    <Chip 
+                      label={data?.extraction?.enable_temporal_linking ? 'Temporal ✓' : 'Temporal ✗'} 
+                      size="small" 
+                      color={data?.extraction?.enable_temporal_linking ? 'info' : 'default'}
+                    />
+                    <Chip 
+                      label={data?.extraction?.enable_geographic_linking ? 'Geographic ✓' : 'Geographic ✗'} 
+                      size="small" 
+                      color={data?.extraction?.enable_geographic_linking ? 'info' : 'default'}
+                    />
+                  </Box>
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <Typography variant="subtitle2" gutterBottom>Network Analysis</Typography>
+                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    <Chip 
+                      label={data?.extraction?.enable_anti_silo ? 'Anti-Silo ✓' : 'Anti-Silo ✗'} 
+                      size="small" 
+                      color={data?.extraction?.enable_anti_silo ? 'warning' : 'default'}
+                    />
+                    <Chip 
+                      label={data?.extraction?.enable_connectivity_analysis ? 'Connectivity ✓' : 'Connectivity ✗'} 
+                      size="small" 
+                      color={data?.extraction?.enable_connectivity_analysis ? 'warning' : 'default'}
+                    />
+                  </Box>
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <Typography variant="subtitle2" gutterBottom>Quality Controls</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Entity: {(data?.extraction?.min_entity_confidence ?? 0.5).toFixed(2)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Relationship: {(data?.extraction?.min_relationship_confidence ?? 0.6).toFixed(2)}
+                  </Typography>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
         </Box>
       )}
     </Box>
