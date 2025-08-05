@@ -578,14 +578,37 @@ def reload_knowledge_graph_settings() -> Dict[str, Any]:
                 cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings)
                 return settings
             
-            # No knowledge graph settings found, return defaults
+            # CRITICAL SAFETY: Check if there are existing cached settings before overwriting with defaults
+            existing_cached = cache.get(KNOWLEDGE_GRAPH_SETTINGS_KEY)
+            if existing_cached and isinstance(existing_cached, dict):
+                # Existing cache has complex settings - preserve them
+                complex_fields = ['prompts', 'extraction', 'learning', 'discovered_schemas', 'entity_discovery', 'relationship_discovery']
+                has_complex_data = any(field in existing_cached and existing_cached[field] for field in complex_fields)
+                if has_complex_data:
+                    print("WARNING: Preserving complex cached knowledge graph settings instead of overwriting with defaults")
+                    print(f"Complex fields found: {[field for field in complex_fields if field in existing_cached and existing_cached[field]]}")
+                    return existing_cached
+            
+            # No existing complex settings found, safe to use defaults  
             default_settings = get_default_knowledge_graph_settings()
             cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, default_settings)
+            print("Using default knowledge graph settings (no existing complex data to preserve)")
             return default_settings
         finally:
             db.close()
     except Exception as e:
         print(f"Failed to load knowledge graph settings from database: {e}")
+        
+        # CRITICAL SAFETY: Check existing cache before falling back to defaults
+        existing_cached = cache.get(KNOWLEDGE_GRAPH_SETTINGS_KEY)
+        if existing_cached and isinstance(existing_cached, dict):
+            complex_fields = ['prompts', 'extraction', 'learning', 'discovered_schemas', 'entity_discovery', 'relationship_discovery']
+            has_complex_data = any(field in existing_cached and existing_cached[field] for field in complex_fields)
+            if has_complex_data:
+                print("ERROR FALLBACK: Preserving complex cached settings instead of using defaults")
+                return existing_cached
+        
+        print("ERROR FALLBACK: Using default settings (no complex cached data to preserve)")
         return get_default_knowledge_graph_settings()
 
 def detect_business_document(filename: str = '', content: str = '') -> bool:

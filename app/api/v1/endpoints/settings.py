@@ -26,6 +26,26 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+def deep_merge_settings(existing_settings: Dict[str, Any], new_settings: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Deep merge new settings into existing settings, preserving all existing fields
+    and only updating the fields that are explicitly provided in new_settings.
+    """
+    if not existing_settings:
+        return new_settings.copy()
+    
+    merged = existing_settings.copy()
+    
+    for key, value in new_settings.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            # Recursively merge nested dictionaries
+            merged[key] = deep_merge_settings(merged[key], value)
+        else:
+            # Override with new value
+            merged[key] = value
+    
+    return merged
+
 @router.post("/llm/cache/reload")
 def reload_llm_cache():
     """Force reload LLM settings cache from database"""
@@ -714,6 +734,11 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
     if category == 'knowledge_graph':
         logger.info("Processing knowledge graph settings")
         
+        # CRITICAL FIX: Use deep merge instead of complete replacement to preserve all existing fields
+        existing_settings = settings_row.settings or {}
+        logger.info(f"Existing settings keys: {list(existing_settings.keys()) if existing_settings else 'None'}")
+        logger.info(f"New settings keys: {list(settings_for_db.keys())}")
+        
         # Synchronize model fields: ensure both main 'model' and 'model_config.model' are consistent
         if 'model_config' in settings_for_db and 'model' in settings_for_db['model_config']:
             # Update the main model field to match model_config.model
@@ -725,8 +750,18 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
                 settings_for_db['model_config']['model'] = settings_for_db['model']
                 logger.info(f"Synchronized model_config.model field to: {settings_for_db['model']}")
         
-        # Update the database with synchronized settings
-        settings_row.settings = settings_for_db
+        # Deep merge to preserve existing complex fields (prompts, extraction, learning, discovered_schemas, etc.)
+        merged_settings = deep_merge_settings(existing_settings, settings_for_db)
+        logger.info(f"Merged settings keys: {list(merged_settings.keys())}")
+        
+        # Validate that critical fields are preserved
+        critical_fields = ['prompts', 'extraction', 'learning', 'discovered_schemas', 'entity_discovery', 'relationship_discovery']
+        preserved_fields = [field for field in critical_fields if field in existing_settings and field in merged_settings]
+        if preserved_fields:
+            logger.info(f"Preserved critical fields: {preserved_fields}")
+        
+        # Update the database with merged settings
+        settings_row.settings = merged_settings
         db.commit()
         db.refresh(settings_row)
         logger.info("Knowledge graph settings synchronized and saved")

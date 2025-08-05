@@ -249,40 +249,59 @@ const KnowledgeGraphModelSelector: React.FC<{
               size="small" 
               onClick={async () => {
                 try {
-                  // First save current settings to database
+                  // CRITICAL FIX: First fetch current complete settings to avoid data loss
+                  const currentResponse = await fetch('/api/v1/settings/knowledge_graph');
+                  if (!currentResponse.ok) {
+                    throw new Error('Failed to fetch current settings');
+                  }
+                  const currentData = await currentResponse.json();
+                  const currentSettings = currentData.settings || {};
+                  
+                  console.log('Current settings keys:', Object.keys(currentSettings));
+                  console.log('Critical fields preserved:', ['prompts', 'extraction', 'learning', 'discovered_schemas'].filter(key => currentSettings[key]));
+                  
+                  // Only update the specific fields that might have changed, preserve all others
+                  const updatedSettings = {
+                    ...currentSettings, // Preserve ALL existing fields
+                    // Only override specific fields that are displayed/modified in the UI
+                    model_config: {
+                      ...currentSettings.model_config, // Preserve existing model_config fields
+                      model: data?.model_config?.model || currentSettings.model_config?.model || "qwen3:30b-a3b-instruct-2507-q4_K_M",
+                      temperature: data?.model_config?.temperature !== undefined ? data?.model_config?.temperature : (currentSettings.model_config?.temperature !== undefined ? currentSettings.model_config?.temperature : 0.1),
+                      repeat_penalty: data?.model_config?.repeat_penalty !== undefined ? data?.model_config?.repeat_penalty : (currentSettings.model_config?.repeat_penalty !== undefined ? currentSettings.model_config?.repeat_penalty : 1.1),
+                      system_prompt: data?.model_config?.system_prompt || currentSettings.model_config?.system_prompt || "You are an expert knowledge graph extraction system. Extract entities and relationships from text accurately and comprehensively.",
+                      max_tokens: data?.model_config?.max_tokens || currentSettings.model_config?.max_tokens || 4096,
+                      context_length: data?.model_config?.context_length || currentSettings.model_config?.context_length || 40960,
+                      model_server: data?.model_config?.model_server || currentSettings.model_config?.model_server || "http://localhost:11434"
+                    },
+                    neo4j: data?.neo4j || currentSettings.neo4j || {
+                      enabled: true,
+                      host: "localhost",
+                      port: 7687,
+                      http_port: 7474,
+                      database: "neo4j",
+                      username: "neo4j",
+                      password: "jarvis_neo4j_password",
+                      uri: "bolt://localhost:7687"
+                    },
+                    anti_silo: data?.anti_silo || currentSettings.anti_silo || {
+                      enabled: true,
+                      similarity_threshold: 0.5,
+                      cross_document_linking: true,
+                      max_relationships_per_entity: 100
+                    }
+                  };
+                  
+                  console.log('Sending updated settings keys:', Object.keys(updatedSettings));
+                  
+                  // Save the merged settings (backend will handle deep merge as additional safety)
                   const saveResponse = await fetch('/api/v1/settings/knowledge_graph', {
                     method: 'PUT',
                     headers: {
                       'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                      settings: {
-                        model_config: {
-                          model: data?.model_config?.model || "qwen3:30b-a3b-instruct-2507-q4_K_M",
-                          temperature: data?.model_config?.temperature !== undefined ? data?.model_config?.temperature : 0.1,
-                          repeat_penalty: data?.model_config?.repeat_penalty !== undefined ? data?.model_config?.repeat_penalty : 1.1,
-                          system_prompt: data?.model_config?.system_prompt || "You are an expert knowledge graph extraction system. Extract entities and relationships from text accurately and comprehensively.",
-                          max_tokens: data?.model_config?.max_tokens || 4096,
-                          context_length: data?.model_config?.context_length || 40960,
-                          model_server: data?.model_config?.model_server || "http://localhost:11434"
-                        },
-                        neo4j: data?.neo4j || {
-                          enabled: true,
-                          host: "localhost",
-                          port: 7687,
-                          http_port: 7474,
-                          database: "neo4j",
-                          username: "neo4j",
-                          password: "jarvis_neo4j_password",
-                          uri: "bolt://localhost:7687"
-                        },
-                        anti_silo: data?.anti_silo || {
-                          enabled: true,
-                          similarity_threshold: 0.5,
-                          cross_document_linking: true,
-                          max_relationships_per_entity: 100
-                        }
-                      },
+                      settings: updatedSettings,
                       persist_to_db: true,
                       reload_cache: true
                     }),
