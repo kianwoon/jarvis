@@ -12,7 +12,16 @@ import re
 
 router = APIRouter()
 
-ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+# Determine Ollama URL based on environment following established codebase patterns
+# Check if we're running inside Docker
+in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+
+# Use environment variable if set, otherwise use appropriate default
+if os.environ.get("OLLAMA_BASE_URL"):
+    ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
+else:
+    # Use appropriate default based on environment
+    ollama_base_url = "http://ollama:11434" if in_docker else "http://localhost:11434"
 
 # Helper to create a new inference object with the latest settings
 def get_inference(thinking: bool = False):
