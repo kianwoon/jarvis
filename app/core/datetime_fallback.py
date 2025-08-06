@@ -3,20 +3,26 @@ Simple datetime fallback for when MCP servers are unavailable
 """
 from datetime import datetime
 import logging
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # For Python < 3.9
 
 logger = logging.getLogger(__name__)
 
 def get_current_datetime():
     """
-    Simple fallback function to get current date and time
+    Simple fallback function to get current date and time in Singapore timezone
     Returns current datetime in a user-friendly format
     """
     try:
-        current_time = datetime.now()
+        # Get current time in Singapore timezone
+        singapore_tz = ZoneInfo("Asia/Singapore")
+        current_time = datetime.now(singapore_tz)
         
-        # Format: "Wednesday, June 28, 2025 at 11:50 PM (UTC+8)"
+        # Format: "Wednesday, June 28, 2025 at 11:50 PM (Singapore Time)"
         formatted_date = current_time.strftime("%A, %B %d, %Y at %I:%M %p")
-        timezone_info = current_time.strftime("%Z") or "Local Time"
+        timezone_info = "Singapore Time"
         
         result = {
             "current_datetime": f"{formatted_date} ({timezone_info})",

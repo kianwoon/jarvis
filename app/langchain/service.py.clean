@@ -4814,13 +4814,11 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
                         safe_parameters[safe_key] = safe_value
                 tool_span = tracer.create_tool_span(trace, str(tool_name), safe_parameters)
             else:
-                pass
         except Exception as e:
             logger.warning(f"Failed to create tool span for {tool_name}: {e}")
             tool_span = None
             tracer = None
     else:
-        pass
     
     try:
         from app.core.mcp_tools_cache import get_enabled_mcp_tools
@@ -4972,7 +4970,6 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
                 except Exception as e:
                     logger.warning(f"Failed to end tool span for {tool_name}: {e}")
             else:
-                pass
             
             return result
             

@@ -179,7 +179,6 @@ class EnhancedQueryClassifier:
                 self.collection_keywords.update(collection_info['keywords'])
             
             logger.info(f"Loaded {len(self.rag_collections)} RAG collections with {len(self.collection_keywords)} keywords")
-            logger.info(f"[RAG COLLECTIONS DEBUG] Sample collection data: {list(self.rag_collections.items())[:2] if self.rag_collections else 'No collections available'}")
             
             # Log collection summary for debugging
             for name, info in self.rag_collections.items():
@@ -492,12 +491,6 @@ class EnhancedQueryClassifier:
                 collections_info = self._build_collections_info()
                 
                 # Debug logging to verify what data is being fed to classifier
-                logger.info(f"[MAIN CLASSIFIER DEBUG] Tools info length: {len(tools_info)} chars")
-                logger.info(f"[MAIN CLASSIFIER DEBUG] Tools info preview: {tools_info[:300]}...")
-                logger.info(f"[MAIN CLASSIFIER DEBUG] Collections info length: {len(collections_info)} chars")
-                logger.info(f"[MAIN CLASSIFIER DEBUG] Collections info preview: {collections_info[:300]}...")
-                logger.info(f"[MAIN CLASSIFIER DEBUG] Available MCP tools count: {len(self.mcp_tool_names)}")
-                logger.info(f"[MAIN CLASSIFIER DEBUG] Available RAG collections count: {len(self.rag_collections)}")
                 
                 # Process template placeholders in system prompt
                 processed_system_prompt = system_prompt.format(
@@ -633,8 +626,6 @@ class EnhancedQueryClassifier:
                 import re
                 clean_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
             
-            logger.info(f"[CLASSIFIER DEBUG] Raw response length: {len(response_text)}")
-            logger.info(f"[CLASSIFIER DEBUG] Response after processing: '{clean_response}'")
             
             # Enhanced parsing for TYPE|CONFIDENCE format with model-specific handling
             classification_found = False
@@ -1119,9 +1110,6 @@ class EnhancedQueryClassifier:
             tool_info = self._build_tools_info()
             
             # Debug logging to check what's being fed
-            logger.info(f"[TOOL SUGGESTION DEBUG] Tool info length: {len(tool_info)} chars")
-            logger.info(f"[TOOL SUGGESTION DEBUG] Tool info preview: {tool_info[:200]}...")
-            logger.info(f"[TOOL SUGGESTION DEBUG] Available tool names: {list(self.mcp_tool_names)[:5]}...")
             
             # Use configurable tool suggestion prompt
             tool_suggestion_template = classifier_specific_settings.get('tool_suggestion_prompt', 

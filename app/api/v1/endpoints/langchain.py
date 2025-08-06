@@ -150,7 +150,6 @@ async def rag_endpoint(request: RAGRequest):
         if request.collections:
             tool_parameters["collections"] = request.collections
         
-        print(f"[DEBUG] Unified RAG search - tool parameters: {tool_parameters}")
         
         # Execute rag_knowledge_search tool
         from app.langchain.service import call_mcp_tool
@@ -198,11 +197,9 @@ async def rag_endpoint(request: RAGRequest):
         is_hybrid = routing.get('is_hybrid', False)
         confidence = routing['confidence']
         
-        logger.info(f"[ROUTING DEBUG] primary_type='{primary_type}', QueryType.TOOL.value='{QueryType.TOOL.value}', confidence={confidence}, tool_threshold={tool_threshold}, is_hybrid={is_hybrid}")
         
         # Check for hybrid queries that need multiple handlers
         if is_hybrid:
-            logger.info(f"[ROUTING DEBUG] Taking hybrid query path")
             # Handle hybrid queries (TOOL_RAG, TOOL_LLM, RAG_LLM, TOOL_RAG_LLM)
             return handle_hybrid_query(request, routing)
         elif primary_type == QueryType.TOOL.value and confidence >= tool_threshold:
@@ -219,12 +216,11 @@ async def rag_endpoint(request: RAGRequest):
             )
             
             if is_rag_query:
-                logger.info(f"[ROUTING DEBUG] RAG query detected in TOOL classification - routing to RAG synthesis instead")
                 # Route to RAG synthesis path instead of tool calling
                 # This prevents showing <tool>rag_knowledge_search(...) and ensures proper synthesis
                 # Fall through to RAG path below
+                pass
             else:
-                logger.info(f"[ROUTING DEBUG] Taking direct tool execution path")
                 # Direct tool execution for confident classifications
                 # Use the suggested tool from classification instead of planning
                 return handle_direct_tool_query(request, routing, trace=trace)
@@ -235,7 +231,7 @@ async def rag_endpoint(request: RAGRequest):
             # Route to multi-agent system
             return handle_multi_agent_query(request, routing)
         else:
-            logger.info(f"[ROUTING DEBUG] Taking fallback RAG path")
+            pass
         # Fall through to RAG for RAG_SEARCH or low confidence cases
     
     async def stream():
@@ -269,7 +265,6 @@ async def rag_endpoint(request: RAGRequest):
                 }) + "\n"
                 yield classification_chunk
                 
-            print(f"[DEBUG] API endpoint - About to call rag_answer with stream=True")
             
             # Map enhanced classifier types to simple optimization types
             simple_query_type = None
@@ -277,7 +272,6 @@ async def rag_endpoint(request: RAGRequest):
             # Force RAG type when using hybrid RAG mode
             if request.use_hybrid_rag:
                 simple_query_type = "RAG"
-                print(f"[DEBUG] API endpoint - Forcing query_type='RAG' for hybrid RAG mode")
             elif routing:
                 enhanced_type = routing['primary_type']
                 
@@ -304,8 +298,6 @@ async def rag_endpoint(request: RAGRequest):
                     "tool_rag_llm": "TOOLS"
                 }
                 simple_query_type = type_mapping.get(enhanced_type, "LLM")
-                print(f"[DEBUG] API endpoint - Mapped '{enhanced_type}' to '{simple_query_type}'")
-                print(f"[DEBUG] API endpoint - About to pass query_type='{simple_query_type}' to rag_answer")
             
             # Handle hybrid RAG mode or traditional temp document integration
             # enhanced_question already set above with conversation context
@@ -361,14 +353,12 @@ Please answer the user's question using the information from the uploaded docume
             elif conversation_id and (request.include_temp_docs is not False):
                 # Traditional temp document integration (backward compatibility)
                 try:
-                    logger.info(f"[TEMP DOC DEBUG] Searching for temp docs with conversation_id: {conversation_id}")
                     
                     # First check if any temp docs exist for this conversation
                     all_docs = await temp_doc_manager.get_conversation_documents(conversation_id)
-                    logger.info(f"[TEMP DOC DEBUG] Found {len(all_docs)} total temp documents for conversation")
                     
                     for doc in all_docs:
-                        logger.info(f"[TEMP DOC DEBUG] Doc: {doc.get('filename', 'Unknown')} - included: {doc.get('is_included', False)}")
+                        pass
                     
                     # Query temp documents if they exist
                     temp_results = await temp_doc_manager.query_conversation_documents(
@@ -378,7 +368,6 @@ Please answer the user's question using the information from the uploaded docume
                         top_k=5
                     )
                     
-                    logger.info(f"[TEMP DOC DEBUG] Query returned {len(temp_results)} results")
                     
                     if temp_results:
                         logger.info(f"Found {len(temp_results)} temporary document results")
@@ -386,7 +375,6 @@ Please answer the user's question using the information from the uploaded docume
                         for result in temp_results:
                             filename = result.get('filename', 'Unknown document')
                             content = result.get('content', '')
-                            logger.info(f"[TEMP DOC DEBUG] Result from {filename}: {content[:100]}...")
                             temp_context_parts.append(f"From {filename}:\n{content}")
                         
                         temp_doc_context = "\n\n=== TEMPORARY DOCUMENTS ===\n" + "\n\n".join(temp_context_parts) + "\n=== END TEMPORARY DOCUMENTS ===\n\n"
@@ -399,9 +387,8 @@ User question: {request.question}
 
 Please answer the user's question using the information from the uploaded documents above, along with any other relevant knowledge."""
                         
-                        logger.info(f"[TEMP DOC DEBUG] Enhanced question length: {len(enhanced_question)}")
                     else:
-                        logger.info(f"[TEMP DOC DEBUG] No temp document results found for query")
+                        pass
                         
                 except Exception as e:
                     logger.warning(f"Failed to get temporary document context: {e}")
@@ -418,7 +405,6 @@ Please answer the user's question using the information from the uploaded docume
                 # Execute rag_knowledge_search once using unified function
                 extracted_documents = await execute_rag_search_once(enhanced_question, rag_span or trace)
                 
-                print(f"[DEBUG] API endpoint - Extracted {len(extracted_documents)} documents from unified RAG search")
                 
                 if extracted_documents:
                     yield json_module.dumps({
@@ -440,8 +426,6 @@ Please answer the user's question using the information from the uploaded docume
                             doc.get('metadata', {}).get('file') or
                             'Unknown source'
                         )
-                        print(f"[DEBUG] Document metadata: {doc.keys()}")
-                        print(f"[DEBUG] Extracted file_info: {file_info}")
                         document_contexts.append(f"**📄 {file_info}:**\n{content}")
                     
                     documents_text = "\n\n".join(document_contexts)
@@ -481,7 +465,6 @@ Please provide a detailed, helpful response based on the information found in th
                         hybrid_context=synthesis_context  # Pass document context via hybrid_context
                     )
                     
-                    print(f"[DEBUG] API endpoint - Got synthesis stream: {type(rag_stream)}")
                     
                     # Track complete response for final message
                     complete_response = ""
@@ -638,11 +621,9 @@ Please provide a detailed, helpful response based on the information found in th
                 # If we can't send the error, client is likely disconnected
                 print(f"[ERROR] Could not send error response, client likely disconnected")
     
-    print(f"[DEBUG] API endpoint - Returning StreamingResponse")
     
     # Create a wrapper to capture the output for Langfuse tracing
     async def stream_with_tracing():
-        logger.info(f"[TRACE DEBUG] Stream wrapper started for tracing")
         collected_output = ""
         final_answer = ""
         source_info = ""
@@ -665,9 +646,7 @@ Please provide a detailed, helpful response based on the information found in th
                                     pass  # logger.info(f"[TRACE DEBUG] Final answer: {final_answer[:100]}...")  # Commented out
                             if "source" in chunk_data:
                                 source_info = chunk_data["source"]
-                                logger.info(f"[TRACE DEBUG] Extracted source info: {source_info}")
                         except Exception as e:
-                            logger.warning(f"[TRACE DEBUG] Failed to parse chunk: {e}")
                             pass  # Continue streaming even if parsing fails
                 
                 yield chunk
@@ -683,12 +662,10 @@ Please provide a detailed, helpful response based on the information found in th
                 logger.info(f"[CONVERSATION] Saved assistant response to conversation {conversation_id}")
             
             # Update Langfuse generation and trace with the final output
-            logger.info(f"[TRACE DEBUG] Stream completed, updating trace. Final answer length: {len(final_answer) if final_answer else 0}")
             if tracer.is_enabled():
                 try:
                     # Ensure we have meaningful output for the generation
                     generation_output = final_answer if final_answer else "Response generated successfully"
-                    logger.info(f"[TRACE DEBUG] Final generation output for tracing: {len(generation_output)} chars, has_final_answer: {bool(final_answer)}")
                     
                     # Estimate token usage for cost tracking
                     usage = tracer.estimate_token_usage(request.question, generation_output)
@@ -797,7 +774,6 @@ class GenerationProgressRequest(BaseModel):
 @router.post("/multi-agent")
 async def multi_agent_endpoint(request: MultiAgentRequest):
     """Process a question using the LangGraph multi-agent system"""
-    print(f"[DEBUG] 🚀 MULTI-AGENT ENDPOINT CALLED with question: {request.question[:50]}...")
     
     # Initialize Langfuse tracing
     tracer = get_tracer()
@@ -852,13 +828,12 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                     trace, "langgraph-multi-agent", request.selected_agents or []
                 )
         except Exception as e:
-            print(f"[DEBUG] Failed to create multi-agent workflow span: {e}")
+            pass
     
     # Use LangGraph multi-agent system with streaming callback
     from app.langchain.langgraph_multi_agent_system import LangGraphMultiAgentSystem
     
     async def stream_events_with_tracing():
-        print(f"[DEBUG] ✅ STREAM FUNCTION CALLED FOR MULTI-AGENT")
         collected_output = ""
         final_response = ""
         agent_outputs = []  # Initialize to track agent outputs
@@ -874,7 +849,6 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                 stream=True,
                 trace=workflow_span or trace
             )
-            print(f"[DEBUG] API endpoint - Got multi_agent_stream: {type(multi_agent_stream)}")
             
             # Stream chunks exactly like RAG endpoint does
             chunk_count = 0
@@ -909,7 +883,6 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
                     except:
                         break  # If we can't even send error, client is likely gone
                         
-            print(f"[DEBUG] Multi-agent streaming completed with {chunk_count} chunks")
             collected_output = f"Multi-agent streaming completed with {chunk_count} chunks"
             
             # Update Langfuse generation and trace with the final output
@@ -1008,7 +981,6 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
             
             raise
     
-    print(f"[DEBUG] 🎯 ABOUT TO RETURN STREAMING RESPONSE FOR MULTI-AGENT")
     return StreamingResponse(
         stream_events_with_tracing(),
         media_type="application/json"
@@ -1356,7 +1328,6 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
             
     # Create a wrapper to capture the output for Langfuse tracing in direct tool execution
     async def stream_with_tracing():
-        logger.info(f"[TRACE DEBUG] Direct tool stream wrapper started")
         collected_output = ""
         final_answer = ""
         source_info = ""
@@ -1379,14 +1350,11 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
                                     pass  # logger.info(f"[TRACE DEBUG] Direct tool final answer: {final_answer[:100]}...")  # Commented out
                             if "source" in chunk_data:
                                 source_info = chunk_data["source"]
-                                logger.info(f"[TRACE DEBUG] Direct tool extracted source info: {source_info}")
                         except Exception as e:
-                            logger.warning(f"[TRACE DEBUG] Direct tool failed to parse chunk: {e}")
                             pass  # Continue streaming even if parsing fails
                 
                 yield chunk
             
-            logger.info(f"[TRACE DEBUG] Direct tool stream completed, final answer length: {len(final_answer) if final_answer else 0}")
             
         except Exception as e:
             logger.error(f"Direct tool streaming error: {e}")
@@ -1718,7 +1686,6 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     
                     # Configure LLM for streaming using refactored config
                     max_tokens_from_config = main_llm_config.get('max_tokens', 4000)
-                    print(f"[DEBUG] Direct handler max_tokens from config: {max_tokens_from_config}")
                     llm_config = LLMConfig(
                         model_name=main_llm_config.get('model'),
                         temperature=float(main_llm_config.get('temperature', 0.8)),
@@ -1753,8 +1720,6 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     first_analysis_done = False
                     chunk_count = 0
                     
-                    logger.info(f"[SYNTHESIS DEBUG] Starting LLM streaming with model: {main_llm_config.get('model')}")
-                    logger.info(f"[SYNTHESIS DEBUG] LLM config - temp: {main_llm_config.get('temperature')}, top_p: {main_llm_config.get('top_p')}, max_tokens: {main_llm_config.get('max_tokens')}")
                     
                     async for response_chunk in llm.chat_stream(messages):
                         chunk_count += 1
@@ -1764,15 +1729,11 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                         
                         # Log first few chunks for debugging
                         if chunk_count <= 5:
-                            logger.info(f"[SYNTHESIS DEBUG] Chunk {chunk_count}: '{chunk_text}' (length: {len(chunk_text)})")
+                            pass
                         
                         # Log every 100 chunks to track progress
                         if chunk_count % 100 == 0:
-                            logger.info(f"[SYNTHESIS DEBUG] Processed {chunk_count} chunks, total length: {len(final_response)}")
-                        
-                        # Early termination detection
-                        if chunk_count > 10 and len(final_response) < 200:
-                            logger.warning(f"[SYNTHESIS DEBUG] Potential early termination detected at chunk {chunk_count} with only {len(final_response)} characters")
+                            pass
                         
                         # Analyze first 10 tokens for thinking behavior detection
                         if not first_analysis_done and len(response_tokens) >= 10:
@@ -1802,9 +1763,6 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                             }) + "\n"
                     
                     logger.info(f"[DIRECT HANDLER] Synthesis completed, response length: {len(final_response)}")
-                    logger.info(f"[SYNTHESIS DEBUG] Final stats - Total chunks: {chunk_count}, Final response length: {len(final_response)}")
-                    logger.info(f"[SYNTHESIS DEBUG] Response preview: {final_response[:300]}...")
-                    logger.info(f"[SYNTHESIS DEBUG] Response ends with: ...{final_response[-100:] if len(final_response) > 100 else final_response}")
                     
                     # End synthesis generation span with output
                     if synthesis_generation_span:
