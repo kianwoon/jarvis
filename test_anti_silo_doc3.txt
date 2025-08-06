@@ -1,5 +1,0 @@
-Apache Kafka's adoption in India continues to grow as more organizations recognize its value for building resilient data pipelines. Companies are using Kafka for everything from log aggregation to real-time analytics.
-
-PostgreSQL has proven its worth in demanding environments across Indonesia and other Southeast Asian markets. Its support for ACID transactions makes it particularly suitable for financial applications.
-
-Temenos has established strong partnerships throughout Eastern Asia, helping banks modernize their core systems. The platform's flexibility allows for rapid deployment of new financial products and services.

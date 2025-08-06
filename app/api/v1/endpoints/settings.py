@@ -417,6 +417,9 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
     logger.info(f"Updating settings for category: {category}")
     logger.info(f"Update payload: persist_to_db={update.persist_to_db}, reload_cache={update.reload_cache}")
     
+    # Initialize merged_settings variable to track deep merge results  
+    merged_settings = None
+    
     # Debug log all settings data for MCP
     if category == 'mcp':
         logger.info(f"MCP settings received - keys: {list(update.settings.keys())}")
@@ -436,6 +439,58 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         del settings_for_db['api_key']
     
     settings_row = db.query(SettingsModel).filter(SettingsModel.category == category).first()
+    
+    # CRITICAL: Handle LLM deep merge BEFORE database save to prevent data loss
+    if category == 'llm':
+        logger.info("Processing LLM settings with deep merge BEFORE database save")
+        
+        # Get existing settings for deep merge
+        existing_settings = settings_row.settings if settings_row else {}
+        logger.info(f"Existing LLM settings keys: {list(existing_settings.keys()) if existing_settings else 'None'}")
+        logger.info(f"New LLM settings keys: {list(settings_for_db.keys())}")
+        
+        # Ensure query_classifier is properly nested if present in top-level
+        if 'query_classifier' in update.settings and isinstance(update.settings['query_classifier'], dict):
+            # query_classifier is already nested, good
+            pass
+        else:
+            # Check if query_classifier fields are at top level and need to be nested
+            query_classifier_fields = [
+                'min_confidence_threshold', 'max_classifications', 'classifier_max_tokens',
+                'enable_hybrid_detection', 'confidence_decay_factor', 'pattern_combination_bonus',
+                'llm_direct_threshold', 'multi_agent_threshold', 'direct_execution_threshold',
+                'system_prompt',
+                # New LLM-based classification fields
+                'enable_llm_classification', 'llm_model', 'context_length', 'llm_temperature', 'llm_max_tokens',
+                'llm_timeout_seconds', 'llm_system_prompt', 'fallback_to_patterns', 'llm_classification_priority'
+            ]
+            
+            # Extract query_classifier fields if they exist at top level
+            query_classifier_data = {}
+            for field in query_classifier_fields:
+                if field in settings_for_db:
+                    query_classifier_data[field] = settings_for_db[field]
+                    # Remove from top level
+                    del settings_for_db[field]
+            
+            # Add query_classifier as nested object if we found any fields
+            if query_classifier_data:
+                settings_for_db['query_classifier'] = query_classifier_data
+        
+        # Deep merge to preserve existing complex fields
+        merged_settings = deep_merge_settings(existing_settings, settings_for_db)
+        logger.info(f"Merged LLM settings keys: {list(merged_settings.keys())}")
+        
+        # Validate that critical fields are preserved
+        critical_fields = ['main_llm', 'second_llm', 'query_classifier', 'search_optimization', 'thinking_mode_params', 'non_thinking_mode_params']
+        preserved_fields = [field for field in critical_fields if field in existing_settings and field in merged_settings]
+        if preserved_fields:
+            logger.info(f"Preserved critical LLM fields: {preserved_fields}")
+        
+        # Use merged settings for database save
+        settings_for_db = merged_settings
+        logger.info("LLM deep merge completed, will save merged data to database")
+    
     if settings_row:
         logger.info(f"Updating existing settings for {category}")
         # Debug for existing settings
@@ -471,41 +526,9 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save settings: {str(e)}")
     
-    # If updating LLM settings, handle query_classifier properly and reload cache
+    # If updating LLM settings, reload cache (deep merge already handled above)
     if category == 'llm':
-        # Ensure query_classifier is properly nested if present in top-level
-        if 'query_classifier' in update.settings and isinstance(update.settings['query_classifier'], dict):
-            # query_classifier is already nested, good
-            pass
-        else:
-            # Check if query_classifier fields are at top level and need to be nested
-            query_classifier_fields = [
-                'min_confidence_threshold', 'max_classifications', 'classifier_max_tokens',
-                'enable_hybrid_detection', 'confidence_decay_factor', 'pattern_combination_bonus',
-                'llm_direct_threshold', 'multi_agent_threshold', 'direct_execution_threshold',
-                'system_prompt',
-                # New LLM-based classification fields
-                'enable_llm_classification', 'llm_model', 'context_length', 'llm_temperature', 'llm_max_tokens',
-                'llm_timeout_seconds', 'llm_system_prompt', 'fallback_to_patterns', 'llm_classification_priority'
-            ]
-            
-            # Extract query_classifier fields if they exist at top level
-            query_classifier_data = {}
-            for field in query_classifier_fields:
-                if field in settings_for_db:
-                    query_classifier_data[field] = settings_for_db[field]
-                    # Remove from top level
-                    del settings_for_db[field]
-            
-            # Add query_classifier as nested object if we found any fields
-            if query_classifier_data:
-                settings_for_db['query_classifier'] = query_classifier_data
-        
-        # Update the database row with the properly structured settings
-        settings_row.settings = settings_for_db
-        db.commit()
-        db.refresh(settings_row)
-        
+        logger.info("LLM deep merge completed, reloading caches")
         reload_llm_settings()
         reload_query_classifier_settings()
     
@@ -770,7 +793,9 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         reload_knowledge_graph_settings()
         logger.info("Knowledge graph settings saved and cache reloaded")
     
-    return {"category": category, "settings": settings_row.settings}
+    # Return merged settings if available (for LLM with deep merge), otherwise use database settings
+    final_settings = merged_settings if merged_settings is not None else settings_row.settings
+    return {"category": category, "settings": final_settings}
 
 def handle_mcp_settings_update(update: SettingsUpdate, db: Session):
     """Handle MCP settings update with special processing for manifest URL and API key"""

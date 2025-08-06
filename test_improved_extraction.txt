@@ -1,9 +1,0 @@
-DBS Bank has been exploring Ant Group's OceanBase database technology. The bank aims to strengthen its technology infrastructure and gain competitive advantages in scalability. 
-
-Embracing such platforms is consistent with DBS's goal of simplifying its tech stack and supporting microservices architecture. Innovation requires ecosystem ambitions that enable rapid development.
-
-Another strategic motive is DBS's desire to create new digital offerings and ecosystems quickly. The bank has broadened its business model to act as a technology platform, integrating banking services with digital marketplaces.
-
-OceanBase and TDSQL can handle surges in user activity without compromising performance. These technologies serve DBS's strategic goal of being a nimble organization that is customer-focused.
-
-Both banks and tech competitors recognize that distributed databases like OceanBase provide significant advantages. As demonstrated in China's financial industry, these solutions can handle extreme transaction volumes.

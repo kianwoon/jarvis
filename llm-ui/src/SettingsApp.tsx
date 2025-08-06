@@ -472,6 +472,32 @@ function SettingsApp() {
             reload_cache: true
           }),
         });
+      } else if (category === 'llm') {
+        console.log('[DEBUG] LLM save - saving all user-modified settings with data preservation');
+        
+        // First, fetch current database values to merge with UI changes
+        const currentResponse = await fetch(`/api/v1/settings/llm?t=${Date.now()}`);
+        const currentData = currentResponse.ok ? await currentResponse.json() : { settings: {} };
+        console.log('[DEBUG] LLM save - current DB data:', currentData.settings);
+        
+        // Deep merge current DB data with UI changes to preserve all fields - NO HARDCODING
+        const mergedData = {
+          ...currentData.settings,
+          ...cleanData  // Simply merge all UI changes with current DB data
+        };
+        
+        console.log('[DEBUG] LLM save - merged data:', mergedData);
+        response = await fetch('/api/v1/settings/llm', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            settings: mergedData,
+            persist_to_db: true,
+            reload_cache: true
+          }),
+        });
       } else {
         // All other categories use the standard endpoint pattern
         console.log(`[DEBUG] ${category} save - saving to standard endpoint /api/v1/settings/${category}`);
@@ -493,11 +519,14 @@ function SettingsApp() {
       }
 
       setSuccess(prev => ({ ...prev, [category]: true }));
-      setSuccessMessage(prev => ({ ...prev, [category]: `${category === 'knowledge_graph' ? 'Knowledge Graph' : 'Settings'} saved successfully!` }));
+      setSuccessMessage(prev => ({ ...prev, [category]: `${category === 'knowledge_graph' ? 'Knowledge Graph' : category === 'llm' ? 'LLM' : 'Settings'} saved successfully!` }));
       
-      // Force reload for knowledge graph to ensure UI shows correct data
+      // Force reload for knowledge graph and LLM to ensure UI shows correct data
       if (category === 'knowledge_graph') {
         console.log('[DEBUG] KG save success - forcing reload');
+        await loadSettings(category);
+      } else if (category === 'llm') {
+        console.log('[DEBUG] LLM save success - forcing reload');  
         await loadSettings(category);
       }
       
