@@ -262,7 +262,7 @@ class LangGraphMultiAgentSystem:
         
         # Store LLM configuration for efficient per-request creation
         import os
-        self.ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+        self.ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         logger.info(f"Using Ollama base_url: {self.ollama_base_url}")
         
         # Don't create LLM instance here - create per request for efficiency
@@ -308,13 +308,15 @@ class LangGraphMultiAgentSystem:
             # Validate and clamp parameters with special handling for synthesizer
             is_synthesizer = agent_name.lower() == 'synthesizer'
             
-            # Apply appropriate limits based on agent type
+            # Apply timeout limits based on agent type (but respect workflow max_tokens configuration)
             if is_synthesizer:
-                max_tokens = min(max_tokens, 3000)  # Higher limit for synthesizer
                 timeout = min(timeout, 90)          # Longer timeout for synthesizer
             else:
-                max_tokens = min(max_tokens, 2000)  # Standard limit for other agents
                 timeout = min(timeout, 45)          # Standard timeout for other agents
+            
+            # Respect workflow configuration for max_tokens - no hardcoded limits
+            # Only apply safety bounds for temperature
+            logger.debug(f"Agent {agent_name} using workflow max_tokens: {max_tokens} (no hardcoded override)")
                 
             temperature = max(0.1, min(temperature, 1.0))  # Temperature bounds
             

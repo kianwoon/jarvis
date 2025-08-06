@@ -266,7 +266,7 @@ Now continue generating items {chunk.start_index} to {chunk.end_index} following
                 model_name=model_config.get("model", "qwen3:30b-a3b"),
                 temperature=0.7,
                 top_p=model_config.get("top_p", 0.9),
-                max_tokens=3000  # Conservative limit for chunk generation
+                max_tokens=model_config.get("max_tokens", 3000)  # Use configured value or fallback to 3000
             )
             
             ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
