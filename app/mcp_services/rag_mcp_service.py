@@ -229,21 +229,19 @@ class RAGMCPService:
             return self._format_jsonrpc_response(None, str(e))
     
     async def _determine_collections(self, query: str, specified_collections: Optional[List[str]]) -> List[str]:
-        """Determine which collections to search"""
+        """Determine which collections to search with smart matching"""
         
         if specified_collections:
-            # Validate specified collections exist
-            available_collections = get_all_collections()
-            available_names = [c.get('collection_name', '') for c in available_collections] if available_collections else []
+            # Apply smart collection matching to handle agent inference errors
+            from app.core.rag_fallback import smart_collection_matching
+            matched_collections = smart_collection_matching(specified_collections)
             
-            validated = []
-            for collection in specified_collections:
-                if collection in available_names:
-                    validated.append(collection)
-                else:
-                    logger.warning(f"RAG MCP: Collection '{collection}' not found")
-            
-            return validated if validated else ["default_knowledge"]
+            if matched_collections:
+                logger.info(f"RAG MCP: Smart matched collections: {specified_collections} -> {matched_collections}")
+                return matched_collections
+            else:
+                logger.warning(f"RAG MCP: No collections matched for {specified_collections}, falling back")
+                return ["default_knowledge"]
         
         # Auto-detect collections based on query content
         return await self._auto_detect_collections(query)
@@ -829,22 +827,19 @@ def execute_rag_search_sync(query: str, collections: List[str] = None, max_docum
 
 
 def _determine_collections_sync(query: str, specified_collections: Optional[List[str]], service: RAGMCPService) -> List[str]:
-    """Synchronous version of collection determination"""
+    """Synchronous version of collection determination with smart matching"""
     
     if specified_collections:
-        # Validate specified collections exist
-        from app.core.collection_registry_cache import get_all_collections
-        available_collections = get_all_collections()
-        available_names = [c.get('collection_name', '') for c in available_collections] if available_collections else []
+        # Apply smart collection matching to handle agent inference errors
+        from app.core.rag_fallback import smart_collection_matching
+        matched_collections = smart_collection_matching(specified_collections)
         
-        validated = []
-        for collection in specified_collections:
-            if collection in available_names:
-                validated.append(collection)
-            else:
-                logger.warning(f"RAG MCP: Collection '{collection}' not found")
-        
-        return validated if validated else ["default_knowledge"]
+        if matched_collections:
+            logger.info(f"RAG MCP Sync: Smart matched collections: {specified_collections} -> {matched_collections}")
+            return matched_collections
+        else:
+            logger.warning(f"RAG MCP Sync: No collections matched for {specified_collections}, falling back")
+            return ["default_knowledge"]
     
     # Auto-detect collections based on query content
     # Get collection selection settings

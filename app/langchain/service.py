@@ -509,21 +509,25 @@ def build_messages_for_synthesis(
     # Debug logging for function entry
     logger.info(f"[DEBUG] Messages synthesis - Source: {query_type}+LLM, Query type: {query_type}")
     logger.info(f"[DEBUG] Messages synthesis - Has RAG: {bool(rag_context)}, Has tools: {bool(tool_context)}")
+    logger.info(f"[DEBUG] Messages synthesis - Has RAG sources: {bool(rag_sources) and len(rag_sources) > 0}")
     
     # Get system prompt based on context
-    # CRITICAL FIX: When tool_context exists, it means tools have ALREADY been executed
-    # and results are provided. The model should synthesize these results, NOT make more tool calls.
-    if tool_context:
-        logger.info(f"[DEBUG] Messages synthesis - Tool context exists, using basic system prompt for synthesis")
+    # CRITICAL FIX: When we have RAG sources or tool context, force synthesis mode
+    # This prevents LLM from generating tool calls when we already have the information
+    if tool_context or (rag_sources and len(rag_sources) > 0):
+        logger.info(f"[DEBUG] Messages synthesis - SYNTHESIS MODE: Have tool results or RAG sources, disabling tool generation")
         llm_settings = get_llm_settings()
         base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
-        # Add synthesis-specific instructions
+        # Add synthesis-specific instructions that explicitly prevent tool generation
         system_prompt = f"""{base_prompt}
 
-SYNTHESIS MODE: You are provided with tool results and should synthesize a comprehensive answer based on the information given. Do NOT make additional tool calls - use only the provided information to generate your response."""
-        logger.info(f"[DEBUG] Messages synthesis - Basic system prompt with synthesis instructions length: {len(system_prompt)}")
+IMPORTANT: You are in SYNTHESIS MODE. You have been provided with search results and information below. 
+DO NOT generate any tool calls like <tool>...</tool>.
+Instead, synthesize the provided information into a comprehensive, helpful response.
+Focus on answering the user's question using the search results and context provided."""
+        logger.info(f"[DEBUG] Messages synthesis - Synthesis mode prompt with NO TOOL instructions")
     else:
-        logger.info(f"[DEBUG] Messages synthesis - No tool context, using enhanced system prompt for potential tool usage")
+        logger.info(f"[DEBUG] Messages synthesis - No results yet, using enhanced system prompt for potential tool usage")
         system_prompt = build_enhanced_system_prompt()
         logger.info(f"[DEBUG] Messages synthesis - Enhanced system prompt length: {len(system_prompt)}")
     
@@ -3511,12 +3515,18 @@ Please generate the requested items incorporating relevant information from the 
     
     # STEP 3: Check if tools can add value (for non-large generation queries)
     print(f"[DEBUG] rag_answer: Step 3 - Checking tool applicability")
+    print(f"[DEBUG] rag_answer: After Step 3 log, query_type={query_type}")
     
     # Initialize tool variables if not already set by fallback
+    print(f"[DEBUG] rag_answer: Initializing tool variables")
     if 'tool_calls' not in locals():
         tool_calls = []
         tool_context = ""
+        print(f"[DEBUG] rag_answer: Initialized empty tool_calls and tool_context")
+    else:
+        print(f"[DEBUG] rag_answer: tool_calls already exists with {len(tool_calls)} items")
     
+    print(f"[DEBUG] rag_answer: About to check if query_type == 'TOOLS' (current: {query_type})")
     if query_type == "TOOLS":
         # Only execute tools if not already executed in web search fallback
         if not tool_calls:  # Check if fallback already populated these
@@ -3758,6 +3768,8 @@ Please generate the requested items incorporating relevant information from the 
         else:
             print(f"[DEBUG] rag_answer: Tools already executed in web search fallback, skipping duplicate execution")
     
+    print(f"[DEBUG] rag_answer: Finished TOOLS section, moving to conversation history (query_type={query_type})")
+    
     # Get conversation history with smart filtering for ALL query types
     conversation_history = ""
     history_prompt = ""
@@ -3781,6 +3793,14 @@ Please generate the requested items incorporating relevant information from the 
     print(f"[DEBUG] rag_answer: Using unified LLM synthesis approach")
     print(f"[DEBUG] rag_answer: Before synthesis - query_type={query_type}, tool_context length={len(tool_context) if tool_context else 0}")
     print(f"[DEBUG] rag_answer: Before synthesis - tool_calls count={len(tool_calls) if tool_calls else 0}")
+    
+    # CRITICAL FIX: For RAG/TOOLS queries with documents, force synthesis mode
+    # This prevents LLM from generating tool syntax when we already have results
+    synthesis_mode = False
+    if query_type in ["RAG", "TOOLS"] and (rag_sources or tool_calls):
+        synthesis_mode = True
+        print(f"[DEBUG] rag_answer: SYNTHESIS MODE ACTIVATED - Already have {len(rag_sources)} documents and {len(tool_calls)} tool results")
+    
     # Use build_messages_for_synthesis directly to get messages array
     messages, source, context, system_prompt = build_messages_for_synthesis(
         question=question,
@@ -3832,14 +3852,16 @@ Please generate the requested items incorporating relevant information from the 
         # Handle both string and int values
         try:
             max_tokens = int(max_tokens_raw)
-            # Sanity check - if someone set max_tokens to context window size, fix it
+            # Sanity check - only limit if max_tokens is >= context window (obvious user error)
             # Make this configurable based on model capabilities
             context_length = mode_config.get("context_length", 40960)
-            max_output_ratio = 0.4  # Use max 40% of context for output
-            max_safe_tokens = int(context_length * max_output_ratio)
-            if max_tokens > max_safe_tokens:
-                print(f"[WARNING] max_tokens {max_tokens} is too high (likely set to context window). Using {max_safe_tokens} for output (40% of {context_length} context).")
+            # Only apply safety limit when max_tokens equals or exceeds context_length (user error)
+            if max_tokens >= context_length:
+                max_output_ratio = 0.75  # Use max 75% of context for output (more generous)
+                max_safe_tokens = int(context_length * max_output_ratio)
+                print(f"[WARNING] max_tokens {max_tokens} equals/exceeds context window {context_length}. Using {max_safe_tokens} for output (75% of context).")
                 max_tokens = max_safe_tokens
+            # Otherwise, trust the configured max_tokens value
         except (ValueError, TypeError):
             # Use fallback based on context length instead of hardcoded value
             context_length = mode_config.get("context_length", 40960)
@@ -3880,10 +3902,13 @@ Please generate the requested items incorporating relevant information from the 
             ollama_url = mode_config.get("model_server", "http://ollama:11434")
             print(f"[DEBUG] Ollama URL from config: {ollama_url}")
             
-            # If localhost, change to host.docker.internal for Docker containers
-            if "localhost" in ollama_url:
+            # If localhost, change to host.docker.internal for Docker containers only
+            import os
+            if "localhost" in ollama_url and (os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')):
                 ollama_url = ollama_url.replace("localhost", "host.docker.internal")
                 print(f"[DEBUG] Converted to Docker URL: {ollama_url}")
+            elif "localhost" in ollama_url:
+                print(f"[DEBUG] Running locally, keeping localhost URL: {ollama_url}")
             
             # Create LLM instance
             llm = OllamaLLM(llm_config, base_url=ollama_url)
@@ -3906,16 +3931,37 @@ Please generate the requested items incorporating relevant information from the 
             
             # Stream tokens exactly like multi-agent
             response_text = ""
+            stream_chunk_count = 0
+            print(f"[DEBUG] Starting streaming generation...")
             
             # Use chat_stream with messages array instead of generate_stream with concatenated prompt
-            async for response_chunk in llm.chat_stream(messages):
-                response_text += response_chunk.text
+            try:
+                async for response_chunk in llm.chat_stream(messages):
+                    stream_chunk_count += 1
+                    if stream_chunk_count == 1:
+                        print(f"[DEBUG] First streaming chunk received: '{response_chunk.text[:50]}...'")
+                    elif stream_chunk_count % 20 == 0:
+                        print(f"[DEBUG] Streamed {stream_chunk_count} chunks, total length: {len(response_text)} chars")
+                    
+                    response_text += response_chunk.text
+                    
+                    # Stream tokens in real-time (but filter out tool syntax)
+                    if response_chunk.text.strip():
+                        # Don't stream tool syntax tokens to prevent user from seeing them
+                        if "<tool>" not in response_chunk.text and "</tool>" not in response_chunk.text:
+                            yield json.dumps({
+                                "token": response_chunk.text
+                            }) + "\n"
                 
-                # Stream tokens in real-time
-                if response_chunk.text.strip():
-                    yield json.dumps({
-                        "token": response_chunk.text
-                    }) + "\n"
+                print(f"[DEBUG] Streaming completed! Total chunks: {stream_chunk_count}, final length: {len(response_text)} chars")
+            except Exception as e:
+                print(f"[ERROR] Streaming generation failed: {e}")
+                logger.error(f"LLM streaming generation failed: {e}")
+                # Yield error information to client
+                yield json.dumps({
+                    "error": f"Generation failed: {e}"
+                }) + "\n"
+                return
             
             # End LLM generation span with actual output
             if llm_generation_span:
@@ -3936,19 +3982,29 @@ Please generate the requested items incorporating relevant information from the 
                 except Exception as e:
                     logger.warning(f"Failed to end LLM generation span: {e}")
             
-            # Parse and execute tool calls using enhanced error handling  
-            # Skip redundant knowledge_search if RAG was already performed, unless explicit search intent detected
+            # Parse and execute tool calls using enhanced error handling
+            # CRITICAL FIX: Skip tool execution if we already have RAG sources or tool results
+            # This prevents double execution and tool syntax being shown to users
             from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier
             classifier = EnhancedQueryClassifier()
             has_explicit_search_intent = await classifier.detect_explicit_search_intent(question)
+            
+            # Check if response contains tool syntax that needs execution
+            contains_tool_syntax = "<tool>" in response_text and "</tool>" in response_text
+            
             skip_knowledge_search = (
                 (query_type == "RAG" and rag_context and not has_explicit_search_intent) or
-                (query_type == "SYNTHESIS")  # Skip tool execution for synthesis mode to prevent triple execution
+                (query_type == "SYNTHESIS") or  # Skip tool execution for synthesis mode
+                (rag_sources and len(rag_sources) > 0) or  # Skip if we already have RAG sources
+                (tool_calls and len(tool_calls) > 0)  # Skip if we already executed tools
             )
             
             if skip_knowledge_search:
-                logger.info(f"[EXECUTION TRACKER] SKIPPING tool execution - query_type={query_type}, rag_context={'present' if rag_context else 'absent'}")
-                print(f"[EXECUTION TRACKER] SKIPPING tool execution - query_type={query_type}")
+                logger.info(f"[EXECUTION TRACKER] SKIPPING tool execution - already have results or synthesis mode")
+                print(f"[EXECUTION TRACKER] SKIPPING tool execution - query_type={query_type}, has_rag_sources={bool(rag_sources)}, has_tool_calls={bool(tool_calls)}")
+                # If response contains tool syntax but we're skipping execution, we need to synthesize
+                if contains_tool_syntax and (rag_sources or tool_calls):
+                    print(f"[WARNING] LLM generated tool syntax but we already have results - need synthesis")
             else:
                 logger.info(f"[EXECUTION TRACKER] EXECUTION #2: Tool parsing from streaming LLM response")
                 print(f"[EXECUTION TRACKER] EXECUTION #2: Tool parsing from streaming LLM response")
@@ -3961,7 +4017,8 @@ Please generate the requested items incorporating relevant information from the 
                 original_query=question
             )
             
-            if tool_results:
+            # Only process tool results if we actually executed tools
+            if tool_results and not skip_knowledge_search:
                 print(f"[DEBUG] Executed {len(tool_results)} tools from LLM response")
                 
                 # Extract documents from tool results
@@ -3998,9 +4055,9 @@ Please generate the requested items incorporating relevant information from the 
                         }
                     }) + "\n"
                 
-                # If tools were executed successfully (excluding skipped ones), we need to synthesize the response with tool results
-                successful_tool_results = [r for r in tool_results if r.get('success') and not r.get('skipped')]
-                if successful_tool_results:
+                # If tools were executed successfully, we need to synthesize the response with tool results
+                successful_tool_results = [r for r in tool_results if r.get('success') and not r.get('skipped')] if tool_results else []
+                if successful_tool_results and not skip_knowledge_search:
                     # Build enhanced response with tool results (excluding skipped tools)
                     tool_context = "\n\nTool Results:\n"
                     for tr in successful_tool_results:
@@ -4100,9 +4157,14 @@ Based on these search results, provide a comprehensive answer to the user's ques
                 "conversation_id": conversation_id
             }) + "\n"
             
-            # Store conversation
+            # Store conversation - ensure we store the synthesized text, not tool syntax
             if conversation_id and response_text:
-                store_conversation_message(conversation_id, "assistant", response_text)
+                # Check if response contains tool syntax and skip storing if so
+                if "<tool>" not in response_text and "</tool>" not in response_text:
+                    store_conversation_message(conversation_id, "assistant", response_text)
+                    print(f"[DEBUG] Stored synthesized response to conversation (length: {len(response_text)})")
+                else:
+                    print(f"[WARNING] Skipping storage of response with tool syntax to prevent contamination")
         
         return stream_tokens()
     
@@ -4146,9 +4208,23 @@ Based on these search results, provide a comprehensive answer to the user's ques
                 logger.warning(f"Failed to create LLM generation span: {e}")
         
         response_text = ""
+        chunk_count = 0
+        print(f"[DEBUG] Starting non-streaming generation...")
         # Use chat_stream with messages array instead of generate_stream with concatenated prompt
-        async for response_chunk in llm.chat_stream(messages):
-            response_text += response_chunk.text
+        try:
+            async for response_chunk in llm.chat_stream(messages):
+                chunk_count += 1
+                if chunk_count == 1:
+                    print(f"[DEBUG] First response chunk received: '{response_chunk.text[:50]}...'")
+                elif chunk_count % 20 == 0:
+                    print(f"[DEBUG] Received {chunk_count} chunks, total length: {len(response_text)} chars")
+                response_text += response_chunk.text
+            
+            print(f"[DEBUG] Generation completed! Total chunks: {chunk_count}, final length: {len(response_text)} chars")
+        except Exception as e:
+            print(f"[ERROR] Generation failed: {e}")
+            logger.error(f"LLM generation failed: {e}")
+            raise
         
         # End LLM generation span
         if llm_generation_span:

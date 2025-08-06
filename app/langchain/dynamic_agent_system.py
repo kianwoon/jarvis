@@ -803,12 +803,17 @@ Required JSON format:
         logger.debug(f"[MODEL DEBUG] context.get('model'): {context.get('model') if context else 'No context'}")
         logger.debug(f"[MODEL DEBUG] agent_config.get('model'): {agent_config.get('model')}")
         
+        # Use the configured main_llm model as default instead of hardcoded value
+        from app.core.llm_settings_cache import get_main_llm_full_config
+        main_llm_config = get_main_llm_full_config()
+        default_model = main_llm_config.get("model", "qwen3:30b-a3b")
+        
         model = (
             context.get("model") or
             agent_config.get("model") or
-            "qwen3:30b-a3b"
+            default_model
         )
-        logger.debug(f"[MODEL DEBUG] Final model selected: {model}")
+        logger.debug(f"[MODEL DEBUG] Final model selected: {model} (default was: {default_model})")
         
         # Dynamic timeout based on query complexity and agent type
         # Priority: context timeout (from workflow config) > agent config timeout > default
@@ -1207,9 +1212,19 @@ TASK: Provide your analysis of the query above."""
                 except Exception:
                     pass  # Ignore if already ended
     
-    async def _call_llm(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2000, model: str = "qwen3:30b-a3b") -> str:
+    async def _call_llm(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2000, model: str = None) -> str:
         """Simple LLM call that returns complete response"""
-        model_config = self.llm_settings.get("thinking_mode", {})
+        # Use the configured main_llm model if no model specified or if using old hardcoded default
+        if model is None or model == "qwen3:30b-a3b":
+            from app.core.llm_settings_cache import get_main_llm_full_config
+            main_llm_config = get_main_llm_full_config()
+            actual_model = main_llm_config.get("model", "qwen3:30b-a3b")
+            if model == "qwen3:30b-a3b" and actual_model != "qwen3:30b-a3b":
+                logger.info(f"[MODEL FIX] Replacing hardcoded default model {model} with configured model {actual_model}")
+            model = actual_model
+            model_config = main_llm_config
+        else:
+            model_config = self.llm_settings.get("thinking_mode", {})
         
         config = LLMConfig(
             model_name=model,
@@ -1228,14 +1243,25 @@ TASK: Provide your analysis of the query above."""
         return response_text
     
     async def _call_llm_stream(self, prompt: str, agent_name: str, temperature: float = 0.7, 
-                               max_tokens: int = 4000, timeout: int = 60, model: str = "qwen3:30b-a3b"):
+                               max_tokens: int = 4000, timeout: int = 60, model: str = None):
         """Streaming LLM call for agent execution with real-time token streaming"""
         try:
             response_text = ""
             token_count = 0
             
+            # Use the configured main_llm model if no model specified or if using old hardcoded default
+            if model is None or model == "qwen3:30b-a3b":
+                from app.core.llm_settings_cache import get_main_llm_full_config
+                main_llm_config = get_main_llm_full_config()
+                actual_model = main_llm_config.get("model", "qwen3:30b-a3b")
+                if model == "qwen3:30b-a3b" and actual_model != "qwen3:30b-a3b":
+                    logger.info(f"[MODEL FIX] Replacing hardcoded default model {model} with configured model {actual_model}")
+                model = actual_model
+                model_config = main_llm_config
+            else:
+                model_config = self.llm_settings.get("thinking_mode", {})
+            
             # Create LLM instance for streaming
-            model_config = self.llm_settings.get("thinking_mode", {})
             config = LLMConfig(
                 model_name=model,
                 temperature=temperature,
@@ -1655,6 +1681,33 @@ TASK: Provide your analysis of the query above."""
                         tool_call = future_to_tool[future]
                         try:
                             result = future.result(timeout=30)  # 30 second timeout per tool
+                            
+                            # COMPREHENSIVE DEBUG LOGGING FOR RAG TOOL RESPONSES
+                            if 'rag_knowledge_search' in result.get('tool', '').lower():
+                                print(f"[RAG DEBUG] {agent_name}: RAG tool response received")
+                                print(f"[RAG DEBUG] Top-level keys: {list(result.keys())}")
+                                print(f"[RAG DEBUG] Top-level success: {result.get('success')}")
+                                
+                                if 'result' in result:
+                                    rag_result = result['result']
+                                    print(f"[RAG DEBUG] Result type: {type(rag_result)}")
+                                    if isinstance(rag_result, dict):
+                                        print(f"[RAG DEBUG] Result keys: {list(rag_result.keys())}")
+                                        print(f"[RAG DEBUG] documents_found: {rag_result.get('documents_found', 'KEY NOT FOUND')}")
+                                        print(f"[RAG DEBUG] has_results: {rag_result.get('has_results', 'KEY NOT FOUND')}")
+                                        print(f"[RAG DEBUG] text_summary preview: {str(rag_result.get('text_summary', ''))[:200]}")
+                                        
+                                        # Check documents array
+                                        docs = rag_result.get('documents', [])
+                                        print(f"[RAG DEBUG] documents array length: {len(docs)}")
+                                        if docs:
+                                            print(f"[RAG DEBUG] First document keys: {list(docs[0].keys()) if docs[0] else 'Empty'}")
+                                    else:
+                                        print(f"[RAG DEBUG] Result is not a dict: {str(rag_result)[:200]}")
+                                else:
+                                    print(f"[RAG DEBUG] No 'result' key in tool response")
+                                    print(f"[RAG DEBUG] Full response: {str(result)[:500]}")
+                            
                             tool_results.append(result)
                             print(f"[DEBUG] {agent_name}: Tool {result['tool']} -> {'Success' if result['success'] else 'Failed'}")
                         except concurrent.futures.TimeoutError:
@@ -1693,8 +1746,43 @@ TASK: Provide your analysis of the query above."""
                         
                         tool_context += f"\n**{tool_name}:**\n"
                         
-                        # Format search results nicely
-                        if 'search' in tool_name.lower() and isinstance(tool_result, dict) and 'result' in tool_result:
+                        # DEBUG: Log what we're processing for RAG tools
+                        if 'rag_knowledge_search' in tool_name.lower():
+                            print(f"[RAG PROCESS] {agent_name}: Processing RAG tool result")
+                            print(f"[RAG PROCESS] tool_result type: {type(tool_result)}")
+                            if isinstance(tool_result, dict):
+                                print(f"[RAG PROCESS] tool_result keys: {list(tool_result.keys())}")
+                                print(f"[RAG PROCESS] documents_found: {tool_result.get('documents_found', 'KEY NOT FOUND')}")
+                                print(f"[RAG PROCESS] has_results: {tool_result.get('has_results', 'KEY NOT FOUND')}")
+                        
+                        # Special handling for RAG knowledge search tools
+                        if 'rag_knowledge_search' in tool_name.lower() and isinstance(tool_result, dict):
+                            # RAG tools return documents directly in tool_result, not nested under 'result'
+                            documents_found = tool_result.get('documents_found', 0)
+                            documents = tool_result.get('documents', [])
+                            text_summary = tool_result.get('text_summary', '')
+                            
+                            if text_summary:
+                                # Use the pre-formatted text summary if available
+                                tool_context += text_summary
+                            elif documents_found > 0 and documents:
+                                # Format the documents ourselves
+                                tool_context += f"Found {documents_found} relevant documents:\n\n"
+                                for i, doc in enumerate(documents[:5], 1):  # Show first 5 documents
+                                    if isinstance(doc, dict):
+                                        title = doc.get('title', 'Untitled')
+                                        content = doc.get('content', '')
+                                        score = doc.get('score', 0)
+                                        tool_context += f"{i}. **{title}** (relevance: {score:.2f})\n"
+                                        if content:
+                                            # Show first 300 chars of content
+                                            preview = content[:300] + '...' if len(content) > 300 else content
+                                            tool_context += f"   Content: {preview}\n\n"
+                            else:
+                                tool_context += "No documents found matching the search criteria.\n"
+                        
+                        # Format other search results (non-RAG)
+                        elif 'search' in tool_name.lower() and isinstance(tool_result, dict) and 'result' in tool_result:
                             search_results = tool_result['result']
                             if isinstance(search_results, list):
                                 tool_context += f"Found {len(search_results)} search results:\n"
@@ -1740,6 +1828,8 @@ Based on these tool results, provide your final comprehensive response that:
 3. Synthesizes the findings into a coherent response
 4. Does not repeat the raw tool output but interprets and explains it
 5. NEVER includes tool JSON - only provide your analysis and response
+
+IMPORTANT: If the RAG knowledge search found documents, you MUST acknowledge that documents were found and summarize their key information. Never say "no documents found" if documents are shown above
 
 Provide your complete response based on the tool results above. Do not generate any tool calls."""
 

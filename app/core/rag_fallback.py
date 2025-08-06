@@ -10,6 +10,7 @@ infrastructure but avoids the complex langchain.service dependencies.
 import logging
 import time
 import json as json_module
+import requests
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,8 @@ def simple_rag_search(
                 "search_metadata": {"fallback": True}
             }
         
-        # Get collections to search
-        if not collections:
-            collections = get_default_collections()
+        # Get collections to search with smart matching
+        collections = smart_collection_matching(collections)
         
         logger.info(f"[RAG FALLBACK] Searching collections: {collections}")
         
@@ -154,24 +154,103 @@ def get_default_collections() -> List[str]:
         logger.warning(f"[RAG FALLBACK] Could not get collections: {e}")
         return ["default_knowledge"]
 
+def smart_collection_matching(requested_collections: List[str]) -> List[str]:
+    """
+    Smart collection name matching to handle agent inference errors
+    
+    This fixes cases where agents guess collection names like 'partnerships' 
+    when the actual collection is 'partnership'.
+    """
+    if not requested_collections:
+        return get_default_collections()
+    
+    try:
+        from app.core.collection_registry_cache import get_all_collections
+        all_collections_data = get_all_collections()
+        if not all_collections_data:
+            return get_default_collections()
+        
+        available_collections = [c.get('collection_name') for c in all_collections_data if c.get('collection_name')]
+        matched_collections = []
+        
+        for requested in requested_collections:
+            if not requested:
+                continue
+                
+            # Exact match first
+            if requested in available_collections:
+                matched_collections.append(requested)
+                continue
+            
+            # Fuzzy matching for common variations
+            requested_lower = requested.lower().strip()
+            best_match = None
+            
+            for available in available_collections:
+                available_lower = available.lower().strip()
+                
+                # Handle plural/singular variations
+                if (requested_lower == available_lower + 's' or  # partnerships -> partnership
+                    requested_lower + 's' == available_lower or   # partnership -> partnerships
+                    requested_lower == available_lower):           # exact case-insensitive
+                    best_match = available
+                    break
+                
+                # Handle partial matches (be careful not to be too broad)
+                if (len(requested_lower) > 4 and len(available_lower) > 4 and
+                    (requested_lower in available_lower or available_lower in requested_lower)):
+                    if not best_match or len(available) < len(best_match):  # prefer shorter match
+                        best_match = available
+            
+            if best_match:
+                matched_collections.append(best_match)
+                logger.info(f"[RAG FALLBACK] Smart matched '{requested}' -> '{best_match}'")
+            else:
+                logger.warning(f"[RAG FALLBACK] No match found for collection '{requested}'")
+        
+        # If we found matches, use them. Otherwise fall back to searching all collections
+        if matched_collections:
+            return matched_collections
+        else:
+            logger.info(f"[RAG FALLBACK] No collections matched, falling back to default search")
+            return get_default_collections()
+            
+    except Exception as e:
+        logger.warning(f"[RAG FALLBACK] Smart matching failed: {e}")
+        return requested_collections  # Return original if matching fails
+
 def get_simple_embedder(embedding_settings: Dict[str, Any]):
     """Get a simple embedder instance"""
     try:
-        model_name = embedding_settings.get('model_name', 'all-MiniLM-L6-v2')
+        # Get the actual embedding model from settings
+        embedding_model = embedding_settings.get('embedding_model', 'all-MiniLM-L6-v2')
+        embedding_endpoint = embedding_settings.get('embedding_endpoint', '')
         
-        # Try sentence transformers first (most common)
+        logger.info(f"[RAG FALLBACK] Using embedding model: {embedding_model}, endpoint: {embedding_endpoint}")
+        
+        # If we have a remote endpoint, use HTTP embedder
+        if embedding_endpoint and embedding_endpoint.startswith('http'):
+            # Replace Docker hostname with localhost for local access
+            if 'qwen-embedder:8050' in embedding_endpoint:
+                embedding_endpoint = embedding_endpoint.replace('qwen-embedder:8050', 'localhost:8050')
+            return HTTPEmbedder(embedding_endpoint)
+        
+        # Try sentence transformers with the configured model
         try:
             from sentence_transformers import SentenceTransformer
+            # Handle model name (strip quotes if present)
+            model_name = embedding_model.strip('"').strip("'")
             return SentenceTransformer(model_name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[RAG FALLBACK] SentenceTransformer failed: {e}")
         
         # Try HuggingFace embeddings
         try:
             from langchain_community.embeddings import HuggingFaceEmbeddings
+            model_name = embedding_model.strip('"').strip("'")
             return HuggingFaceEmbeddings(model_name=model_name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[RAG FALLBACK] HuggingFaceEmbeddings failed: {e}")
         
         # Fallback to a basic implementation
         logger.warning("[RAG FALLBACK] Using mock embedder - no proper embedding available")
@@ -218,36 +297,56 @@ def search_milvus_collection(
     try:
         from pymilvus import Collection, connections
         
-        # Connect to Milvus
-        milvus_config = vector_settings.get('milvus', {})
-        host = milvus_config.get('host', 'localhost')
-        port = milvus_config.get('port', 19530)
+        # Get Milvus config from the correct location
+        milvus_config = {}
+        if 'databases' in vector_settings:
+            for db in vector_settings['databases']:
+                if db.get('id') == 'milvus' and db.get('enabled'):
+                    milvus_config = db.get('config', {})
+                    break
         
-        connections.connect(host=host, port=port)
+        # Extract connection parameters
+        uri = milvus_config.get('MILVUS_URI') or milvus_config.get('uri')
+        token = milvus_config.get('MILVUS_TOKEN') or milvus_config.get('token')
+        
+        if not uri:
+            logger.warning("[RAG FALLBACK] No Milvus URI found in configuration")
+            raise Exception("No Milvus URI configured")
+        
+        # Connect to Milvus with proper authentication
+        if token:
+            connections.connect(uri=uri, token=token)
+        else:
+            connections.connect(uri=uri)
         
         # Get collection
         collection = Collection(collection_name)
         collection.load()
         
-        # Search
+        # Search with correct field name
         search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
         results = collection.search(
             data=[query_embedding],
-            anns_field="embedding",
+            anns_field="vector",  # Use correct field name
             param=search_params,
             limit=max_docs,
-            output_fields=["title", "content", "metadata"]
+            output_fields=["content", "source"]  # Use available fields
         )
         
         # Format results
         documents = []
         for hits in results:
             for hit in hits:
+                entity = hit.entity
+                # Access entity fields correctly
                 documents.append({
-                    'title': hit.get('title', 'Unknown'),
-                    'content': hit.get('content', ''),
-                    'score': float(hit.score),
-                    'metadata': hit.get('metadata', {})
+                    'title': entity.get('source') or 'Unknown',  # Use source as title
+                    'content': entity.get('content') or '',
+                    'score': float(hit.distance),  # Use distance for score
+                    'metadata': {
+                        'source': entity.get('source') or '',
+                        'collection': collection_name
+                    }
                 })
         
         return documents
@@ -324,3 +423,34 @@ class MockEmbedder:
             embeddings.append(embedding[:384])
         
         return embeddings
+
+class HTTPEmbedder:
+    """HTTP-based embedder for remote embedding services"""
+    
+    def __init__(self, endpoint: str):
+        self.endpoint = endpoint
+        
+    def encode(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings via HTTP endpoint"""
+        try:
+            response = requests.post(
+                self.endpoint,
+                json={"texts": texts},
+                timeout=30,
+                headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            if 'embeddings' in result:
+                return result['embeddings']
+            elif 'data' in result:
+                return [item['embedding'] for item in result['data']]
+            else:
+                logger.error(f"[HTTPEmbedder] Unexpected response format: {result}")
+                return [[0.0] * 2560 for _ in texts]  # Return zero vectors as fallback
+                
+        except Exception as e:
+            logger.error(f"[HTTPEmbedder] Failed to get embeddings: {e}")
+            # Return zero vectors as fallback
+            return [[0.0] * 2560 for _ in texts]

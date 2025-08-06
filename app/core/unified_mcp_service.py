@@ -903,6 +903,26 @@ async def call_mcp_tool_unified(tool_info: Dict[str, Any], tool_name: str,
         server_id = tool_info.get("server_id")
         logger.debug(f"Tool {tool_name} - endpoint: {endpoint}, server_id: {server_id}")
         
+        # CRITICAL FIX: Direct routing bypass for google_search to avoid subprocess issues
+        if tool_name == "google_search":
+            logger.info(f"[BYPASS] Routing google_search directly to avoid subprocess issues")
+            service = UnifiedMCPService()
+            result = await service._direct_google_search(parameters)
+            logger.info(f"[BYPASS] Direct google_search completed successfully")
+            return result
+        
+        # CRITICAL FIX: Direct routing bypass for get_datetime to avoid MCP server issues
+        if tool_name == "get_datetime":
+            logger.info(f"[BYPASS] Routing get_datetime directly to fallback to avoid server issues")
+            try:
+                from .datetime_fallback import get_current_datetime
+                fallback_result = get_current_datetime()
+                logger.info(f"[BYPASS] get_datetime fallback successful")
+                return {"content": [{"type": "text", "text": str(fallback_result)}]}
+            except Exception as fallback_error:
+                logger.error(f"[BYPASS] get_datetime fallback failed: {fallback_error}")
+                return {"error": f"Datetime fallback failed: {str(fallback_error)}"}
+        
         # Determine service type based on tool name or server info
         service_name = "general"  # Default for non-OAuth tools
         if any(gmail_term in tool_name.lower() for gmail_term in ["gmail", "email", "mail"]):

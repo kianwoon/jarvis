@@ -1,0 +1,35 @@
+{
+  "success": true,
+  "result": {
+    "success": true,
+    "documents_found": 5,
+    "total_documents_found": 10,
+    "documents_returned": 5,
+    "collections_searched": [
+      "partnership",
+      "training_materials",
+      "audit_reports"
+    ],
+    "execution_time_ms": 9046,
+    "documents": [
+      {
+        "title": "bys & alibaba partnership.pdf",
+        "score": 0.749,
+        "metadata": {
+          "source": "bys & alibaba partnership.pdf",
+          "collection": "partnership"
+        },
+        "content": "Beyondsoft's Deep Partnership with Alibaba and ANT Group..."
+      }
+    ],
+    "summary": "Found 5 relevant documents",
+    "search_metadata": {
+      "fallback": true,
+      "search_strategy": "simple_vector_search"
+    }
+  },
+  "tool": "rag_knowledge_search",
+  "parameters": {
+    "query": "beyondsoft alibaba partnership"
+  }
+}

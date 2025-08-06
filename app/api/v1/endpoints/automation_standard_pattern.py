@@ -13,6 +13,7 @@ from datetime import datetime
 
 from app.core.langfuse_integration import get_tracer
 from app.automation.core.agent_workflow_executor_standard_pattern import AgentWorkflowExecutor
+from app.automation.integrations.postgres_bridge import postgres_bridge
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -99,6 +100,7 @@ async def execute_automation_workflow(request: AutomationRequest):
             chunk_count = 0
             collected_output = ""
             final_answer = ""
+            workflow_result_data = None
             
             # Initialize workflow executor
             executor = AgentWorkflowExecutor()
@@ -120,15 +122,49 @@ async def execute_automation_workflow(request: AutomationRequest):
                 # Stream events in real-time (like standard chat)
                 yield json.dumps(event) + "\\n"
                 
-                # Collect final answer for trace completion
+                # Collect final answer and result data for trace completion and database storage
                 if event_type == "workflow_result":
                     final_answer = event.get("response", "")
+                    workflow_result_data = event  # Store complete result data
                     collected_output += json.dumps(event)
                 elif event_type == "workflow_complete":
                     if not final_answer:
                         final_answer = "Automation workflow completed"
             
             print(f"[DEBUG] API endpoint - Processed {chunk_count} events")
+            
+            # Save workflow result to database
+            if workflow_result_data:
+                try:
+                    # Prepare output data for database storage
+                    output_data = {
+                        "final_response": workflow_result_data.get("response", ""),
+                        "agent_outputs": workflow_result_data.get("agent_outputs", {}),
+                        "output_config": workflow_result_data.get("output_config"),
+                        "execution_timestamp": datetime.now(datetime.UTC).isoformat(),
+                        "workflow_id": workflow_result_data.get("workflow_id"),
+                        "execution_id": workflow_result_data.get("execution_id")
+                    }
+                    
+                    # Update execution record with output data
+                    update_success = postgres_bridge.update_execution(execution_id, {
+                        "output_data": output_data,
+                        "status": "completed"
+                    })
+                    
+                    if update_success:
+                        logger.info(f"[DATABASE] Successfully saved workflow result for execution {execution_id}")
+                        print(f"[DEBUG] Database update successful - output_data saved with response length: {len(final_answer)}")
+                    else:
+                        logger.error(f"[DATABASE] Failed to save workflow result for execution {execution_id}")
+                        print(f"[DEBUG] Database update failed for execution {execution_id}")
+                        
+                except Exception as db_error:
+                    logger.error(f"[DATABASE] Error saving workflow result: {db_error}")
+                    print(f"[DEBUG] Database save error: {db_error}")
+            else:
+                logger.warning(f"[DATABASE] No workflow result data to save for execution {execution_id}")
+                print(f"[DEBUG] No workflow_result_data captured for execution {execution_id}")
             
             # EXACT SAME TRACE COMPLETION AS STANDARD CHAT MODE
             if tracer.is_enabled():

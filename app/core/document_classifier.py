@@ -75,6 +75,13 @@ class DocumentClassifier:
                 re.compile(r"\b(?:party|parties|signatory|witness|executed|enforceable)\b", re.I),
                 re.compile(r"\b(?:warranty|indemnity|confidential|proprietary|disclaimer)\b", re.I),
             ],
+            "partnership": [
+                re.compile(r"\b(?:partnership|partner|strategic.?partner|business.?partner|alliance)\b", re.I),
+                re.compile(r"\b(?:collaboration|joint.?venture|cooperative|co.?development|co.?innovation)\b", re.I),
+                re.compile(r"\b(?:beyondsoft|alibaba|tencent|baidu|huawei|strategic.?alliance)\b", re.I),
+                re.compile(r"\b(?:partnership.?agreement|memorandum.?of.?understanding|mou|joint.?agreement)\b", re.I),
+                re.compile(r"\b(?:co.?creation|shared.?development|mutual.?cooperation|strategic.?cooperation)\b", re.I),
+            ],
         }
         return patterns
     
@@ -108,6 +115,8 @@ class DocumentClassifier:
                 scores["audit_reports"] = max(scores.get("audit_reports", 0), 0.8)
             elif any(term in doc_type + filename for term in ["training", "onboarding", "certification"]):
                 scores["training_materials"] = max(scores.get("training_materials", 0), 0.8)
+            elif any(term in doc_type + filename for term in ["partnership", "alliance", "collaboration", "joint", "strategic"]):
+                scores["partnership"] = max(scores.get("partnership", 0), 0.8)
             # Original metadata checks
             elif "technical" in doc_type or "api" in doc_type:
                 scores["technical_docs"] = max(scores.get("technical_docs", 0), 0.8)
@@ -266,6 +275,29 @@ Example: technical_docs|0.85
             if audience_match:
                 metadata["target_audience"] = audience_match.group(1).strip()
                 
+        elif collection_type == "partnership":
+            # Extract partner companies
+            partner_companies = re.findall(r"\b(?:beyondsoft|alibaba|tencent|baidu|huawei|microsoft|google|amazon|oracle)\b", content, re.I)
+            if partner_companies:
+                metadata["partner_companies"] = list(set(company.lower() for company in partner_companies[:5]))
+            
+            # Extract partnership type
+            partnership_types = ["strategic", "technology", "marketing", "distribution", "joint venture", "collaboration"]
+            for ptype in partnership_types:
+                if re.search(rf"\b{ptype}\s+(?:partnership|alliance|cooperation)\b", content, re.I):
+                    metadata["partnership_type"] = ptype
+                    break
+            
+            # Extract partnership objectives
+            objectives_match = re.search(r"(?:objective|goal|purpose)[:\s]+([^\n\.]+)", content, re.I)
+            if objectives_match:
+                metadata["objectives"] = objectives_match.group(1).strip()
+                
+            # Extract partnership duration
+            duration_match = re.search(r"(?:duration|term|period)[:\s]+(\d+\s+(?:year|month|day)s?)", content, re.I)
+            if duration_match:
+                metadata["duration"] = duration_match.group(1).strip()
+                
         # Original metadata extraction
         elif collection_type == "technical_docs":
             # Extract programming languages
@@ -326,14 +358,27 @@ Example: technical_docs|0.85
         """Get the best available collection for a document type"""
         collections = get_all_collections()
         
-        # First, try to find exact match
+        # First, try to find exact match by collection_type
         for col in collections:
             if col["collection_type"] == collection_type:
                 return col["collection_name"]
         
-        # If no specific collection exists, use general or create recommendation
+        # Special handling for partnership - look for partnership collection name
+        if collection_type == "partnership":
+            for col in collections:
+                if col["collection_name"] == "partnership":
+                    return col["collection_name"]
+        
+        # If no specific collection exists, use general collections with smart selection
         general_collections = [c for c in collections if c["collection_type"] == "general"]
         if general_collections:
+            # For partnership classification, prefer partnership collection if it exists
+            if collection_type == "partnership":
+                partnership_collections = [c for c in general_collections if "partnership" in c["collection_name"].lower() or "partnership" in c["description"].lower()]
+                if partnership_collections:
+                    return partnership_collections[0]["collection_name"]
+            
+            # Default to first general collection (likely default_knowledge)
             return general_collections[0]["collection_name"]
         
         # No suitable collection found

@@ -3624,11 +3624,14 @@ Please process this request independently and provide your analysis."""
     
     def _build_system_prompt(self, agent_node: Dict[str, Any]) -> str:
         """
-        Build system prompt with proper priority:
+        Build system prompt with dynamic tool information:
         1. Combine workflow custom_prompt + query 
         2. Fallback to agent database system_prompt
-        3. Final fallback to default prompt
+        3. Generate dynamic tools section based on workflow tools
+        4. Final fallback to default prompt
         """
+        from app.automation.core.workflow_prompt_generator import generate_workflow_agent_prompt
+        
         # Build combined workflow prompt from custom_prompt + query
         workflow_prompt_parts = []
         if agent_node.get("custom_prompt"):
@@ -3638,12 +3641,30 @@ Please process this request independently and provide your analysis."""
         
         combined_workflow_prompt = "\n\n".join(workflow_prompt_parts) if workflow_prompt_parts else ""
         
-        # Apply priority chain: workflow prompt -> agent database -> default
-        return (
+        # Get base system prompt with priority chain: workflow prompt -> agent database -> default
+        base_prompt = (
             combined_workflow_prompt or 
             agent_node.get("agent_config", {}).get("system_prompt") or 
             "You are a helpful assistant."
         )
+        
+        # Get workflow tools and agent info
+        workflow_tools = agent_node.get("tools", [])
+        agent_name = agent_node.get("agent_name", "Unknown Agent")
+        agent_role = agent_node.get("agent_config", {}).get("role", "")
+        
+        # Generate dynamic prompt with correct tool information
+        dynamic_prompt = generate_workflow_agent_prompt(
+            agent_name=agent_name,
+            workflow_tools=workflow_tools,
+            base_system_prompt=base_prompt,
+            role=agent_role,
+            custom_prompt=""  # Already included in base_prompt
+        )
+        
+        logger.info(f"[WORKFLOW PROMPT] Generated dynamic prompt for {agent_name} with tools: {workflow_tools}")
+        
+        return dynamic_prompt
     
     def _process_router_node(
         self,

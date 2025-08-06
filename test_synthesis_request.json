@@ -1,0 +1,70 @@
+{
+  "question": "Tell me about the strategic partnership between Beyondsoft and Alibaba",
+  "thinking": false,
+  "query_type": "SYNTHESIS",
+  "conversation_id": "test_conv_123",
+  "collections": [],
+  "collection_strategy": "auto",
+  "hybrid_context": {
+    "pre_formatted_context": "Based on the retrieved documents, here is comprehensive information about the strategic partnership between Beyondsoft and Alibaba:\n\nBeyondsoft has maintained a strategic partnership with the Alibaba Group for over 16 years, representing one of the longest-standing collaborations in the Chinese technology ecosystem. This partnership spans multiple business units within Alibaba, including ANT Group, Alibaba Cloud, and the Taobao/Tmall platforms.\n\n**Partnership Scale and Scope:**\n- **Total Workforce**: Over 9,000 professionals across all Alibaba business units\n- **ANT Group**: 2,800+ specialized team members\n- **Alibaba Cloud**: 1,800+ cloud infrastructure specialists\n- **Taobao/Tmall**: 4,600+ e-commerce platform developers and support staff\n\nThe partnership has evolved from traditional outsourcing to strategic co-development, with Beyondsoft playing crucial roles in:\n- Digital transformation initiatives\n- Cloud infrastructure development\n- E-commerce platform enhancement\n- Financial technology innovations\n- AI and machine learning implementations\n\n**Key Collaboration Areas:**\n1. **Smart Industries Development**: Joint development of AI-driven solutions for manufacturing, retail, and logistics\n2. **Cloud Native Technologies**: Co-creation of enterprise cloud solutions and microservices architectures\n3. **Financial Services Innovation**: Development of next-generation fintech solutions through ANT Group collaboration\n4. **Platform Ecosystem Expansion**: Enhancement of Taobao and Tmall marketplace capabilities\n\nThis long-term strategic alliance has positioned both companies as leaders in the digital transformation space, leveraging combined expertise to deliver cutting-edge solutions across multiple industries.",
+    "sources": [
+      {
+        "content": "Beyondsoft has been a key strategic partner of Alibaba for over 16 years, providing comprehensive technology services across multiple business units including ANT Group, Alibaba Cloud, and Taobao/Tmall platforms.",
+        "file": "beyondsoft_alibaba_partnership.pdf",
+        "page": 1,
+        "score": 0.801,
+        "collection": "partnership"
+      },
+      {
+        "content": "The partnership encompasses over 9,000 professionals: 2,800+ in ANT Group, 1,800+ in Alibaba Cloud, and 4,600+ in Taobao/Tmall, representing one of the largest strategic technology collaborations in the industry.",
+        "file": "beyondsoft_staff_distribution.pdf", 
+        "page": 2,
+        "score": 0.789,
+        "collection": "partnership"
+      },
+      {
+        "content": "Joint initiatives focus on smart industries development, cloud-native technologies, financial services innovation, and platform ecosystem expansion, driving digital transformation across multiple sectors.",
+        "file": "strategic_collaboration_areas.pdf",
+        "page": 1,
+        "score": 0.734,
+        "collection": "partnership"
+      },
+      {
+        "content": "The collaboration has evolved from traditional outsourcing to strategic co-development, with Beyondsoft contributing to AI-driven solutions, microservices architectures, and next-generation fintech capabilities.",
+        "file": "partnership_evolution.pdf",
+        "page": 3,
+        "score": 0.712,
+        "collection": "partnership"
+      },
+      {
+        "content": "Case studies demonstrate successful implementation of smart manufacturing solutions, cloud infrastructure optimization, and e-commerce platform enhancements that have benefited millions of users globally.",
+        "file": "success_case_studies.pdf",
+        "page": 1,
+        "score": 0.698,
+        "collection": "partnership"
+      },
+      {
+        "content": "The partnership leverages combined R&D capabilities, with joint innovation centers and shared technology roadmaps that align with both companies' long-term strategic objectives.",
+        "file": "joint_innovation_strategy.pdf",
+        "page": 2,
+        "score": 0.685,
+        "collection": "partnership"
+      },
+      {
+        "content": "Key performance metrics show sustained growth in collaboration scope, with year-over-year expansion in team size, project complexity, and technological innovation depth.",
+        "file": "partnership_metrics.pdf",
+        "page": 4,
+        "score": 0.672,
+        "collection": "partnership"
+      },
+      {
+        "content": "Future roadmap includes expansion into emerging technologies such as quantum computing research, advanced AI applications, and sustainable technology development initiatives.",
+        "file": "future_collaboration_roadmap.pdf",
+        "page": 1,
+        "score": 0.667,
+        "collection": "partnership"
+      }
+    ]
+  },
+  "stream": true
+}

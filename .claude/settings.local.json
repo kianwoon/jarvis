@@ -104,7 +104,22 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -f /tmp/restore_two_step_prompts.sql)",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''extraction'') FROM settings WHERE category = ''knowledge_graph'';\")",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -f /tmp/complete_kg_restore.sql)",
-      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''extraction'') FROM settings WHERE category = ''knowledge_graph'';\")"
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''extraction'') FROM settings WHERE category = ''knowledge_graph'';\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -f /Users/kianwoonwong/Downloads/jarvis/fix_system_prompt.sql)",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -f /Users/kianwoonwong/Downloads/jarvis/restore_clean_system_prompt.sql)",
+      "Bash(pkill:*)",
+      "Bash(pip install:*)",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"\\dt\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT * FROM collection_registry ORDER BY created_at DESC LIMIT 10;\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT * FROM collection_statistics ORDER BY last_updated DESC LIMIT 10;\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, jsonb_pretty(settings) FROM settings WHERE category LIKE ''%embed%'';\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, settings->''embedding'' as embedding_settings FROM settings WHERE settings->''embedding'' IS NOT NULL;\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT COUNT(*) as document_count FROM knowledge_graph_documents;\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, settings->embedding as embedding_settings FROM settings WHERE settings->embedding IS NOT NULL;\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, jsonb_pretty(settings) FROM settings WHERE category LIKE ''%embed%'';\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"\\d automation_workflows\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT collection_name, collection_type, description FROM collection_registry ORDER BY collection_type, collection_name;\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, settings FROM settings WHERE category = ''storage'';\" -t)"
     ],
     "deny": []
   },

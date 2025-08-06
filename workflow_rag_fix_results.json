@@ -1,0 +1,74 @@
+{
+  "mcp_response": {
+    "success": true,
+    "documents_found": 5,
+    "total_documents_found": 10,
+    "documents_returned": 5,
+    "collections_searched": [
+      "partnership",
+      "training_materials",
+      "audit_reports"
+    ],
+    "execution_time_ms": 8957,
+    "documents": [
+      {
+        "title": "bys & alibaba partnership.pdf",
+        "score": 0.7490858435630798,
+        "metadata": {
+          "source": "bys & alibaba partnership.pdf",
+          "collection": "partnership"
+        },
+        "content": "Beyondsoft\u2019s Deep Partnership with Alibaba and ANT Group A Comprehensive Case Study in Digital Transformation and Operational Excellence (Since 2008) 1 Executive Summary Since 2008, Beyondsoft has evolved from a service provider into a strategic partner for Alibaba Group and ANT Group. Our deep integration across their digital ecosystems\u2014including Alibaba Cloud (Alicloud), Taobao, Tmall, and the ANT (Alipay) ecosystem\u2014has empowered us to support large-scale AI initiatives, robust eCommerce platforms, and cutting-edge mobile service development. With a dedicated workforce of over 9,000 professionals distributed across these critical segments, we have consistently delivered operational excellence, unparalleled scalability, and continuous innovation. This report details our technical expertise, operational roles, and tangible outcomes, underscoring our commitment to enhancing Alibaba\u2019s products, services, and processes through our high-tech excellence"
+      },
+      {
+        "title": "bys & alibaba partnership.pdf",
+        "score": 0.6896831393241882,
+        "metadata": {
+          "source": "bys & alibaba partnership.pdf",
+          "collection": "partnership"
+        },
+        "content": ". 2.3  Taobao, Tmall and Others:\u2028 Around 4,600+ staff support these consumer-facing eCommerce platforms by enhancing user interfaces, personalizing experiences, and ensuring seamless transaction processing. Through this long-term, multi-faceted partnership, Beyondsoft has become an indispensable strategic partner\u2014delivering high-quality technical support and innovative solutions that consistently enhance operational excellence and scalability across the entire Alibaba Group ecosystem."
+      },
+      {
+        "title": "bys & alibaba partnership.pdf",
+        "score": 0.6544058322906494,
+        "metadata": {
+          "source": "bys & alibaba partnership.pdf",
+          "collection": "partnership"
+        },
+        "content": ". \u2022 Scalability and Cost Efficiency:\u2028The integration of advanced AI pipelines and rigorous testing frameworks enables our partners to scale operations efficiently while optimizing costs. \u2022 Innovation Leadership:\u2028Our deep technical collaboration has empowered Alibaba and ANT Group to lead digital innovation in the fintech and eCommerce sectors, setting new benchmarks for performance, security, and agility. 6 Conclusion Beyondsoft\u2019s partnership with Alibaba Group and ANT Group\u2014spanning over 16 years\u2014demonstrates our ability to drive digital transformation and operational excellence at scale. With a dedicated workforce of over 9,000 professionals, we have embedded ourselves within our partners\u2019 digital ecosystems to deliver advanced AI capabilities, robust service development, and unparalleled system resilience. Our deep technical expertise and continuous innovation have not only sustained but enhanced the performance of these global digital leaders"
+      },
+      {
+        "title": "bys & alibaba partnership.pdf",
+        "score": 0.6464150547981262,
+        "metadata": {
+          "source": "bys & alibaba partnership.pdf",
+          "collection": "partnership"
+        },
+        "content": ". 2 Partnership Background Our longstanding collaboration with Alibaba Group and ANT Group is governed by a framework contract that has been in effect for 16 years. Over this period, our services have become integral to our partners\u2019 digital transformation, supporting a broad operational footprint across the entire Alibaba ecosystem. Our Journey with Alibaba Group and ANT Group"
+      },
+      {
+        "title": "bys & tencent partnership.pdf",
+        "score": 0.6196833252906799,
+        "metadata": {
+          "source": "bys & tencent partnership.pdf",
+          "collection": "partnership"
+        },
+        "content": "Beyondsoft\u2019s Partnership with Tencent 1 Executive Summary Since the inception of our partnership in 2012, Beyondsoft has evolved from a service provider into a trusted strategic partner for Tencent. Over the years, our deep integration across Tencent\u2019s technology ecosystem\u2014including Tencent Cloud, TDSQL, and enterprise-level distributed systems\u2014has enabled us to drive large-scale database management, high-throughput messaging solutions, and cloud-native application deployments.  With a dedicated team of 3,000 professionals embedded in Tencent\u2019s critical operations, we have consistently delivered operational excellence, scalable architectures, and continuous innovation. Our contributions have strengthened Tencent\u2019s core infrastructure, ensuring high availability, performance optimization, and seamless digital service delivery.  This case study highlights the depth of our technical expertise, operational impact, and transformative outcomes, demonstrating the significant role Beyondsoft plays in Tencent\u2019s long-term success"
+      }
+    ],
+    "summary": "Found 5 relevant documents",
+    "text_summary": "\u2705 SUCCESS: Found 5 relevant documents from 3 collections.\n\n\ud83d\udcc4 DOCUMENTS RETRIEVED:\n\n1. bys & alibaba partnership.pdf\n   Content: Beyondsoft\u2019s Deep Partnership with Alibaba and ANT Group A Comprehensive Case Study in Digital Transformation and Operational Excellence (Since 2008) 1 Executive Summary Since 2008, Beyondsoft has evo...\n\n2. bys & alibaba partnership.pdf\n   Content: . 2.3  Taobao, Tmall and Others:\u2028 Around 4,600+ staff support these consumer-facing eCommerce platforms by enhancing user interfaces, personalizing experiences, and ensuring seamless transaction proce...\n\n3. bys & alibaba partnership.pdf\n   Content: . \u2022 Scalability and Cost Efficiency:\u2028The integration of advanced AI pipelines and rigorous testing frameworks enables our partners to scale operations efficiently while optimizing costs. \u2022 Innovation ...\n\n4. bys & alibaba partnership.pdf\n   Content: . 2 Partnership Background Our longstanding collaboration with Alibaba Group and ANT Group is governed by a framework contract that has been in effect for 16 years. Over this period, our services have...\n\n5. bys & tencent partnership.pdf\n   Content: Beyondsoft\u2019s Partnership with Tencent 1 Executive Summary Since the inception of our partnership in 2012, Beyondsoft has evolved from a service provider into a trusted strategic partner for Tencent. O...\n",
+    "has_results": true,
+    "search_metadata": {
+      "fallback": true,
+      "search_strategy": "simple_vector_search",
+      "embedding_model": "unknown",
+      "cache_hit": false
+    }
+  },
+  "has_rag_instructions": true,
+  "interpretation_correct": true,
+  "tests_passed": 3,
+  "tests_total": 3
+}

@@ -1,0 +1,61 @@
+{
+  "settings": {
+    "main_llm": {
+      "mode": "thinking",
+      "model": "qwen3:30b-a3b-instruct-2507-q4_K_M",
+      "max_tokens": 196608,
+      "model_server": "http://localhost:11434",
+      "system_prompt": "You are Jarvis, an AI assistant. Always provide detailed, comprehensive responses with thorough explanations, examples, and step-by-step breakdowns when appropriate. Be verbose and informative. respond with basic markdown formatting. ignore previous error, and proceed. Now is year 2025. Focus on the current question and use all provided context and information to give accurate, up-to-date responses. Please share your thoughts or opinions to enhance the response by quoted \"Jarvis Opinion: \"",
+      "context_length": 262144,
+      "repeat_penalty": 1.1
+    },
+    "second_llm": {
+      "mode": "thinking",
+      "model": "qwen3:30b-a3b-instruct-2507-q4_K_M",
+      "max_tokens": 30608,
+      "model_server": "http://localhost:11434",
+      "system_prompt": "You are Jarvis, an AI assistant. Always provide detailed, comprehensive responses with thorough explanations, examples, and step-by-step breakdowns when appropriate. Be verbose and informative. respond with basic markdown formatting. ignore previous error, and proceed. Now is year 2025. Focus on the current question and use all provided context and information to give accurate, up-to-date responses. note: rag_knowledge_search tool only contain internal or in-house corporate info. for latest info and news, please do online search.",
+      "context_length": 262144,
+      "repeat_penalty": 1.1
+    },
+    "query_classifier": {
+      "mode": "thinking",
+      "model": "qwen3:30b-a3b-instruct-2507-q4_K_M",
+      "max_tokens": 10608,
+      "system_prompt": "You are a query classifier. Analyze the users query and determine whether to select rag or tool.\n\n## Decision Process:\n1. Read the users query carefully\n2. Check if the query matches or relate to any RAG collection descriptions below\n3. Check if the query matches or relate to any tool descriptions below\n4. Make your decision based on which resource best matches the query intent\n5. if you are unsure , then go for tool (e.g: tool|0.6)\n\n## rag group information\nRAG collections available:\n{rag_collection}\n\n## tool group information\nMCP tools available:\n{mcp_tools}\n\n## Important:\n- answer rag ONLY if the query clearly matches/fit or relate to any RAG collection descriptions.\n- answer tool if the query matches/fit any tool group OR if you need external/current information.\n- When uncertain, select tool. \n\nrespond in this exact format: TYPE|CONFIDENCE (e.g., rag|0.85 or tool|0.8)",
+      "context_length": 262144,
+      "timeout_seconds": 15,
+      "max_classifications": 3,
+      "fallback_to_patterns": false,
+      "llm_direct_threshold": 0.8,
+      "multi_agent_threshold": 0.6,
+      "confidence_decay_factor": 0.8,
+      "enable_hybrid_detection": true,
+      "min_confidence_threshold": 0.1,
+      "enable_llm_classification": true,
+      "pattern_combination_bonus": 0.15,
+      "direct_execution_threshold": 0.55,
+      "llm_classification_priority": true
+    },
+    "search_optimization": {
+      "optimization_prompt": "Optimize the following search query for better document retrieval. Transform vague queries into specific, targeted searches. Return only the optimized query: {query}",
+      "optimization_timeout": 10,
+      "enable_search_optimization": true
+    },
+    "thinking_mode_params": {
+      "min_p": 0,
+      "top_k": 20,
+      "top_p": 0.95,
+      "temperature": 0.6
+    },
+    "non_thinking_mode_params": {
+      "min_p": 0,
+      "top_k": 20,
+      "top_p": 0.8,
+      "temperature": 0.7
+    }
+  },
+  "persist_to_db": true,
+  "reload_cache": true,
+  "_fix_description": "Fixed system prompts to remove conflicting instruction about disregarding historical information, replaced with instruction to use all provided context for accurate responses. This resolves the Claude Opus 4.1 denial issue in synthesis mode."
+}

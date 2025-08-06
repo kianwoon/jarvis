@@ -159,25 +159,62 @@ class OllamaLLM(BaseLLM):
         print(f"[DEBUG] Ollama chat payload - model: {self.model_name}, num_predict: {self.config.max_tokens}, num_ctx: {context_length}")
         print(f"[DEBUG] Ollama URL: {self.base_url}/api/chat")
         
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
-                async for line in response.aiter_lines():
-                    if not line.strip():
-                        continue
-                    try:
-                        data_json = json.loads(line)
-                        message = data_json.get("message", {})
-                        if message and "content" in message:
-                            yield LLMResponse(
-                                text=message["content"],
-                                metadata={
-                                    "model": self.model_name,
-                                    "streaming": True,
-                                    "role": message.get("role", "assistant")
-                                }
-                            )
-                    except Exception:
-                        continue
+        print(f"[DEBUG] Attempting connection to {self.base_url}/api/chat")
+        print(f"[DEBUG] Payload: {json.dumps(payload, indent=2)[:500]}...")
+        
+        try:
+            async with httpx.AsyncClient(timeout=600.0) as client:  # 10 minute timeout
+                print(f"[DEBUG] HTTP client created, making request...")
+                async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
+                    print(f"[DEBUG] HTTP response status: {response.status_code}")
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        print(f"[ERROR] Ollama API error {response.status_code}: {error_text.decode()}")
+                        raise Exception(f"Ollama API error {response.status_code}: {error_text.decode()}")
+                    
+                    token_count = 0
+                    print(f"[DEBUG] Starting to read streaming response...")
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            data_json = json.loads(line)
+                            message = data_json.get("message", {})
+                            if message and "content" in message:
+                                token_count += 1
+                                if token_count <= 5:  # Log first 5 tokens
+                                    print(f"[DEBUG] Token {token_count}: '{message['content']}'")
+                                elif token_count % 50 == 0:  # Log every 50th token
+                                    print(f"[DEBUG] Generated {token_count} tokens so far...")
+                                yield LLMResponse(
+                                    text=message["content"],
+                                    metadata={
+                                        "model": self.model_name,
+                                        "streaming": True,
+                                        "role": message.get("role", "assistant")
+                                    }
+                                )
+                            elif data_json.get("done", False):
+                                print(f"[DEBUG] Stream completed. Total tokens generated: {token_count}")
+                        except json.JSONDecodeError as e:
+                            print(f"[WARNING] JSON decode error on line: '{line}' - {e}")
+                            continue
+                        except Exception as e:
+                            print(f"[ERROR] Unexpected error processing stream line: {e}")
+                            print(f"[ERROR] Problematic line: '{line}'")
+                            continue
+                    
+                    if token_count == 0:
+                        print(f"[ERROR] No tokens generated! Check if model is loaded and responding.")
+        except httpx.ConnectError as e:
+            print(f"[ERROR] Connection failed to {self.base_url}: {e}")
+            raise Exception(f"Cannot connect to Ollama server at {self.base_url}. Is it running?")
+        except httpx.TimeoutException as e:
+            print(f"[ERROR] Request timed out: {e}")
+            raise Exception(f"Request to Ollama timed out. Model might be loading or overloaded.")
+        except Exception as e:
+            print(f"[ERROR] Unexpected error in chat_stream: {e}")
+            raise
 
 class JarvisLLM:
     def __init__(self, mode=None, max_tokens=None, base_url: str = "http://localhost:11434"):

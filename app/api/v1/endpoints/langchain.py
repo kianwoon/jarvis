@@ -68,6 +68,9 @@ async def rag_endpoint(request: RAGRequest):
     if not tracer._initialized:
         tracer.initialize()
     
+    # Initialize rag_span outside conditional to ensure it's always defined
+    rag_span = None
+    
     if tracer.is_enabled():
         trace = tracer.create_trace(
             name="rag-workflow",
@@ -84,7 +87,6 @@ async def rag_endpoint(request: RAGRequest):
         )
         
         # Create RAG execution span for proper hierarchy
-        rag_span = None
         if trace:
             rag_span = tracer.create_span(
                 trace,
@@ -204,10 +206,28 @@ async def rag_endpoint(request: RAGRequest):
             # Handle hybrid queries (TOOL_RAG, TOOL_LLM, RAG_LLM, TOOL_RAG_LLM)
             return handle_hybrid_query(request, routing)
         elif primary_type == QueryType.TOOL.value and confidence >= tool_threshold:
-            logger.info(f"[ROUTING DEBUG] Taking direct tool execution path")
-            # Direct tool execution for confident classifications
-            # Use the suggested tool from classification instead of planning
-            return handle_direct_tool_query(request, routing, trace=trace)
+            # CRITICAL FIX: Check if the "tool" is actually rag_knowledge_search
+            # If so, route to RAG synthesis instead of tool calling to prevent 
+            # showing <tool>rag_knowledge_search(...) instead of synthesized content
+            suggested_tools = routing.get('suggested_tools', [])
+            if not suggested_tools and 'routing' in routing:
+                suggested_tools = routing['routing'].get('suggested_tools', [])
+            
+            is_rag_query = any(
+                tool in ['rag_knowledge_search', 'knowledge_search', 'document_search'] 
+                for tool in suggested_tools
+            )
+            
+            if is_rag_query:
+                logger.info(f"[ROUTING DEBUG] RAG query detected in TOOL classification - routing to RAG synthesis instead")
+                # Route to RAG synthesis path instead of tool calling
+                # This prevents showing <tool>rag_knowledge_search(...) and ensures proper synthesis
+                # Fall through to RAG path below
+            else:
+                logger.info(f"[ROUTING DEBUG] Taking direct tool execution path")
+                # Direct tool execution for confident classifications
+                # Use the suggested tool from classification instead of planning
+                return handle_direct_tool_query(request, routing, trace=trace)
         elif primary_type == QueryType.LLM.value and confidence > llm_threshold:
             # Route to direct LLM only if high confidence
             return handle_direct_llm_query(request, routing)
@@ -260,9 +280,21 @@ async def rag_endpoint(request: RAGRequest):
                 print(f"[DEBUG] API endpoint - Forcing query_type='RAG' for hybrid RAG mode")
             elif routing:
                 enhanced_type = routing['primary_type']
+                
+                # CRITICAL FIX: Check if this was a TOOL query that we detected as RAG
+                # If so, override the mapping to ensure proper RAG synthesis
+                suggested_tools = routing.get('suggested_tools', [])
+                if not suggested_tools and 'routing' in routing:
+                    suggested_tools = routing['routing'].get('suggested_tools', [])
+                
+                is_rag_query = any(
+                    tool in ['rag_knowledge_search', 'knowledge_search', 'document_search'] 
+                    for tool in suggested_tools
+                )
+                
                 type_mapping = {
                     "rag": "RAG",
-                    "tool": "TOOLS", 
+                    "tool": "RAG" if is_rag_query else "TOOLS",  # Map tool->RAG for knowledge queries
                     "llm": "LLM",
                     "code": "LLM",
                     "multi_agent": "RAG",
