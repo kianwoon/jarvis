@@ -81,28 +81,44 @@ class MCPToolsBridge:
                     }
             
             # BYPASS: Direct fallback for rag_knowledge_search to avoid MCP routing issues in workflows
-            from app.langchain.service import is_rag_tool
-            if is_rag_tool(tool_name):
-                logger.info(f"[MCP BRIDGE] Using direct RAG search fallback for tool: {tool_name}")
+            # Use simple pattern matching to avoid circular imports from is_rag_tool
+            if tool_name and ('rag_knowledge_search' in tool_name.lower() or 'knowledge_search' in tool_name.lower()):
+                logger.info(f"[MCP BRIDGE] Using standalone RAG fallback for tool: {tool_name}")
                 try:
-                    from app.mcp_services.rag_mcp_service import execute_rag_search_sync
+                    from app.core.rag_fallback import simple_rag_search
                     
                     # Extract parameters with defaults
                     query = parameters.get('query', '')
                     collections = parameters.get('collections')
-                    max_documents = parameters.get('max_documents')
+                    max_documents = parameters.get('max_documents', 5)
                     include_content = parameters.get('include_content', True)
                     
                     logger.info(f"[MCP BRIDGE] RAG fallback - query: {query[:100]}...")
-                    fallback_result = execute_rag_search_sync(query, collections, max_documents, include_content)
+                    fallback_result = simple_rag_search(query, collections, max_documents, include_content)
                     logger.info(f"[MCP BRIDGE] RAG fallback successful")
                     
-                    return {
-                        "success": True,
-                        "result": fallback_result,
-                        "tool": tool_name,
-                        "parameters": parameters
-                    }
+                    # Format result for MCP tool response
+                    if fallback_result.get("success"):
+                        # Format as JSON-RPC response to match expected format
+                        jsonrpc_result = {
+                            "jsonrpc": "2.0",
+                            "result": fallback_result,
+                            "id": 1
+                        }
+                        return {
+                            "success": True,
+                            "result": jsonrpc_result,
+                            "tool": tool_name,
+                            "parameters": parameters
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "error": fallback_result.get("error", "RAG search failed"),
+                            "tool": tool_name,
+                            "parameters": parameters
+                        }
+                        
                 except Exception as fallback_error:
                     logger.error(f"[MCP BRIDGE] RAG fallback failed: {fallback_error}")
                     return {

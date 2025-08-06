@@ -17,7 +17,6 @@ from app.core.llm_settings_cache import get_llm_settings
 from app.core.rag_settings_cache import get_collection_selection_settings, get_document_retrieval_settings
 from app.core.collection_registry_cache import get_all_collections
 from app.core.redis_client import get_redis_client
-from app.langchain.service import handle_rag_query
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +149,8 @@ class RAGMCPService:
                 request.collections
             )
             
-            # Execute RAG search using existing infrastructure
+            # Execute RAG search using existing infrastructure (local import to avoid circular dependency)
+            from app.langchain.service import handle_rag_query
             context, sources = handle_rag_query(
                 question=request.query,
                 thinking=False,  # Agents don't need thinking mode
