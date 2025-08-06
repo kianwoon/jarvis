@@ -2380,29 +2380,73 @@ Please process this request independently and provide your analysis."""
             # Use the pre-created DynamicMultiAgentSystem instance
             dynamic_agent_system = self.dynamic_agent_system
             
-            # Get the full agent data from cache
-            agent_info = get_agent_by_name(agent_name)
-            
-            # TEMPORARY: Create a basic agent_info if not found in cache for testing
-            if not agent_info and agent_name == "Research Analyst":
-                logger.info(f"[AGENT WORKFLOW] Creating temporary agent_info for testing in _execute_single_agent")
-                agent_info = {
-                    "name": agent_name,
-                    "role": "Senior Research Analyst",
-                    "system_prompt": "You are a senior research analyst. Provide detailed, comprehensive analysis with specific metrics and data points.",
-                    "config": {"temperature": 0.7, "max_tokens": 2000},
-                    "tools": ["get_datetime"]
-                }
-            
-            if not agent_info:
-                raise ValueError(f"Agent '{agent_name}' not found in cache")
-            
-            # CRITICAL FIX: Override cached agent config with workflow-specific configuration
-            # Extract workflow config from multiple possible locations
+            # CRITICAL FIX: Extract workflow config from multiple possible locations FIRST
             workflow_node = agent.get("node", {})  # Main workflow node config
             agent_config_data = agent.get("agent_config", {})
             workflow_context = agent.get("context", {})
             available_tools = agent.get("tools", []) or workflow_node.get("tools", [])
+            
+            # Helper function to check if workflow has complete configuration
+            def _has_complete_workflow_config():
+                """Check if workflow has sufficient configuration to skip database loading"""
+                # Check for essential config: max_tokens, model, and either custom_prompt or query
+                has_max_tokens = bool(
+                    agent.get("max_tokens") or 
+                    workflow_node.get("max_tokens") or 
+                    workflow_context.get("max_tokens") or 
+                    agent_config_data.get("max_tokens")
+                )
+                
+                has_model = bool(
+                    agent.get("model") or 
+                    workflow_node.get("model") or
+                    workflow_context.get("model") or 
+                    agent_config_data.get("model")
+                )
+                
+                has_prompt_config = bool(
+                    agent.get("custom_prompt") or 
+                    agent.get("query") or
+                    agent_config_data.get("system_prompt")
+                )
+                
+                return has_max_tokens and has_model and has_prompt_config
+            
+            # Use workflow config directly if complete, otherwise load from database
+            if _has_complete_workflow_config():
+                logger.info(f"[AGENT WORKFLOW] Using complete workflow configuration for agent {agent_name}, skipping database")
+                
+                # Build agent_info from workflow configuration only
+                agent_info = {
+                    "name": agent_name,
+                    "role": agent_config_data.get("role", f"Agent {agent_name}"),
+                    "system_prompt": "You are a helpful assistant.",  # Will be overridden below
+                    "config": {},
+                    "tools": available_tools or []
+                }
+                
+            else:
+                logger.info(f"[AGENT WORKFLOW] Workflow configuration incomplete, loading agent {agent_name} from database")
+                
+                # Get the full agent data from cache
+                agent_info = get_agent_by_name(agent_name)
+                
+                # TEMPORARY: Create a basic agent_info if not found in cache for testing
+                if not agent_info and agent_name == "Research Analyst":
+                    logger.info(f"[AGENT WORKFLOW] Creating temporary agent_info for testing in _execute_single_agent")
+                    agent_info = {
+                        "name": agent_name,
+                        "role": "Senior Research Analyst",
+                        "system_prompt": "You are a senior research analyst. Provide detailed, comprehensive analysis with specific metrics and data points.",
+                        "config": {"temperature": 0.7, "max_tokens": 2000},
+                        "tools": ["get_datetime"]
+                    }
+                
+                if not agent_info:
+                    raise ValueError(f"Agent '{agent_name}' not found in cache")
+                
+                # Create a copy of agent_info to avoid modifying the cache
+                agent_info = agent_info.copy()
             
             # Debug logging for tool extraction
             logger.debug(f"[TOOL EXTRACTION] Agent: {agent_name}")
@@ -2410,17 +2454,12 @@ Please process this request independently and provide your analysis."""
             logger.debug(f"[TOOL EXTRACTION] workflow_node.get('tools'): {workflow_node.get('tools', [])}")
             logger.debug(f"[TOOL EXTRACTION] Final available_tools: {available_tools}")
             
-            # Create a copy of agent_info to avoid modifying the cache
-            agent_info = agent_info.copy()
-            
-            # Override tools with workflow config
-            if available_tools:
+            # Ensure tools are set properly (already handled in workflow config path above)
+            if available_tools and agent_info["tools"] != available_tools:
                 agent_info["tools"] = available_tools
-                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} tools with workflow config: {available_tools}")
-            else:
-                logger.info(f"[AGENT WORKFLOW] Using default agent {agent_name} tools from cache: {agent_info.get('tools', [])}")
+                logger.info(f"[AGENT WORKFLOW] Setting agent {agent_name} tools: {available_tools}")
             
-            # Override agent config with workflow-specific values
+            # Ensure config section exists
             if "config" not in agent_info:
                 agent_info["config"] = {}
             
@@ -2430,7 +2469,7 @@ Please process this request independently and provide your analysis."""
             logger.debug(f"[MODEL EXTRACTION] workflow_node.get('model'): {workflow_node.get('model')}")
             logger.debug(f"[MODEL EXTRACTION] agent_config_data.get('model'): {agent_config_data.get('model')}")
             
-            # Override model if specified in workflow
+            # Set workflow configuration values (no override needed when built from workflow)
             workflow_model = (
                 agent.get("model") or  # Direct model from AgentNode UI
                 workflow_node.get("model") or
@@ -2438,20 +2477,15 @@ Please process this request independently and provide your analysis."""
                 agent_config_data.get("model")
             )
             logger.debug(f"[MODEL EXTRACTION] workflow_model value: {workflow_model}")
-            logger.debug(f"[MODEL EXTRACTION] agent_info before override: {agent_info.get('config', {})}")
+            logger.debug(f"[MODEL EXTRACTION] agent_info config before setting: {agent_info.get('config', {})}")
             
             if workflow_model:
-                if "config" not in agent_info:
-                    agent_info["config"] = {}
                 agent_info["config"]["model"] = workflow_model
-                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} model with workflow config: {workflow_model}")
+                logger.info(f"[AGENT WORKFLOW] Setting agent {agent_name} model: {workflow_model}")
             else:
                 logger.warning(f"[AGENT WORKFLOW] No workflow model found for agent {agent_name}")
             
-            # Debug: Log the final agent_info config after override
-            logger.debug(f"[AGENT WORKFLOW] Final agent_info['config'] after model override: {agent_info.get('config', {})}")
-                
-            # Override temperature if specified in workflow  
+            # Set temperature if specified in workflow  
             workflow_temperature = (
                 agent.get("temperature") or  # Direct temperature from AgentNode UI
                 workflow_node.get("temperature") or
@@ -2460,9 +2494,9 @@ Please process this request independently and provide your analysis."""
             )
             if workflow_temperature is not None:
                 agent_info["config"]["temperature"] = workflow_temperature
-                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} temperature with workflow config: {workflow_temperature}")
+                logger.info(f"[AGENT WORKFLOW] Setting agent {agent_name} temperature: {workflow_temperature}")
                 
-            # Override max_tokens if specified in workflow
+            # Set max_tokens if specified in workflow
             # DEBUG: Log all possible sources for max_tokens
             agent_max_tokens = agent.get("max_tokens")
             node_max_tokens = workflow_node.get("max_tokens")
@@ -2482,11 +2516,11 @@ Please process this request independently and provide your analysis."""
             
             if workflow_max_tokens:
                 agent_info["config"]["max_tokens"] = workflow_max_tokens
-                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} max_tokens with workflow config: {workflow_max_tokens}")
+                logger.info(f"[AGENT WORKFLOW] Setting agent {agent_name} max_tokens: {workflow_max_tokens}")
             else:
-                logger.warning(f"[AGENT WORKFLOW] No max_tokens found in workflow config for agent {agent_name}, keeping agent default")
+                logger.warning(f"[AGENT WORKFLOW] No max_tokens found in workflow config for agent {agent_name}, keeping default")
             
-            # CRITICAL FIX: Override system_prompt with workflow configuration
+            # Set system_prompt with workflow configuration
             # Build workflow prompt from custom_prompt + query
             workflow_custom_prompt = agent.get("custom_prompt", "")
             workflow_query = agent.get("query", "")
@@ -2500,17 +2534,24 @@ Please process this request independently and provide your analysis."""
             
             combined_workflow_prompt = "\n\n".join(workflow_prompt_parts) if workflow_prompt_parts else ""
             
-            # Override agent's system prompt if workflow provides one
+            # Set agent's system prompt if workflow provides one
             if combined_workflow_prompt:
                 agent_info["system_prompt"] = combined_workflow_prompt
-                logger.info(f"[AGENT WORKFLOW] Overriding agent {agent_name} system_prompt with workflow config (length: {len(combined_workflow_prompt)})")
+                logger.info(f"[AGENT WORKFLOW] Setting agent {agent_name} system_prompt from workflow config (length: {len(combined_workflow_prompt)})")
                 logger.debug(f"[AGENT WORKFLOW] Workflow system prompt: {combined_workflow_prompt[:200]}...")
             else:
-                logger.info(f"[AGENT WORKFLOW] Using agent {agent_name} default system_prompt from database")
+                # Fallback to agent config data system prompt or keep existing
+                fallback_prompt = agent_config_data.get("system_prompt", agent_info.get("system_prompt", "You are a helpful assistant."))
+                agent_info["system_prompt"] = fallback_prompt
+                logger.info(f"[AGENT WORKFLOW] Using fallback system_prompt for agent {agent_name} (length: {len(fallback_prompt)})")
             
             # Use configured timeout from workflow node, with fallback to reasonable default
             effective_timeout = agent.get("configured_timeout", 60)
             logger.info(f"[AGENT WORKFLOW] Using configured timeout: {effective_timeout}s for agent {agent_name}")
+            
+            # Debug: Log the final agent_info configuration
+            logger.debug(f"[AGENT WORKFLOW] Final agent_info config for {agent_name}: {agent_info.get('config', {})}")
+            logger.info(f"[AGENT WORKFLOW] Final agent_info keys: name={agent_info.get('name')}, tools_count={len(agent_info.get('tools', []))}, system_prompt_length={len(agent_info.get('system_prompt', ''))}")
             
             # Get model, temperature, and max_tokens from overridden agent_info config OR from agent dict
             # Priority: agent dict (from UI) > agent_info config (after override) > defaults
