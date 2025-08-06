@@ -57,6 +57,61 @@ class MCPToolsBridge:
         try:
             logger.info(f"[MCP BRIDGE] Executing tool {tool_name} with parameters: {parameters}")
             
+            # BYPASS: Direct fallback for get_datetime to avoid circular import and server issues
+            if tool_name == "get_datetime":
+                logger.info(f"[MCP BRIDGE] Using direct get_datetime fallback")
+                try:
+                    from app.core.datetime_fallback import get_current_datetime
+                    fallback_result = get_current_datetime()
+                    logger.info(f"[MCP BRIDGE] get_datetime fallback successful")
+                    result = {"content": [{"type": "text", "text": str(fallback_result)}]}
+                    return {
+                        "success": True,
+                        "result": result,
+                        "tool": tool_name,
+                        "parameters": parameters
+                    }
+                except Exception as fallback_error:
+                    logger.error(f"[MCP BRIDGE] get_datetime fallback failed: {fallback_error}")
+                    return {
+                        "success": False,
+                        "error": f"Datetime fallback failed: {str(fallback_error)}",
+                        "tool": tool_name,
+                        "parameters": parameters
+                    }
+            
+            # BYPASS: Direct fallback for rag_knowledge_search to avoid MCP routing issues in workflows
+            from app.langchain.service import is_rag_tool
+            if is_rag_tool(tool_name):
+                logger.info(f"[MCP BRIDGE] Using direct RAG search fallback for tool: {tool_name}")
+                try:
+                    from app.mcp_services.rag_mcp_service import execute_rag_search_sync
+                    
+                    # Extract parameters with defaults
+                    query = parameters.get('query', '')
+                    collections = parameters.get('collections')
+                    max_documents = parameters.get('max_documents')
+                    include_content = parameters.get('include_content', True)
+                    
+                    logger.info(f"[MCP BRIDGE] RAG fallback - query: {query[:100]}...")
+                    fallback_result = execute_rag_search_sync(query, collections, max_documents, include_content)
+                    logger.info(f"[MCP BRIDGE] RAG fallback successful")
+                    
+                    return {
+                        "success": True,
+                        "result": fallback_result,
+                        "tool": tool_name,
+                        "parameters": parameters
+                    }
+                except Exception as fallback_error:
+                    logger.error(f"[MCP BRIDGE] RAG fallback failed: {fallback_error}")
+                    return {
+                        "success": False,
+                        "error": f"RAG fallback failed: {str(fallback_error)}",
+                        "tool": tool_name,
+                        "parameters": parameters
+                    }
+            
             # Use existing call_mcp_tool infrastructure (local import to avoid circular dependency)
             from app.langchain.service import call_mcp_tool
             result = call_mcp_tool(tool_name, parameters, trace=trace)
