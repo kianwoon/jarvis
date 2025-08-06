@@ -85,8 +85,16 @@ You have no specific tools available for this task. Use your knowledge and reaso
 - **Explain your tool choices** when using them in your analysis
 - **Leverage tools for real-time data** rather than relying on potentially outdated knowledge
 
-### Important: RAG Knowledge Search Tool Response Interpretation
+### Important: RAG Knowledge Search Tool Usage and Response Interpretation
 When using the **rag_knowledge_search** tool:
+
+**Tool Usage:**
+- **IMPORTANT**: Do NOT specify max_documents parameter unless you need a specific value different from the default
+- The tool defaults to max_documents=8 from RAG configuration
+- Only include max_documents in your tool call if you specifically need more or fewer documents
+- Example: Use {"query": "your query", "include_content": true} instead of {"query": "your query", "max_documents": 5, "include_content": true}
+
+**Response Interpretation:**
 1. The tool returns a structured response with 'success' and 'result' fields
 2. Check result.success to verify the search succeeded
 3. Check result.documents_found for the number of documents retrieved

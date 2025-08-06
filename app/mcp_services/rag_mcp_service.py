@@ -149,14 +149,30 @@ class RAGMCPService:
                 request.collections
             )
             
-            # Execute RAG search using existing infrastructure (local import to avoid circular dependency)
-            from app.langchain.service import handle_rag_query
-            context, sources = handle_rag_query(
-                question=request.query,
-                thinking=False,  # Agents don't need thinking mode
+            # Use enhanced RAG fallback to avoid circular imports
+            from app.core.rag_enhanced_fallback import enhanced_rag_search
+            rag_result = enhanced_rag_search(
+                query=request.query,
                 collections=collections_to_search,
-                collection_strategy="specific" if request.collections else "auto"
+                max_documents=request.max_documents,
+                include_content=request.include_content
             )
+            
+            # Convert enhanced fallback format to expected format
+            if rag_result.get('success', False):
+                # Extract documents for sources format
+                documents = rag_result.get('documents', [])
+                sources = documents  # Enhanced fallback already returns in the right format
+                context = ""  # Build context from documents if needed
+                if documents and request.include_content:
+                    context_parts = []
+                    for doc in documents[:3]:  # Use top 3 for context
+                        if doc.get('content'):
+                            context_parts.append(doc['content'])
+                    context = "\n\n".join(context_parts)
+            else:
+                sources = []
+                context = ""
             
             # Get max documents from settings if not provided
             doc_settings = get_document_retrieval_settings()
@@ -744,14 +760,30 @@ def execute_rag_search_sync(query: str, collections: List[str] = None, max_docum
             sync_service
         )
         
-        # Execute RAG search using existing infrastructure
-        from app.langchain.service import handle_rag_query
-        context, sources = handle_rag_query(
-            question=request.query,
-            thinking=False,  # Agents don't need thinking mode
+        # Use enhanced RAG fallback to avoid circular imports
+        from app.core.rag_enhanced_fallback import enhanced_rag_search
+        rag_result = enhanced_rag_search(
+            query=request.query,
             collections=collections_to_search,
-            collection_strategy="specific" if request.collections else "auto"
+            max_documents=request.max_documents,
+            include_content=request.include_content
         )
+        
+        # Convert enhanced fallback format to expected format
+        if rag_result.get('success', False):
+            # Extract documents for sources format
+            documents = rag_result.get('documents', [])
+            sources = documents  # Enhanced fallback already returns in the right format
+            context = ""  # Build context from documents if needed
+            if documents and request.include_content:
+                context_parts = []
+                for doc in documents[:3]:  # Use top 3 for context
+                    if doc.get('content'):
+                        context_parts.append(doc['content'])
+                context = "\n\n".join(context_parts)
+        else:
+            sources = []
+            context = ""
         
         # Get max documents from settings if not provided
         from app.core.rag_settings_cache import get_document_retrieval_settings

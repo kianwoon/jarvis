@@ -254,7 +254,7 @@ class LLMKnowledgeExtractor:
             'model': model_config.get('model', 'qwen3:30b-a3b-q4_K_M'),
             'temperature': model_config.get('temperature', 0.1),
             'max_tokens': model_config.get('max_tokens', 4096),
-            'model_server': model_config.get('model_server', 'http://host.docker.internal:11434')
+            'model_server': model_config.get('model_server', 'http://localhost:11434')
         }
         return config
     

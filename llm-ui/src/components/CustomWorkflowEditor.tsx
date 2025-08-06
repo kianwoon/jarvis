@@ -3556,7 +3556,6 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
             }
           }
         }
-      }
     } catch (error) {
       setExecutionError(error instanceof Error ? error.message : 'Unknown error occurred');
     } finally {

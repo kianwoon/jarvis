@@ -54,12 +54,24 @@ class ToolExecutor:
     
     def __init__(self):
         # Import at runtime to avoid circular imports
+        self.call_mcp_tool = None
         try:
-            from app.langchain.service import call_mcp_tool
-            self.call_mcp_tool = call_mcp_tool
-        except ImportError as e:
-            logger.error(f"Failed to import call_mcp_tool: {e}")
-            self.call_mcp_tool = None
+            # First try unified MCP service to avoid circular imports
+            from app.core.unified_mcp_service import call_mcp_tool_unified
+            self.call_mcp_tool_unified = call_mcp_tool_unified
+            self.use_unified = True
+            logger.info("Using unified MCP service for tool execution")
+        except ImportError:
+            try:
+                # Fallback to legacy service if unified not available
+                from app.langchain.service import call_mcp_tool
+                self.call_mcp_tool = call_mcp_tool
+                self.use_unified = False
+                logger.info("Using legacy MCP service for tool execution")
+            except ImportError as e:
+                logger.error(f"Failed to import call_mcp_tool: {e}")
+                self.call_mcp_tool = None
+                self.use_unified = False
     
     def extract_tool_calls(self, agent_response: str) -> List[Dict[str, Any]]:
         """
@@ -288,8 +300,8 @@ class ToolExecutor:
     
     async def execute_tools(self, tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Execute a list of tool calls and return results"""
-        if not self.call_mcp_tool:
-            logger.error("Tool execution not available - call_mcp_tool not imported")
+        if not hasattr(self, 'use_unified') or (not self.use_unified and not self.call_mcp_tool) or (self.use_unified and not hasattr(self, 'call_mcp_tool_unified')):
+            logger.error("Tool execution not available - no MCP service imported")
             return []
         
         results = []
@@ -303,7 +315,20 @@ class ToolExecutor:
             
             try:
                 logger.info(f"Executing tool: {tool_name} with parameters: {parameters}")
-                result = self.call_mcp_tool(tool_name, parameters)
+                
+                if self.use_unified:
+                    # Use unified MCP service (async)
+                    from app.core.mcp_tools_cache import get_enabled_mcp_tools
+                    tools_cache = get_enabled_mcp_tools()
+                    tool_info = tools_cache.get(tool_name, {})
+                    
+                    if not tool_info:
+                        raise ValueError(f"Tool '{tool_name}' not found in cache")
+                    
+                    result = await self.call_mcp_tool_unified(tool_info, tool_name, parameters)
+                else:
+                    # Use legacy service (sync)
+                    result = self.call_mcp_tool(tool_name, parameters)
                 
                 results.append({
                     "tool": tool_name,

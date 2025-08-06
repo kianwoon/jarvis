@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def enhanced_rag_search(
     query: str,
     collections: Optional[List[str]] = None,
-    max_documents: int = 5,
+    max_documents: Optional[int] = None,
     include_content: bool = True,
     trace=None
 ) -> Dict[str, Any]:
@@ -60,9 +60,15 @@ def enhanced_rag_search(
         # Get settings
         from app.core.vector_db_settings_cache import get_vector_db_settings
         from app.core.embedding_settings_cache import get_embedding_settings
+        from app.core.rag_settings_cache import get_document_retrieval_settings
         
         vector_settings = get_vector_db_settings()
         embedding_settings = get_embedding_settings()
+        
+        # Use same max_documents as standard chat for consistency
+        if max_documents is None:
+            doc_settings = get_document_retrieval_settings()
+            max_documents = doc_settings.get('max_documents_mcp', 8)
         
         # Initialize embeddings
         from app.core.rag_fallback import get_simple_embedder

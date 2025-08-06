@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 def simple_rag_search(
     query: str,
     collections: Optional[List[str]] = None,
-    max_documents: int = 5,
+    max_documents: Optional[int] = None,
     include_content: bool = True
 ) -> Dict[str, Any]:
     """
@@ -31,6 +31,12 @@ def simple_rag_search(
     start_time = time.time()
     
     try:
+        # Use same max_documents as standard chat for consistency
+        if max_documents is None:
+            from app.core.rag_settings_cache import get_document_retrieval_settings
+            doc_settings = get_document_retrieval_settings()
+            max_documents = doc_settings.get('max_documents_mcp', 8)
+        
         logger.info(f"[RAG FALLBACK] Starting simple RAG search for query: {query[:100]}...")
         
         # Handle edge cases

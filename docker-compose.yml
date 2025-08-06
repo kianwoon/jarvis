@@ -16,7 +16,7 @@ services:
     environment:
       - MCP_SERVERS_PATH=/mcp-servers
       - ENVIRONMENT=development
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_BASE_URL=http://localhost:11434
       - REDIS_HOST=redis
       - POSTGRES_HOST=postgres
       - DOCKER_HOST=unix:///var/run/docker.sock

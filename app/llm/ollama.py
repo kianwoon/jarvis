@@ -6,6 +6,14 @@ from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_conf
 
 class OllamaLLM(BaseLLM):
     def __init__(self, config: LLMConfig, base_url: str = "http://localhost:11434"):
+        print(f"[OLLAMA_INIT] ============ OllamaLLM INITIALIZING ============")
+        print(f"[OLLAMA_INIT] Model: {config.model_name}")
+        print(f"[OLLAMA_INIT] Base URL: {base_url}")
+        print(f"[OLLAMA_INIT] Max Tokens: {config.max_tokens}")
+        print(f"[OLLAMA_INIT] Temperature: {config.temperature}")
+        import traceback
+        print(f"[OLLAMA_INIT] Called from:\n{''.join(traceback.format_stack()[-5:-1])}")
+        print(f"[OLLAMA_INIT] ============================================")
         super().__init__(config)
         self.base_url = base_url
         self.model_name = config.model_name
@@ -16,6 +24,14 @@ class OllamaLLM(BaseLLM):
         This method now uses the chat endpoint internally to properly separate
         system prompts from user prompts.
         """
+        # Debug: Check if this is related to query expansion
+        is_query_expansion = any(term in prompt.lower() for term in ['alternative', 'query', 'search', 'rephrase', 'variation'])
+        if is_query_expansion:
+            print(f"[QUERY_EXPANSION_OLLAMA] GENERATE method called for query expansion")
+            print(f"[QUERY_EXPANSION_OLLAMA] Prompt: {prompt[:200]}...")
+            print(f"[QUERY_EXPANSION_OLLAMA] Base URL: {self.base_url}")
+            print(f"[QUERY_EXPANSION_OLLAMA] Model: {self.model_name}")
+        
         # Use chat endpoint with message format
         return await self.chat(prompt, **kwargs)
 
@@ -79,6 +95,15 @@ class OllamaLLM(BaseLLM):
             prompt: Either a string (will be converted to messages) or a list of message dicts
             **kwargs: Additional arguments like system_prompt for string prompts
         """
+        # Debug: Check if this is related to query expansion
+        if isinstance(prompt, str):
+            is_query_expansion = any(term in prompt.lower() for term in ['alternative', 'query', 'search', 'rephrase', 'variation'])
+            if is_query_expansion:
+                print(f"[QUERY_EXPANSION_OLLAMA] CHAT method called for query expansion")
+                print(f"[QUERY_EXPANSION_OLLAMA] Prompt: {prompt[:200]}...")
+                print(f"[QUERY_EXPANSION_OLLAMA] Base URL: {self.base_url}")
+                print(f"[QUERY_EXPANSION_OLLAMA] Model: {self.model_name}")
+        
         # Get context length from settings
         llm_settings = get_llm_settings()
         context_length = llm_settings.get("context_length", 128000)
@@ -115,13 +140,20 @@ class OllamaLLM(BaseLLM):
         from app.core.timeout_settings_cache import get_timeout_value
         http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
         
+        # Add logging for HTTP request
+        print(f"[OLLAMA_HTTP] Making POST request to {self.base_url}/api/chat")
+        print(f"[OLLAMA_HTTP] Model: {self.model_name}")
+        print(f"[OLLAMA_HTTP] Payload preview: {str(payload)[:300]}...")
+        
         async with httpx.AsyncClient(timeout=http_timeout) as client:
             response = await client.post(f"{self.base_url}/api/chat", json=payload)
+            print(f"[OLLAMA_HTTP] Response status: {response.status_code}")
             response.raise_for_status()
             
             data = response.json()
             # Chat endpoint returns message object
             message = data.get("message", {})
+            print(f"[OLLAMA_HTTP] Response received, content length: {len(message.get('content', ''))}")
             return LLMResponse(
                 text=message.get("content", ""),
                 metadata={
@@ -157,6 +189,11 @@ class OllamaLLM(BaseLLM):
         }
         
         print(f"[DEBUG] Ollama chat payload - model: {self.model_name}, num_predict: {self.config.max_tokens}, num_ctx: {context_length}")
+        # CRITICAL: Explicit high-token logging to detect truncation issues
+        if self.config.max_tokens >= 8000:
+            print(f"[OLLAMA HIGH TOKENS] CRITICAL: Using {self.config.max_tokens} tokens - should prevent truncation")
+            print(f"[OLLAMA HIGH TOKENS] Model: {self.model_name}")
+            print(f"[OLLAMA HIGH TOKENS] Context length: {context_length}")
         print(f"[DEBUG] Ollama URL: {self.base_url}/api/chat")
         
         print(f"[DEBUG] Attempting connection to {self.base_url}/api/chat")
@@ -182,10 +219,18 @@ class OllamaLLM(BaseLLM):
                             message = data_json.get("message", {})
                             if message and "content" in message:
                                 token_count += 1
+                                content = message['content']
                                 if token_count <= 5:  # Log first 5 tokens
-                                    print(f"[DEBUG] Token {token_count}: '{message['content']}'")
+                                    print(f"[DEBUG] Token {token_count}: '{content}'")
                                 elif token_count % 50 == 0:  # Log every 50th token
                                     print(f"[DEBUG] Generated {token_count} tokens so far...")
+                                
+                                # CRITICAL: Check for potential truncation patterns
+                                if token_count >= 2500 and self.config.max_tokens >= 8000:
+                                    print(f"[TRUNCATION CHECK] Token {token_count}: Still generating (target: {self.config.max_tokens})")
+                                if "distribut..." in content or (content.strip().endswith("...") and len(content.strip()) > 10):
+                                    print(f"[TRUNCATION DETECTED] Response appears to be cut off at token {token_count}: '{content[-50:]}'")
+                                    print(f"[TRUNCATION DETECTED] Expected {self.config.max_tokens} tokens, got truncation pattern")
                                 yield LLMResponse(
                                     text=message["content"],
                                     metadata={
@@ -196,6 +241,10 @@ class OllamaLLM(BaseLLM):
                                 )
                             elif data_json.get("done", False):
                                 print(f"[DEBUG] Stream completed. Total tokens generated: {token_count}")
+                                if self.config.max_tokens >= 8000:
+                                    print(f"[HIGH TOKEN COMPLETION] Expected {self.config.max_tokens}, generated {token_count} tokens")
+                                    if token_count < (self.config.max_tokens * 0.7):
+                                        print(f"[TOKEN WARNING] Generated {token_count} tokens, but expected up to {self.config.max_tokens}. Possible early termination?")
                         except json.JSONDecodeError as e:
                             print(f"[WARNING] JSON decode error on line: '{line}' - {e}")
                             continue
@@ -260,5 +309,11 @@ class JarvisLLM:
         self.llm = self._build_llm(self.mode, self.max_tokens)
 
     async def invoke(self, prompt: str) -> str:
+        # Debug: Track JarvisLLM invoke calls
+        import traceback
+        caller_info = traceback.format_stack()[-2]
+        print(f"[JARVIS_LLM_INVOKE] Called from: {caller_info.strip()}")
+        print(f"[JARVIS_LLM_INVOKE] Prompt: {prompt[:200]}...")
+        
         response = await self.llm.generate(prompt)
         return response.text 

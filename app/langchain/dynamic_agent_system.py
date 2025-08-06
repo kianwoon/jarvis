@@ -783,30 +783,39 @@ Required JSON format:
         # Get agent configuration
         agent_config = agent_data.get("config", {})
         
-        # Priority: context (workflow config) > agent config > default
+        # Get LLM settings from cache (same as standard chat)
+        from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
+        llm_settings = get_llm_settings()
+        mode_config = get_main_llm_full_config(llm_settings)
+        
+        # Priority: context (workflow config) > agent config > main LLM config (same as standard chat)
         # Debug max_tokens extraction
         logger.debug(f"[MAX_TOKENS DEBUG] context.get('max_tokens'): {context.get('max_tokens') if context else 'No context'}")
         logger.debug(f"[MAX_TOKENS DEBUG] agent_config.get('max_tokens'): {agent_config.get('max_tokens')}")
+        logger.debug(f"[MAX_TOKENS DEBUG] mode_config.get('max_tokens'): {mode_config.get('max_tokens')}")
         
+        # Use the same defaults as standard chat
         max_tokens = (
             context.get("max_tokens") or
             agent_config.get("max_tokens") or
-            4000
+            int(mode_config.get('max_tokens', 8192))  # Match standard chat's default
         )
         logger.debug(f"[MAX_TOKENS DEBUG] Final max_tokens selected: {max_tokens}")
+        # CRITICAL: Add explicit logging to ensure 8000+ tokens are being used
+        if max_tokens >= 8000:
+            print(f"[TOKEN CONFIG] HIGH TOKEN COUNT DETECTED: {max_tokens} tokens configured for agent {agent_name}")
+            print(f"[TOKEN CONFIG] This should allow comprehensive responses without truncation")
         temperature = (
             context.get("temperature") or
             agent_config.get("temperature") or
-            0.7
+            float(mode_config.get('temperature', 0.7))  # Match standard chat's default
         )
         # Debug model extraction
         logger.debug(f"[MODEL DEBUG] context.get('model'): {context.get('model') if context else 'No context'}")
         logger.debug(f"[MODEL DEBUG] agent_config.get('model'): {agent_config.get('model')}")
         
-        # Use the configured main_llm model as default instead of hardcoded value
-        from app.core.llm_settings_cache import get_main_llm_full_config
-        main_llm_config = get_main_llm_full_config()
-        default_model = main_llm_config.get("model", "qwen3:30b-a3b")
+        # Use the same model as standard chat (mode_config already loaded above)
+        default_model = mode_config.get("model", "qwen3:30b-a3b")
         
         model = (
             context.get("model") or
@@ -829,6 +838,13 @@ Required JSON format:
         # Apply complexity-based timeout extensions (but respect configured minimum)
         timeout = base_timeout  # Start with configured timeout
         
+        # CRITICAL FIX: High token responses need much more time
+        if max_tokens >= 8000:
+            # For 8000+ tokens, provide generous timeout (30-60 tokens per second typical)
+            min_timeout_for_high_tokens = max_tokens // 30 + 60  # ~4.5 min for 8000 tokens + buffer
+            timeout = max(timeout, min_timeout_for_high_tokens)
+            print(f"[TIMEOUT FIX] {agent_name}: High token count ({max_tokens}) detected, timeout extended to {timeout}s")
+        
         # Extend timeout for complex queries (but don't reduce below configured)
         if query_length > 100 or "strategy" in query.lower() or "discuss" in query.lower():
             timeout = max(timeout, base_timeout + 30)  # Add 30s for complexity
@@ -837,7 +853,7 @@ Required JSON format:
         if any(keyword in agent_name.lower() for keyword in ["strategist", "analyst", "architect", "ceo", "cto", "cio"]):
             timeout = max(timeout, base_timeout + 60)  # Add 60s for strategic work
             
-        print(f"[DEBUG] {agent_name}: Dynamic timeout set to {timeout}s (base={base_timeout}s, query_len={query_length})")
+        print(f"[DEBUG] {agent_name}: Dynamic timeout set to {timeout}s (base={base_timeout}s, query_len={query_length}, max_tokens={max_tokens})")
         logger.info(f"[AGENT TIMEOUT] {agent_name}: Using timeout {timeout}s (configured: {base_timeout}s, extended for complexity: {timeout > base_timeout})")
         
         # Build prompt with agent's system prompt and query
@@ -1079,12 +1095,30 @@ TASK: If you need current information, start by using the available tools. Then 
         else:
             # This is a standalone agent or first in sequence  
             if available_tools:
-                # More explicit instructions for tool-enabled agents
+                # Enhanced prompt to generate comprehensive first response with detailed analysis
                 full_prompt = f"""{system_prompt}
 
 USER QUERY: {query}{context_str}{task_enhancement}
 
-TASK: Analyze the query above. If you need current information to answer properly, use the available tools first, then provide your strategic analysis."""
+CRITICAL INSTRUCTIONS FOR COMPREHENSIVE RESPONSE:
+1. Start by using the available tools to gather information (output the JSON format shown above)
+2. While the tools are executing, begin formulating your comprehensive analysis
+3. Your response should include:
+   - Executive summary of the key findings
+   - Detailed analysis with specific data points and metrics
+   - Strategic insights and recommendations
+   - Specific examples and evidence from the documents
+4. When RAG/knowledge search returns results, incorporate:
+   - Specific years, numbers, percentages, and metrics found
+   - Names of companies, projects, or initiatives mentioned
+   - Direct quotes or key phrases from the documents
+   - Relationships and patterns identified across documents
+5. Structure your response with clear sections and bullet points for readability
+6. Provide the same level of detail as if you were writing an executive briefing
+
+IMPORTANT: Generate a COMPLETE, DETAILED response that fully addresses all aspects of the query. Include specific metrics, dates, names, and concrete examples from any documents found. Do not provide generic summaries - give specific, actionable insights.
+
+TASK: Search for relevant information using tools, then provide a comprehensive, detailed analysis with specific data points and strategic insights."""
             else:
                 full_prompt = f"""{system_prompt}
 
@@ -1572,10 +1606,39 @@ TASK: Provide your analysis of the query above."""
                             
                             result = run_async()
                         else:
-                            # Import and call MCP tool in thread context (legacy)
-                            from app.langchain.service import call_mcp_tool
-                            # Skip span creation in call_mcp_tool since we already created it
-                            result = call_mcp_tool(tool_name, parameters, trace=self.trace, _skip_span_creation=True)
+                            # Use unified MCP service to avoid circular imports
+                            try:
+                                from app.core.unified_mcp_service import call_mcp_tool_unified
+                                from app.core.mcp_tools_cache import get_enabled_mcp_tools
+                                tools_cache = get_enabled_mcp_tools()
+                                tool_info = tools_cache.get(tool_name, {})
+                                
+                                if not tool_info:
+                                    result = {
+                                        "error": f"Tool '{tool_name}' not found in cache",
+                                        "success": False,
+                                        "tool": tool_name,
+                                        "parameters": parameters
+                                    }
+                                else:
+                                    # Call unified service (requires running in async context)
+                                    import asyncio
+                                    def run_unified_async():
+                                        return asyncio.run(call_mcp_tool_unified(tool_info, tool_name, parameters))
+                                    result = run_unified_async()
+                            except Exception as unified_error:
+                                logger.error(f"[TOOL EXECUTION] Unified MCP service failed: {unified_error}")
+                                # Fallback to legacy service import
+                                try:
+                                    from app.langchain.service import call_mcp_tool
+                                    result = call_mcp_tool(tool_name, parameters, trace=self.trace, _skip_span_creation=True)
+                                except ImportError as legacy_error:
+                                    result = {
+                                        "error": f"Both unified and legacy MCP services failed: {str(unified_error)}, {str(legacy_error)}",
+                                        "success": False,
+                                        "tool": tool_name,
+                                        "parameters": parameters
+                                    }
                         
                         # Check result and handle enhanced error information
                         if isinstance(result, dict) and "error" in result:
@@ -1845,71 +1908,182 @@ TASK: Provide your analysis of the query above."""
                         
                         tool_context += "\n"
                 
-                # Create follow-up prompt to generate a response that incorporates tool results
-                agent_config = context.get("agent_config", {}) if context else {}
-                system_prompt = agent_config.get("system_prompt") or agent_data.get("system_prompt", "You are a helpful assistant.")
+                # CRITICAL FIX: Generate comprehensive response using tool results without making another LLM call
+                # If the agent response contains raw tool JSON, replace it with proper analysis
                 
-                print(f"[DEBUG] {agent_name}: Building unified follow-up prompt with query length: {len(query)}")
+                # Check if agent_response contains raw tool calls (JSON format)
+                import re
+                tool_json_pattern = r'\{"tool"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{.*?\}\}'
+                if re.search(tool_json_pattern, agent_response):
+                    # Agent response has raw JSON - generate clean comprehensive response
+                    enhanced_response = "Based on the available information and tools, here is a comprehensive analysis:\n\n"
+                else:
+                    # Keep original response and append tool results
+                    enhanced_response = agent_response
+                    enhanced_response += "\n\n**Detailed Analysis:**\n"
                 
-                # Build the follow-up prompt carefully to avoid scoping issues
-                user_query_part = f"USER QUERY: {query}"
+                # Process each tool result and extract ALL key information
+                for result in tool_results:
+                    if result.get("success"):
+                        tool_name = result['tool']
+                        tool_result = result['result']
+                        
+                        # Special handling for RAG/knowledge search results
+                        if 'rag_knowledge_search' in tool_name.lower() or 'knowledge_search' in tool_name.lower():
+                            # Extract the actual data from nested structure
+                            if isinstance(tool_result, dict):
+                                # Handle nested result structure (workflow mode)
+                                if 'result' in tool_result and isinstance(tool_result['result'], dict):
+                                    rag_data = tool_result['result']
+                                else:
+                                    rag_data = tool_result
+                                
+                                # Extract document information
+                                documents_found = (rag_data.get('documents_found') or 
+                                                 rag_data.get('total_documents_found') or 
+                                                 rag_data.get('documents_returned', 0))
+                                documents = rag_data.get('documents', [])
+                                text_summary = rag_data.get('text_summary', '')
+                                
+                                if text_summary:
+                                    # Use the FULL pre-formatted comprehensive summary with all details
+                                    enhanced_response += f"\n{text_summary}"
+                                    
+                                    # CRITICAL: Also process documents to extract specific metrics
+                                    if documents:
+                                        enhanced_response += "\n\n**Specific Details from Documents:**\n"
+                                        
+                                        # Extract all specific metrics, dates, and names from documents
+                                        all_metrics = []
+                                        all_dates = []
+                                        all_names = []
+                                        
+                                        for doc in documents:
+                                            content = doc.get('content', doc.get('page_content', ''))
+                                            if content:
+                                                # Extract years and dates
+                                                import re
+                                                years = re.findall(r'\b(19|20)\d{2}\b', content)
+                                                all_dates.extend(years)
+                                                
+                                                # Extract numbers with context
+                                                numbers_with_context = re.findall(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:years?|engineers?|staff|employees?|people|%|percent|billion|million)', content, re.IGNORECASE)
+                                                all_metrics.extend(numbers_with_context)
+                                                
+                                                # Extract company/project names (capitalized words)
+                                                names = re.findall(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', content)
+                                                all_names.extend(names)
+                                        
+                                        # Add unique findings
+                                        if all_dates:
+                                            unique_dates = sorted(set(all_dates))
+                                            enhanced_response += f"- **Timeline:** {', '.join(unique_dates[-5:])}\n"
+                                        
+                                        if all_metrics:
+                                            unique_metrics = list(set(all_metrics))[:10]
+                                            enhanced_response += f"- **Key Metrics:** {', '.join(unique_metrics)}\n"
+                                        
+                                        if all_names:
+                                            unique_names = list(set(all_names))[:10]
+                                            enhanced_response += f"- **Key Entities:** {', '.join(unique_names)}\n"
+                                        
+                                        # Show comprehensive excerpts from top documents
+                                        enhanced_response += "\n**Document Highlights:**\n"
+                                        for i, doc in enumerate(documents[:3], 1):  # Show top 3 with more detail
+                                            content = doc.get('content', doc.get('page_content', ''))
+                                            if content:
+                                                # Show larger, more meaningful excerpt
+                                                excerpt = content[:1500].strip()  # Show more content
+                                                if len(content) > 1500:
+                                                    excerpt += "..."
+                                                enhanced_response += f"\n**Document {i}:**\n{excerpt}\n"
+                                elif documents:
+                                    # Format document results with full detail if no summary available
+                                    enhanced_response += f"\n**Found {documents_found} relevant documents with detailed information:**\n"
+                                    for i, doc in enumerate(documents[:5], 1):  # Show top 5
+                                        content = doc.get('content', doc.get('page_content', ''))
+                                        if content:
+                                            # Show comprehensive excerpt
+                                            excerpt = content[:1000].strip()  # Show more content
+                                            if len(content) > 1000:
+                                                excerpt += "..."
+                                            enhanced_response += f"\n**Document {i}:**\n{excerpt}\n"
+                                else:
+                                    enhanced_response += f"\nSearched knowledge base but found no directly relevant documents for this query.\n"
+                        else:
+                            # Handle other tool types with comprehensive formatting
+                            if tool_name.lower() == 'get_datetime':
+                                # Format datetime tool results comprehensively
+                                datetime_info = None
+                                
+                                # Handle MCP format: {'content': [{'type': 'text', 'text': '...'}]}
+                                if isinstance(tool_result, dict) and 'content' in tool_result:
+                                    # Extract from MCP format
+                                    content_list = tool_result.get('content', [])
+                                    if content_list and isinstance(content_list, list):
+                                        first_content = content_list[0]
+                                        if isinstance(first_content, dict) and 'text' in first_content:
+                                            text_data = first_content['text']
+                                            # Try to parse as dictionary string
+                                            try:
+                                                import ast
+                                                if text_data.startswith('{') and text_data.endswith('}'):
+                                                    datetime_info = ast.literal_eval(text_data)
+                                            except Exception:
+                                                # Treat as plain string
+                                                enhanced_response += f"**Current Date and Time Information:**\n"
+                                                enhanced_response += f"• **Current Time:** {text_data}\n"
+                                                enhanced_response += f"\nThis information was retrieved in real-time to provide you with the most accurate current date and time details."
+                                elif isinstance(tool_result, dict):
+                                    datetime_info = tool_result
+                                elif isinstance(tool_result, str):
+                                    # Try to parse string that might contain dictionary representation
+                                    try:
+                                        import ast
+                                        if tool_result.startswith('{') and tool_result.endswith('}'):
+                                            datetime_info = ast.literal_eval(tool_result)
+                                    except:
+                                        # If parsing fails, extract information from string
+                                        enhanced_response += f"**Current Date and Time Information:**\n"
+                                        enhanced_response += f"• **Current Time:** {tool_result}\n"
+                                        enhanced_response += f"\nThis information was retrieved in real-time to provide you with the most accurate current date and time details."
+                                        datetime_info = None
+                                
+                                if datetime_info and isinstance(datetime_info, dict):
+                                    current_datetime = datetime_info.get('current_datetime', '')
+                                    iso_format = datetime_info.get('iso_format', '')
+                                    timezone = datetime_info.get('timezone', '')
+                                    day_of_week = datetime_info.get('day_of_week', '')
+                                    date = datetime_info.get('date', '')
+                                    time = datetime_info.get('time', '')
+                                    
+                                    enhanced_response += f"**Current Date and Time Information:**\n"
+                                    if current_datetime:
+                                        enhanced_response += f"• **Current Time:** {current_datetime}\n"
+                                    if day_of_week:
+                                        enhanced_response += f"• **Day of Week:** {day_of_week}\n"
+                                    if date:
+                                        enhanced_response += f"• **Date:** {date}\n"
+                                    if time:
+                                        enhanced_response += f"• **Time:** {time}\n"
+                                    if timezone:
+                                        enhanced_response += f"• **Timezone:** {timezone}\n"
+                                    if iso_format:
+                                        enhanced_response += f"• **ISO Format:** {iso_format}\n"
+                                    
+                                    # Add contextual information
+                                    enhanced_response += f"\nThis information was retrieved in real-time to provide you with the most accurate current date and time details."
+                            elif isinstance(tool_result, dict) and 'message' in tool_result:
+                                enhanced_response += f"\n**{tool_name}:** {tool_result['message']}\n"
+                            elif isinstance(tool_result, dict):
+                                # Format dict results in a user-friendly way
+                                enhanced_response += f"\n**{tool_name} Results:**\n"
+                                for key, value in tool_result.items():
+                                    enhanced_response += f"• **{key.replace('_', ' ').title()}:** {value}\n"
+                            elif isinstance(tool_result, str):
+                                enhanced_response += f"\n**{tool_name}:** {tool_result}\n"
                 
-                follow_up_prompt = f"""{system_prompt}
-
-{user_query_part}
-
-You have already executed the necessary tools and received the following results:
-{tool_context}
-
-IMPORTANT: Do NOT generate any new tool calls. The tools have already been executed.
-
-Based on these tool results, provide your final comprehensive response that:
-1. Directly answers the user's question
-2. Incorporates the relevant information from the tool results
-3. Synthesizes the findings into a coherent response
-4. Does not repeat the raw tool output but interprets and explains it
-5. NEVER includes tool JSON - only provide your analysis and response
-
-IMPORTANT: If the RAG knowledge search found documents, you MUST acknowledge that documents were found and summarize their key information. Never say "no documents found" if documents are shown above
-
-Provide your complete response based on the tool results above. Do not generate any tool calls."""
-
-                # Generate SINGLE follow-up response that incorporates tool results (UNIFIED PROCESSING)
-                # Calculate timeout using same logic as main execution
-                follow_up_timeout = (
-                    context.get("timeout") or 
-                    agent_data.get("config", {}).get("timeout") or 
-                    60
-                )
-                # Apply complexity-based extensions for strategic agents
-                if any(keyword in agent_name.lower() for keyword in ["strategist", "analyst", "architect", "ceo", "cto", "cio"]):
-                    follow_up_timeout = max(follow_up_timeout, follow_up_timeout + 60)
-                
-                # Extract model from agent_data or context (same logic as main execution)
-                agent_config = agent_data.get("config", {}) if agent_data else {}
-                model = (
-                    context.get("model") or
-                    agent_config.get("model") or
-                    "qwen3:30b-a3b"
-                )
-                
-                follow_up_response = ""
-                print(f"[DEBUG] {agent_name}: Starting FIXED real-time streaming with timeout={follow_up_timeout}s")
-                async for chunk in self._call_llm_stream(
-                    follow_up_prompt,
-                    agent_name, 
-                    temperature=0.8,
-                    max_tokens=2000,
-                    timeout=follow_up_timeout,  # Use calculated timeout
-                    model=model
-                ):
-                    if chunk.get("type") == "agent_complete":
-                        follow_up_response = chunk.get("content", "")
-                        break
-                
-                # Use the follow-up response that incorporates tool results, fallback to original if needed
-                enhanced_response = follow_up_response if follow_up_response.strip() else agent_response
-                print(f"[DEBUG] {agent_name}: Generated unified follow-up response incorporating tool results (length: {len(follow_up_response)})")
+                print(f"[DEBUG] {agent_name}: Enhanced response with FULL tool results and extracted metrics (no second LLM call)")
                 
             else:
                 # No successful tools or no tools executed

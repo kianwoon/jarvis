@@ -425,7 +425,7 @@ def _get_emergency_fallback_settings():
             "mode": "thinking",
             "model": working_model,  # Use the working model
             "max_tokens": 196608,
-            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
+            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
             "system_prompt": "You are Jarvis, an AI assistant. Always provide detailed, comprehensive responses with thorough explanations, examples, and step-by-step breakdowns when appropriate. Be verbose and informative.",
             "context_length": 262144,
             "repeat_penalty": 1.1

@@ -923,6 +923,40 @@ async def call_mcp_tool_unified(tool_info: Dict[str, Any], tool_name: str,
                 logger.error(f"[BYPASS] get_datetime fallback failed: {fallback_error}")
                 return {"error": f"Datetime fallback failed: {str(fallback_error)}"}
         
+        # CRITICAL FIX: Handle internal:// RAG service calls
+        if endpoint.startswith("internal://"):
+            logger.info(f"[INTERNAL] Routing {tool_name} to internal service: {endpoint}")
+            
+            if endpoint == "internal://rag_mcp_service" and tool_name == "rag_knowledge_search":
+                logger.info(f"[INTERNAL RAG] Processing RAG knowledge search request")
+                try:
+                    from ..mcp_services.rag_mcp_service import execute_rag_search_sync
+                    
+                    # Extract parameters
+                    query = parameters.get('query', '')
+                    collections = parameters.get('collections')
+                    
+                    # Use same max_documents as standard chat for consistency
+                    from ..core.rag_settings_cache import get_document_retrieval_settings
+                    doc_settings = get_document_retrieval_settings()
+                    max_documents = parameters.get('max_documents') or doc_settings.get('max_documents_mcp', 8)
+                    include_content = parameters.get('include_content', True)
+                    
+                    logger.info(f"[INTERNAL RAG] Calling execute_rag_search_sync with query: '{query[:100]}...'")
+                    result = execute_rag_search_sync(
+                        query=query,
+                        collections=collections,
+                        max_documents=max_documents,
+                        include_content=include_content
+                    )
+                    logger.info(f"[INTERNAL RAG] RAG search completed successfully")
+                    return result
+                except Exception as rag_error:
+                    logger.error(f"[INTERNAL RAG] RAG search failed: {rag_error}")
+                    return {"error": f"RAG search failed: {str(rag_error)}"}
+            
+            return {"error": f"Unknown internal service: {endpoint}"}
+        
         # Determine service type based on tool name or server info
         service_name = "general"  # Default for non-OAuth tools
         if any(gmail_term in tool_name.lower() for gmail_term in ["gmail", "email", "mail"]):

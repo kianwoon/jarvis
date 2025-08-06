@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 def execute_service_layer_rag(
     query: str,
     collections: Optional[List[str]] = None,
-    max_documents: int = 5,
+    max_documents: Optional[int] = None,
     include_content: bool = True,
     trace=None
 ) -> Dict[str, Any]:
@@ -37,6 +37,13 @@ def execute_service_layer_rag(
         Dict with success status and results or error message
     """
     try:
+        # Use same max_documents logic as standard chat for consistency
+        if max_documents is None:
+            from app.core.rag_settings_cache import get_document_retrieval_settings
+            doc_settings = get_document_retrieval_settings()
+            # Use same default as standard chat (langchain/service.py:2640)
+            max_documents = doc_settings.get('max_documents_mcp', 10)
+        
         # Use importlib to delay import and break circular dependencies
         import importlib
         import sys

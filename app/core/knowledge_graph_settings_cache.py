@@ -96,7 +96,7 @@ def get_default_knowledge_graph_settings() -> Dict[str, Any]:
         'mode': 'comprehensive',  # REBALANCED: Restore comprehensive extraction for business documents
         'model': 'qwen3:30b-a3b-q4_K_M',
         'max_tokens': 8192,
-        'model_server': os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
+        'model_server': os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
         'system_prompt': 'You are an expert knowledge graph extraction system. Extract entities and relationships from the provided text with high precision.',
         'context_length': 40960,  # Conservative fallback - database should override
         'repeat_penalty': '1.05',

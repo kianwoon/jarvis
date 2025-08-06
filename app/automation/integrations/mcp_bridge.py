@@ -107,15 +107,22 @@ class MCPToolsBridge:
                 logger.info(f"[MCP BRIDGE]   - max_documents: {parameters.get('max_documents', 'NOT PROVIDED')}")
                 logger.info(f"[MCP BRIDGE]   - include_content: {parameters.get('include_content', 'NOT PROVIDED')}")
                 try:
-                    # Use SAME service as standard chat: app.langchain.service.handle_rag_query
-                    logger.info(f"[MCP BRIDGE] Importing handle_rag_query from app.langchain.service")
-                    from app.langchain.service import handle_rag_query
-                    logger.info(f"[MCP BRIDGE] Successfully imported handle_rag_query function")
+                    # Use RAG MCP Service to avoid circular imports
+                    logger.info(f"[MCP BRIDGE] Using RAG MCP Service to avoid circular imports")
+                    from app.mcp_services.rag_mcp_service import RAGMCPService, RAGSearchRequest
+                    rag_service = RAGMCPService()
+                    logger.info(f"[MCP BRIDGE] Successfully initialized RAG MCP Service")
                     
-                    # Extract parameters with defaults
+                    # Extract parameters with defaults - use same max_documents as standard chat for consistency
                     query = parameters.get('query', '')
                     collections = parameters.get('collections')
-                    max_documents = parameters.get('max_documents', 5)
+                    
+                    # Use same max_documents logic as standard chat for consistency
+                    from app.core.rag_settings_cache import get_document_retrieval_settings
+                    doc_settings = get_document_retrieval_settings()
+                    # Use same default as standard chat (langchain/service.py:2640)
+                    max_documents = parameters.get('max_documents') or doc_settings.get('max_documents_mcp', 10)
+                    
                     include_content = parameters.get('include_content', True)
                     
                     logger.info(f"[MCP BRIDGE] Extracted RAG parameters:")
@@ -124,64 +131,52 @@ class MCPToolsBridge:
                     logger.info(f"[MCP BRIDGE]   - Final max_documents: {max_documents}")
                     logger.info(f"[MCP BRIDGE]   - Final include_content: {include_content}")
                     
-                    # Call SAME function that standard chat uses with SAME auto-detected collections
-                    # Standard chat auto-detects: ['partnership', 'default_knowledge'] for this query
-                    logger.info(f"[MCP BRIDGE] ========== CALLING handle_rag_query ==========")
-                    logger.info(f"[MCP BRIDGE] Using auto-detected collections: ['partnership', 'default_knowledge']")
-                    logger.info(f"[MCP BRIDGE] Collection strategy: 'auto'")
-                    logger.info(f"[MCP BRIDGE] Calling handle_rag_query with:")
-                    logger.info(f"[MCP BRIDGE]   - question: '{query[:100]}...' (length: {len(query)})")
-                    logger.info(f"[MCP BRIDGE]   - thinking: False")
-                    logger.info(f"[MCP BRIDGE]   - collections: ['partnership', 'default_knowledge']")
-                    logger.info(f"[MCP BRIDGE]   - collection_strategy: 'auto'")
+                    # Use RAG MCP service with auto-detected collections
+                    logger.info(f"[MCP BRIDGE] ========== CALLING RAG MCP Service ==========")
+                    if collections is None:
+                        collections = ['partnership', 'default_knowledge']  # Default collections like standard chat
+                    
+                    logger.info(f"[MCP BRIDGE] Using collections: {collections}")
+                    logger.info(f"[MCP BRIDGE] Calling RAG service with:")
+                    logger.info(f"[MCP BRIDGE]   - query: '{query[:100]}...' (length: {len(query)})")
+                    logger.info(f"[MCP BRIDGE]   - collections: {collections}")
+                    logger.info(f"[MCP BRIDGE]   - max_documents: {max_documents}")
+                    logger.info(f"[MCP BRIDGE]   - include_content: {include_content}")
                     
                     start_time = time.time()
-                    context, sources = handle_rag_query(
-                        question=query,
-                        thinking=False,
-                        collections=['partnership', 'default_knowledge'],  # Same as standard chat
-                        collection_strategy="auto"  # Same strategy as standard chat
+                    from app.mcp_services.rag_mcp_service import execute_rag_search_sync
+                    rag_result = execute_rag_search_sync(
+                        query=query,
+                        collections=collections,
+                        max_documents=max_documents,
+                        include_content=include_content
                     )
                     execution_time = (time.time() - start_time) * 1000  # Convert to ms
                     
-                    logger.info(f"[MCP BRIDGE] handle_rag_query completed in {execution_time:.2f}ms")
-                    logger.info(f"[MCP BRIDGE] Results from handle_rag_query:")
-                    logger.info(f"[MCP BRIDGE]   - Context length: {len(context) if context else 0}")
-                    logger.info(f"[MCP BRIDGE]   - Context preview: {context[:200] if context else 'EMPTY'}...")
-                    logger.info(f"[MCP BRIDGE]   - Sources count: {len(sources) if sources else 0}")
-                    if sources:
-                        logger.info(f"[MCP BRIDGE]   - First source: {sources[0] if sources else 'None'}")
+                    logger.info(f"[MCP BRIDGE] RAG search completed in {execution_time:.2f}ms")
+                    logger.info(f"[MCP BRIDGE] Results from RAG service:")
+                    logger.info(f"[MCP BRIDGE]   - Success: {rag_result.get('success', False)}")
+                    logger.info(f"[MCP BRIDGE]   - Documents returned: {rag_result.get('documents_returned', 0)}")
+                    logger.info(f"[MCP BRIDGE]   - Total documents found: {rag_result.get('total_documents_found', 0)}")
+                    logger.info(f"[MCP BRIDGE]   - Collections searched: {rag_result.get('collections_searched', [])}")
                     
-                    # Convert to enhanced_result format for compatibility
-                    logger.info(f"[MCP BRIDGE] Converting sources to enhanced_result format")
-                    documents = []
-                    if sources:
-                        logger.info(f"[MCP BRIDGE] Processing {len(sources)} sources (max_documents: {max_documents})")
-                        for idx, source in enumerate(sources[:max_documents]):
-                            doc = {
-                                "title": source.get("source", "Unknown"),
-                                "content": source.get("content", "")[:500] + "..." if len(source.get("content", "")) > 500 else source.get("content", ""),
-                                "score": source.get("relevance_score", 0.0),
-                                "collection": source.get("collection_name", ""),
-                                "metadata": {
-                                    "page": source.get("page"),
-                                    "doc_id": source.get("doc_id")
-                                }
-                            }
-                            documents.append(doc)
-                            logger.info(f"[MCP BRIDGE]   - Document {idx+1}: {doc['title']} (score: {doc['score']:.3f})")
-                    else:
-                        logger.info(f"[MCP BRIDGE] No sources to process")
-                    
-                    enhanced_result = {
-                        "success": True,
-                        "query": query,
-                        "context": context,
-                        "documents": documents,
-                        "documents_returned": len(documents),
-                        "total_documents_found": len(sources) if sources else 0,
-                        "collections_searched": collections or ["auto"],
-                        "execution_time_ms": execution_time,
+                    if rag_result.get('success'):
+                        documents = rag_result.get('documents', [])
+                        logger.info(f"[MCP BRIDGE] Processing {len(documents)} documents")
+                        if documents:
+                            for idx, doc in enumerate(documents[:3]):  # Log first 3
+                                logger.info(f"[MCP BRIDGE]   - Document {idx+1}: {doc.get('title', 'No title')} (score: {doc.get('score', 0.0):.3f})")
+                        
+                        # RAG service result is already in the right format
+                        enhanced_result = {
+                            "success": rag_result.get('success', True),
+                            "query": rag_result.get('query', query),
+                            "context": "",  # RAG service doesn't provide context string, build from documents
+                            "documents": documents,
+                            "documents_returned": rag_result.get('documents_returned', len(documents)),
+                            "total_documents_found": rag_result.get('total_documents_found', len(documents)),
+                            "collections_searched": rag_result.get('collections_searched', collections or ["auto"]),
+                            "execution_time_ms": execution_time,
                         "search_metadata": {
                             "service": "standard_chat_rag_service",
                             "same_as_standard_chat": True,

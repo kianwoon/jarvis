@@ -122,7 +122,7 @@ class RAGToolConfig:
                     },
                     "max_documents": {
                         "type": "integer",
-                        "description": "Maximum number of documents to return (uses RAG config if not specified)",
+                        "description": "Maximum number of documents to return (optional - defaults to 8 from RAG config. Only specify if you need a different value)",
                         "minimum": self.get_max_documents_min(),
                         "maximum": self.get_max_documents_max()
                     },
