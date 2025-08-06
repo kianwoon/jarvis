@@ -1422,9 +1422,12 @@ Output the tool call now:"""
 
 def llm_expand_query(question: str, llm_cfg: dict) -> list:
     """Use LLM to generate alternative queries for better retrieval"""
+    logger.debug(f"[QUERY_EXPANSION] Starting query expansion for: {question[:100]}...")
+    print(f"[DEBUG] Starting query expansion for: {question[:100]}...")  # Keep print for immediate visibility
     
     # Check if llm_cfg is valid
     if not isinstance(llm_cfg, dict):
+        logger.error(f"[QUERY_EXPANSION] Invalid llm_cfg type: {type(llm_cfg)}")
         print(f"[ERROR] llm_expand_query: Invalid llm_cfg type: {type(llm_cfg)}")
         return [question]  # Return original query only
     
@@ -1464,6 +1467,9 @@ def llm_expand_query(question: str, llm_cfg: dict) -> list:
     
     # If we don't have enough variations, use LLM expansion
     if len(expanded_queries) < 3:
+        logger.debug(f"[QUERY_EXPANSION] Need more variations, using LLM expansion")
+        print(f"[DEBUG] Need more variations, using LLM expansion")
+        
         expand_prompt = f"""Generate 2 alternative ways to ask this question for better document search. 
 Keep the same intent but vary the phrasing and keywords.
 Original question: {question}
@@ -1478,15 +1484,24 @@ Provide ONLY the 2 alternatives, one per line, no numbering or explanations."""
             "max_tokens": 150
         }
         
+        logger.debug(f"[QUERY_EXPANSION] Calling LLM API at {llm_api_url}")
+        print(f"[DEBUG] Calling LLM API for query expansion")
+        
         try:
             text = ""
-            # Use centralized timeout configuration
+            # Use centralized timeout configuration with a shorter timeout for query expansion
             from app.core.timeout_settings_cache import get_timeout_value
-            http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+            # Use a shorter timeout specifically for query expansion to prevent hanging
+            http_timeout = min(get_timeout_value("api_network", "http_request_timeout", 30), 10)
+            logger.debug(f"[QUERY_EXPANSION] Using timeout: {http_timeout} seconds")
             
-            with httpx.Client(timeout=http_timeout) as client:
+            with httpx.Client(timeout=httpx.Timeout(http_timeout, connect=5.0)) as client:
+                logger.debug(f"[QUERY_EXPANSION] Sending request with timeout={http_timeout}s")
                 with client.stream("POST", llm_api_url, json=payload) as response:
+                    logger.debug(f"[QUERY_EXPANSION] Got response, processing stream...")
+                    line_count = 0
                     for line in response.iter_lines():
+                        line_count += 1
                         if not line:
                             continue
                         if isinstance(line, bytes):
@@ -1500,17 +1515,26 @@ Provide ONLY the 2 alternatives, one per line, no numbering or explanations."""
                         if line.startswith("data: "):
                             token = line.replace("data: ", "")
                             text += token
+                    logger.debug(f"[QUERY_EXPANSION] Processed {line_count} lines from stream")
             
             # Parse alternatives
+            logger.debug(f"[QUERY_EXPANSION] Raw LLM response: {text[:200]}...")
             alternatives = [q.strip() for q in text.strip().split('\n') if q.strip() and len(q.strip()) > 5]
             expanded_queries.extend(alternatives[:2])  # Take up to 2 alternatives
+            logger.debug(f"[QUERY_EXPANSION] Added {len(alternatives[:2])} LLM-generated variations")
+            print(f"[DEBUG] LLM query expansion successful, added {len(alternatives[:2])} variations")
             
+        except httpx.TimeoutException as e:
+            logger.warning(f"[QUERY_EXPANSION] LLM expansion timed out after {http_timeout}s: {str(e)}")
+            print(f"[WARNING] LLM query expansion timed out after {http_timeout}s, using basic expansion only")
         except Exception as e:
+            logger.error(f"[QUERY_EXPANSION] LLM expansion failed: {str(e)}")
             print(f"[DEBUG] LLM query expansion failed: {str(e)}")
     
     # Normalize all queries to lowercase for consistent searching
     normalized_queries = [query.lower().strip() for query in expanded_queries]
     
+    logger.debug(f"[QUERY_EXPANSION] Final expanded queries: {normalized_queries}")
     print(f"[DEBUG] Expanded queries: {normalized_queries}")
     return normalized_queries
 
@@ -2005,9 +2029,18 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
     NUM_DOCS = doc_settings.get('num_docs_retrieve', 20)
     
     # Use LLM to expand queries for better recall
+    logger.info(f"[RAG_SEARCH] Starting query expansion for: {question[:100]}...")
     print(f"[DEBUG] Starting query expansion for: {question}")
-    queries_to_try = llm_expand_query(question, llm_cfg)
-    print(f"[DEBUG] Query expansion completed successfully. Expanded queries: {queries_to_try}")
+    
+    try:
+        queries_to_try = llm_expand_query(question, llm_cfg)
+        logger.info(f"[RAG_SEARCH] Query expansion completed. Got {len(queries_to_try)} variations")
+        print(f"[DEBUG] Query expansion completed successfully. Expanded queries: {queries_to_try}")
+    except Exception as e:
+        logger.error(f"[RAG_SEARCH] Query expansion failed with error: {str(e)}")
+        print(f"[ERROR] Query expansion failed: {str(e)}, using original query only")
+        queries_to_try = [question.lower()]  # Fallback to original query
+    
     print(f"[DEBUG] Starting hybrid search process...")
     
     try:

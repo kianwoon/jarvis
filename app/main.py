@@ -7,7 +7,11 @@ import asyncio
 import logging
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+# Temporarily set to DEBUG for troubleshooting query expansion issues
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Check service dependencies
