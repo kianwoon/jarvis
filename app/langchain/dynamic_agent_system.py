@@ -1373,8 +1373,9 @@ TASK: Provide your analysis of the query above."""
     async def _process_tool_calls(self, agent_name: str, agent_response: str, query: str, context: Dict = None, agent_data: Dict = None, parent_span = None) -> tuple[str, list]:
         """Process agent response for tool calls and execute them using intelligent tool system"""
         try:
-            print(f"[DEBUG] {agent_name}: _process_tool_calls started with query: {query[:50]}...")
-            print(f"[DEBUG] {agent_name}: Method parameters - query type: {type(query)}, context: {context is not None}, agent_data: {agent_data is not None}")
+            logger.info(f"[TOOL PROCESSING] ========== Starting Tool Processing for {agent_name} ==========")
+            logger.info(f"[TOOL PROCESSING] Agent: {agent_name}")
+            logger.debug(f"[TOOL PROCESSING] Query preview: {query[:100]}..." if query and len(query) > 100 else f"[TOOL PROCESSING] Query: {query}")
             
             # Use legacy tool executor to parse agent JSON responses (like standard chat)
             try:
@@ -1387,8 +1388,8 @@ TASK: Provide your analysis of the query above."""
                 use_intelligent_tools = False
                 use_intelligent_tool_results = False
             
-            print(f"[DEBUG] {agent_name}: _process_tool_calls called with response length: {len(agent_response)}")
-            print(f"[DEBUG] {agent_name}: Response preview: {agent_response[:200]}")
+            logger.debug(f"[TOOL PROCESSING] Agent response length: {len(agent_response)}")
+            logger.debug(f"[TOOL PROCESSING] Response preview: {agent_response[:200]}..." if len(agent_response) > 200 else f"[TOOL PROCESSING] Response: {agent_response}")
             
             if use_intelligent_tools:
                 # Use intelligent tool system for multi-agent mode
@@ -1489,18 +1490,24 @@ TASK: Provide your analysis of the query above."""
                     print(f"[DEBUG] {agent_name}: No tool patterns found, returning original response")
                     return agent_response, []
                 
-                print(f"[DEBUG] {agent_name}: Tool patterns detected, extracting tool calls")
+                logger.info(f"[TOOL PROCESSING] Tool patterns detected in agent response, extracting tool calls")
                 
                 # Extract tool calls first to debug
                 tool_calls = tool_executor.extract_tool_calls(agent_response)
-                print(f"[DEBUG] {agent_name}: Extracted {len(tool_calls)} tool calls: {tool_calls}")
+                logger.info(f"[TOOL PROCESSING] Extracted {len(tool_calls)} tool calls from response")
                 
                 if not tool_calls:
-                    print(f"[DEBUG] {agent_name}: No valid tool calls extracted")
+                    logger.info(f"[TOOL PROCESSING] No valid tool calls found")
+                    logger.info(f"[TOOL PROCESSING] ========== Tool Processing Complete (no tools) ==========")
                     return agent_response, []
                 
+                # Log each tool call
+                for idx, tool_call in enumerate(tool_calls, 1):
+                    logger.info(f"[TOOL PROCESSING] Tool {idx}: {tool_call.get('tool', 'unknown')}")
+                    logger.debug(f"[TOOL PROCESSING]   Parameters: {json.dumps(tool_call.get('parameters', {}), indent=2)}")
+                
                 # Execute tool calls - call synchronously since call_mcp_tool is sync
-                print(f"[DEBUG] {agent_name}: Executing {len(tool_calls)} tool calls")
+                logger.info(f"[TOOL PROCESSING] Starting execution of {len(tool_calls)} tools")
                 
                 # Execute tools in a separate thread to avoid event loop conflicts
                 tool_results = []
@@ -1511,6 +1518,9 @@ TASK: Provide your analysis of the query above."""
                 
                 def execute_tool_sync(tool_name, parameters):
                     """Execute tool in a separate thread to avoid event loop conflicts"""
+                    logger.info(f"[TOOL EXECUTION] Starting tool: {tool_name}")
+                    logger.debug(f"[TOOL EXECUTION] Parameters: {json.dumps(parameters, indent=2) if parameters else 'None'}")
+                    
                     # Create tool span for tracing if parent span or trace is available
                     from app.core.langfuse_integration import get_tracer
                     tracer = get_tracer()
@@ -1518,7 +1528,7 @@ TASK: Provide your analysis of the query above."""
                     
                     if (parent_span or self.trace) and tracer and tracer.is_enabled():
                         try:
-                            print(f"[DEBUG] Creating tool span for {tool_name} by agent {agent_name}")
+                            logger.debug(f"[TOOL EXECUTION] Creating tool span for {tool_name} by agent {agent_name}")
                             # Add agent info to parameters
                             params_with_agent = dict(parameters) if isinstance(parameters, dict) else {}
                             params_with_agent["agent"] = agent_name
@@ -1573,6 +1583,11 @@ TASK: Provide your analysis of the query above."""
                             error_type = result.get("error_type", "unknown")
                             attempts = result.get("attempts", 1)
                             
+                            logger.error(f"[TOOL EXECUTION] Tool {tool_name} failed")
+                            logger.error(f"[TOOL EXECUTION]   Error: {error_msg}")
+                            logger.error(f"[TOOL EXECUTION]   Type: {error_type}")
+                            logger.error(f"[TOOL EXECUTION]   Attempts: {attempts}")
+                            
                             # End tool span with error
                             if tool_span:
                                 try:
@@ -1581,10 +1596,7 @@ TASK: Provide your analysis of the query above."""
                                 except Exception as e:
                                     print(f"[ERROR] Failed to end tool span: {e}")
                             
-                            if attempts > 1:
-                                print(f"[ERROR] Tool {tool_name} failed after {attempts} attempts ({error_type}): {error_msg}")
-                            else:
-                                print(f"[ERROR] Tool {tool_name} failed ({error_type}): {error_msg}")
+                            # Log attempt information is already done above
                             
                             return {
                                 "tool": tool_name,
@@ -1596,13 +1608,16 @@ TASK: Provide your analysis of the query above."""
                             }
                         else:
                             # Success
+                            logger.info(f"[TOOL EXECUTION] Tool {tool_name} completed successfully")
+                            logger.debug(f"[TOOL EXECUTION] Result preview: {str(result)[:300]}..." if result and len(str(result)) > 300 else f"[TOOL EXECUTION] Result: {result}")
+                            
                             # End tool span with success
                             if tool_span:
                                 try:
-                                    print(f"[DEBUG] Ending tool span for {tool_name} with success")
+                                    logger.debug(f"[TOOL EXECUTION] Ending tool span for {tool_name} with success")
                                     tracer.end_span_with_result(tool_span, result, True)
                                 except Exception as e:
-                                    print(f"[ERROR] Failed to end tool span: {e}")
+                                    logger.warning(f"[TOOL EXECUTION] Failed to end tool span: {e}")
                             
                             return {
                                 "tool": tool_name,
@@ -1612,7 +1627,7 @@ TASK: Provide your analysis of the query above."""
                             }
                         
                     except Exception as e:
-                        print(f"[ERROR] Thread execution failed for {tool_name}: {e}")
+                        logger.error(f"[TOOL EXECUTION] Thread execution failed for {tool_name}: {e}")
                         
                         # End tool span with error
                         if tool_span:
@@ -1709,7 +1724,10 @@ TASK: Provide your analysis of the query above."""
                                     print(f"[RAG DEBUG] Full response: {str(result)[:500]}")
                             
                             tool_results.append(result)
-                            print(f"[DEBUG] {agent_name}: Tool {result['tool']} -> {'Success' if result['success'] else 'Failed'}")
+                            status = 'Success' if result.get('success', False) else 'Failed'
+                            logger.info(f"[TOOL PROCESSING] Tool {result.get('tool', 'unknown')} result: {status}")
+                            if not result.get('success', False):
+                                logger.warning(f"[TOOL PROCESSING]   Error: {result.get('error', 'Unknown error')}")
                         except concurrent.futures.TimeoutError:
                             print(f"[ERROR] {agent_name}: Tool {tool_call.get('tool')} timed out")
                             tool_results.append({
@@ -1727,7 +1745,8 @@ TASK: Provide your analysis of the query above."""
                                 "success": False
                             })
                 
-                print(f"[DEBUG] {agent_name}: All tools executed. Results: {len(tool_results)} tools")
+                logger.info(f"[TOOL PROCESSING] Completed execution of {len(tool_results)} tools")
+                logger.info(f"[TOOL PROCESSING] ========== Tool Processing Complete for {agent_name} ==========")
             else:
                 # Intelligent tools path - no legacy tool execution needed
                 tool_results = []
@@ -1747,20 +1766,42 @@ TASK: Provide your analysis of the query above."""
                         tool_context += f"\n**{tool_name}:**\n"
                         
                         # DEBUG: Log what we're processing for RAG tools
-                        if 'rag_knowledge_search' in tool_name.lower():
+                        if 'rag_knowledge_search' in tool_name.lower() or 'knowledge_search' in tool_name.lower():
                             print(f"[RAG PROCESS] {agent_name}: Processing RAG tool result")
                             print(f"[RAG PROCESS] tool_result type: {type(tool_result)}")
                             if isinstance(tool_result, dict):
                                 print(f"[RAG PROCESS] tool_result keys: {list(tool_result.keys())}")
-                                print(f"[RAG PROCESS] documents_found: {tool_result.get('documents_found', 'KEY NOT FOUND')}")
-                                print(f"[RAG PROCESS] has_results: {tool_result.get('has_results', 'KEY NOT FOUND')}")
+                                print(f"[RAG PROCESS] documents_found (direct): {tool_result.get('documents_found', 'KEY NOT FOUND')}")
+                                print(f"[RAG PROCESS] has_results (direct): {tool_result.get('has_results', 'KEY NOT FOUND')}")
+                                # Check if nested
+                                if 'result' in tool_result and isinstance(tool_result['result'], dict):
+                                    nested = tool_result['result']
+                                    print(f"[RAG PROCESS] Found nested result with keys: {list(nested.keys())}")
+                                    print(f"[RAG PROCESS] nested documents_found: {nested.get('documents_found', 'KEY NOT FOUND')}")
+                                    print(f"[RAG PROCESS] nested total_documents_found: {nested.get('total_documents_found', 'KEY NOT FOUND')}")
+                                    print(f"[RAG PROCESS] nested documents_returned: {nested.get('documents_returned', 'KEY NOT FOUND')}")
+                                    print(f"[RAG PROCESS] nested has_results: {nested.get('has_results', 'KEY NOT FOUND')}")
                         
                         # Special handling for RAG knowledge search tools
-                        if 'rag_knowledge_search' in tool_name.lower() and isinstance(tool_result, dict):
-                            # RAG tools return documents directly in tool_result, not nested under 'result'
-                            documents_found = tool_result.get('documents_found', 0)
-                            documents = tool_result.get('documents', [])
-                            text_summary = tool_result.get('text_summary', '')
+                        if ('rag_knowledge_search' in tool_name.lower() or 'knowledge_search' in tool_name.lower()) and isinstance(tool_result, dict):
+                            # Check if result is nested (workflow mode) or direct (standard chat mode)
+                            # In workflow mode via MCP bridge, results are nested under 'result' key
+                            if 'result' in tool_result and isinstance(tool_result['result'], dict):
+                                # Workflow mode: extract from nested result
+                                rag_data = tool_result['result']
+                                # Handle both 'documents_found' and 'total_documents_found' keys
+                                documents_found = rag_data.get('documents_found') or rag_data.get('total_documents_found') or rag_data.get('documents_returned', 0)
+                                documents = rag_data.get('documents', [])
+                                text_summary = rag_data.get('text_summary', '')
+                                print(f"[RAG PROCESS] {agent_name}: Workflow mode - extracted from nested result")
+                                print(f"[RAG PROCESS] documents_found: {documents_found}, has text_summary: {bool(text_summary)}")
+                            else:
+                                # Standard chat mode: direct access
+                                documents_found = tool_result.get('documents_found', 0)
+                                documents = tool_result.get('documents', [])
+                                text_summary = tool_result.get('text_summary', '')
+                                print(f"[RAG PROCESS] {agent_name}: Standard mode - direct access")
+                                print(f"[RAG PROCESS] documents_found: {documents_found}, has text_summary: {bool(text_summary)}")
                             
                             if text_summary:
                                 # Use the pre-formatted text summary if available

@@ -1520,9 +1520,13 @@ def keyword_search_milvus(question: str, collection_name: str, uri: str, token: 
     import re
     
     try:
+        print(f"[DEBUG] keyword_search_milvus: Connecting to Milvus...")
         connections.connect(uri=uri, token=token, alias="keyword_search")
+        print(f"[DEBUG] keyword_search_milvus: Connected, accessing collection {collection_name}...")
         collection = Collection(collection_name, using="keyword_search")
+        print(f"[DEBUG] keyword_search_milvus: Loading collection...")
         collection.load()
+        print(f"[DEBUG] keyword_search_milvus: Collection loaded successfully")
         
         # Generic stop words for any query
         stop_words = {
@@ -1875,16 +1879,27 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
     
     print(f"[DEBUG] handle_rag_query: Embedding config - endpoint: {embedding_endpoint}, model: {embedding_model}")
     
+    print(f"[DEBUG] Setting up embedding function...")
     if embedding_endpoint and isinstance(embedding_endpoint, str) and embedding_endpoint.strip():
-        embeddings = HTTPEmbeddingFunction(embedding_endpoint)
-        print(f"[DEBUG] handle_rag_query: Using HTTP embedding endpoint")
+        print(f"[DEBUG] Creating HTTP embedding function with endpoint: {embedding_endpoint}")
+        try:
+            embeddings = HTTPEmbeddingFunction(embedding_endpoint)
+            print(f"[DEBUG] HTTP embedding function created successfully")
+        except Exception as e:
+            print(f"[ERROR] Failed to create HTTP embedding function: {str(e)}")
+            raise
     else:
         # Use default model if embedding_model is not a valid string
         model_name = embedding_cfg.get("embedding_model", "BAAI/bge-base-en-v1.5")
         if not isinstance(model_name, str) or not model_name.strip():
             model_name = "BAAI/bge-base-en-v1.5"
-        embeddings = HuggingFaceEmbeddings(model_name=model_name)
-        print(f"[DEBUG] handle_rag_query: Using HuggingFace embeddings with model: {model_name}")
+        print(f"[DEBUG] Creating HuggingFace embeddings with model: {model_name}")
+        try:
+            embeddings = HuggingFaceEmbeddings(model_name=model_name)
+            print(f"[DEBUG] HuggingFace embedding function created successfully")
+        except Exception as e:
+            print(f"[ERROR] Failed to create HuggingFace embedding function: {str(e)}")
+            raise
     
     # Determine which collections to search
     # Handle both old and new vector database configuration formats
@@ -1990,30 +2005,66 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
     NUM_DOCS = doc_settings.get('num_docs_retrieve', 20)
     
     # Use LLM to expand queries for better recall
+    print(f"[DEBUG] Starting query expansion for: {question}")
     queries_to_try = llm_expand_query(question, llm_cfg)
+    print(f"[DEBUG] Query expansion completed successfully. Expanded queries: {queries_to_try}")
+    print(f"[DEBUG] Starting hybrid search process...")
     
     try:
         # HYBRID SEARCH: Run both vector and keyword search across all collections
         all_docs = []
         seen_ids = set()
         
+        print(f"[DEBUG] Collections to search: {collections_to_search}")
+        print(f"[DEBUG] Starting search across {len(collections_to_search)} collections...")
+        
         # Search each collection
-        for collection_name in collections_to_search:
-            print(f"[DEBUG] Searching collection: {collection_name}")
+        for i, collection_name in enumerate(collections_to_search):
+            print(f"[DEBUG] Processing collection {i+1}/{len(collections_to_search)}: {collection_name}")
+            print(f"[DEBUG] Creating Milvus store for collection: {collection_name}...")
+            print(f"[DEBUG] Using URI: {uri[:50]}{'...' if len(str(uri)) > 50 else ''}")
+            print(f"[DEBUG] Using embeddings type: {type(embeddings).__name__}")
             
-            # Create Milvus store for this collection
-            milvus_store = Milvus(
-                embedding_function=embeddings,
-                collection_name=collection_name,
-                connection_args={"uri": uri, "token": token},
-                text_field="content"
-            )
+            # Create Milvus store for this collection with timeout handling
+            try:
+                import signal
+                import asyncio
+                from concurrent.futures import TimeoutError
+                
+                # Add timeout to Milvus store creation
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("Milvus store creation timed out after 30 seconds")
+                
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(30)  # 30 second timeout
+                
+                print(f"[DEBUG] Starting Milvus store creation...")
+                milvus_store = Milvus(
+                    embedding_function=embeddings,
+                    collection_name=collection_name,
+                    connection_args={"uri": uri, "token": token},
+                    text_field="content"
+                )
+                signal.alarm(0)  # Cancel timeout
+                print(f"[DEBUG] Milvus store created successfully for {collection_name}")
+                
+            except TimeoutError as e:
+                print(f"[ERROR] Milvus store creation timed out for collection {collection_name}: {e}")
+                signal.alarm(0)  # Cancel timeout
+                continue  # Skip this collection
+            except Exception as e:
+                print(f"[ERROR] Failed to create Milvus store for collection {collection_name}: {str(e)}")
+                signal.alarm(0)  # Cancel timeout
+                continue  # Skip this collection
             
             # 1. Vector search with query expansion
-            for query in queries_to_try:
+            print(f"[DEBUG] Starting vector search with {len(queries_to_try)} queries for collection {collection_name}")
+            for j, query in enumerate(queries_to_try):
                 try:
+                    print(f"[DEBUG] Processing query {j+1}/{len(queries_to_try)}: '{query[:50]}{'...' if len(query) > 50 else ''}'")
                     # Normalize query to lowercase for consistent vector search
                     normalized_query = query.lower().strip()
+                    print(f"[DEBUG] Normalized query: '{normalized_query[:50]}{'...' if len(normalized_query) > 50 else ''}'")
                     
                     # Create vector search span for tracing
                     vector_search_span = None
@@ -2032,9 +2083,33 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
                         except Exception as e:
                             logger.warning(f"Failed to create vector search span: {e}")
                     
+                    print(f"[DEBUG] Starting vector search operation...")
                     vector_search_start = time.time()
-                    docs = milvus_store.similarity_search_with_score(normalized_query, k=NUM_DOCS) if hasattr(milvus_store, 'similarity_search_with_score') else [(doc, 0.0) for doc in milvus_store.similarity_search(normalized_query, k=NUM_DOCS)]
-                    vector_search_end = time.time()
+                    
+                    # Add timeout to vector search
+                    try:
+                        signal.signal(signal.SIGALRM, timeout_handler)
+                        signal.alarm(60)  # 60 second timeout for vector search
+                        
+                        if hasattr(milvus_store, 'similarity_search_with_score'):
+                            print(f"[DEBUG] Using similarity_search_with_score method...")
+                            docs = milvus_store.similarity_search_with_score(normalized_query, k=NUM_DOCS)
+                        else:
+                            print(f"[DEBUG] Using fallback similarity_search method...")
+                            docs = [(doc, 0.0) for doc in milvus_store.similarity_search(normalized_query, k=NUM_DOCS)]
+                        
+                        signal.alarm(0)  # Cancel timeout
+                        vector_search_end = time.time()
+                        print(f"[DEBUG] Vector search completed successfully")
+                        
+                    except TimeoutError as e:
+                        print(f"[ERROR] Vector search timed out after 60 seconds for query: {normalized_query[:50]}")
+                        signal.alarm(0)  # Cancel timeout
+                        continue  # Skip this query
+                    except Exception as e:
+                        print(f"[ERROR] Vector search failed for query '{normalized_query[:50]}': {str(e)}")
+                        signal.alarm(0)  # Cancel timeout
+                        continue  # Skip this query
                     
                     # End vector search span with results
                     if vector_search_span:
@@ -2085,13 +2160,32 @@ def handle_rag_query(question: str, thinking: bool = False, collections: List[st
                     logger.warning(f"Failed to create keyword search span: {e}")
             
             keyword_search_start = time.time()
-            keyword_docs = keyword_search_milvus(
-                question,
-                collection_name,
-                uri=milvus_cfg.get("MILVUS_URI"),
-                token=milvus_cfg.get("MILVUS_TOKEN")
-            )
-            keyword_search_end = time.time()
+            try:
+                print(f"[DEBUG] Starting keyword search operation...")
+                # Add timeout to keyword search
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(45)  # 45 second timeout for keyword search
+                
+                keyword_docs = keyword_search_milvus(
+                    question,
+                    collection_name,
+                    uri=milvus_cfg.get("MILVUS_URI"),
+                    token=milvus_cfg.get("MILVUS_TOKEN")
+                )
+                signal.alarm(0)  # Cancel timeout
+                keyword_search_end = time.time()
+                print(f"[DEBUG] Keyword search completed successfully")
+                
+            except TimeoutError as e:
+                print(f"[ERROR] Keyword search timed out after 45 seconds for collection {collection_name}: {e}")
+                signal.alarm(0)  # Cancel timeout
+                keyword_docs = []  # Use empty results
+                keyword_search_end = time.time()
+            except Exception as e:
+                print(f"[ERROR] Keyword search failed for collection {collection_name}: {str(e)}")
+                signal.alarm(0)  # Cancel timeout
+                keyword_docs = []  # Use empty results
+                keyword_search_end = time.time()
             
             # End keyword search span with results
             if keyword_search_span:
@@ -4689,10 +4783,16 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
     
     # Ensure logger is available in this function context
     import logging
+    import json
     logger = logging.getLogger(__name__)
+    
+    logger.info(f"[MCP TOOL CALL] ========== Starting MCP Tool Call ==========")
+    logger.info(f"[MCP TOOL CALL] Tool: {tool_name}")
+    logger.info(f"[MCP TOOL CALL] Parameters: {json.dumps(parameters, indent=2) if parameters else 'None'}")
     
     # Apply parameter mapping for common mismatches FIRST (including search optimization)
     tool_name, parameters = _map_tool_parameters_service(tool_name, parameters)
+    logger.debug(f"[MCP TOOL CALL] After parameter mapping - Tool: {tool_name}")
     
     # Create tool span AFTER optimization so Langfuse shows optimized parameters
     tool_span = None
@@ -4725,7 +4825,11 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
     try:
         from app.core.mcp_tools_cache import get_enabled_mcp_tools
         enabled_tools = get_enabled_mcp_tools()
+        logger.debug(f"[MCP TOOL CALL] Found {len(enabled_tools)} enabled tools")
+        
         if tool_name not in enabled_tools:
+            logger.warning(f"[MCP TOOL CALL] Tool {tool_name} not found in enabled tools")
+            logger.debug(f"[MCP TOOL CALL] Available tools sample: {list(enabled_tools.keys())[:10]}")
             # End tool span with error
             if tool_span and tracer:
                 try:
@@ -4736,6 +4840,7 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
         
         tool_info = enabled_tools[tool_name]
         endpoint = tool_info["endpoint"]
+        logger.info(f"[MCP TOOL CALL] Tool found - endpoint type: {endpoint[:20] if endpoint else 'None'}")
         
         # Replace localhost with the actual hostname from manifest if available
         server_hostname = tool_info.get("server_hostname")
@@ -4819,7 +4924,8 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
                     
                     return error_result
             
-            logger.info(f"[UNIFIED] Calling {tool_name} via unified MCP service")
+            logger.info(f"[MCP TOOL CALL] Calling {tool_name} via unified MCP service")
+            logger.debug(f"[MCP TOOL CALL] Clean parameters being sent: {clean_parameters}")
             
             # Import unified service
             from app.core.unified_mcp_service import call_mcp_tool_unified
@@ -4867,7 +4973,11 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
                 
             except RuntimeError:
                 # No running loop, we can use asyncio.run()
+                logger.info(f"[MCP TOOL CALL] Executing in sync context (no running loop)")
                 result = asyncio.run(call_mcp_tool_unified(tool_info, tool_name, clean_parameters))
+                logger.info(f"[MCP TOOL CALL] Sync execution completed")
+            
+            logger.debug(f"[MCP TOOL CALL] Result preview: {str(result)[:500]}..." if result and len(str(result)) > 500 else f"[MCP TOOL CALL] Result: {result}")
             
             # End tool span with result
             if tool_span and tracer:
@@ -4881,12 +4991,14 @@ def call_mcp_tool(tool_name, parameters, trace=None, _skip_span_creation=False):
             else:
                 logger.info(f"[TOOL SPAN DEBUG] No tool span to end for {tool_name} - span: {tool_span is not None}, tracer: {tracer is not None}")
             
-            logger.info(f"[UNIFIED] Tool {tool_name} completed via unified service")
+            logger.info(f"[MCP TOOL CALL] Tool {tool_name} completed successfully")
+            logger.info(f"[MCP TOOL CALL] ========== MCP Tool Call Complete ==========")
             return result
             
         except Exception as e:
             error_msg = f"Unified MCP service failed for {tool_name}: {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"[MCP TOOL CALL] {error_msg}")
+            logger.info(f"[MCP TOOL CALL] ========== MCP Tool Call Failed ==========")
             if tool_span and tracer:
                 try:
                     tracer.end_span_with_result(tool_span, None, False, error_msg)

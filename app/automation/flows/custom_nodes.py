@@ -99,9 +99,18 @@ class JarvisMCPToolNode(CustomComponent):
                 tool_params["num_results"] = num_results
             
             # Execute tool
+            logger.info(f"[JARVIS MCP NODE] ========== CALLING MCP BRIDGE ==========")
+            logger.info(f"[JARVIS MCP NODE] Tool: {tool_name}")
+            logger.info(f"[JARVIS MCP NODE] Parameters: {tool_params}")
+            logger.info(f"[JARVIS MCP NODE] About to call mcp_bridge.execute_tool_sync...")
+            
             result = mcp_bridge.execute_tool_sync(tool_name, tool_params)
             
-            logger.info(f"[JARVIS MCP NODE] Executed {tool_name}: {result.get('success', False)}")
+            logger.info(f"[JARVIS MCP NODE] ========== MCP BRIDGE RESULT ==========")
+            logger.info(f"[JARVIS MCP NODE] Tool: {tool_name}")
+            logger.info(f"[JARVIS MCP NODE] Success: {result.get('success', False)}")
+            logger.info(f"[JARVIS MCP NODE] Result: {str(result)[:500]}...")
+            logger.info(f"[JARVIS MCP NODE] ==================================================")
             
             # Return data in Langflow format
             return Data(

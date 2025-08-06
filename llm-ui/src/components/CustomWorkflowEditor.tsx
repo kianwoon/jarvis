@@ -2018,6 +2018,22 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
           setNodes(nodesWithRouterConnections);
           setEdges(validEdges);
           
+          // Set workflow type from loaded workflow metadata
+          if (langflowConfig.workflow_type) {
+            setWorkflowType(langflowConfig.workflow_type);
+            console.log(`[WORKFLOW DEBUG] Setting workflow type from metadata: ${langflowConfig.workflow_type}`);
+          } else if (langflowConfig.metadata && langflowConfig.metadata.workflow_type) {
+            setWorkflowType(langflowConfig.metadata.workflow_type);
+            console.log(`[WORKFLOW DEBUG] Setting workflow type from metadata.workflow_type: ${langflowConfig.metadata.workflow_type}`);
+          } else {
+            // Detect workflow type based on node types for legacy workflows
+            const hasAgentNodes = langflowConfig.nodes.some(node => 
+              node.type === 'agentnode' || node.data?.type === 'AgentNode'
+            );
+            const detectedType = hasAgentNodes ? 'agent_based' : 'legacy';
+            setWorkflowType(detectedType);
+            console.log(`[WORKFLOW DEBUG] Auto-detected workflow type based on nodes: ${detectedType}`);
+          }
           
           // Set higher node counter to avoid ID conflicts
           const maxId = Math.max(
@@ -3473,24 +3489,35 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
     resetAllNodeExecutionData();
 
     try {
-      // Determine execution endpoint based on workflow type
-      const endpoint = workflowType === 'agent_based' 
-        ? `http://127.0.0.1:8000/api/v1/automation/workflows/${workflowId}/execute/stream`
-        : `http://127.0.0.1:8000/api/v1/automation/workflows/${workflowId}/execute`;
+      // All workflows now use the streaming endpoint
+      const endpoint = `http://127.0.0.1:8000/api/v1/automation/workflows/${workflowId}/execute/stream`;
+
+      // DEBUG LOGGING for workflow execution
+      console.log(`[WORKFLOW DEBUG] === EXECUTING WORKFLOW ID ${workflowId} ===`);
+      console.log(`[WORKFLOW DEBUG] Workflow type: ${workflowType}`);
+      console.log(`[WORKFLOW DEBUG] Endpoint: ${endpoint}`);
+      console.log(`[WORKFLOW DEBUG] Execution message: ${executionMessage}`);
 
       const requestBody = {
         input_data: {},
-        execution_mode: workflowType === 'agent_based' ? 'stream' : 'sync',
+        execution_mode: 'stream', // All workflows now use streaming
         ...(executionMessage && { message: executionMessage })
       };
 
-      if (workflowType === 'agent_based') {
-        // Streaming execution for agent-based workflows
-        const response = await fetch(endpoint, {
+      console.log(`[WORKFLOW DEBUG] Request body:`, requestBody);
+
+      // All workflows now use streaming execution
+      console.log(`[WORKFLOW DEBUG] Making fetch request to: ${endpoint}`);
+      console.log(`[WORKFLOW DEBUG] Method: POST`);
+      console.log(`[WORKFLOW DEBUG] Headers: Content-Type: application/json`);
+      
+      const response = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(requestBody),
         });
+
+        console.log(`[WORKFLOW DEBUG] Response status: ${response.status}`);
 
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -3528,23 +3555,6 @@ const CustomWorkflowEditor: React.FC<CustomWorkflowEditorProps> = ({
               }
             }
           }
-        }
-      } else {
-        // Standard execution for legacy workflows
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          setExecutionLogs([{
-            timestamp: new Date().toISOString(),
-            type: 'workflow_complete',
-            execution_id: result.execution_id,
-            message: 'Workflow execution completed'
-          }]);
         }
       }
     } catch (error) {

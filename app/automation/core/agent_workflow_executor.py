@@ -57,6 +57,10 @@ class AgentWorkflowExecutor:
         resource_usage = self.resource_monitor.start_workflow_monitoring(workflow_id, execution_id)
         
         try:
+            logger.info(f"[AGENT NODE DEBUG] ===== WORKFLOW EXECUTION START =====")
+            logger.info(f"[AGENT NODE DEBUG] Workflow ID: {workflow_id}, Execution ID: {execution_id}")
+            logger.info(f"[AGENT NODE DEBUG] Input data: {input_data}")
+            logger.info(f"[AGENT NODE DEBUG] Message: {message}")
             logger.info(f"[AGENT WORKFLOW] Starting workflow {workflow_id}, execution {execution_id}")
             
             # OPTIMIZED: Use agent instance pool instead of creating fresh instances
@@ -2318,10 +2322,13 @@ Please process this request independently and provide your analysis."""
                 ""
             )
             
-            logger.debug(f"[AGENT WORKFLOW] Extracted agent name: '{agent_name}'")
+            logger.info(f"[AGENT NODE DEBUG] Starting execution for agent: '{agent_name}' in workflow {workflow_id}")
+            logger.info(f"[AGENT NODE DEBUG] Parameters received - agent_index: {agent_index}, prompt length: {len(prompt) if prompt else 0}")
+            logger.info(f"[AGENT NODE DEBUG] Agent configuration keys: {list(agent.keys())}")
+            logger.debug(f"[AGENT NODE DEBUG] Full agent config: {agent}")
             
             if not agent_name:
-                logger.error(f"[AGENT WORKFLOW] No agent name found in: {list(agent.keys())}")
+                logger.error(f"[AGENT NODE DEBUG] No agent name found in: {list(agent.keys())}")
                 raise ValueError(f"Agent name is required. Available keys: {list(agent.keys())}")
                 
             logger.info(f"[AGENT WORKFLOW] Executing agent: {agent_name}")
@@ -2493,6 +2500,11 @@ Please process this request independently and provide your analysis."""
             
             # CRITICAL FIX: Pass the correct parent span to DynamicMultiAgentSystem
             # This should be the agent-execution-sequence span, not the main trace
+            logger.info(f"[AGENT NODE DEBUG] Calling dynamic_agent_system.execute_agent for {agent_name}")
+            logger.info(f"[AGENT NODE DEBUG] Tools available: {agent_info.get('tools', [])}")
+            logger.info(f"[AGENT NODE DEBUG] Query: {simple_query[:200]}...")
+            logger.info(f"[AGENT NODE DEBUG] Context length: {len(context) if context else 0}")
+            
             async for event in dynamic_agent_system.execute_agent(
                 agent_name=agent_name,
                 agent_data=agent_info,
@@ -2528,13 +2540,24 @@ Please process this request independently and provide your analysis."""
                     logger.info(f"[AGENT WORKFLOW] Extracted model from event: {model_info} (event keys: {list(event.keys())})")
                     
                 elif event_type == "tool_call":
+                    tool_name = event.get("tool", "")
+                    tool_input = event.get("input", {})
+                    tool_output = event.get("output", {})
+                    success = event.get("success", True)
+                    duration = event.get("duration", 0)
+                    
+                    logger.info(f"[AGENT NODE DEBUG] MCP tool call detected: {tool_name}")
+                    logger.info(f"[AGENT NODE DEBUG] Tool input: {str(tool_input)[:200]}...")
+                    logger.info(f"[AGENT NODE DEBUG] Tool success: {success}, duration: {duration}s")
+                    logger.info(f"[AGENT NODE DEBUG] Tool output: {str(tool_output)[:300]}...")
+                    
                     tool_call_info = {
-                        "tool": event.get("tool", ""),
-                        "input": event.get("input", {}),
-                        "output": event.get("output", {}),
-                        "duration": event.get("duration", 0),
-                        "success": event.get("success", True),
-                        "name": event.get("tool", "")
+                        "tool": tool_name,
+                        "input": tool_input,
+                        "output": tool_output,
+                        "duration": duration,
+                        "success": success,
+                        "name": tool_name
                     }
                     tools_used.append(tool_call_info)
                     

@@ -64,6 +64,14 @@ api_router.include_router(
     tags=["mcp"]
 )
 
+# Also add an alias route for backward compatibility with workflows
+# that may be using the old URL pattern
+api_router.include_router(
+    mcp_tools.router,
+    prefix="/mcp-tools",
+    tags=["mcp-legacy"]
+)
+
 api_router.include_router(
     mcp_servers.router,
     prefix="/mcp/servers",

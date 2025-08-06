@@ -68,18 +68,39 @@ class AutomationExecutor:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Execute workflow with real-time streaming for agent-based workflows"""
         
+        logger.info(f"[AUTOMATION EXECUTOR DEBUG] Starting execute_workflow_stream for workflow_id={workflow_id}, execution_id={execution_id}")
+        logger.info(f"[AUTOMATION EXECUTOR DEBUG] Input data: {input_data}")
+        logger.info(f"[AUTOMATION EXECUTOR DEBUG] Message: {message}")
+        logger.info(f"[AUTOMATION EXECUTOR DEBUG] Langflow config nodes: {len(langflow_config.get('nodes', []))}")
+        logger.info(f"[AUTOMATION EXECUTOR DEBUG] Langflow config edges: {len(langflow_config.get('edges', []))}")
+        
         workflow_type = self._detect_workflow_type(langflow_config)
+        logger.info(f"[AUTOMATION EXECUTOR DEBUG] Detected workflow type: {workflow_type}")
         
         if workflow_type == "agent_based":
-            logger.info(f"[AUTOMATION EXECUTOR] Streaming agent-based workflow {workflow_id}")
+            logger.info(f"[AUTOMATION EXECUTOR DEBUG] Streaming agent-based workflow {workflow_id} - about to call agent_executor.execute_agent_workflow")
             
-            async for update in self.agent_executor.execute_agent_workflow(
-                workflow_id, execution_id, langflow_config, input_data, message, trace
-            ):
-                yield update
+            # Check nodes in langflow_config for debugging
+            nodes = langflow_config.get('nodes', [])
+            logger.info(f"[AUTOMATION EXECUTOR DEBUG] Found {len(nodes)} nodes in workflow")
+            for i, node in enumerate(nodes):
+                node_type = node.get('type', 'unknown')
+                node_id = node.get('id', 'unknown')
+                logger.info(f"[AUTOMATION EXECUTOR DEBUG] Node {i+1}: type={node_type}, id={node_id}")
+            
+            try:
+                async for update in self.agent_executor.execute_agent_workflow(
+                    workflow_id, execution_id, langflow_config, input_data, message, trace
+                ):
+                    logger.debug(f"[AUTOMATION EXECUTOR DEBUG] Yielding update type: {update.get('type', 'unknown')}")
+                    yield update
+                logger.info(f"[AUTOMATION EXECUTOR DEBUG] Agent-based workflow {workflow_id} execution completed")
+            except Exception as e:
+                logger.error(f"[AUTOMATION EXECUTOR DEBUG] Agent-based workflow {workflow_id} failed: {e}")
+                raise
         else:
             # For legacy workflows, convert to streaming format
-            logger.info(f"[AUTOMATION EXECUTOR] Converting legacy workflow to stream {workflow_id}")
+            logger.info(f"[AUTOMATION EXECUTOR DEBUG] Converting legacy workflow to stream {workflow_id}")
             
             try:
                 result = await self._execute_legacy_workflow(
@@ -100,6 +121,7 @@ class AutomationExecutor:
                 }
                 
             except Exception as e:
+                logger.error(f"[AUTOMATION EXECUTOR DEBUG] Legacy workflow {workflow_id} failed: {e}")
                 yield {
                     "type": "workflow_error",
                     "workflow_id": workflow_id,
@@ -111,7 +133,7 @@ class AutomationExecutor:
         """Detect if workflow uses agent-based nodes or legacy nodes"""
         
         nodes = langflow_config.get("nodes", [])
-        logger.info(f"[WORKFLOW DETECTION] Found {len(nodes)} nodes in workflow")
+        logger.info(f"[WORKFLOW DETECTION DEBUG] Found {len(nodes)} nodes in workflow")
         
         # Check for agent-based nodes
         agent_node_types = {
@@ -123,43 +145,65 @@ class AutomationExecutor:
             "JarvisEndNode", "JarvisStartNode", "JarvisConditionNode", "JarvisLoopNode"
         }
         
-        # Debug: Show all node types found
+        # Debug: Show all node types found with detailed structure
         for i, node in enumerate(nodes):
             node_type = node.get("data", {}).get("type", "")
             node_id = node.get("id", "unknown")
-            logger.info(f"[WORKFLOW DETECTION] Node {i}: id={node_id}, type='{node_type}'")
+            node_data_keys = list(node.get("data", {}).keys())
+            logger.info(f"[WORKFLOW DETECTION DEBUG] Node {i}: id={node_id}, type='{node_type}', data_keys={node_data_keys}")
+            
+            # Also check alternative type locations
+            alt_type = node.get("type", "")
+            if alt_type:
+                logger.info(f"[WORKFLOW DETECTION DEBUG] Node {i} also has direct type='{alt_type}'")
+        
+        # Check for agent nodes in both locations
+        agent_nodes_found = []
+        legacy_nodes_found = []
+        
+        for node in nodes:
+            # Check data.type location
+            data_type = node.get("data", {}).get("type", "")
+            # Check direct type location
+            direct_type = node.get("type", "")
+            
+            if data_type in agent_node_types or direct_type in agent_node_types:
+                agent_nodes_found.append(f"{node.get('id', 'unknown')}:{data_type or direct_type}")
+            elif data_type in legacy_node_types or direct_type in legacy_node_types:
+                legacy_nodes_found.append(f"{node.get('id', 'unknown')}:{data_type or direct_type}")
+        
+        logger.info(f"[WORKFLOW DETECTION DEBUG] Agent nodes found: {agent_nodes_found}")
+        logger.info(f"[WORKFLOW DETECTION DEBUG] Legacy nodes found: {legacy_nodes_found}")
         
         # Special case: If TriggerNode is present, always treat as agent-based
         has_trigger_node = any(
-            node.get("data", {}).get("type", "") == "TriggerNode" 
+            node.get("data", {}).get("type", "") == "TriggerNode" or node.get("type", "") == "TriggerNode"
             for node in nodes
         )
         
-        logger.info(f"[WORKFLOW DETECTION] TriggerNode found: {has_trigger_node}")
+        logger.info(f"[WORKFLOW DETECTION DEBUG] TriggerNode found: {has_trigger_node}")
         
         if has_trigger_node:
-            logger.info("TriggerNode detected - forcing agent-based workflow execution")
+            logger.info(f"[WORKFLOW DETECTION DEBUG] TriggerNode detected - forcing agent-based workflow execution")
             return "agent_based"
         
-        has_agent_nodes = any(
-            node.get("data", {}).get("type", "") in agent_node_types 
-            for node in nodes
-        )
+        has_agent_nodes = len(agent_nodes_found) > 0
+        has_legacy_nodes = len(legacy_nodes_found) > 0
         
-        has_legacy_nodes = any(
-            node.get("data", {}).get("type", "") in legacy_node_types 
-            for node in nodes
-        )
+        logger.info(f"[WORKFLOW DETECTION DEBUG] has_agent_nodes: {has_agent_nodes}, has_legacy_nodes: {has_legacy_nodes}")
         
         if has_agent_nodes and not has_legacy_nodes:
+            logger.info(f"[WORKFLOW DETECTION DEBUG] Detected agent_based workflow")
             return "agent_based"
         elif has_legacy_nodes and not has_agent_nodes:
+            logger.info(f"[WORKFLOW DETECTION DEBUG] Detected legacy workflow")
             return "legacy"
         elif has_agent_nodes and has_legacy_nodes:
-            logger.warning("Workflow contains both agent-based and legacy nodes - using agent-based execution")
+            logger.warning(f"[WORKFLOW DETECTION DEBUG] Workflow contains both agent-based and legacy nodes - using agent-based execution")
             return "agent_based"
         else:
             # Default to legacy for backward compatibility
+            logger.info(f"[WORKFLOW DETECTION DEBUG] No known node types found - defaulting to legacy")
             return "legacy"
     
     async def _execute_agent_workflow_sync(
@@ -691,7 +735,17 @@ class AutomationExecutor:
         query = params.get("query", "")
         context = params.get("context", "")
         
-        return await agent_bridge.execute_agent_async(agent_name, query, context, trace=node_span)
+        logger.info(f"[AGENT NODE DEBUG] Automation executor calling agent node: {agent_name}")
+        logger.info(f"[AGENT NODE DEBUG] Parameters: {list(params.keys())}")
+        logger.info(f"[AGENT NODE DEBUG] Query: {query[:100]}..." if query else "No query provided")
+        logger.info(f"[AGENT NODE DEBUG] Context: {context[:100]}..." if context else "No context provided")
+        
+        result = await agent_bridge.execute_agent_async(agent_name, query, context, trace=node_span)
+        
+        logger.info(f"[AGENT NODE DEBUG] Agent node execution completed: {agent_name}")
+        logger.info(f"[AGENT NODE DEBUG] Result success: {result.get('success', False)}")
+        
+        return result
     
     def _execute_redis_node(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute Redis node"""

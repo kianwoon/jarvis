@@ -241,6 +241,12 @@ async def execute_workflow_stream(
     from fastapi.responses import StreamingResponse
     import json
     
+    # DEBUG LOGGING for workflow execution
+    logger.info(f"[WORKFLOW EXECUTION DEBUG] === EXECUTING WORKFLOW ID {workflow_id} ===")
+    logger.info(f"[WORKFLOW EXECUTION DEBUG] Request data: {request.dict()}")
+    logger.info(f"[WORKFLOW EXECUTION DEBUG] Input data: {request.input_data}")
+    logger.info(f"[WORKFLOW EXECUTION DEBUG] Message: {request.message}")
+    
     # EXACT SAME LANGFUSE PATTERN AS STANDARD CHAT MODE
     from app.core.langfuse_integration import get_tracer
     tracer = get_tracer()
@@ -259,11 +265,17 @@ async def execute_workflow_stream(
     
     try:
         # Get workflow
+        logger.info(f"[WORKFLOW EXECUTION DEBUG] Fetching workflow {workflow_id} from cache/database...")
         workflow = get_workflow_by_id(workflow_id)
         if not workflow:
+            logger.error(f"[WORKFLOW EXECUTION DEBUG] Workflow {workflow_id} not found!")
             raise HTTPException(status_code=404, detail="Workflow not found")
         
+        logger.info(f"[WORKFLOW EXECUTION DEBUG] Workflow {workflow_id} found. Name: {workflow.get('name', 'Unknown')}")
+        logger.info(f"[WORKFLOW EXECUTION DEBUG] Workflow is_active: {workflow.get('is_active', False)}")
+        
         if not workflow.get("is_active", False):
+            logger.error(f"[WORKFLOW EXECUTION DEBUG] Workflow {workflow_id} is not active!")
             raise HTTPException(status_code=400, detail="Workflow is not active")
         
         # Extract models from agent nodes in the workflow
@@ -384,8 +396,12 @@ async def execute_workflow_stream(
                 collected_output = ""
                 final_answer = ""
                 
+                logger.info(f"[WORKFLOW EXECUTION DEBUG] Creating AutomationExecutor for workflow {workflow_id}")
                 executor = AutomationExecutor()
                 
+                logger.info(f"[WORKFLOW EXECUTION DEBUG] About to call execute_workflow_stream")
+                logger.info(f"[WORKFLOW EXECUTION DEBUG] Execution ID: {execution_id}")
+                logger.info(f"[WORKFLOW EXECUTION DEBUG] Langflow config nodes count: {len(workflow.get('langflow_config', {}).get('nodes', []))}")
                 logger.debug(f"Automation API - About to call execute_workflow_stream with trace")
                 
                 # EXACT SAME PATTERN: Pass trace to service layer (like rag_answer)

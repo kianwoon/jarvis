@@ -962,8 +962,14 @@ async def call_mcp_tool_unified(tool_info: Dict[str, Any], tool_name: str,
                 result = await service.call_stdio_tool(
                     server_config, tool_name, parameters, server_id, service_name
                 )
-                logger.debug(f"Stdio tool {tool_name} completed")
+                logger.info(f"[UNIFIED MCP] Stdio tool {tool_name} completed successfully")
+                logger.debug(f"[UNIFIED MCP] Result preview: {str(result)[:300]}..." if result and len(str(result)) > 300 else f"[UNIFIED MCP] Result: {result}")
+                logger.info(f"[UNIFIED MCP] ========== Unified MCP Tool Call Complete ==========")
                 return result
+            except Exception as e:
+                logger.error(f"[UNIFIED MCP] Failed to call stdio tool {tool_name}: {e}")
+                logger.info(f"[UNIFIED MCP] ========== Unified MCP Tool Call Failed ==========")
+                return {"error": str(e)}
             finally:
                 db.close()
         

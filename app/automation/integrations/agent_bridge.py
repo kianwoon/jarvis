@@ -61,11 +61,15 @@ class AgentBridge:
     ) -> Dict[str, Any]:
         """Execute agent synchronously (for Langflow nodes)"""
         try:
-            logger.info(f"[AGENT BRIDGE] Executing agent {agent_name} with query: {query[:100]}...")
+            logger.info(f"[AGENT NODE DEBUG] Agent Bridge executing agent: {agent_name}")
+            logger.info(f"[AGENT NODE DEBUG] Query length: {len(query) if query else 0}")
+            logger.info(f"[AGENT NODE DEBUG] Context length: {len(context) if context else 0}")
+            logger.info(f"[AGENT NODE DEBUG] Query preview: {query[:100]}...")
             
             # Get agent configuration
             agent_config = self.get_agent_config(agent_name)
             if not agent_config:
+                logger.error(f"[AGENT NODE DEBUG] Agent {agent_name} not found in configuration")
                 return {
                     "success": False,
                     "error": f"Agent {agent_name} not found",
@@ -113,10 +117,12 @@ class AgentBridge:
                     logger.warning(f"Failed to create LLM generation span: {e}")
             
             # Execute synchronously (convert async to sync) with timeout
+            logger.info(f"[AGENT NODE DEBUG] Starting LLM generation for {agent_name} using model {model_name}")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 # Add timeout wrapper for agent LLM calls
+                logger.info(f"[AGENT NODE DEBUG] Calling LLM with timeout of 45 seconds...")
                 response = loop.run_until_complete(
                     asyncio.wait_for(
                         llm.generate(full_prompt), 
@@ -138,6 +144,10 @@ class AgentBridge:
                         )
                     except Exception as e:
                         logger.warning(f"Failed to end LLM generation span: {e}")
+                
+                logger.info(f"[AGENT NODE DEBUG] LLM generation completed for {agent_name}")
+                logger.info(f"[AGENT NODE DEBUG] Response length: {len(response.text) if response.text else 0}")
+                logger.debug(f"[AGENT NODE DEBUG] Response preview: {response.text[:200]}..." if response.text else "No response text")
                 
                 return {
                     "success": True,
@@ -182,6 +192,8 @@ class AgentBridge:
         trace=None
     ) -> Dict[str, Any]:
         """Execute agent asynchronously"""
+        logger.info(f"[AGENT NODE DEBUG] Agent Bridge async execution starting for: {agent_name}")
+        
         loop = asyncio.get_event_loop()
         
         # Use ThreadPoolExecutor to run sync execution in async context
@@ -194,7 +206,12 @@ class AgentBridge:
                 context,
                 trace
             )
-            return await future
+            result = await future
+            
+            logger.info(f"[AGENT NODE DEBUG] Agent Bridge async execution completed for: {agent_name}")
+            logger.info(f"[AGENT NODE DEBUG] Success: {result.get('success', False)}")
+            
+            return result
     
     def get_agent_capabilities(self, agent_name: str) -> Dict[str, Any]:
         """Get capabilities and tools for a specific agent"""

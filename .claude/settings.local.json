@@ -119,7 +119,16 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, jsonb_pretty(settings) FROM settings WHERE category LIKE ''%embed%'';\")",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"\\d automation_workflows\")",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT collection_name, collection_type, description FROM collection_registry ORDER BY collection_type, collection_name;\")",
-      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, settings FROM settings WHERE category = ''storage'';\" -t)"
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, settings FROM settings WHERE category = ''storage'';\" -t)",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT * FROM knowledge_graph_settings WHERE setting_key IN (''similarity_threshold'', ''embedding_service_url'', ''search_threshold'', ''retrieval_threshold'') ORDER BY setting_key;\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"\\d settings\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, settings FROM settings ORDER BY category;\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, jsonb_pretty(settings) FROM settings WHERE category IN (''rag'', ''knowledge_graph'');\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT settings->''embedding_service_url'', settings->''similarity_threshold'', settings->''search_threshold'' FROM settings WHERE category = ''rag'';\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT settings FROM settings WHERE category = ''''rag'''';\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_extract_path_text(settings, ''milvus'', ''host'') as milvus_host, jsonb_extract_path_text(settings, ''milvus'', ''port'') as milvus_port FROM settings WHERE category = ''knowledge_graph'';\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT id, name, description FROM automation_workflows WHERE id = 39;\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT langflow_config FROM automation_workflows WHERE id = 39;\" -t)"
     ],
     "deny": []
   },

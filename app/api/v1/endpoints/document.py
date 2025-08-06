@@ -33,6 +33,9 @@ class DocumentRequest(BaseModel):
 class HTTPEmbeddingFunction:
     def __init__(self, endpoint: str):
         self.endpoint = endpoint
+        # Use the provided endpoint instead of hardcoded URL
+        if not self.endpoint:
+            raise ValueError("Embedding endpoint must be provided - no hardcoding allowed")
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         embeddings = []
@@ -40,11 +43,36 @@ class HTTPEmbeddingFunction:
             # Use lowercase for consistent embeddings
             normalized_text = text.lower().strip()
             payload = {"texts": [normalized_text]}
-            resp = requests.post("http://qwen-embedder:8050/embed", json=payload)
-            if resp.status_code == 422:
-                print("Response content:", resp.content)
-            resp.raise_for_status()
-            embeddings.append(resp.json()["embeddings"][0])
+            
+            print(f"[DEBUG] HTTPEmbeddingFunction: Sending embedding request for text length: {len(normalized_text)}")
+            
+            try:
+                # Add timeout to prevent hanging - USE CONFIGURED ENDPOINT
+                resp = requests.post(
+                    self.endpoint, 
+                    json=payload,
+                    timeout=30  # 30 second timeout
+                )
+                print(f"[DEBUG] HTTPEmbeddingFunction: Received response with status {resp.status_code}")
+                
+                if resp.status_code == 422:
+                    print("Response content:", resp.content)
+                resp.raise_for_status()
+                
+                embedding_data = resp.json()["embeddings"][0]
+                embeddings.append(embedding_data)
+                print(f"[DEBUG] HTTPEmbeddingFunction: Successfully got embedding with dimension {len(embedding_data)}")
+                
+            except requests.exceptions.Timeout as e:
+                print(f"[ERROR] HTTPEmbeddingFunction: Timeout after 30 seconds for text: {normalized_text[:50]}...")
+                raise HTTPException(status_code=504, detail=f"Embedding service timeout: {str(e)}")
+            except requests.exceptions.ConnectionError as e:
+                print(f"[ERROR] HTTPEmbeddingFunction: Connection error to qwen-embedder service: {str(e)}")
+                raise HTTPException(status_code=503, detail=f"Embedding service unavailable: {str(e)}")
+            except Exception as e:
+                print(f"[ERROR] HTTPEmbeddingFunction: Unexpected error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Embedding error: {str(e)}")
+                
         return embeddings
     
     def embed_query(self, text: str) -> List[float]:

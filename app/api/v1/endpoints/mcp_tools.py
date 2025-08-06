@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from app.core.db import SessionLocal, MCPTool, MCPManifest
 from app.core.mcp_tools_cache import reload_enabled_mcp_tools
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime
 import requests
@@ -430,4 +430,62 @@ def delete_mcp_tool(tool_id: str, db: Session = Depends(get_db)):
     
     db.delete(db_tool)
     db.commit()
-    return db_tool 
+    return db_tool
+
+# MCP Tool Execution Endpoint
+class MCPToolExecutionRequest(BaseModel):
+    """Request model for MCP tool execution"""
+    tool_name: str
+    parameters: Dict[str, Any]
+    workflow_id: Optional[str] = None
+    execution_id: Optional[str] = None
+    trace_id: Optional[str] = None
+
+class MCPToolExecutionResponse(BaseModel):
+    """Response model for MCP tool execution"""
+    success: bool
+    result: Any = None
+    error: Optional[str] = None
+    tool: str
+    parameters: Dict[str, Any]
+
+@router.post("/execute", response_model=MCPToolExecutionResponse)
+async def execute_mcp_tool(request: MCPToolExecutionRequest):
+    """
+    Execute an MCP tool
+    
+    This endpoint provides a unified interface for executing MCP tools,
+    particularly for workflow automation where agents need to call tools.
+    """
+    try:
+        logger.info(f"[MCP EXECUTE] Executing tool: {request.tool_name}")
+        logger.info(f"[MCP EXECUTE] Parameters: {request.parameters}")
+        
+        # Use the MCP bridge to execute the tool
+        from app.automation.integrations.mcp_bridge import mcp_bridge
+        
+        # Execute the tool synchronously 
+        result = mcp_bridge.execute_tool_sync(
+            tool_name=request.tool_name,
+            parameters=request.parameters,
+            trace=None  # We could enhance this with trace support later
+        )
+        
+        logger.info(f"[MCP EXECUTE] Tool execution completed: {result.get('success', False)}")
+        
+        return MCPToolExecutionResponse(
+            success=result.get("success", False),
+            result=result.get("result"),
+            error=result.get("error"),
+            tool=request.tool_name,
+            parameters=request.parameters
+        )
+        
+    except Exception as e:
+        logger.error(f"[MCP EXECUTE] Tool execution failed: {str(e)}")
+        return MCPToolExecutionResponse(
+            success=False,
+            error=str(e),
+            tool=request.tool_name,
+            parameters=request.parameters
+        ) 
