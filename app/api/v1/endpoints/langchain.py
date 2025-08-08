@@ -1714,13 +1714,17 @@ ALWAYS trust the search results as they contain the most up-to-date information.
                         top_p=float(main_llm_config.get('top_p', 0.9))
                     )
                     
-                    # Use same model server detection as service
-                    import os
-                    model_server = os.environ.get("OLLAMA_BASE_URL")
+                    # Get model server from settings - no hardcoded fallback
+                    model_server = main_llm_config.get('model_server', '').strip()
+                    
                     if not model_server:
-                        model_server = main_llm_config.get('model_server', '').strip()
-                        if not model_server:
-                            model_server = "http://ollama:11434"
+                        # Use environment variable as last resort
+                        import os
+                        model_server = os.environ.get("OLLAMA_BASE_URL", "")
+                    
+                    if not model_server:
+                        logger.error("No model server configured in settings or environment")
+                        raise ValueError("Model server must be configured in LLM settings")
                     
                     llm = OllamaLLM(llm_config, base_url=model_server)
                     

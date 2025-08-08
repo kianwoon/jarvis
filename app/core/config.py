@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     LLM_MODEL: Optional[str] = "llama2"
     LLM_API_KEY: Optional[str] = None
     LLM_BASE_URL: Optional[str] = None
-    OLLAMA_BASE_URL: Optional[str] = "http://localhost:11434"
+    OLLAMA_BASE_URL: Optional[str] = None  # Must be configured in LLM settings or environment
     
     # Memory Service
     MEMORY_SERVICE_URL: Optional[str] = "http://memory:8000"

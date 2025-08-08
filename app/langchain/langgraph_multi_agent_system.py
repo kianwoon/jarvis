@@ -268,8 +268,23 @@ class LangGraphMultiAgentSystem:
         from app.core.llm_settings_cache import get_second_llm_full_config
         second_llm_config = get_second_llm_full_config()
         
-        # Get model_server from settings with fallback
-        settings_base_url = second_llm_config.get('model_server', 'http://localhost:11434')
+        # Get model_server from settings ONLY - no hardcoded fallback
+        settings_base_url = second_llm_config.get('model_server', '')
+        
+        if not settings_base_url:
+            # Fallback to main LLM model_server if second LLM doesn't have one
+            from app.core.llm_settings_cache import get_main_llm_full_config
+            main_llm_config = get_main_llm_full_config()
+            settings_base_url = main_llm_config.get('model_server', '')
+        
+        if not settings_base_url:
+            # Use environment variable as last resort
+            import os
+            settings_base_url = os.environ.get("OLLAMA_BASE_URL", "")
+        
+        if not settings_base_url:
+            logger.error("No model server configured in settings or environment")
+            raise ValueError("Model server must be configured in LLM settings")
         
         # Docker environment detection and URL conversion (apply to settings-based URL)
         is_docker = os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER")
@@ -1294,11 +1309,23 @@ class LangGraphMultiAgentSystem:
             if fallback_url not in urls_to_try:
                 urls_to_try.append(fallback_url)
         
-        # Also try the opposite of what we started with
-        if "localhost" in urls_to_try[0]:
-            urls_to_try.append("http://host.docker.internal:11434")
-        elif "host.docker.internal" in urls_to_try[0]:
-            urls_to_try.append("http://localhost:11434")
+        # Try Docker/localhost conversion but maintain the same port from settings
+        if urls_to_try:
+            base_url = urls_to_try[0]
+            if "localhost" in base_url:
+                # Extract port from the original URL and apply to host.docker.internal
+                import re
+                port_match = re.search(r':(\d+)', base_url)
+                if port_match:
+                    port = port_match.group(1)
+                    urls_to_try.append(f"http://host.docker.internal:{port}")
+            elif "host.docker.internal" in base_url:
+                # Extract port from the original URL and apply to localhost
+                import re
+                port_match = re.search(r':(\d+)', base_url)
+                if port_match:
+                    port = port_match.group(1)
+                    urls_to_try.append(f"http://localhost:{port}")
         
         for url in urls_to_try:
             try:

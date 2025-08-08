@@ -1760,10 +1760,22 @@ async def _llm_classify_efficient(question: str, llm_cfg) -> str:
             max_tokens=max_tokens
         )
         
-        # Create LLM instance
-        ollama_url = query_classifier_config.get("model_server", "http://ollama:11434")
-        # If localhost, change to host.docker.internal for Docker containers
-        if "localhost" in ollama_url:
+        # Create LLM instance using settings-based URL
+        ollama_url = query_classifier_config.get("model_server", "")
+        if not ollama_url:
+            # Fallback to main LLM model_server
+            from app.core.llm_settings_cache import get_main_llm_full_config
+            main_llm_config = get_main_llm_full_config()
+            ollama_url = main_llm_config.get('model_server', '')
+        
+        if not ollama_url:
+            logger.error("No model server configured in settings")
+            raise ValueError("Model server must be configured in LLM settings")
+        
+        # Apply Docker environment detection to settings-based URL
+        import os
+        is_docker = os.path.exists('/root') or os.environ.get('DOCKER_ENVIRONMENT') or os.path.exists('/.dockerenv')
+        if "localhost" in ollama_url and is_docker:
             ollama_url = ollama_url.replace("localhost", "host.docker.internal")
         llm = OllamaLLM(llm_config, base_url=ollama_url)
         
@@ -3269,7 +3281,11 @@ Documents to score:
                 # FIXED: Get model_server URL from main_llm settings (not hardcoded)
                 from app.core.llm_settings_cache import get_main_llm_full_config
                 main_llm_full_config = get_main_llm_full_config()
-                llm_api_url = main_llm_full_config.get('model_server', 'http://localhost:11434')
+                llm_api_url = main_llm_full_config.get('model_server', '')
+                
+                if not llm_api_url:
+                    logger.error("No model server configured in main LLM settings")
+                    raise ValueError("Model server must be configured in LLM settings")
                 
                 # Docker environment detection and URL conversion
                 import os
@@ -4769,8 +4785,11 @@ Please generate the requested items incorporating relevant information from the 
                 max_tokens=int(max_tokens)
             )
             
-            # Get Ollama URL from LLM config
-            ollama_url = mode_config.get("model_server", "http://ollama:11434")
+            # Get Ollama URL from LLM config - no hardcoded fallback
+            ollama_url = mode_config.get("model_server", "")
+            if not ollama_url:
+                logger.error("No model server configured in LLM settings")
+                raise ValueError("Model server must be configured in LLM settings")
             print(f"[DEBUG] Ollama URL from config: {ollama_url}")
             
             # If localhost, change to host.docker.internal for Docker containers only
@@ -5055,9 +5074,15 @@ Based on these search results, provide a comprehensive answer to the user's ques
             max_tokens=int(max_tokens)
         )
         
-        ollama_url = mode_config.get("model_server", "http://ollama:11434")
-        # If localhost, change to host.docker.internal for Docker containers
-        if "localhost" in ollama_url:
+        ollama_url = mode_config.get("model_server", "")
+        if not ollama_url:
+            logger.error("No model server configured in settings")
+            raise ValueError("Model server must be configured in LLM settings")
+        
+        # Apply Docker environment detection to settings-based URL
+        import os
+        is_docker = os.path.exists('/root') or os.environ.get('DOCKER_ENVIRONMENT') or os.path.exists('/.dockerenv')
+        if "localhost" in ollama_url and is_docker:
             ollama_url = ollama_url.replace("localhost", "host.docker.internal")
         llm = OllamaLLM(llm_config, base_url=ollama_url)
         

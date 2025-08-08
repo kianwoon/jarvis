@@ -9,8 +9,21 @@ from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_conf
 logger = logging.getLogger(__name__)
 
 class OllamaLLM(BaseLLM):
-    def __init__(self, config: LLMConfig, base_url: str = "http://localhost:11434"):
+    def __init__(self, config: LLMConfig, base_url: str = None):
         super().__init__(config)
+        
+        # If no base_url provided, get from settings
+        if not base_url:
+            from app.core.llm_settings_cache import get_main_llm_full_config
+            main_llm_config = get_main_llm_full_config()
+            base_url = main_llm_config.get('model_server', '')
+            
+            if not base_url:
+                # Use environment variable as last resort
+                base_url = os.environ.get("OLLAMA_BASE_URL", "")
+                
+            if not base_url:
+                raise ValueError("Model server URL must be configured in LLM settings or provided as parameter")
         
         # Docker environment detection and URL conversion
         is_docker = os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER")
@@ -202,9 +215,23 @@ class OllamaLLM(BaseLLM):
             raise
 
 class JarvisLLM:
-    def __init__(self, mode=None, max_tokens=None, base_url: str = "http://localhost:11434"):
+    def __init__(self, mode=None, max_tokens=None, base_url: str = None):
         # Default to 'non-thinking' if mode is not specified
         self.mode = mode if mode in ("thinking", "non-thinking") else "non-thinking"
+        
+        # If no base_url provided, get from settings
+        if not base_url:
+            from app.core.llm_settings_cache import get_main_llm_full_config
+            main_llm_config = get_main_llm_full_config()
+            base_url = main_llm_config.get('model_server', '')
+            
+            if not base_url:
+                # Use environment variable as last resort
+                base_url = os.environ.get("OLLAMA_BASE_URL", "")
+                
+            if not base_url:
+                raise ValueError("Model server URL must be configured in LLM settings")
+        
         self.base_url = base_url
         self.max_tokens = max_tokens
         self.llm = self._build_llm(self.mode, self.max_tokens)

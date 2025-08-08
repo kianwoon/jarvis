@@ -427,12 +427,20 @@ def _get_emergency_fallback_settings():
     working_model = "qwen3:30b-a3b-q4_K_M"
     
     import os
+    # Get model server from environment or use empty string (no hardcoded defaults)
+    model_server = os.environ.get("OLLAMA_BASE_URL", "")
+    
+    if not model_server:
+        # Log critical error but don't hardcode a fallback
+        print("[LLM_SETTINGS] CRITICAL: No model server configured in environment (OLLAMA_BASE_URL)")
+        print("[LLM_SETTINGS] System will not function without proper model server configuration")
+    
     emergency_settings = {
         "main_llm": {
             "mode": "thinking",
             "model": working_model,  # Use the working model
             "max_tokens": 196608,
-            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+            "model_server": model_server,  # Use environment variable only
             "system_prompt": "You are Jarvis, an AI assistant. Always provide detailed, comprehensive responses with thorough explanations, examples, and step-by-step breakdowns when appropriate. Be verbose and informative.",
             "context_length": 262144,
             "repeat_penalty": 1.1
@@ -441,7 +449,7 @@ def _get_emergency_fallback_settings():
             "mode": "thinking", 
             "model": working_model,  # Use the working model
             "max_tokens": 16384,
-            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+            "model_server": model_server,  # Use environment variable only
             "temperature": 0.7,
             "top_p": 0.9
         },
@@ -449,7 +457,7 @@ def _get_emergency_fallback_settings():
             "mode": "thinking",
             "model": working_model,  # Use the working model
             "max_tokens": 2048,
-            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+            "model_server": model_server,  # Use environment variable only
             "temperature": 0.3,
             "top_p": 0.8
         },
@@ -457,7 +465,7 @@ def _get_emergency_fallback_settings():
             "mode": "thinking",
             "model": working_model,
             "max_tokens": 8192,
-            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+            "model_server": model_server,  # Use environment variable only
             "temperature": 0.6,
             "top_p": 0.9
         },

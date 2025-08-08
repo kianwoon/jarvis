@@ -1267,7 +1267,17 @@ TASK: Provide your analysis of the query above."""
             max_tokens=max_tokens
         )
         
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        # Get model server from settings, not hardcoded
+        from app.core.llm_settings_cache import get_second_llm_full_config
+        second_llm_config = get_second_llm_full_config()
+        ollama_url = second_llm_config.get('model_server', '')
+        
+        if not ollama_url:
+            ollama_url = os.environ.get("OLLAMA_BASE_URL", "")
+        
+        if not ollama_url:
+            raise ValueError("Model server must be configured in LLM settings")
+        
         llm = OllamaLLM(config, base_url=ollama_url)
         
         response_text = ""
@@ -1303,7 +1313,17 @@ TASK: Provide your analysis of the query above."""
                 max_tokens=max_tokens
             )
             
-            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            # Get model server from settings, not hardcoded
+            from app.core.llm_settings_cache import get_second_llm_full_config
+            second_llm_config = get_second_llm_full_config()
+            ollama_url = second_llm_config.get('model_server', '')
+            
+            if not ollama_url:
+                ollama_url = os.environ.get("OLLAMA_BASE_URL", "")
+            
+            if not ollama_url:
+                raise ValueError("Model server must be configured in LLM settings")
+            
             llm = OllamaLLM(config, base_url=ollama_url)
             
             print(f"[DEBUG] {agent_name}: Starting FIXED real-time streaming with timeout={timeout}s")

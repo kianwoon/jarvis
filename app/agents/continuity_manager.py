@@ -269,7 +269,16 @@ Now continue generating items {chunk.start_index} to {chunk.end_index} following
                 max_tokens=model_config.get("max_tokens", 3000)  # Use configured value or fallback to 3000
             )
             
-            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            # Get model server from settings, not hardcoded
+            from app.core.llm_settings_cache import get_second_llm_full_config
+            second_llm_config = get_second_llm_full_config()
+            ollama_url = second_llm_config.get('model_server', '')
+            
+            if not ollama_url:
+                ollama_url = os.environ.get("OLLAMA_BASE_URL", "")
+            
+            if not ollama_url:
+                raise ValueError("Model server must be configured in LLM settings")
             llm = OllamaLLM(config, base_url=ollama_url)
             
             response_text = ""

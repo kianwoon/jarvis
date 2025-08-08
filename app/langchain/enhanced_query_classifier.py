@@ -573,21 +573,26 @@ class EnhancedQueryClassifier:
                 top_p=0.95  # Use default top_p for classification
             )
             
-            # FIXED: Use query classifier model server from settings with proper fallback
+            # Use query classifier model server from settings ONLY - no hardcoded fallbacks
             import os
-            model_server = os.environ.get("OLLAMA_BASE_URL")
+            # Get full query classifier config which includes model_server
+            from app.core.llm_settings_cache import get_query_classifier_full_config
+            query_classifier_full_config = get_query_classifier_full_config()
+            model_server = query_classifier_full_config.get('model_server', '').strip()
+            
             if not model_server:
-                # Get full query classifier config which includes model_server
-                from app.core.llm_settings_cache import get_query_classifier_full_config
-                query_classifier_full_config = get_query_classifier_full_config()
-                model_server = query_classifier_full_config.get('model_server', '').strip()
+                # Fallback to main LLM model_server if query classifier doesn't have one
+                from app.core.llm_settings_cache import get_main_llm_full_config
+                main_llm_full_config = get_main_llm_full_config()
+                model_server = main_llm_full_config.get('model_server', '').strip()
                 
-                if not model_server:
-                    # Fallback to main LLM model_server if query classifier doesn't have one
-                    model_server = main_llm_settings.get('model_server', '').strip()
-                    if not model_server:
-                        # Final fallback to localhost
-                        model_server = "http://localhost:11434"
+            if not model_server:
+                # Use environment variable as last resort (not hardcoded)
+                model_server = os.environ.get("OLLAMA_BASE_URL", "")
+                
+            if not model_server:
+                logger.error("No model server configured in settings or environment. Please configure model_server in LLM settings.")
+                return await self._retry_llm_classification(query, "no_model_server")
             
             # Apply Docker environment detection to the model_server URL
             is_docker = os.path.exists('/root') or os.environ.get('DOCKER_ENVIRONMENT') or os.path.exists('/.dockerenv')
@@ -1194,19 +1199,29 @@ class EnhancedQueryClassifier:
                 top_p=0.95
             )
             
-            # Use same model server detection as main system
+            # Use model server from settings ONLY - no hardcoded fallbacks
             import os
-            model_server = os.environ.get("OLLAMA_BASE_URL")
-            if not model_server:
-                model_server = second_llm_config.get('model_server', '').strip()
-                if not model_server:
-                    model_server = main_llm_settings.get('model_server', '').strip()
-                    if not model_server:
-                        model_server = "http://ollama:11434"
+            model_server = second_llm_config.get('model_server', '').strip()
             
-            # Handle localhost to docker container URL conversion
-            if "localhost" in model_server:
-                model_server = model_server.replace("localhost", "host.docker.internal")
+            if not model_server:
+                # Fallback to main LLM model_server if second LLM doesn't have one
+                from app.core.llm_settings_cache import get_main_llm_full_config
+                main_llm_full_config = get_main_llm_full_config()
+                model_server = main_llm_full_config.get('model_server', '').strip()
+                
+            if not model_server:
+                # Use environment variable as last resort (not hardcoded)
+                model_server = os.environ.get("OLLAMA_BASE_URL", "")
+                
+            if not model_server:
+                logger.error("No model server configured in settings or environment")
+                raise ValueError("Model server must be configured in LLM settings")
+            
+            # Apply Docker environment detection to the settings-based URL
+            is_docker = os.path.exists('/root') or os.environ.get('DOCKER_ENVIRONMENT') or os.path.exists('/.dockerenv')
+            if 'localhost' in model_server and is_docker:
+                model_server = model_server.replace('localhost', 'host.docker.internal')
+                logger.info(f"Docker environment detected, converted URL to: {model_server}")
             
             llm = OllamaLLM(llm_config, base_url=model_server)
             

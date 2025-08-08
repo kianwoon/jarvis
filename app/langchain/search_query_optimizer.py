@@ -114,8 +114,18 @@ class SearchQueryOptimizer:
             
             logger.debug(f"Using LLM model for search optimization: {llm_config.get('model')}")
             
-            # Create JarvisLLM instance with second_llm config
-            base_url = llm_config.get('model_server', 'http://localhost:11434')
+            # Create JarvisLLM instance with second_llm config from settings
+            base_url = llm_config.get('model_server', '')
+            
+            if not base_url:
+                # Fallback to main LLM model_server
+                from app.core.llm_settings_cache import get_main_llm_full_config
+                main_llm_config = get_main_llm_full_config()
+                base_url = main_llm_config.get('model_server', '')
+            
+            if not base_url:
+                logger.error("No model server configured in settings")
+                raise ValueError("Model server must be configured in LLM settings")
             
             # Convert localhost to host.docker.internal for Docker containers (following existing pattern)
             if "localhost" in base_url:
