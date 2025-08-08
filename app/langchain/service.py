@@ -82,13 +82,22 @@ def get_redis_conversation_client():
         return None
 
 def build_enhanced_system_prompt(base_prompt: str = None) -> str:
-    """Build system prompt with real MCP tools and RAG collections from Redis cache"""
+    """Build system prompt with real MCP tools, RAG collections, and temporal context from cache"""
     
     
     # Get base system prompt from settings if not provided
     if not base_prompt:
         llm_settings = get_llm_settings()
         base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
+    
+    # Enhance with temporal context first (before other enhancements)
+    try:
+        from app.core.temporal_context_manager import get_temporal_context_manager
+        temporal_manager = get_temporal_context_manager()
+        base_prompt = temporal_manager.enhance_system_prompt_with_time_context(base_prompt)
+        logger.debug("Successfully enhanced system prompt with temporal context")
+    except Exception as e:
+        logger.warning(f"Failed to enhance system prompt with temporal context: {e}")
     
     
     # Check if system prompt already has format instructions
@@ -154,6 +163,13 @@ def build_enhanced_system_prompt(base_prompt: str = None) -> str:
         enhanced_prompt += "\n- Search collections for documented knowledge and historical information"
         enhanced_prompt += "\n- Combine multiple sources when appropriate for comprehensive answers"
         enhanced_prompt += "\n- Always provide accurate, helpful responses based on available resources"
+        
+    # Add critical factual data prioritization instructions (always include)
+    enhanced_prompt += "\n\n**CRITICAL: FACTUAL DATA PRIORITIZATION:**"
+    enhanced_prompt += "\n- When provided with CURRENT FACTUAL DATA (web search, tool results), always prioritize it over conversation history"
+    enhanced_prompt += "\n- If fresh search results contradict previous conversation context, trust the fresh data"
+    enhanced_prompt += "\n- Conversation history provides context, but factual data provides truth"
+    enhanced_prompt += "\n- Always base your answers on the most current and verified information available"
         
     # Add tool calling format instructions
     if tools_info:
@@ -251,7 +267,7 @@ def get_conversation_history(conversation_id: str) -> str:
         return ""
 
 def get_limited_conversation_history(conversation_id: str, max_messages: int = 2, current_query: str = None) -> str:
-    """Get limited conversation history for simple factual queries"""
+    """Get limited conversation history for simple factual queries with temporal awareness"""
     if not conversation_id:
         return ""
     
@@ -270,6 +286,34 @@ def get_limited_conversation_history(conversation_id: str, max_messages: int = 2
                 )
         except Exception as e:
             print(f"[DEBUG] Smart conversation history failed, falling back: {e}")
+    
+    # Apply temporal filtering if current query is provided
+    if current_query:
+        try:
+            from app.core.temporal_context_manager import get_temporal_context_manager
+            temporal_manager = get_temporal_context_manager()
+            
+            # Get full history first
+            full_history = get_full_conversation_history(conversation_id)
+            if full_history:
+                # Apply temporal filtering
+                filtered_history = temporal_manager.get_time_aware_conversation_window(
+                    full_history, current_query
+                )
+                
+                # Format the filtered history
+                formatted = []
+                for msg in filtered_history:
+                    role = "User" if msg.get("role") == "user" else "Assistant"
+                    content = msg.get('content', '')[:100]  # Truncate long content
+                    formatted.append(f"{role}: {content}")
+                
+                if formatted:
+                    logger.debug(f"Applied temporal filtering to conversation history: {len(filtered_history)} messages")
+                    return "\n".join(formatted)
+                    
+        except Exception as e:
+            logger.debug(f"Temporal conversation filtering failed, using fallback: {e}")
     
     # Original implementation as fallback
     try:
@@ -331,16 +375,28 @@ def get_limited_conversation_history(conversation_id: str, max_messages: int = 2
         return ""
 
 def store_conversation_message(conversation_id: str, role: str, content: str):
-    """Store a message in conversation history with Redis support"""
+    """Store a message in conversation history with Redis support and temporal context"""
     if not conversation_id:
         return
     
     from app.core.large_generation_utils import get_config_accessor
     config = get_config_accessor()
     
+    # Add temporal context to user messages when appropriate
+    enhanced_content = content
+    if role == "user":
+        try:
+            from app.core.temporal_context_manager import get_temporal_context_manager
+            temporal_manager = get_temporal_context_manager()
+            enhanced_content = temporal_manager.add_temporal_context_to_message(content, role)
+            if enhanced_content != content:
+                logger.debug("Added temporal context to user message")
+        except Exception as e:
+            logger.debug(f"Failed to add temporal context to message: {e}")
+    
     message = {
         "role": role,
-        "content": content,
+        "content": enhanced_content,
         "timestamp": datetime.now().isoformat()
     }
     
@@ -482,6 +538,456 @@ Only use tools when they would genuinely improve your response with real-time or
     
     return final_prompt
 
+def detect_contradictory_information(tool_context: str, conversation_history: str) -> dict:
+    """
+    Detect when tool_context contains information that contradicts conversation_history.
+    
+    Returns:
+        dict with keys: 'has_contradiction', 'contradiction_type', 'filtered_history', 'override_instructions'
+    """
+    import re
+    
+    if not tool_context or not conversation_history:
+        return {
+            'has_contradiction': False,
+            'contradiction_type': None,
+            'filtered_history': conversation_history,
+            'override_instructions': ""
+        }
+    
+    tool_lower = tool_context.lower()
+    history_lower = conversation_history.lower()
+    
+    # Define contradiction patterns - company/entity + action combinations
+    contradiction_patterns = [
+        # CRITICAL FIX: OpenAI GPT-5 / ChatGPT-5 specific patterns
+        {
+            'entity': ['openai', 'open ai', 'chatgpt.*5', 'gpt.*5', 'chatgpt-5', 'gpt-5', 'chatgpt 5', 'gpt 5'],
+            'positive_actions': ['released', 'launches', 'introduces', 'announces', 'open-source', 'open source', 'is out', 'available', 'exists', 'launched'],
+            'negative_phrases': ['has not released', 'no.*open-source', 'no.*open source', 'not released any', 'does not exist', 'no official release', 'persistent myth', 'myth', 'not exist', 'there is no'],
+            'topic': ['models', 'gpt', 'language model', 'chatgpt.*5', 'gpt.*5', 'chatgpt-5', 'gpt-5', 'chatgpt 5', 'gpt 5']
+        },
+        # Enhanced OpenAI general patterns  
+        {
+            'entity': ['openai', 'open ai'],
+            'positive_actions': ['released', 'launches', 'introduces', 'announces', 'open-source', 'open source', 'is out', 'available'],
+            'negative_phrases': ['has not released', 'no.*open-source', 'no.*open source', 'not released any', 'does not exist', 'no official release', 'persistent myth'],
+            'topic': ['models', 'gpt', 'language model']
+        },
+        # Generic patterns for other companies/entities
+        {
+            'entity': ['google', 'microsoft', 'meta', 'facebook', 'apple', 'amazon'],
+            'positive_actions': ['released', 'launched', 'introduced', 'announced', 'available', 'supports', 'is out'],
+            'negative_phrases': ['has not', 'no.*available', 'not released', 'does not support', 'does not exist', 'no official release', 'persistent myth'],
+            'topic': ['model', 'service', 'feature', 'product', 'api']
+        },
+        # ENHANCED: General existence vs non-existence patterns with stronger detection
+        {
+            'entity': ['.*'],  # Any entity
+            'positive_actions': ['exists', 'available', 'released', 'launched', 'supports', 'offers', 'is out', 'has been released', 'now available'],
+            'negative_phrases': ['does not exist', 'not available', 'no.*available', 'not released', 'not supported', 'no official release', 'persistent myth', 'myth', 'not exist', 'there is no'],
+            'topic': ['.*']  # Any topic
+        }
+    ]
+    
+    detected_contradictions = []
+    
+    for pattern in contradiction_patterns:
+        # ENHANCED SEMANTIC MATCHING: Check if any entity is mentioned in both contexts
+        # Also handle cases where tool mentions product (ChatGPT-5) but history mentions company (OpenAI)
+        entity_found = False
+        
+        for entity in pattern['entity']:
+            if entity == '.*':
+                entity_found = True
+                break
+                
+            # Direct entity match in both contexts
+            if re.search(entity, tool_lower) and re.search(entity, history_lower):
+                entity_found = True
+                break
+            
+            # CRITICAL FIX: Semantic entity matching for ChatGPT-5 <-> OpenAI connection
+            # Handle case where tool mentions ChatGPT-5/GPT-5 but history mentions OpenAI
+            chatgpt_patterns = ['chatgpt.*5', 'gpt.*5', 'chatgpt-5', 'gpt-5', 'chatgpt 5', 'gpt 5']
+            openai_patterns = ['openai', 'open ai']
+            
+            if entity in chatgpt_patterns:
+                # Tool has ChatGPT-5, check if history has OpenAI or ChatGPT-5
+                if (re.search(entity, tool_lower) and 
+                    (any(re.search(openai_pattern, history_lower) for openai_pattern in openai_patterns) or
+                     any(re.search(chatgpt_pattern, history_lower) for chatgpt_pattern in chatgpt_patterns))):
+                    entity_found = True
+                    break
+            
+            if entity in openai_patterns:
+                # Tool has OpenAI, check if history has ChatGPT-5 patterns
+                if (re.search(entity, tool_lower) and 
+                    any(re.search(chatgpt_pattern, history_lower) for chatgpt_pattern in chatgpt_patterns)):
+                    entity_found = True
+                    break
+        
+        if not entity_found:
+            continue
+        
+        # Check for positive action in tool_context
+        positive_in_tool = any(re.search(action, tool_lower) for action in pattern['positive_actions'])
+        
+        # Check for negative phrases in history
+        negative_in_history = any(re.search(phrase, history_lower) for phrase in pattern['negative_phrases'])
+        
+        # Check if topic is relevant
+        topic_relevant = any(re.search(topic, tool_lower) or re.search(topic, history_lower) 
+                           for topic in pattern['topic'])
+        
+        if positive_in_tool and negative_in_history and topic_relevant:
+            # ENHANCED CONFIDENCE SCORING: ChatGPT-5 existence vs non-existence gets CRITICAL confidence
+            confidence = 'high'
+            contradiction_type = 'positive_vs_negative'
+            
+            # Check for ChatGPT-5 specific existence contradictions
+            chatgpt5_existence_indicators = ['chatgpt.*5', 'gpt.*5', 'chatgpt-5', 'gpt-5']
+            existence_positive = ['is out', 'released', 'available', 'exists', 'launched']
+            existence_negative = ['does not exist', 'persistent myth', 'myth', 'no official release', 'there is no']
+            
+            has_chatgpt5_reference = any(re.search(indicator, tool_lower) or re.search(indicator, history_lower) 
+                                       for indicator in chatgpt5_existence_indicators)
+            has_existence_positive = any(re.search(pos, tool_lower) for pos in existence_positive)
+            has_existence_negative = any(re.search(neg, history_lower) for neg in existence_negative)
+            
+            if has_chatgpt5_reference and has_existence_positive and has_existence_negative:
+                confidence = 'critical'
+                contradiction_type = 'existence_vs_nonexistence'
+            
+            detected_contradictions.append({
+                'type': contradiction_type,
+                'confidence': confidence,
+                'tool_evidence': [action for action in pattern['positive_actions'] if re.search(action, tool_lower)],
+                'history_evidence': [phrase for phrase in pattern['negative_phrases'] if re.search(phrase, history_lower)],
+                'entity_match_type': 'semantic' if has_chatgpt5_reference else 'direct'
+            })
+    
+    if detected_contradictions:
+        # Generate filtered history that minimizes contradictory statements
+        filtered_history = conversation_history
+        
+        # For high-confidence contradictions, mark contradictory portions
+        highest_confidence = 'low'
+        for contradiction in detected_contradictions:
+            if contradiction['confidence'] in ['high', 'critical']:
+                if contradiction['confidence'] == 'critical':
+                    highest_confidence = 'critical'
+                elif highest_confidence != 'critical':
+                    highest_confidence = 'high'
+                    
+                for negative_phrase in contradiction['history_evidence']:
+                    # Add warning markers around contradictory statements
+                    marker = "[OUTDATED INFORMATION]" if contradiction['confidence'] == 'critical' else "[POTENTIALLY OUTDATED: {m.group()}]"
+                    pattern = re.compile(negative_phrase, re.IGNORECASE)
+                    if contradiction['confidence'] == 'critical':
+                        filtered_history = pattern.sub(lambda m: f"[OUTDATED INFORMATION: {m.group()}]", filtered_history)
+                    else:
+                        filtered_history = pattern.sub(lambda m: f"[POTENTIALLY OUTDATED: {m.group()}]", filtered_history)
+        
+        # ENHANCED OVERRIDE INSTRUCTIONS: Stronger language for critical contradictions
+        if highest_confidence == 'critical':
+            override_instructions = f"""
+🚨 CRITICAL CONTRADICTION DETECTED: Existence vs Non-existence conflict found!
+
+The search results contain CURRENT, VERIFIED information about something that was previously stated as non-existent or mythical.
+
+ABSOLUTE OVERRIDE RULES:
+1. The search results are the DEFINITIVE source of truth - they contain current facts
+2. COMPLETELY IGNORE all contradictory historical statements - they are now obsolete
+3. Answer based EXCLUSIVELY on the search results
+4. DO NOT acknowledge, mention, or reference any contradictory historical claims
+5. Present the current information as fact without hedging or uncertainty
+6. Do not use phrases like "despite previous claims" or "contrary to earlier statements"
+
+The user needs current, accurate information. Provide it with confidence based on the search results."""
+        else:
+            override_instructions = f"""
+🚨 CONTRADICTION DETECTED: The search results contain current information that contradicts previous statements in the conversation history.
+
+MANDATORY OVERRIDE RULES:
+1. The search results contain CURRENT, VERIFIED information that supersedes any previous statements
+2. IGNORE any contradictory information from the conversation history
+3. Base your answer EXCLUSIVELY on the fresh search results
+4. Do NOT mention or reference the contradictory historical statements
+5. Treat the search results as the single source of truth for this response
+
+The user is asking for current information - provide it based on the search results."""
+
+        # Determine the most severe contradiction type
+        contradiction_types = [c['type'] for c in detected_contradictions]
+        primary_type = 'existence_vs_nonexistence' if 'existence_vs_nonexistence' in contradiction_types else contradiction_types[0]
+        
+        # Map confidence levels for proper comparison
+        confidence_order = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
+        max_confidence = max(detected_contradictions, key=lambda x: confidence_order.get(x['confidence'], 0))['confidence']
+        
+        return {
+            'has_contradiction': True,
+            'contradiction_type': primary_type,
+            'filtered_history': filtered_history,
+            'override_instructions': override_instructions,
+            'confidence': max_confidence,
+            'contradictions_found': len(detected_contradictions),
+            'highest_confidence_level': highest_confidence
+        }
+    
+    return {
+        'has_contradiction': False,
+        'contradiction_type': None,
+        'filtered_history': conversation_history,
+        'override_instructions': ""
+    }
+
+def detect_and_resolve_conflicts(info_sources: list, question: str, conversation_id: str = None) -> dict:
+    """
+    Detect conflicts between information sources and prepare resolution.
+    Enhanced with automatic cache invalidation for conflicting messages.
+    
+    Args:
+        info_sources: List of information sources with priority and freshness
+        question: User's current question
+        conversation_id: ID for conversation cache cleanup
+    
+    Returns:
+        dict: Analysis results with conflicts, resolution instructions, and cache cleanup actions
+    """
+    if len(info_sources) < 2:
+        return {'conflicts_detected': False, 'resolution_summary': '', 'resolved_conflicts': []}
+    
+    import re
+    
+    conflicts = []
+    resolved_conflicts = []
+    
+    # Define conflict detection patterns
+    conflict_patterns = [
+        {
+            'type': 'existence_conflict',
+            'positive_indicators': [
+                r'\b(exists?|available|released?|launched?|announced?|is out|now available)\b',
+                r'\b(has been|was|have|got|can be|are)\b.*\b(released?|made available|published)\b'
+            ],
+            'negative_indicators': [
+                r'\b(does not exist|doesn\'t exist|not exist|no.*available|not.*released?)\b',
+                r'\b(not.*real|myth|fictional|doesn\'t.*have|does not.*have)\b'
+            ]
+        },
+        {
+            'type': 'date_conflict', 
+            'patterns': [
+                r'\b(\d{4})\b',  # Years
+                r'\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})\b',
+                r'\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b'
+            ]
+        },
+        {
+            'type': 'version_conflict',
+            'patterns': [
+                r'\b(version|v\.?)\s*(\d+(?:\.\d+)*)\b',
+                r'\b([a-zA-Z]+-\d+(?:\.\d+)*)\b',  # ChatGPT-5, GPT-4 etc
+                r'\b(\d+(?:\.\d+)*(?:\.\d+)?)\b.*\b(latest|current|new|old)\b'
+            ]
+        }
+    ]
+    
+    # Compare each pair of sources
+    for i in range(len(info_sources)):
+        for j in range(i + 1, len(info_sources)):
+            source_high = info_sources[i]  # Higher priority (lower number)
+            source_low = info_sources[j]   # Lower priority (higher number)
+            
+            content_high = source_high['content'].lower()
+            content_low = source_low['content'].lower()
+            
+            # Check for existence conflicts
+            for pattern in conflict_patterns:
+                if pattern['type'] == 'existence_conflict':
+                    # Check if high priority source indicates existence
+                    high_positive = any(re.search(p, content_high) for p in pattern['positive_indicators'])
+                    high_negative = any(re.search(p, content_high) for p in pattern['negative_indicators'])
+                    
+                    # Check if low priority source indicates non-existence
+                    low_positive = any(re.search(p, content_low) for p in pattern['positive_indicators'])
+                    low_negative = any(re.search(p, content_low) for p in pattern['negative_indicators'])
+                    
+                    # Detect existence conflict
+                    if (high_positive and low_negative) or (high_negative and low_positive):
+                        conflict_type = "Existence conflict detected"
+                        resolution = f"Using {source_high['label']} (Priority {source_high['priority']}) over {source_low['label']} (Priority {source_low['priority']})"
+                        
+                        conflicts.append({
+                            'type': pattern['type'],
+                            'high_priority_source': source_high['label'],
+                            'low_priority_source': source_low['label'],
+                            'high_priority_claim': 'exists/available' if high_positive else 'does not exist',
+                            'low_priority_claim': 'exists/available' if low_positive else 'does not exist',
+                            'resolution': resolution
+                        })
+                        
+                        resolved_conflicts.append(f"{conflict_type}: {resolution}")
+    
+    # Identify messages for cache cleanup
+    messages_to_remove = []
+    cache_cleanup_needed = False
+    
+    if conflicts:
+        # Find conversation sources that were overridden by higher priority sources
+        for conflict in conflicts:
+            if any(source['source_type'] in ['conversation_fresh', 'conversation_stale', 'conversation_legacy'] 
+                   for source in info_sources):
+                # Mark conversation messages containing conflicting information for removal
+                for source in info_sources:
+                    if (source['source_type'] in ['conversation_fresh', 'conversation_stale', 'conversation_legacy'] and
+                        source['label'] == conflict['low_priority_source']):
+                        messages_to_remove.append({
+                            'source_type': source['source_type'],
+                            'content_snippet': source['content'][:200] + '...' if len(source['content']) > 200 else source['content'],
+                            'conflict_type': conflict['type'],
+                            'superseded_by': conflict['high_priority_source']
+                        })
+                        cache_cleanup_needed = True
+    
+    # Generate resolution summary
+    if conflicts:
+        resolution_summary = f"Detected {len(conflicts)} conflicts between information sources. "
+        resolution_summary += "Applying information hierarchy: newer, higher-priority sources override older information."
+        
+        if cache_cleanup_needed:
+            resolution_summary += f" Marked {len(messages_to_remove)} outdated messages for cache removal."
+        
+        return {
+            'conflicts_detected': True,
+            'resolution_summary': resolution_summary,
+            'resolved_conflicts': resolved_conflicts,
+            'detailed_conflicts': conflicts,
+            'cache_cleanup_needed': cache_cleanup_needed,
+            'messages_to_remove': messages_to_remove,
+            'conversation_id': conversation_id
+        }
+    
+    return {'conflicts_detected': False, 'resolution_summary': '', 'resolved_conflicts': [], 'cache_cleanup_needed': False}
+
+async def purge_conflicting_messages(conversation_manager, conversation_id: str, messages_to_remove: list):
+    """
+    Intelligently remove conflicting messages from conversation cache with full metadata tracking.
+    
+    Args:
+        conversation_manager: Instance of conversation manager with Redis access
+        conversation_id: ID of the conversation to clean
+        messages_to_remove: List of message metadata to remove
+    """
+    try:
+        import logging
+        import re
+        from datetime import datetime
+        
+        logger = logging.getLogger(__name__)
+        logger.info(f"[CACHE_CLEANUP] Starting intelligent message purging for conversation {conversation_id}")
+        
+        # Get current conversation messages including superseded ones for analysis
+        current_messages = await conversation_manager.get_conversation_history(
+            conversation_id, limit=50, include_superseded=True
+        )
+        
+        if not current_messages:
+            logger.info(f"[CACHE_CLEANUP] No messages found in conversation {conversation_id}")
+            return
+        
+        messages_marked = 0
+        conflict_patterns_found = []
+        
+        # Enhanced content matching with conflict pattern detection
+        for msg_to_remove in messages_to_remove:
+            content_snippet = msg_to_remove['content_snippet'].replace('...', '').strip()
+            conflict_type = msg_to_remove['conflict_type']
+            superseded_by = msg_to_remove['superseded_by']
+            
+            for i, msg in enumerate(current_messages):
+                msg_content = msg.get('content', '')
+                
+                # Multiple matching strategies for robust detection
+                content_match = False
+                
+                # Strategy 1: Direct content snippet matching
+                if len(content_snippet) > 30 and content_snippet.lower() in msg_content.lower():
+                    content_match = True
+                
+                # Strategy 2: Conflict pattern matching for existence conflicts
+                elif conflict_type == 'existence_conflict':
+                    # Look for contradictory existence claims
+                    negative_patterns = [
+                        r'does not exist', r'doesn\'t exist', r'not exist', r'no.*available',
+                        r'not.*released', r'myth', r'fictional', r'not.*real'
+                    ]
+                    if any(re.search(pattern, msg_content.lower()) for pattern in negative_patterns):
+                        # Check if this contradicts what we now know exists
+                        if any(keyword in superseded_by.lower() for keyword in ['search', 'results', 'current']):
+                            content_match = True
+                
+                # Strategy 3: Temporal conflict detection
+                elif 'date' in conflict_type or 'version' in conflict_type:
+                    # Look for outdated version or date information
+                    old_version_patterns = [
+                        r'latest.*is.*gpt-4', r'current.*model.*is', r'as of.*2024',
+                        r'no.*gpt-5', r'gpt-5.*not.*available'
+                    ]
+                    if any(re.search(pattern, msg_content.lower()) for pattern in old_version_patterns):
+                        content_match = True
+                
+                if content_match:
+                    # Use the enhanced conversation manager methods
+                    conflict_metadata = {
+                        'type': conflict_type,
+                        'superseded_by': superseded_by,
+                        'detected_pattern': content_snippet[:100],
+                        'action': 'cache_cleanup',
+                        'confidence': 'high' if len(content_snippet) > 30 else 'medium'
+                    }
+                    
+                    # Mark message as superseded using conversation manager
+                    success = await conversation_manager.mark_message_superseded(
+                        conversation_id, i, conflict_metadata
+                    )
+                    
+                    if success:
+                        messages_marked += 1
+                        conflict_patterns_found.append({
+                            'message_index': i,
+                            'content_preview': msg_content[:100] + '...',
+                            'conflict_type': conflict_type
+                        })
+                        logger.info(f"[CACHE_CLEANUP] Marked message {i} as superseded: {msg_content[:100]}...")
+        
+        # Remove all superseded messages from cache
+        messages_removed = await conversation_manager.remove_superseded_messages(conversation_id)
+        
+        # Add conflict resolution log for tracking and prevention
+        if messages_marked > 0:
+            conflict_log = {
+                'type': 'batch_conflict_resolution',
+                'action': 'selective_cache_cleanup',
+                'affected_count': messages_removed,
+                'patterns_detected': len(set(p['conflict_type'] for p in conflict_patterns_found)),
+                'superseded_by': 'real_time_search_results'
+            }
+            await conversation_manager.add_conflict_resolution_log(conversation_id, conflict_log)
+        
+        # Summary logging
+        if messages_removed > 0:
+            logger.info(f"[CACHE_CLEANUP] Successfully removed {messages_removed} conflicting messages from conversation {conversation_id}")
+            logger.info(f"[CACHE_CLEANUP] Conflict patterns detected: {[p['conflict_type'] for p in conflict_patterns_found]}")
+        else:
+            logger.info(f"[CACHE_CLEANUP] No conflicting messages found for removal in conversation {conversation_id}")
+            
+    except Exception as e:
+        logger.error(f"[CACHE_CLEANUP] Error during intelligent message purging: {e}")
+        # Don't raise - cache cleanup failure shouldn't break synthesis
+
 def build_messages_for_synthesis(
     question: str,
     query_type: str,
@@ -489,28 +995,78 @@ def build_messages_for_synthesis(
     tool_context: str = "",
     conversation_history: str = "",
     thinking: bool = False,
-    rag_sources: list = None
+    rag_sources: list = None,
+    conversation_messages: list = None,
+    conversation_id: str = None
 ) -> tuple[list[dict[str, str]], str, str, str]:
     """
-    Build messages array for chat-based LLM synthesis.
+    Build messages array for chat-based LLM synthesis with information hierarchy.
+    
+    Implements fundamental principles:
+    1. Fresh tool results > RAG knowledge > conversation history
+    2. Newer information overrides older information
+    3. Source credibility and freshness scoring
+    
+    Args:
+        conversation_messages: List of conversation message dicts with freshness_score
     
     Returns:
         tuple: (messages, source_label, context_for_metadata, system_prompt)
     """
     
-    # Get system prompt based on context
-    # CRITICAL FIX: When we have RAG sources or tool context, force synthesis mode
-    # This prevents LLM from generating tool calls when we already have the information
-    if tool_context or (rag_sources and len(rag_sources) > 0):
-        llm_settings = get_llm_settings()
-        base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
-        # Add synthesis-specific instructions that explicitly prevent tool generation
+    # Get enhanced system prompt with information hierarchy principles
+    llm_settings = get_llm_settings()
+    base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
+    
+    if tool_context or rag_context or conversation_messages or conversation_history:
+        # INFORMATION HIERARCHY SYSTEM PROMPT
         system_prompt = f"""{base_prompt}
 
-IMPORTANT: You are in SYNTHESIS MODE. You have been provided with search results and information below. 
-DO NOT generate any tool calls like <tool>...</tool>.
-Instead, synthesize the provided information into a comprehensive, helpful response.
-Focus on answering the user's question using the search results and context provided."""
+📊 INFORMATION HIERARCHY MODE: Multiple information sources provided with priority ranking.
+
+FUNDAMENTAL PRINCIPLES:
+1. **Fresh information overrides old information** - Always prioritize newer, more current data
+2. **Source hierarchy matters** - Follow the priority levels shown in each source label
+3. **Information validity periods** - Older information may be outdated and should be used cautiously
+
+SOURCE PRIORITY RULES (in order of authority):
+• PRIORITY 1 (🔍): Real-time search results - MOST AUTHORITATIVE, always current
+• PRIORITY 2 (📚): Knowledge base - Generally current, authoritative for internal topics  
+• PRIORITY 3 (💬): Recent conversation - Contextual, use for understanding user intent
+• PRIORITY 4 (⚠️): Older conversation - POTENTIALLY OUTDATED, verify against higher priority sources
+
+AUTOMATIC CONFLICT RESOLUTION PROTOCOL:
+When information sources contradict each other, apply these rules automatically:
+
+1. **Priority Override**: Higher priority source ALWAYS wins
+   - Priority 1 (🔍 search) > Priority 2 (📚 knowledge) > Priority 3 (💬 recent) > Priority 4 (⚠️ older)
+   
+2. **Freshness Within Priority**: Among same priority sources, fresher information wins
+   - Check 'freshness_score' and 'age_hours' metadata
+   - Real-time data > Recent data > Archived data
+   
+3. **Conflict Acknowledgment**: When overriding information, explicitly state:
+   - "While [lower priority source] indicated X, current [higher priority source] shows Y"
+   - "Previous information has been updated: [new information]"
+   - "Based on the latest search results: [corrected information]"
+   
+4. **Source Transparency**: Always indicate which source provided the information:
+   - "According to current search results..."
+   - "Based on knowledge base documentation..."
+   - "As discussed in our recent conversation..."
+   
+5. **Automatic Fact Correction**: Proactively identify and correct outdated facts:
+   - Compare factual claims across priority levels
+   - Flag temporal inconsistencies (dates, versions, availability)
+   - Highlight when "does not exist" conflicts with "now available"
+
+REQUIREMENTS:
+- Base ALL factual statements on the highest priority source available
+- Automatically detect and resolve conflicts without asking for clarification
+- DO NOT generate tool calls like <tool>...</tool>
+- Be explicit about which source informed each claim
+
+Answer using this automatic conflict resolution protocol while maintaining transparency about information sources and any corrections made."""
     else:
         system_prompt = build_enhanced_system_prompt()
     
@@ -519,50 +1075,238 @@ Focus on answering the user's question using the search results and context prov
         'format at the end', 'in this format', 'opinion:', 'provide your point of view'
     ])
     
-    # Build user message content
+    # Build user message content - SIMPLIFIED APPROACH
     user_content_parts = []
     
-    # Add conversation history if available
-    if conversation_history:
-        user_content_parts.append(f"Previous conversation:\n{conversation_history}")
+    # INFORMATION HIERARCHY IMPLEMENTATION
+    # Fundamental principle: Fresh info overrides old info, with explicit source ranking
     
-    # Add context sections
-    if rag_context and tool_context:
-        user_content_parts.append(f"""You have access to both internal knowledge base information and real-time tool results.
+    # Calculate information freshness and priority scores
+    info_sources = []
+    
+    # 1. Tool results = Priority 1 (highest freshness, most authoritative)
+    if tool_context:
+        from datetime import datetime
+        current_time = datetime.now()
+        info_sources.append({
+            'priority': 1,
+            'freshness_score': 1.0,  # Always fresh
+            'source_type': 'tool_results',
+            'content': tool_context,
+            'label': f'🔍 SEARCH RESULTS (PRIORITY 1 - MOST AUTHORITATIVE - {current_time.strftime("%H:%M UTC")})',
+            'description': f'Real-time search results fetched at {current_time.strftime("%Y-%m-%d %H:%M UTC")}',
+            'metadata': {
+                'fetch_time': current_time.isoformat(),
+                'age_seconds': 0,
+                'credibility': 'high',
+                'update_frequency': 'real_time'
+            }
+        })
+    
+    # 2. RAG context = Priority 2 (knowledge base)
+    if rag_context:
+        # Calculate RAG freshness based on source metadata if available
+        rag_freshness = 0.8  # Default
+        rag_age_info = "unknown age"
+        rag_sources_info = []
+        
+        if rag_sources:
+            # Analyze RAG sources for freshness indicators
+            for source in rag_sources:
+                source_score = source.get('score', 0.5)
+                collection = source.get('collection', 'unknown')
+                file_path = source.get('file', '')
+                
+                # Determine freshness based on collection and file indicators
+                if 'temp' in collection.lower() or '[TEMP]' in file_path:
+                    source_freshness = 0.9  # Recent uploads are fresher
+                elif 'recent' in collection.lower():
+                    source_freshness = 0.8
+                elif 'archive' in collection.lower():
+                    source_freshness = 0.4
+                else:
+                    source_freshness = 0.6
+                    
+                rag_sources_info.append({
+                    'collection': collection,
+                    'file': file_path,
+                    'freshness': source_freshness,
+                    'score': source_score
+                })
+            
+            # Use weighted average of source freshness
+            if rag_sources_info:
+                rag_freshness = sum(s['freshness'] * s['score'] for s in rag_sources_info) / sum(s['score'] for s in rag_sources_info)
+                rag_age_info = f"from {len(rag_sources_info)} documents"
+        
+        info_sources.append({
+            'priority': 2,
+            'freshness_score': rag_freshness,
+            'source_type': 'knowledge_base',
+            'content': rag_context,
+            'label': f'📚 KNOWLEDGE BASE (PRIORITY 2 - INTERNAL DOCS - {rag_age_info})',
+            'description': f'Information from internal knowledge base (freshness: {rag_freshness:.1f})',
+            'metadata': {
+                'source_count': len(rag_sources) if rag_sources else 1,
+                'avg_relevance': sum(s.get('score', 0.5) for s in rag_sources) / len(rag_sources) if rag_sources else 0.5,
+                'collections': list(set(s.get('collection', 'unknown') for s in rag_sources)) if rag_sources else ['unknown'],
+                'credibility': 'medium-high',
+                'update_frequency': 'periodic'
+            }
+        })
+    
+    # 3. Conversation history = Priority 3 (lowest, age-dependent)
+    if conversation_messages:
+        # Filter and score conversation messages by freshness
+        fresh_messages = []
+        stale_messages = []
+        
+        for msg in conversation_messages:
+            freshness = msg.get('freshness_score', 0.5)
+            age_hours = msg.get('age_hours', 0)
+            
+            if freshness > 0.5 and age_hours < 6:  # Fresh within 6 hours
+                fresh_messages.append(msg)
+            elif freshness > 0.2:  # Somewhat fresh
+                stale_messages.append(msg)
+            # Messages with freshness <= 0.2 are filtered out as too stale
+        
+        if fresh_messages:
+            # Format fresh conversation context with enhanced metadata
+            fresh_content = "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in fresh_messages])
+            max_freshness = max(msg.get('freshness_score', 0) for msg in fresh_messages)
+            max_age = max(msg.get('age_hours', 0) for msg in fresh_messages)
+            avg_freshness = sum(msg.get('freshness_score', 0) for msg in fresh_messages) / len(fresh_messages)
+            
+            info_sources.append({
+                'priority': 3,
+                'freshness_score': avg_freshness,  # Use average freshness for more accurate scoring
+                'source_type': 'conversation_fresh',
+                'content': fresh_content,
+                'label': f'💬 RECENT CONVERSATION (PRIORITY 3 - {max_age:.1f}h ago)',
+                'description': f'Fresh conversation context (avg freshness: {avg_freshness:.2f})',
+                'metadata': {
+                    'message_count': len(fresh_messages),
+                    'max_age_hours': max_age,
+                    'avg_freshness': avg_freshness,
+                    'freshness_range': [min(msg.get('freshness_score', 0) for msg in fresh_messages), max_freshness],
+                    'credibility': 'medium',
+                    'update_frequency': 'conversational'
+                }
+            })
+        
+        if stale_messages:
+            # Format stale conversation context with enhanced warning metadata
+            stale_content = "\n".join([f"{msg['role'].title()}: {msg['content']}" for msg in stale_messages])
+            avg_stale_freshness = sum(msg.get('freshness_score', 0) for msg in stale_messages) / len(stale_messages)
+            max_stale_age = max(msg.get('age_hours', 0) for msg in stale_messages)
+            
+            info_sources.append({
+                'priority': 4,
+                'freshness_score': avg_stale_freshness,
+                'source_type': 'conversation_stale',
+                'content': stale_content,
+                'label': f'⚠️  OLDER CONVERSATION (PRIORITY 4 - {max_stale_age:.1f}h old)',
+                'description': f'Potentially outdated context (freshness: {avg_stale_freshness:.2f})',
+                'metadata': {
+                    'message_count': len(stale_messages),
+                    'max_age_hours': max_stale_age,
+                    'avg_freshness': avg_stale_freshness,
+                    'staleness_warning': True,
+                    'credibility': 'low',
+                    'update_frequency': 'historical'
+                }
+            })
+    elif conversation_history:  # Fallback for legacy string-based history
+        info_sources.append({
+            'priority': 3,
+            'freshness_score': 0.3,  # Unknown age, assume somewhat stale
+            'source_type': 'conversation_legacy',
+            'content': conversation_history,
+            'label': '💬 PREVIOUS CONVERSATION (PRIORITY 3 - LEGACY FORMAT)',
+            'description': 'Previous conversation context (freshness unknown)',
+            'metadata': {
+                'format': 'legacy_string',
+                'freshness_unknown': True,
+                'credibility': 'medium',
+                'update_frequency': 'unknown'
+            }
+        })
+    
+    # Sort by priority (ascending) and freshness (descending)
+    info_sources.sort(key=lambda x: (x['priority'], -x['freshness_score']))
+    
+    # AUTOMATIC CONFLICT DETECTION AND RESOLUTION
+    conflict_analysis = detect_and_resolve_conflicts(info_sources, question, conversation_id)
+    if conflict_analysis['conflicts_detected']:
+        # Add conflict resolution summary to user content
+        conflict_summary = f"""
+🔍 AUTOMATIC CONFLICT RESOLUTION APPLIED:
+{conflict_analysis['resolution_summary']}
 
-📚 Internal Knowledge Base:
+RESOLVED CONFLICTS:
+{chr(10).join([f'• {conflict}' for conflict in conflict_analysis['resolved_conflicts']])}
+"""
+        user_content_parts.append(conflict_summary)
+        
+        # PROACTIVE CACHE CLEANUP: Remove conflicting messages from cache
+        if conflict_analysis['cache_cleanup_needed'] and conversation_id:
+            try:
+                # Import conversation manager for cache cleanup
+                from app.core.simple_conversation_manager import conversation_manager
+                import asyncio
+                
+                # Schedule cache cleanup asynchronously
+                cleanup_task = asyncio.create_task(
+                    purge_conflicting_messages(
+                        conversation_manager, 
+                        conversation_id, 
+                        conflict_analysis['messages_to_remove']
+                    )
+                )
+                
+                # Log cache cleanup action
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"[CACHE_CLEANUP] Scheduled removal of {len(conflict_analysis['messages_to_remove'])} conflicting messages from conversation {conversation_id}")
+                
+            except Exception as e:
+                # Don't fail synthesis if cache cleanup fails
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"[CACHE_CLEANUP] Failed to schedule cache cleanup: {e}")
+    
+    # Build user content with clear hierarchy
+    if info_sources:
+        # Information hierarchy mode - use ranked sources
+        for source in info_sources:
+            user_content_parts.append(f"""{source['label']}:
+{source['content']}""")
+    else:
+        # Fallback modes when no enhanced sources available
+        if rag_context:
+            # RAG-only fallback mode
+            user_content_parts.append(f"""📚 CURRENT FACTUAL DATA (Knowledge Base - PRIMARY SOURCE):
 {rag_context}
 
-🔧 Current Information (Web Search):
-{tool_context}
-
-SYNTHESIS INSTRUCTIONS: Use BOTH the internal knowledge base information and the web search results to provide a comprehensive answer. Do NOT make additional tool calls. Focus on synthesizing the provided information.""")
-    elif rag_context:
-        user_content_parts.append(f"""You have access to relevant information from our internal knowledge base.
-
-📚 Internal Knowledge Base:
-{rag_context}""")
-    elif tool_context:
-        if "google_search" in str(tool_context).lower():
-            user_content_parts.append(f"""No relevant documents were found in our internal knowledge base, so I searched the web for current information.
-
-🌐 Current Information (Web Search):
-{tool_context}
-
-SYNTHESIS INSTRUCTIONS: Use ONLY the web search results above to answer the user's question. Do NOT make additional tool calls. Synthesize a comprehensive, helpful answer based solely on the provided search results.""")
+SYNTHESIS INSTRUCTIONS: Use the above information as your primary source. Answer based on this factual data.""")
+            
+            # Add conversation history for context (existing behavior)
+            if conversation_history:
+                user_content_parts.append(f"""Previous conversation context (IMPORTANT: If this conflicts with the factual data above, prioritize the factual data):
+{conversation_history}""")
+        
         else:
-            user_content_parts.append(f"""You have executed tools to gather current, real-time information.
-
-🔧 Tool Results:
-{tool_context}
-
-SYNTHESIS INSTRUCTIONS: Use ONLY the tool results above to answer the user's question. Do NOT make additional tool calls. Synthesize a comprehensive, helpful answer based solely on the provided tool results.""")
-    else:
-        # Pure LLM - just note the context without instructions
-        if query_type == "TOOLS":
-            user_content_parts.append("The user is asking for information that would benefit from real-time tools, but no tools were executed.")
-        elif query_type == "RAG":
-            user_content_parts.append("No specific documents were found in our knowledge base for this query.")
+            # Pure LLM fallback mode
+            # Add conversation history normally since no factual data to prioritize
+            if conversation_history:
+                user_content_parts.append(f"Previous conversation:\n{conversation_history}")
+            
+            # Pure LLM - just note the context without instructions
+            if query_type == "TOOLS":
+                user_content_parts.append("The user is asking for information that would benefit from real-time tools, but no tools were executed.")
+            elif query_type == "RAG":
+                user_content_parts.append("No specific documents were found in our knowledge base for this query.")
     
     # Add the actual question
     user_content_parts.append(f"Question: {question}")
@@ -674,7 +1418,9 @@ def unified_llm_synthesis(
         tool_context=tool_context,
         conversation_history=conversation_history,
         thinking=thinking,
-        rag_sources=rag_sources
+        rag_sources=rag_sources,
+        conversation_messages=None,  # Legacy call doesn't have enhanced messages
+        conversation_id=None  # Legacy call doesn't have conversation_id context
     )
     
     # For backward compatibility, concatenate messages into a single prompt
@@ -3871,21 +4617,40 @@ Please generate the requested items incorporating relevant information from the 
     
     print(f"[DEBUG] rag_answer: Finished TOOLS section, moving to conversation history (query_type={query_type})")
     
-    # Get conversation history with smart filtering for ALL query types
+    # Get conversation history with smart filtering and freshness scoring for ALL query types
     conversation_history = ""
+    conversation_messages = None
     history_prompt = ""
     if conversation_id:
         # Get conversation history limits from settings to avoid hardcoding
         llm_settings = get_llm_settings()
         conversation_config = llm_settings.get('conversation_settings', {})
-        max_history_messages = conversation_config.get('max_history_messages', 3)
+        max_history_messages = conversation_config.get('max_history_messages', 6)
+        max_age_hours = conversation_config.get('max_age_hours', 24.0)
         
-        # Use configurable conversation history to prevent context bleeding
-        conversation_history = get_limited_conversation_history(
-            conversation_id, 
-            max_messages=max_history_messages,
-            current_query=question
-        )
+        # Try to use the enhanced conversation manager with freshness scoring
+        try:
+            from app.core.simple_conversation_manager import conversation_manager
+            conversation_messages = await conversation_manager.get_conversation_history(
+                conversation_id, 
+                limit=max_history_messages,
+                max_age_hours=max_age_hours
+            )
+            # Format as string for backward compatibility
+            if conversation_messages:
+                conversation_history = conversation_manager.format_history_for_prompt(
+                    conversation_messages, question
+                ).replace(f"Current question: {question}\n\nPlease answer the current question while considering the context of our previous conversation.", "")
+                conversation_history = conversation_history.replace("Previous conversation:\n", "")
+            
+        except Exception as e:
+            print(f"[DEBUG] Failed to get enhanced conversation history: {e}, falling back to legacy method")
+            # Fallback to legacy method
+            conversation_history = get_limited_conversation_history(
+                conversation_id, 
+                max_messages=max_history_messages,
+                current_query=question
+            )
         
         if conversation_history:
             history_prompt = f"Previous conversation:\n{conversation_history}\n\n"
@@ -3902,7 +4667,7 @@ Please generate the requested items incorporating relevant information from the 
         synthesis_mode = True
         print(f"[DEBUG] rag_answer: SYNTHESIS MODE ACTIVATED - Already have {len(rag_sources)} documents and {len(tool_calls)} tool results")
     
-    # Use build_messages_for_synthesis directly to get messages array
+    # Use build_messages_for_synthesis directly to get messages array with information hierarchy
     messages, source, context, system_prompt = build_messages_for_synthesis(
         question=question,
         query_type=query_type,
@@ -3910,7 +4675,9 @@ Please generate the requested items incorporating relevant information from the 
         tool_context=tool_context,
         conversation_history=conversation_history,
         thinking=thinking,
-        rag_sources=rag_sources
+        rag_sources=rag_sources,
+        conversation_messages=conversation_messages,  # Pass the enhanced conversation messages with freshness scores
+        conversation_id=conversation_id  # Pass conversation_id for cache cleanup
     )
     
     # Keep prompt for backward compatibility and logging
@@ -5488,4 +6255,122 @@ def extract_and_execute_tool_calls(text, stream_callback=None, trace=None, use_e
                 stream_callback(f"❌ Tool {tool_name} failed: {str(e)}")
     
     print(f"[DEBUG] Tool extraction complete: {len(results)} tools executed")
-    return results
+
+
+def validate_response_against_tools(response_text: str, tool_context: str) -> Dict[str, Any]:
+    """
+    Validate that LLM response doesn't contradict tool results.
+    
+    Args:
+        response_text: The generated response from LLM
+        tool_context: The context from tool execution results
+    
+    Returns:
+        dict: Validation results with conflict detection and confidence
+    """
+    import re
+    
+    if not response_text or not tool_context:
+        return {
+            'has_conflict': False,
+            'confidence': 0.0,
+            'conflicts': [],
+            'validation_passed': True
+        }
+    
+    response_lower = response_text.lower()
+    tool_lower = tool_context.lower()
+    
+    detected_conflicts = []
+    
+    # Critical existence vs non-existence patterns
+    existence_patterns = [
+        {
+            'entity_variants': [
+                'chatgpt-5', 'chatgpt 5', 'gpt-5', 'gpt 5', 'chatgpt5', 'gpt5'
+            ],
+            'positive_tool_indicators': [
+                'is out', 'released', 'available', 'launched', 'exists', 'smarter than all of us',
+                'now.*available', 'has.*released', 'jul.*2025', 'july.*2025'
+            ],
+            'negative_response_indicators': [
+                'does not exist', 'doesn\'t exist', 'not exist', 'no.*official.*release',
+                'persistent myth', 'is.*myth', 'not.*real', 'no.*credible.*evidence',
+                'as of.*does not exist'
+            ],
+            'confidence_boost_phrases': [
+                # Tool context phrases that indicate high confidence
+                'is out', 'smarter than all of us', 'jul.*2025', 'july.*2025'
+            ]
+        }
+    ]
+    
+    for pattern in existence_patterns:
+        # Check if any entity variant is mentioned in either context
+        entity_in_tools = any(
+            re.search(entity, tool_lower) for entity in pattern['entity_variants']
+        )
+        entity_in_response = any(
+            re.search(entity, response_lower) for entity in pattern['entity_variants'] 
+        )
+        
+        if not (entity_in_tools or entity_in_response):
+            continue
+            
+        # Check for positive indicators in tool context
+        positive_in_tools = any(
+            re.search(indicator, tool_lower) for indicator in pattern['positive_tool_indicators']
+        )
+        
+        # Check for negative indicators in response
+        negative_in_response = any(
+            re.search(indicator, response_lower) for indicator in pattern['negative_response_indicators']
+        )
+        
+        if positive_in_tools and negative_in_response:
+            # Calculate confidence based on specific phrases
+            confidence = 0.8  # Base confidence for existence conflicts
+            
+            # Boost confidence for high-certainty tool phrases
+            if any(re.search(phrase, tool_lower) for phrase in pattern['confidence_boost_phrases']):
+                confidence = 0.95
+                
+            # Boost confidence for definitive negative statements in response
+            if any(phrase in response_lower for phrase in ['does not exist', 'persistent myth', 'no official release']):
+                confidence = min(confidence + 0.1, 1.0)
+            
+            detected_conflicts.append({
+                'type': 'existence_contradiction',
+                'confidence': confidence,
+                'tool_evidence': [
+                    indicator for indicator in pattern['positive_tool_indicators'] 
+                    if re.search(indicator, tool_lower)
+                ],
+                'response_evidence': [
+                    indicator for indicator in pattern['negative_response_indicators']
+                    if re.search(indicator, response_lower)
+                ],
+                'entity_detected': next(
+                    (entity for entity in pattern['entity_variants'] if re.search(entity, tool_lower)),
+                    pattern['entity_variants'][0]
+                )
+            })
+    
+    # Determine overall validation result
+    has_conflict = len(detected_conflicts) > 0
+    max_confidence = max([c['confidence'] for c in detected_conflicts]) if detected_conflicts else 0.0
+    
+    validation_result = {
+        'has_conflict': has_conflict,
+        'confidence': max_confidence,
+        'conflicts': detected_conflicts,
+        'validation_passed': not has_conflict or max_confidence < 0.7,
+        'severity': 'critical' if max_confidence >= 0.9 else 'high' if max_confidence >= 0.7 else 'medium'
+    }
+    
+    if has_conflict:
+        logger.warning(f"[RESPONSE VALIDATION] Detected {len(detected_conflicts)} conflicts with confidence {max_confidence:.2f}")
+        for conflict in detected_conflicts:
+            logger.warning(f"[CONFLICT] {conflict['type']}: {conflict['entity_detected']} - confidence {conflict['confidence']:.2f}")
+    
+    return validation_result

@@ -1595,16 +1595,37 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     logger.info(f"[DIRECT HANDLER] Tool context built: {tool_context[:200]}...")
                     logger.info(f"[DIRECT HANDLER] Extracted {len(extracted_documents)} documents from tool results")
                     
+                    # CRITICAL FIX: When tool results exist, format conversation history as secondary context
+                    # Tool results are authoritative and take precedence over conversation history
+                    logger.info("[TOOL RESULTS WIN] Tool results exist - formatting conversation history as secondary context")
+                    
+                    # Get conversation history if available but label it clearly
+                    labeled_conversation_history = ""
+                    if conversation_id:
+                        raw_history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
+                        if raw_history:
+                            # Format history with clear labeling
+                            history_text = conversation_manager.format_history_for_prompt(raw_history, "")
+                            labeled_conversation_history = f"""
+📝 PREVIOUS CONVERSATION (may contain outdated information):
+{history_text}
+
+⚠️ NOTE: The above conversation history is provided for context only. 
+If there are any conflicts between the conversation history and the current search results,
+ALWAYS trust the search results as they contain the most up-to-date information."""
+                            logger.info(f"[TOOL RESULTS WIN] Included {len(raw_history)} messages as labeled secondary context")
+                    
                     # Use unified synthesis with proper message format
                     from app.langchain.service import build_messages_for_synthesis
                     
-                    logger.info(f"[DEBUG CALL] About to call build_messages_for_synthesis with question='{enhanced_question[:100]}...', tool_context='{tool_context[:100]}...'")
+                    logger.info(f"[DEBUG CALL] About to call build_messages_for_synthesis with original question and labeled history")
                     
                     try:
                         messages, source_label, full_context, system_prompt = build_messages_for_synthesis(
-                            question=enhanced_question,
+                            question=request.question,  # Use original question
                             query_type="TOOLS",
                             tool_context=tool_context,
+                            conversation_history=labeled_conversation_history,  # Pass labeled history
                             thinking=request.thinking if hasattr(request, 'thinking') else False
                         )
                         logger.info(f"[DEBUG CALL] build_messages_for_synthesis returned successfully, messages count: {len(messages)}")

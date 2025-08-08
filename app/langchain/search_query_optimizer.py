@@ -125,14 +125,14 @@ class SearchQueryOptimizer:
                     base_url = base_url.replace("localhost", "host.docker.internal")
                     logger.debug(f"Docker environment detected, using Docker URL: {base_url}")
             
-            jarvis_llm = JarvisLLM(
-                mode='non-thinking',  # Use non-thinking mode for structured optimization
-                max_tokens=llm_config.get('max_tokens'),
-                base_url=base_url
-            )
-            
-            # Make LLM call with timeout
+            # Make LLM call with timeout - create instance just before use to minimize resource lifetime
             try:
+                jarvis_llm = JarvisLLM(
+                    mode='non-thinking',  # Use non-thinking mode for structured optimization
+                    max_tokens=llm_config.get('max_tokens'),
+                    base_url=base_url
+                )
+                
                 response = await asyncio.wait_for(
                     jarvis_llm.llm.generate(prompt),
                     timeout=timeout_seconds
@@ -146,6 +146,9 @@ class SearchQueryOptimizer:
             except asyncio.TimeoutError:
                 logger.warning(f"Search query optimization timed out after {timeout_seconds} seconds")
                 return None
+            finally:
+                # Clear reference to allow garbage collection of any resources
+                jarvis_llm = None
                 
         except Exception as e:
             logger.error(f"Failed to call LLM for search query optimization: {e}")

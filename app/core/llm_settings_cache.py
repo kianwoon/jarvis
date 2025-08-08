@@ -249,36 +249,38 @@ def get_search_optimization_config(settings=None):
     
     # Default search optimization settings
     default_config = {
-        'enable_search_optimization': True,
+        'enable_search_optimization': False,
         'optimization_timeout': 12,
         'optimization_prompt': '''Transform the user's conversational question into an optimized search query for better results.
 
-Current context: It's 2025, so add year context when asking about recent/current information.
+CRITICAL: Only transform the query structure and keywords. DO NOT add facts, assumptions, or specific details not present in the original query.
 
 User Question: {query}
 
 ## Optimization Guidelines:
 1. Remove conversational words (please, can you, I want to know, etc.)
-2. Add temporal context when needed (2025, current, latest, recent)
-3. Use specific keywords instead of general terms
-4. Keep the core intent and meaning intact
-5. Make it concise but comprehensive
-6. Add relevant context for better search results
+2. Use specific keywords instead of general terms
+3. Keep the core intent and meaning EXACTLY intact
+4. Make it concise but comprehensive
+5. DO NOT ADD temporal context (years, dates) unless explicitly mentioned in the original query
+6. DO NOT assume or inject facts not in the original question
 
 ## Examples:
-- "Can you tell me about the latest AI developments?" → "latest AI developments 2025 current trends"
+- "Can you tell me about the latest AI developments?" → "latest AI developments"
 - "What's the weather like today?" → "weather today current conditions"
-- "I want to know about Python vs JavaScript" → "Python vs JavaScript comparison 2025"
+- "I want to know about Python vs JavaScript" → "Python vs JavaScript comparison"
+- "How does machine learning work in 2024?" → "machine learning work 2024"
 
-Return ONLY the optimized search query, no explanations.'''
+Return ONLY the optimized search query with no explanations, assumptions, or added facts.'''
     }
     
     # Get user-defined settings or defaults
     search_config = settings.get('search_optimization', default_config)
     
-    # Merge with defaults to ensure all fields are present
-    merged_config = default_config.copy()
-    merged_config.update(search_config)
+    # URGENT FIX: Force corrected defaults to prevent hallucination issues
+    # This temporarily overrides user settings to apply critical security fixes
+    merged_config = search_config.copy() if search_config != default_config else default_config.copy()
+    merged_config.update(default_config)  # Force our corrected defaults
     
     return merged_config
 

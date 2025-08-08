@@ -3,9 +3,12 @@ Conversation Context Manager
 Intelligently manages conversation history to prevent context confusion
 """
 import re
+import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
 import json
+
+logger = logging.getLogger(__name__)
 
 class ConversationContextManager:
     """Manages conversation context intelligently based on query type and relevance"""
@@ -49,16 +52,42 @@ class ConversationContextManager:
             'general': ['date', 'time', 'weather', 'hello', 'thanks', 'help', 'explain'],
             'document': ['document', 'file', 'pdf', 'upload', 'extract', 'content'],
             'ai': ['ai', 'model', 'llm', 'neural', 'machine learning', 'training'],
+            'temporal': ['time', 'date', 'schedule', 'calendar', 'deadline', 'appointment', 'meeting', 'business hours']
         }
+        
+        # Integration with temporal context manager
+        try:
+            from app.core.temporal_context_manager import get_temporal_context_manager
+            self.temporal_manager = get_temporal_context_manager()
+            logger.debug("Integrated with temporal context manager")
+        except Exception as e:
+            logger.warning(f"Could not integrate with temporal context manager: {e}")
+            self.temporal_manager = None
     
     def should_include_history(self, current_query: str, conversation_history: List[Dict]) -> bool:
-        """Determine if conversation history should be included for current query"""
+        """Determine if conversation history should be included for current query with temporal awareness"""
         query_lower = current_query.lower().strip()
         
         # Check for explicit context reset
         for pattern in self.context_reset_patterns:
             if re.search(pattern, query_lower):
                 return False
+        
+        # Use temporal context manager for time-related queries
+        if self.temporal_manager:
+            try:
+                is_time_related, _, confidence = self.temporal_manager.detect_time_related_query(query_lower)
+                if is_time_related and confidence > 0.6:
+                    # For time-related queries, be very selective about including history
+                    # Only include if explicitly referencing previous context
+                    for pattern in self.context_sensitive_patterns:
+                        if re.search(pattern, query_lower):
+                            logger.debug("Including history for time-related query with context reference")
+                            return True
+                    logger.debug("Excluding history for standalone time-related query")
+                    return False
+            except Exception as e:
+                logger.debug(f"Temporal history decision failed: {e}")
         
         # Check if it's a simple standalone query
         for pattern in self.simple_query_patterns:
@@ -91,9 +120,18 @@ class ConversationContextManager:
         return False
     
     def _extract_topic(self, text: str) -> str:
-        """Extract primary topic from text"""
+        """Extract primary topic from text with enhanced temporal detection"""
         text_lower = text.lower()
         topic_scores = {}
+        
+        # Use temporal context manager for better temporal detection
+        if self.temporal_manager:
+            try:
+                is_time_related, _, confidence = self.temporal_manager.detect_time_related_query(text_lower)
+                if is_time_related and confidence > 0.5:
+                    return 'temporal'
+            except Exception as e:
+                logger.debug(f"Temporal topic detection failed: {e}")
         
         for topic, keywords in self.topic_keywords.items():
             score = sum(1 for keyword in keywords if keyword in text_lower)
@@ -220,13 +258,23 @@ class ConversationContextManager:
             'contextual': 6,  # More context for follow-up questions
             'technical': 4,   # Moderate context for technical discussions
             'general': 2,     # Minimal context for general queries
+            'temporal': 1,    # Very minimal context for time-related queries (they need fresh data)
         }
         
         return context_sizes.get(query_type, 2)
     
     def classify_query_type(self, query: str) -> str:
-        """Classify query type for context management"""
+        """Classify query type for context management with temporal awareness"""
         query_lower = query.lower()
+        
+        # Check for temporal queries first (highest priority for context management)
+        if self.temporal_manager:
+            try:
+                is_time_related, _, confidence = self.temporal_manager.detect_time_related_query(query_lower)
+                if is_time_related and confidence > 0.6:
+                    return 'temporal'
+            except Exception as e:
+                logger.debug(f"Temporal query classification failed: {e}")
         
         # Check patterns in order of precedence
         if any(re.search(p, query_lower) for p in self.simple_query_patterns):
@@ -238,6 +286,8 @@ class ConversationContextManager:
         topic = self._extract_topic(query)
         if topic in ['technical', 'data', 'ai']:
             return 'technical'
+        elif topic == 'temporal':
+            return 'temporal'
         
         return 'general'
 

@@ -324,6 +324,7 @@ class UnifiedMCPService:
     async def _direct_google_search(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
         EMERGENCY BYPASS: Direct Google Search API call to avoid MCP subprocess issues
+        Uses proper async context management to prevent HTTP resource leaks.
         """
         try:
             import os
@@ -358,49 +359,61 @@ class UnifiedMCPService:
                 "num": min(num_results, 10)  # Google API max is 10
             }
             
-            session = await self._get_http_session()
-            async with session.get(search_url, params=search_params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    # Format results in expected MCP format
-                    results = []
-                    for item in data.get("items", []):
-                        results.append({
-                            "title": item.get("title", ""),
-                            "link": item.get("link", ""),
-                            "snippet": item.get("snippet", "")
-                        })
-                    
-                    logger.debug(f"Found {len(results)} results")
-                    
-                    return {
-                        "content": [{
-                            "type": "text", 
-                            "text": f"Found {len(results)} search results for '{query}':\n\n" + 
-                                   "\n\n".join([f"**{r['title']}**\n{r['snippet']}\n{r['link']}" for r in results])
-                        }]
-                    }
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Google Search API error {response.status}: {error_text}")
-                    return {"error": f"Google Search API error: {response.status}"}
+            # CRITICAL FIX: Use dedicated session with proper async context management
+            # to prevent HTTP resource leaks
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(search_url, params=search_params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        
+                        # Format results in expected MCP format
+                        results = []
+                        for item in data.get("items", []):
+                            results.append({
+                                "title": item.get("title", ""),
+                                "link": item.get("link", ""),
+                                "snippet": item.get("snippet", "")
+                            })
+                        
+                        logger.debug(f"Found {len(results)} results")
+                        
+                        return {
+                            "content": [{
+                                "type": "text", 
+                                "text": f"Found {len(results)} search results for '{query}':\n\n" + 
+                                       "\n\n".join([f"**{r['title']}**\n{r['snippet']}\n{r['link']}" for r in results])
+                            }]
+                        }
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Google Search API error {response.status}: {error_text}")
+                        return {"error": f"Google Search API error: {response.status}"}
         
         except Exception as e:
             logger.error(f"Direct Google Search failed: {e}")
             return {"error": f"Direct Google Search failed: {str(e)}"}
         
     async def _get_http_session(self):
-        """Get or create aiohttp session for HTTP MCP servers"""
+        """Get or create aiohttp session for HTTP MCP servers
+        
+        WARNING: This method creates persistent sessions. Callers should ensure
+        proper cleanup by calling close() method when the UnifiedMCPService
+        instance is no longer needed.
+        """
         if self.http_session is None or self.http_session.closed:
             timeout = aiohttp.ClientTimeout(total=30)
             self.http_session = aiohttp.ClientSession(timeout=timeout)
+            logger.debug("Created new HTTP session for MCP service")
         return self.http_session
     
     async def close(self):
-        """Close HTTP session"""
+        """Close HTTP session and clean up all resources"""
         if self.http_session and not self.http_session.closed:
+            logger.debug("Closing HTTP session for MCP service")
             await self.http_session.close()
+            # Ensure session is set to None to prevent reuse of closed session
+            self.http_session = None
     
     async def _get_stdio_client(self, server_config: Dict[str, Any]) -> Any:
         """Get or create stdio MCP client for a server using subprocess pool"""
@@ -678,71 +691,74 @@ class UnifiedMCPService:
         Returns:
             Tool result or error
         """
-        try:
-            logger.info(f"[HTTP] Calling {tool_name} at {endpoint}")
-            
-            # Fix parameter format
-            fixed_params = self._fix_parameter_format(parameters, tool_name)
-            
-            # Inject OAuth credentials if server_id provided and service needs OAuth
-            if server_id and service_name != "general":
-                enhanced_params = self._inject_oauth_credentials(fixed_params, server_id, service_name)
-            else:
-                enhanced_params = fixed_params
-            
-            # Prepare request
-            request_headers = {"Content-Type": "application/json"}
-            if headers:
-                request_headers.update(headers)
-            
-            # Determine payload format based on endpoint
-            if "/invoke" in endpoint:
-                # Standard MCP format
-                payload = {
-                    "name": tool_name,
-                    "arguments": enhanced_params
-                }
-            else:
-                # Direct parameters
-                payload = enhanced_params
-            
-            # Execute HTTP request
-            session = await self._get_http_session()
-            
-            if method.upper() == "GET":
-                async with session.get(endpoint, params=payload, headers=request_headers) as response:
-                    result = await self._process_http_response(response, tool_name)
-            else:
-                async with session.post(endpoint, json=payload, headers=request_headers) as response:
-                    result = await self._process_http_response(response, tool_name)
-            
-            # Check for token expiry and retry if needed
-            if "error" in result and server_id:
-                token_refreshed = await self._handle_token_expiry_error(result, server_id, service_name)
+        # CRITICAL FIX: Use dedicated session with proper async context management
+        # to prevent HTTP resource leaks for each HTTP tool call
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            try:
+                logger.info(f"[HTTP] Calling {tool_name} at {endpoint}")
                 
-                if token_refreshed:
-                    logger.debug(f"Retrying {tool_name} with refreshed token")
-                    # Retry with refreshed credentials
+                # Fix parameter format
+                fixed_params = self._fix_parameter_format(parameters, tool_name)
+                
+                # Inject OAuth credentials if server_id provided and service needs OAuth
+                if server_id and service_name != "general":
                     enhanced_params = self._inject_oauth_credentials(fixed_params, server_id, service_name)
+                else:
+                    enhanced_params = fixed_params
+                
+                # Prepare request
+                request_headers = {"Content-Type": "application/json"}
+                if headers:
+                    request_headers.update(headers)
+                
+                # Determine payload format based on endpoint
+                if "/invoke" in endpoint:
+                    # Standard MCP format
+                    payload = {
+                        "name": tool_name,
+                        "arguments": enhanced_params
+                    }
+                else:
+                    # Direct parameters
+                    payload = enhanced_params
+                
+                # Execute HTTP request
+                if method.upper() == "GET":
+                    async with session.get(endpoint, params=payload, headers=request_headers) as response:
+                        result = await self._process_http_response(response, tool_name)
+                else:
+                    async with session.post(endpoint, json=payload, headers=request_headers) as response:
+                        result = await self._process_http_response(response, tool_name)
+                
+                # Check for token expiry and retry if needed
+                if "error" in result and server_id:
+                    token_refreshed = await self._handle_token_expiry_error(result, server_id, service_name)
                     
-                    if "/invoke" in endpoint:
-                        payload = {"name": tool_name, "arguments": enhanced_params}
-                    else:
-                        payload = enhanced_params
-                    
-                    if method.upper() == "GET":
-                        async with session.get(endpoint, params=payload, headers=request_headers) as response:
-                            result = await self._process_http_response(response, tool_name)
-                    else:
-                        async with session.post(endpoint, json=payload, headers=request_headers) as response:
-                            result = await self._process_http_response(response, tool_name)
-            
-            logger.info(f"[HTTP] Tool {tool_name} completed")
-            return result
-            
-        except Exception as e:
-            logger.error(f"[HTTP] Failed to call {tool_name}: {e}")
-            return {"error": str(e)}
+                    if token_refreshed:
+                        logger.debug(f"Retrying {tool_name} with refreshed token")
+                        # Retry with refreshed credentials
+                        enhanced_params = self._inject_oauth_credentials(fixed_params, server_id, service_name)
+                        
+                        if "/invoke" in endpoint:
+                            payload = {"name": tool_name, "arguments": enhanced_params}
+                        else:
+                            payload = enhanced_params
+                        
+                        if method.upper() == "GET":
+                            async with session.get(endpoint, params=payload, headers=request_headers) as response:
+                                result = await self._process_http_response(response, tool_name)
+                        else:
+                            async with session.post(endpoint, json=payload, headers=request_headers) as response:
+                                result = await self._process_http_response(response, tool_name)
+                
+                logger.info(f"[HTTP] Tool {tool_name} completed")
+                return result
+                
+            except Exception as e:
+                logger.error(f"[HTTP] Failed to call {tool_name}: {e}")
+                return {"error": str(e)}
+            # Session is automatically closed when exiting this async context manager
     
     async def _process_http_response(self, response, tool_name: str) -> Dict[str, Any]:
         """Process HTTP response from MCP server"""
@@ -812,20 +828,30 @@ class UnifiedMCPService:
 unified_mcp_service = UnifiedMCPService()
 
 async def cleanup_mcp_subprocesses():
-    """Clean up MCP subprocesses using the subprocess pool and unified service"""
+    """Clean up MCP subprocesses using the subprocess pool and unified service
+    
+    CRITICAL FIX: Enhanced cleanup to prevent HTTP resource leaks from all MCP service components.
+    """
     try:
-        logger.info("Starting enhanced MCP subprocess cleanup")
+        logger.info("Starting enhanced MCP subprocess cleanup with HTTP resource leak prevention")
         
         # 1. Clean up subprocess pool (primary cleanup mechanism)
         await mcp_subprocess_pool.cleanup_all()
         logger.info("Subprocess pool cleanup completed")
         
-        # 2. Close HTTP session if it exists
-        if unified_mcp_service.http_session and not unified_mcp_service.http_session.closed:
-            await unified_mcp_service.http_session.close()
-            logger.info("Closed HTTP session")
+        # 2. CRITICAL FIX: Clean up all HTTP sessions in unified service
+        await unified_mcp_service.close()
+        logger.info("Unified MCP service HTTP session cleanup completed")
         
-        # 3. Clean up any remaining stdio clients (legacy cleanup)
+        # 3. CRITICAL FIX: Clean up all remote MCP client HTTP sessions
+        try:
+            from .remote_mcp_client import remote_mcp_manager
+            await remote_mcp_manager.close_all_clients()
+            logger.info("Remote MCP client cleanup completed")
+        except Exception as e:
+            logger.error(f"Remote MCP client cleanup failed: {e}")
+        
+        # 4. Clean up any remaining stdio clients (legacy cleanup)
         if unified_mcp_service.stdio_clients:
             logger.info(f"Cleaning up {len(unified_mcp_service.stdio_clients)} legacy stdio clients")
             clients_to_remove = list(unified_mcp_service.stdio_clients.keys())
@@ -854,30 +880,49 @@ async def cleanup_mcp_subprocesses():
             
             logger.info("Completed legacy stdio client cleanup")
         
-        # 4. Force garbage collection to help clean up closed resources
+        # 5. Wait a moment for HTTP connections to fully close
+        import asyncio
+        await asyncio.sleep(0.1)
+        
+        # 6. Force garbage collection to help clean up closed resources
         import gc
         gc.collect()
         
-        logger.info("Enhanced MCP subprocess cleanup completed")
+        logger.info("Enhanced MCP subprocess cleanup with HTTP resource leak prevention completed")
         
     except Exception as e:
         logger.error(f"Enhanced MCP subprocess cleanup failed: {e}")
 
 
 def get_mcp_pool_stats() -> Dict[str, Any]:
-    """Get MCP subprocess pool statistics for monitoring"""
+    """Get MCP subprocess pool statistics for monitoring
+    
+    ENHANCED: Now includes HTTP session monitoring to detect potential resource leaks.
+    """
     try:
         pool_stats = mcp_subprocess_pool.get_pool_stats()
         
-        # Add unified service stats
+        # Add unified service stats with enhanced HTTP session monitoring
         unified_stats = {
             "legacy_stdio_clients": len(unified_mcp_service.stdio_clients),
-            "http_session_active": unified_mcp_service.http_session is not None and not unified_mcp_service.http_session.closed
+            "http_session_active": unified_mcp_service.http_session is not None and not unified_mcp_service.http_session.closed,
+            "http_session_exists": unified_mcp_service.http_session is not None
         }
+        
+        # Add remote MCP client stats
+        try:
+            from .remote_mcp_client import remote_mcp_manager
+            remote_stats = {
+                "remote_clients_count": len(remote_mcp_manager.clients),
+                "remote_client_ids": list(remote_mcp_manager.clients.keys())
+            }
+        except Exception as e:
+            remote_stats = {"error": f"Failed to get remote client stats: {e}"}
         
         return {
             "subprocess_pool": pool_stats,
             "unified_service": unified_stats,
+            "remote_mcp_clients": remote_stats,
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:

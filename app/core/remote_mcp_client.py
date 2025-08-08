@@ -69,14 +69,25 @@ class RemoteMCPClient:
                 timeout=timeout,
                 headers=headers
             )
+            logger.debug(f"Created new HTTP session for remote MCP server: {self.server_url}")
         
-        # Initialize MCP connection
-        await self._initialize()
+        try:
+            # Initialize MCP connection
+            await self._initialize()
+        except Exception as e:
+            # CRITICAL FIX: Clean up session if initialization fails to prevent resource leaks
+            logger.error(f"MCP initialization failed, cleaning up session: {e}")
+            if self.session and not self.session.closed:
+                await self.session.close()
+                self.session = None
+            raise
         
     async def disconnect(self):
         """Close connection to remote MCP server"""
         if self.session and not self.session.closed:
+            logger.debug(f"Closing HTTP session for remote MCP server: {self.server_url}")
             await self.session.close()
+            # CRITICAL FIX: Ensure session is set to None to prevent reuse of closed session
             self.session = None
         self.initialized = False
         
@@ -177,70 +188,80 @@ class RemoteMCPClient:
     
     async def _send_message_http(self, endpoint: str, message_data: dict, message_id: str) -> MCPMessage:
         """Send message via HTTP transport (like Zapier's StreamableHTTPClientTransport)"""
-        async with self.session.post(endpoint, json=message_data) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                raise Exception(f"HTTP {response.status}: {error_text}")
-            
-            # Handle JSON response (standard for HTTP MCP)
-            response_data = await response.json()
-            logger.debug(f"Received HTTP MCP response: {response_data}")
-            
-            return MCPMessage(
-                jsonrpc=response_data.get("jsonrpc", "2.0"),
-                id=response_data.get("id"),
-                result=response_data.get("result"),
-                error=response_data.get("error")
-            )
+        try:
+            async with self.session.post(endpoint, json=message_data) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"HTTP {response.status}: {error_text}")
+                
+                # Handle JSON response (standard for HTTP MCP)
+                response_data = await response.json()
+                logger.debug(f"Received HTTP MCP response: {response_data}")
+                
+                return MCPMessage(
+                    jsonrpc=response_data.get("jsonrpc", "2.0"),
+                    id=response_data.get("id"),
+                    result=response_data.get("result"),
+                    error=response_data.get("error")
+                )
+        except Exception as e:
+            # CRITICAL FIX: Log HTTP errors with context for debugging
+            logger.error(f"HTTP MCP request failed for endpoint {endpoint}: {e}")
+            raise
     
     async def _send_message_sse(self, endpoint: str, message_data: dict, message_id: str) -> MCPMessage:
         """Send message via SSE transport"""
         # For SSE, we typically need to establish a persistent connection
         # and send messages via POST while receiving responses via SSE stream
         
-        # First, try to send the message via POST
-        async with self.session.post(endpoint, json=message_data) as response:
-            if response.status == 405:  # Method Not Allowed
-                # Some SSE endpoints might not support POST directly
-                # Try to establish SSE connection instead
-                return await self._handle_sse_connection(endpoint, message_data, message_id)
-            elif response.status != 200:
-                error_text = await response.text()
-                raise Exception(f"HTTP {response.status}: {error_text}")
-            
-            content_type = response.headers.get('content-type', '').lower()
-            
-            if 'text/event-stream' in content_type:
-                # Handle Server-Sent Events response
-                response_text = await response.text()
-                logger.debug(f"Received SSE response: {response_text}")
+        try:
+            # First, try to send the message via POST
+            async with self.session.post(endpoint, json=message_data) as response:
+                if response.status == 405:  # Method Not Allowed
+                    # Some SSE endpoints might not support POST directly
+                    # Try to establish SSE connection instead
+                    return await self._handle_sse_connection(endpoint, message_data, message_id)
+                elif response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"HTTP {response.status}: {error_text}")
                 
-                # Parse SSE format: data: {json}\n\n
-                response_data = None
-                for line in response_text.split('\n'):
-                    if line.startswith('data: '):
-                        json_str = line[6:]  # Remove 'data: ' prefix
-                        try:
-                            response_data = json.loads(json_str)
-                            break
-                        except json.JSONDecodeError:
-                            continue
+                content_type = response.headers.get('content-type', '').lower()
                 
-                if not response_data:
-                    raise Exception(f"Failed to parse SSE response: {response_text}")
+                if 'text/event-stream' in content_type:
+                    # Handle Server-Sent Events response
+                    response_text = await response.text()
+                    logger.debug(f"Received SSE response: {response_text}")
                     
-            else:
-                # Fallback to JSON
-                response_data = await response.json()
-            
-            logger.debug(f"Received SSE MCP response: {response_data}")
-            
-            return MCPMessage(
-                jsonrpc=response_data.get("jsonrpc", "2.0"),
-                id=response_data.get("id"),
-                result=response_data.get("result"),
-                error=response_data.get("error")
-            )
+                    # Parse SSE format: data: {json}\n\n
+                    response_data = None
+                    for line in response_text.split('\n'):
+                        if line.startswith('data: '):
+                            json_str = line[6:]  # Remove 'data: ' prefix
+                            try:
+                                response_data = json.loads(json_str)
+                                break
+                            except json.JSONDecodeError:
+                                continue
+                    
+                    if not response_data:
+                        raise Exception(f"Failed to parse SSE response: {response_text}")
+                        
+                else:
+                    # Fallback to JSON
+                    response_data = await response.json()
+                
+                logger.debug(f"Received SSE MCP response: {response_data}")
+                
+                return MCPMessage(
+                    jsonrpc=response_data.get("jsonrpc", "2.0"),
+                    id=response_data.get("id"),
+                    result=response_data.get("result"),
+                    error=response_data.get("error")
+                )
+        except Exception as e:
+            # CRITICAL FIX: Log SSE errors with context for debugging
+            logger.error(f"SSE MCP request failed for endpoint {endpoint}: {e}")
+            raise
     
     async def _handle_sse_connection(self, endpoint: str, message_data: dict, message_id: str) -> MCPMessage:
         """Handle SSE connection for endpoints that don't support POST"""
@@ -380,10 +401,24 @@ class RemoteMCPManager:
             del self.clients[server_id]
             
     async def close_all_clients(self):
-        """Close all client connections"""
-        for client in self.clients.values():
-            await client.disconnect()
+        """Close all client connections with proper error handling"""
+        # CRITICAL FIX: Handle errors during cleanup to prevent resource leaks
+        cleanup_errors = []
+        for server_id, client in list(self.clients.items()):
+            try:
+                await client.disconnect()
+                logger.debug(f"Successfully closed remote MCP client for server {server_id}")
+            except Exception as e:
+                logger.error(f"Error closing remote MCP client for server {server_id}: {e}")
+                cleanup_errors.append((server_id, e))
+            
         self.clients.clear()
+        
+        # Log summary of cleanup results
+        if cleanup_errors:
+            logger.warning(f"Remote MCP client cleanup completed with {len(cleanup_errors)} errors")
+        else:
+            logger.debug("All remote MCP clients closed successfully")
 
 # Global instance
 remote_mcp_manager = RemoteMCPManager()

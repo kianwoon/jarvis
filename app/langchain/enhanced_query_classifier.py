@@ -207,8 +207,45 @@ class EnhancedQueryClassifier:
         
         return keywords
     
+    def _apply_temporal_detection(self, query_lower: str, scores: Dict, metadata: Dict):
+        """Apply temporal query detection and auto-suggest datetime tools"""
+        try:
+            from app.core.temporal_context_manager import get_temporal_context_manager
+            temporal_manager = get_temporal_context_manager()
+            
+            # Detect if this is a time-related query
+            is_time_related, matched_keywords, confidence = temporal_manager.detect_time_related_query(query_lower)
+            
+            if is_time_related and confidence > 0.5:
+                # Find datetime tools in available MCP tools
+                datetime_tools = [t for t in self.mcp_tool_names if 'datetime' in t.lower() or 'time' in t.lower() or t == 'get_datetime']
+                
+                if datetime_tools:
+                    # Boost TOOL score for temporal queries
+                    temporal_boost = min(0.8, confidence * 0.9)  # Cap at 0.8, scale by confidence
+                    scores[QueryType.TOOL] += temporal_boost
+                    
+                    # Add to metadata
+                    metadata[QueryType.TOOL]["matched_patterns"].append(
+                        ("temporal_detection", f"Detected time query (confidence: {confidence:.2f})")
+                    )
+                    metadata[QueryType.TOOL]["pattern_groups"].add("temporal_query")
+                    metadata[QueryType.TOOL]["suggested_tools"].update(datetime_tools)
+                    metadata[QueryType.TOOL]["matched_keywords"] = matched_keywords
+                    metadata[QueryType.TOOL]["temporal_confidence"] = confidence
+                    
+                    logger.info(f"Temporal query detected: '{query_lower}' (confidence: {confidence:.2f}, tools: {datetime_tools})")
+                else:
+                    logger.warning("Temporal query detected but no datetime tools available")
+                    
+        except Exception as e:
+            logger.debug(f"Temporal detection failed: {e}")
+
     def _apply_mcp_tool_patterns(self, query_lower: str, scores: Dict, metadata: Dict):
         """Apply MCP tool-specific patterns for better classification"""
+        
+        # First apply temporal detection (high priority for time queries)
+        self._apply_temporal_detection(query_lower, scores, metadata)
         
         # Get tool patterns from configuration
         tool_patterns = self.config.get("mcp_tool_patterns", {})
@@ -1093,9 +1130,26 @@ class EnhancedQueryClassifier:
         logger.info("Reloaded query patterns configuration")
     
     async def _llm_suggest_tools(self, query: str) -> List[str]:
-        """Use LLM to suggest specific tools for a query based on available MCP tools"""
+        """Use LLM to suggest specific tools for a query based on available MCP tools with temporal awareness"""
         if not self.mcp_tool_names:
             return []
+        
+        # First check for temporal queries and auto-suggest datetime tools
+        try:
+            from app.core.temporal_context_manager import get_temporal_context_manager
+            temporal_manager = get_temporal_context_manager()
+            
+            is_time_related, matched_keywords, confidence = temporal_manager.detect_time_related_query(query.lower())
+            
+            if is_time_related and confidence > 0.6:
+                # Find datetime tools and prioritize them
+                datetime_tools = [t for t in self.mcp_tool_names if 'datetime' in t.lower() or 'time' in t.lower() or t == 'get_datetime']
+                if datetime_tools:
+                    logger.info(f"Auto-suggesting datetime tools for temporal query: {datetime_tools} (confidence: {confidence:.2f})")
+                    return datetime_tools[:1]  # Return the first datetime tool found
+                    
+        except Exception as e:
+            logger.debug(f"Temporal tool suggestion failed, proceeding with LLM suggestion: {e}")
         
         try:
             from app.core.llm_settings_cache import get_llm_settings, get_second_llm_full_config
