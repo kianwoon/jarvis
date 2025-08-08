@@ -133,7 +133,11 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, settings::text FROM settings WHERE category = ''''rag'''';\")",
       "Bash(diff:*)",
       "Bash(/Users/kianwoonwong/Downloads/jarvis/test-reminder-hook.py)",
-      "Bash(docker ps:*)"
+      "Bash(docker ps:*)",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''search_optimization'') FROM settings WHERE category = ''llm'';\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''search_optimization'') FROM settings WHERE category = ''llm'';\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''search_optimization'') FROM settings WHERE category = ''llm'';\")",
+      "Bash(npm run:*)"
     ],
     "deny": []
   },

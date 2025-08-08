@@ -84,17 +84,39 @@ def reload_llm_settings():
                 except Exception as e:
                     print(f"Warning: Failed to merge query classifier settings: {e}")
                 
-                # Merge in search optimization settings with defaults
+                # Ensure search optimization configuration is upgraded to full LLM config format
                 try:
-                    search_config = get_search_optimization_config(settings)
-                    settings['search_optimization'] = search_config
+                    search_optimization = settings.get('search_optimization', {})
                     
-                    # Save updated settings back to database if new search optimization was added
-                    row.settings = settings
-                    db.commit()
-                    print("Updated LLM settings with search optimization defaults")
+                    # Check if search_optimization has the old format (missing model field) and needs upgrade
+                    if not search_optimization or 'model' not in search_optimization:
+                        print("Upgrading search_optimization to full LLM configuration format")
+                        
+                        # Preserve any existing optimization-specific settings
+                        preserved_settings = {}
+                        if search_optimization:
+                            for key in ['optimization_prompt', 'optimization_timeout', 'enable_search_optimization']:
+                                if key in search_optimization:
+                                    preserved_settings[key] = search_optimization[key]
+                        
+                        # Get the full LLM configuration from emergency fallback as template
+                        emergency_settings = _get_emergency_fallback_settings()
+                        new_search_config = emergency_settings.get('search_optimization', {}).copy()
+                        
+                        # Merge preserved settings over the defaults
+                        new_search_config.update(preserved_settings)
+                        
+                        # Update settings with new full configuration
+                        settings['search_optimization'] = new_search_config
+                        
+                        # Save updated settings back to database
+                        row.settings = settings
+                        db.commit()
+                        print("Upgraded search optimization to full LLM configuration with preserved settings")
+                    else:
+                        print("Search optimization already has full LLM configuration")
                 except Exception as e:
-                    print(f"Warning: Failed to merge search optimization settings: {e}")
+                    print(f"Warning: Failed to upgrade search optimization settings: {e}")
                 
                 # Try to cache in Redis
                 redis_client = _get_redis_client()
@@ -247,47 +269,43 @@ def get_second_llm_full_config(settings=None, override_mode=None):
     
     return full_config
 
-def get_search_optimization_config(settings=None):
-    """Get search query optimization configuration with defaults"""
-    if settings is None:
-        settings = get_llm_settings()
+def get_search_optimization_full_config(settings=None, override_mode=None):
+    """Construct full search_optimization configuration by merging base config with mode parameters
     
-    # Default search optimization settings
-    default_config = {
-        'enable_search_optimization': False,
-        'optimization_timeout': 12,
-        'optimization_prompt': '''Transform the user's conversational question into an optimized search query for better results.
-
-CRITICAL: Only transform the query structure and keywords. DO NOT add facts, assumptions, or specific details not present in the original query.
-
-User Question: {query}
-
-## Optimization Guidelines:
-1. Remove conversational words (please, can you, I want to know, etc.)
-2. Use specific keywords instead of general terms
-3. Keep the core intent and meaning EXACTLY intact
-4. Make it concise but comprehensive
-5. DO NOT ADD temporal context (years, dates) unless explicitly mentioned in the original query
-6. DO NOT assume or inject facts not in the original question
-
-## Examples:
-- "Can you tell me about the latest AI developments?" → "latest AI developments"
-- "What's the weather like today?" → "weather today current conditions"
-- "I want to know about Python vs JavaScript" → "Python vs JavaScript comparison"
-- "How does machine learning work in 2024?" → "machine learning work 2024"
-
-Return ONLY the optimized search query with no explanations, assumptions, or added facts.'''
-    }
+    Args:
+        settings: LLM settings dictionary
+        override_mode: Override mode detected dynamically ('thinking' or 'non-thinking')
+    """
+    try:
+        if settings is None:
+            settings = get_llm_settings()
+    except Exception as e:
+        print(f"[SEARCH_OPTIMIZATION_CONFIG] Failed to get settings: {e}, using emergency fallback")
+        settings = _get_emergency_fallback_settings()
     
-    # Get user-defined settings or defaults
-    search_config = settings.get('search_optimization', default_config)
+    search_optimization = settings.get('search_optimization', {})
+    # Search optimization should default to non-thinking mode for structured optimization responses
+    configured_mode = search_optimization.get('mode', 'non-thinking')
     
-    # URGENT FIX: Force corrected defaults to prevent hallucination issues
-    # This temporarily overrides user settings to apply critical security fixes
-    merged_config = search_config.copy() if search_config != default_config else default_config.copy()
-    merged_config.update(default_config)  # Force our corrected defaults
+    # Use override mode if provided (from dynamic detection)
+    mode = override_mode if override_mode else configured_mode
     
-    return merged_config
+    # Get the appropriate mode parameters
+    if mode == 'thinking':
+        mode_params = settings.get('thinking_mode_params', {})
+    else:
+        mode_params = settings.get('non_thinking_mode_params', {})
+    
+    # Merge base config with mode parameters
+    full_config = search_optimization.copy()
+    full_config.update(mode_params)
+    
+    # Store the effective mode used
+    full_config['effective_mode'] = mode
+    full_config['configured_mode'] = configured_mode
+    full_config['mode_overridden'] = override_mode is not None
+    
+    return full_config
 
 def detect_and_override_mode(model_name: str, sample_response: str = None):
     """Detect model behavior dynamically and return appropriate mode override
@@ -398,12 +416,37 @@ def get_second_llm_full_config_with_detection(settings=None, sample_response=Non
     # Get config with potential override
     return get_second_llm_full_config(settings, detected_mode)
 
+def get_search_optimization_full_config_with_detection(settings=None, sample_response=None):
+    """Get search_optimization config with dynamic mode detection
+    
+    This function combines search optimization configuration loading with
+    automatic behavior detection for optimal query optimization performance.
+    
+    Args:
+        settings: LLM settings dictionary
+        sample_response: Sample response to analyze for behavior detection
+        
+    Returns:
+        dict: Full search_optimization configuration with dynamically detected mode
+    """
+    if settings is None:
+        settings = get_llm_settings()
+    
+    search_optimization = settings.get('search_optimization', {})
+    model_name = search_optimization.get('model', 'unknown')
+    
+    # Attempt dynamic detection
+    detected_mode = detect_and_override_mode(model_name, sample_response)
+    
+    # Get config with potential override
+    return get_search_optimization_full_config(settings, detected_mode)
+
 def _validate_llm_settings(settings):
     """Validate that LLM settings contain required keys to prevent runtime failures"""
     if not isinstance(settings, dict):
         return False
     
-    required_keys = ['main_llm', 'second_llm', 'query_classifier']
+    required_keys = ['main_llm', 'second_llm', 'query_classifier', 'search_optimization']
     for key in required_keys:
         if key not in settings or not isinstance(settings[key], dict):
             print(f"[LLM_SETTINGS] Missing or invalid key: {key}")
@@ -482,14 +525,20 @@ def _get_emergency_fallback_settings():
             "top_p": 0.8,
             "temperature": 0.7
         },
-        # Search optimization with safe defaults
+        # Search optimization with full LLM configuration
         "search_optimization": {
-            "hybrid_search_enabled": True,
-            "vector_weight": 0.7,
-            "bm25_weight": 0.3,
-            "result_fusion_method": "rrf",
-            "reranking_enabled": False,
-            "max_results": 20
+            "mode": "non-thinking",
+            "model": "qwen2.5:0.5b",  # Use smaller, faster model for query optimization
+            "max_tokens": 50,
+            "model_server": model_server,  # Use environment variable only
+            "temperature": 0.1,  # Low temperature for consistent optimization
+            "top_p": 0.8,
+            "system_prompt": "You are a search query optimizer. Transform conversational questions into optimized search queries while preserving the original intent and meaning.",
+            "context_length": 8192,
+            "repeat_penalty": 1.05,
+            "optimization_prompt": "Transform the user's conversational question into an optimized search query for better results.\n\nCRITICAL: Only transform the query structure and keywords. DO NOT add facts, assumptions, or specific details not present in the original query.\n\nUser Question: {query}\n\n## Optimization Guidelines:\n1. Remove conversational words (please, can you, I want to know, etc.)\n2. Use specific keywords instead of general terms\n3. Keep the core intent and meaning EXACTLY intact\n4. Make it concise but comprehensive\n5. DO NOT ADD temporal context (years, dates) unless explicitly mentioned in the original query\n6. DO NOT assume or inject facts not in the original question\n\nReturn ONLY the optimized search query with no explanations, assumptions, or added facts.",
+            "optimization_timeout": 8,
+            "enable_search_optimization": True
         },
         # Mark as emergency fallback
         "_fallback_mode": "emergency",

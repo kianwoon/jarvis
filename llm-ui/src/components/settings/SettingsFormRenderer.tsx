@@ -1451,8 +1451,8 @@ const renderStandardForm = (
         second_llm: { title: 'Second LLM', fields: {} },
         knowledge_graph: { title: 'Knowledge Graph', fields: {} },
         classifier: { title: 'Query Classifier', fields: {} },
-        thinking: { title: 'Thinking Mode', fields: {} },
-        search_optimization: { title: 'Search Optimization', fields: {} }
+        search_optimization: { title: 'Search Optimization', fields: {} },
+        thinking: { title: 'Thinking Mode', fields: {} }
       };
     } else {
       // Default single-tab structure for other categories (monitoring, mcp, etc.)

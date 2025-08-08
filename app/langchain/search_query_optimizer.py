@@ -42,8 +42,8 @@ class SearchQueryOptimizer:
         
         try:
             # Get search optimization configuration
-            from app.core.llm_settings_cache import get_search_optimization_config
-            config = get_search_optimization_config()
+            from app.core.llm_settings_cache import get_search_optimization_full_config
+            config = get_search_optimization_full_config()
             
             # Check if optimization is enabled
             if not config.get('enable_search_optimization', True):
@@ -64,7 +64,8 @@ class SearchQueryOptimizer:
             # Call LLM for optimization using existing patterns
             optimized_query = await self._call_llm_for_optimization(
                 optimization_prompt, 
-                timeout_seconds
+                timeout_seconds,
+                config
             )
             
             if optimized_query and optimized_query.strip():
@@ -84,13 +85,14 @@ class SearchQueryOptimizer:
             logger.warning(f"Search query optimization failed: {e}, using original query")
             return user_query
     
-    async def _call_llm_for_optimization(self, prompt: str, timeout_seconds: int) -> Optional[str]:
+    async def _call_llm_for_optimization(self, prompt: str, timeout_seconds: int, config: dict) -> Optional[str]:
         """
-        Call LLM for search query optimization using existing patterns
+        Call LLM for search query optimization using search_optimization configuration
         
         Args:
             prompt: The optimization prompt
             timeout_seconds: Timeout for the LLM call
+            config: Search optimization configuration dictionary
             
         Returns:
             Optimized query string or None if failed
@@ -100,32 +102,20 @@ class SearchQueryOptimizer:
             
             # Use direct Ollama LLM call to avoid circular imports
             from app.llm.ollama import JarvisLLM
-            from app.core.llm_settings_cache import get_llm_settings, get_second_llm_full_config
             
-            # Get LLM settings using established pattern
-            llm_settings = get_llm_settings()
-            
-            # Use second_llm config for optimization (following tool planner pattern)
-            llm_config = get_second_llm_full_config(llm_settings)
-            
-            if not llm_config or not llm_config.get('model'):
-                logger.error("LLM configuration not available for search optimization")
+            # Use search_optimization config directly
+            if not config or not config.get('model'):
+                logger.error("Search optimization configuration not available or missing model")
                 return None
             
-            logger.debug(f"Using LLM model for search optimization: {llm_config.get('model')}")
+            logger.debug(f"Using LLM model for search optimization: {config.get('model')}")
             
-            # Create JarvisLLM instance with second_llm config from settings
-            base_url = llm_config.get('model_server', '')
-            
-            if not base_url:
-                # Fallback to main LLM model_server
-                from app.core.llm_settings_cache import get_main_llm_full_config
-                main_llm_config = get_main_llm_full_config()
-                base_url = main_llm_config.get('model_server', '')
+            # Get model server from search_optimization config
+            base_url = config.get('model_server', '')
             
             if not base_url:
-                logger.error("No model server configured in settings")
-                raise ValueError("Model server must be configured in LLM settings")
+                logger.error("No model server configured in search_optimization settings")
+                raise ValueError("Model server must be configured in search_optimization settings")
             
             # Convert localhost to host.docker.internal for Docker containers (following existing pattern)
             if "localhost" in base_url:
@@ -138,8 +128,8 @@ class SearchQueryOptimizer:
             # Make LLM call with timeout - create instance just before use to minimize resource lifetime
             try:
                 jarvis_llm = JarvisLLM(
-                    mode='non-thinking',  # Use non-thinking mode for structured optimization
-                    max_tokens=llm_config.get('max_tokens'),
+                    mode=config.get('mode', 'non-thinking'),  # Use search optimization mode
+                    max_tokens=config.get('max_tokens', 50),
                     base_url=base_url
                 )
                 
