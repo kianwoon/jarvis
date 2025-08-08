@@ -131,7 +131,9 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT langflow_config FROM automation_workflows WHERE id = 39;\" -t)",
       "Bash(kill:*)",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT category, settings::text FROM settings WHERE category = ''''rag'''';\")",
-      "Bash(diff:*)"
+      "Bash(diff:*)",
+      "Bash(/Users/kianwoonwong/Downloads/jarvis/test-reminder-hook.py)",
+      "Bash(docker ps:*)"
     ],
     "deny": []
   },

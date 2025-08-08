@@ -573,18 +573,27 @@ class EnhancedQueryClassifier:
                 top_p=0.95  # Use default top_p for classification
             )
             
-            # Use query classifier specific model server configuration
+            # FIXED: Use query classifier model server from settings with proper fallback
             import os
             model_server = os.environ.get("OLLAMA_BASE_URL")
             if not model_server:
-                # Try query classifier specific settings first
-                model_server = classifier_specific_settings.get('model_server', '').strip()
+                # Get full query classifier config which includes model_server
+                from app.core.llm_settings_cache import get_query_classifier_full_config
+                query_classifier_full_config = get_query_classifier_full_config()
+                model_server = query_classifier_full_config.get('model_server', '').strip()
+                
                 if not model_server:
-                    # Fallback to main LLM settings
+                    # Fallback to main LLM model_server if query classifier doesn't have one
                     model_server = main_llm_settings.get('model_server', '').strip()
                     if not model_server:
-                        # Use localhost as default
+                        # Final fallback to localhost
                         model_server = "http://localhost:11434"
+            
+            # Apply Docker environment detection to the model_server URL
+            is_docker = os.path.exists('/root') or os.environ.get('DOCKER_ENVIRONMENT') or os.path.exists('/.dockerenv')
+            if 'localhost' in model_server and is_docker:
+                model_server = model_server.replace('localhost', 'host.docker.internal')
+                logger.info(f"Docker environment detected, converted URL to: {model_server}")
             
             logger.info(f"LLM Classifier using model server: {model_server}")
             logger.info(f"LLM Classifier using model: {llm_config.model_name}")

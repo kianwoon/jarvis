@@ -2,13 +2,31 @@ import httpx
 from app.llm.base import BaseLLM, LLMConfig, LLMResponse
 from typing import AsyncGenerator, List, Dict, Union, Optional
 import json
+import os
+import logging
 from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
+
+logger = logging.getLogger(__name__)
 
 class OllamaLLM(BaseLLM):
     def __init__(self, config: LLMConfig, base_url: str = "http://localhost:11434"):
         super().__init__(config)
+        
+        # Docker environment detection and URL conversion
+        is_docker = os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER")
+        
+        # Convert localhost to host.docker.internal for Docker if needed
+        if is_docker and "localhost" in base_url:
+            original_url = base_url
+            base_url = base_url.replace("localhost", "host.docker.internal")
+            logger.info(f"[OllamaLLM] Docker detected - converted URL from {original_url} to {base_url}")
+        
         self.base_url = base_url
         self.model_name = config.model_name
+        self.is_docker = is_docker
+        
+        # Log initialization details for debugging
+        logger.debug(f"[OllamaLLM] Initialized with model={config.model_name}, base_url={base_url}, docker={is_docker}")
 
     async def generate(self, prompt: str, **kwargs) -> LLMResponse:
         """Generate using chat endpoint for better prompt handling.

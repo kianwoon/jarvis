@@ -3266,10 +3266,13 @@ Documents to score:
             
             try:
                 # Use non-streaming endpoint for faster, more reliable reranking
-                # Get LLM URL from config to handle Docker environment
+                # FIXED: Get model_server URL from main_llm settings (not hardcoded)
+                from app.core.llm_settings_cache import get_main_llm_full_config
+                main_llm_full_config = get_main_llm_full_config()
+                llm_api_url = main_llm_full_config.get('model_server', 'http://localhost:11434')
+                
+                # Docker environment detection and URL conversion
                 import os
-                llm_api_url = llm_cfg.get('main_llm', {}).get('model_server', 'http://localhost:11434')
-                # Detect Docker environment more reliably
                 is_docker = os.path.exists('/root') or os.environ.get('DOCKER_ENVIRONMENT')
                 if 'localhost' in llm_api_url and is_docker:
                     llm_api_url = llm_api_url.replace('localhost', 'host.docker.internal')

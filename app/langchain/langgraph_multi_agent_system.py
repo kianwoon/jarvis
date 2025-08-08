@@ -262,8 +262,32 @@ class LangGraphMultiAgentSystem:
         
         # Store LLM configuration for efficient per-request creation
         import os
-        self.ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        logger.info(f"Using Ollama base_url: {self.ollama_base_url}")
+        
+        # FIXED: Use settings from LLM settings page instead of hardcoded URLs
+        # Get model_server from second_llm config (which most agents use)
+        from app.core.llm_settings_cache import get_second_llm_full_config
+        second_llm_config = get_second_llm_full_config()
+        
+        # Get model_server from settings with fallback
+        settings_base_url = second_llm_config.get('model_server', 'http://localhost:11434')
+        
+        # Docker environment detection and URL conversion (apply to settings-based URL)
+        is_docker = os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER")
+        
+        if is_docker and "localhost" in settings_base_url:
+            # Convert localhost to host.docker.internal for Docker containers
+            logger.info("Docker environment detected - converting settings URL for Docker")
+            self.ollama_base_url = settings_base_url.replace("localhost", "host.docker.internal")
+        else:
+            self.ollama_base_url = settings_base_url
+        
+        # Allow environment override for testing
+        self.ollama_base_url = os.environ.get("OLLAMA_BASE_URL", self.ollama_base_url)
+        
+        logger.info(f"Using Ollama base_url from settings: {self.ollama_base_url} (Docker: {is_docker}, Settings URL: {settings_base_url})")
+        
+        # Test Ollama connectivity on initialization
+        self._test_ollama_connectivity()
         
         # Don't create LLM instance here - create per request for efficiency
         
@@ -285,13 +309,18 @@ class LangGraphMultiAgentSystem:
         # MINIMAL cleaning - only remove excessive whitespace
         cleaned = response_text.strip()
         
+        # Log response cleaning details for debugging
+        logger.debug(f"Response cleaning: original_length={len(response_text)}, cleaned_length={len(cleaned)}")
+        
         # Only clean up excessive newlines (more than 3 in a row)
         cleaned = re.sub(r'\n\s*\n\s*\n\s*\n+', '\n\n\n', cleaned)
         
-        # If response is too short, return original
+        # If response is too short, return cleaned or original
         if len(cleaned) < 10:
-            return response_text
+            logger.debug(f"Response too short (len={len(cleaned)}), returning {'cleaned' if cleaned else 'original'}")
+            return cleaned if cleaned else response_text
             
+        logger.debug(f"Response cleaned successfully, final_length={len(cleaned)}")
         return cleaned
 
     async def _efficient_llm_call(self, prompt: str, max_tokens: int = 2000, temperature: float = 0.7, timeout: float = 45.0, agent_name: str = "unknown", model_name: str = None) -> str:
@@ -335,7 +364,15 @@ class LangGraphMultiAgentSystem:
                 second_llm_config = get_second_llm_full_config()
                 effective_model = second_llm_config.get('model', 'qwen3:1.7b')
             
-            logger.debug(f"Agent {agent_name} using model: {effective_model} (agent-specific: {bool(model_name)})")
+            # Enhanced debugging for GPT-OSS issues
+            is_gpt_oss = 'gpt-oss' in effective_model.lower()
+            if is_gpt_oss:
+                logger.info(f"[GPT-OSS DEBUG] Agent {agent_name} using GPT-OSS model: {effective_model}")
+                logger.info(f"[GPT-OSS DEBUG] Parameters: max_tokens={max_tokens}, temperature={temperature}, timeout={timeout}s")
+                logger.info(f"[GPT-OSS DEBUG] Prompt length: {len(prompt)} chars")
+                logger.info(f"[GPT-OSS DEBUG] Base URL: {self.ollama_base_url}")
+            else:
+                logger.debug(f"Agent {agent_name} using model: {effective_model} (agent-specific: {bool(model_name)})")
             
             # Create LLM config using codebase efficient pattern
             llm_config = LLMConfig(
@@ -348,6 +385,10 @@ class LangGraphMultiAgentSystem:
             # Create LLM instance per request (efficient pattern from service.py)
             llm = OllamaLLM(llm_config, base_url=self.ollama_base_url)
             
+            # Enhanced debugging for GPT-OSS generation
+            if is_gpt_oss:
+                logger.info(f"[GPT-OSS DEBUG] Starting generation for {agent_name}...")
+            
             # Make efficient call with timeout
             import asyncio
             response = await asyncio.wait_for(
@@ -355,9 +396,21 @@ class LangGraphMultiAgentSystem:
                 timeout=timeout
             )
             
+            # Enhanced debugging for GPT-OSS response
+            if is_gpt_oss:
+                logger.info(f"[GPT-OSS DEBUG] Response received for {agent_name}")
+                logger.info(f"[GPT-OSS DEBUG] Response length: {len(response.text) if response.text else 0} chars")
+                logger.info(f"[GPT-OSS DEBUG] Response empty: {not response.text or len(response.text.strip()) == 0}")
+                if response.text:
+                    logger.info(f"[GPT-OSS DEBUG] First 100 chars: {response.text[:100]}...")
+            
             success = True
             # Clean the response text by removing <think> blocks and verbose reasoning
             cleaned_text = self._clean_llm_response(response.text)
+            
+            if is_gpt_oss:
+                logger.info(f"[GPT-OSS DEBUG] Cleaned response length: {len(cleaned_text)} chars")
+            
             return cleaned_text
             
         except asyncio.TimeoutError:
@@ -1187,6 +1240,87 @@ class LangGraphMultiAgentSystem:
         
         return "\n".join(prompt_parts)
 
+    def _test_ollama_connectivity(self):
+        """Test Ollama connectivity and try fallback URLs if needed"""
+        import httpx
+        import os
+        
+        urls_to_try = [self.ollama_base_url]
+        
+        # Add fallback URLs based on environment
+        if "localhost" in self.ollama_base_url:
+            # If using localhost, also try host.docker.internal as fallback
+            fallback_url = self.ollama_base_url.replace("localhost", "host.docker.internal")
+            if fallback_url not in urls_to_try:
+                urls_to_try.append(fallback_url)
+        elif "host.docker.internal" in self.ollama_base_url:
+            # If using host.docker.internal, also try localhost as fallback
+            fallback_url = self.ollama_base_url.replace("host.docker.internal", "localhost")
+            if fallback_url not in urls_to_try:
+                urls_to_try.append(fallback_url)
+        
+        for url in urls_to_try:
+            try:
+                test_url = f"{url}/api/tags"  # Use tags endpoint for testing
+                logger.info(f"Testing Ollama connectivity at: {test_url}")
+                
+                with httpx.Client(timeout=5.0) as client:
+                    response = client.get(test_url)
+                    if response.status_code == 200:
+                        logger.info(f"✅ Ollama connected successfully at: {url}")
+                        self.ollama_base_url = url  # Update to working URL
+                        return
+                    else:
+                        logger.warning(f"Ollama returned status {response.status_code} at: {url}")
+            except Exception as e:
+                logger.warning(f"Failed to connect to Ollama at {url}: {e}")
+        
+        # Log warning but don't fail initialization - connections will be retried per request
+        logger.warning(f"⚠️ Could not verify Ollama connectivity at initialization. Will retry during requests.")
+    
+    async def _verify_ollama_connectivity_async(self):
+        """Async version of Ollama connectivity verification with automatic fallback"""
+        import httpx
+        
+        urls_to_try = [self.ollama_base_url]
+        
+        # Add fallback URLs based on environment
+        if "localhost" in self.ollama_base_url:
+            fallback_url = self.ollama_base_url.replace("localhost", "host.docker.internal")
+            if fallback_url not in urls_to_try:
+                urls_to_try.append(fallback_url)
+        elif "host.docker.internal" in self.ollama_base_url:
+            fallback_url = self.ollama_base_url.replace("host.docker.internal", "localhost")
+            if fallback_url not in urls_to_try:
+                urls_to_try.append(fallback_url)
+        
+        # Also try the opposite of what we started with
+        if "localhost" in urls_to_try[0]:
+            urls_to_try.append("http://host.docker.internal:11434")
+        elif "host.docker.internal" in urls_to_try[0]:
+            urls_to_try.append("http://localhost:11434")
+        
+        for url in urls_to_try:
+            try:
+                test_url = f"{url}/api/tags"
+                logger.info(f"[OLLAMA] Testing connectivity at: {test_url}")
+                
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(test_url)
+                    if response.status_code == 200:
+                        logger.info(f"[OLLAMA] ✅ Connected successfully at: {url}")
+                        if url != self.ollama_base_url:
+                            logger.info(f"[OLLAMA] Switching from {self.ollama_base_url} to {url}")
+                            self.ollama_base_url = url
+                        return True
+                    else:
+                        logger.warning(f"[OLLAMA] Status {response.status_code} at: {url}")
+            except Exception as e:
+                logger.warning(f"[OLLAMA] Failed to connect at {url}: {e}")
+        
+        logger.error(f"[OLLAMA] ❌ Could not connect to Ollama at any URL. GPT-OSS agents may fail.")
+        return False
+    
     def _calculate_confidence(self, state: MultiAgentLangGraphState) -> float:
         """Calculate confidence score based on execution metrics"""
         

@@ -75,7 +75,12 @@ def reload_llm_settings():
                 try:
                     from app.core.query_classifier_settings_cache import get_query_classifier_settings
                     latest_query_classifier = get_query_classifier_settings()
-                    settings['query_classifier'] = latest_query_classifier
+                    
+                    # Preserve existing query_classifier settings from database and merge with cache defaults
+                    existing_query_classifier = settings.get('query_classifier', {})
+                    merged_query_classifier = latest_query_classifier.copy()
+                    merged_query_classifier.update(existing_query_classifier)
+                    settings['query_classifier'] = merged_query_classifier
                 except Exception as e:
                     print(f"Warning: Failed to merge query classifier settings: {e}")
                 
@@ -436,6 +441,7 @@ def _get_emergency_fallback_settings():
             "mode": "thinking", 
             "model": working_model,  # Use the working model
             "max_tokens": 16384,
+            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
             "temperature": 0.7,
             "top_p": 0.9
         },
@@ -443,6 +449,7 @@ def _get_emergency_fallback_settings():
             "mode": "thinking",
             "model": working_model,  # Use the working model
             "max_tokens": 2048,
+            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
             "temperature": 0.3,
             "top_p": 0.8
         },
@@ -450,6 +457,7 @@ def _get_emergency_fallback_settings():
             "mode": "thinking",
             "model": working_model,
             "max_tokens": 8192,
+            "model_server": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
             "temperature": 0.6,
             "top_p": 0.9
         },

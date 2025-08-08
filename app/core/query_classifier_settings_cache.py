@@ -37,6 +37,7 @@ DEFAULT_QUERY_CLASSIFIER_SETTINGS = {
     # LLM-based classification settings
     "enable_llm_classification": True,  # Feature toggle for LLM-based classification
     "llm_model": "",  # LLM model for classification (e.g., "qwen2.5:0.5b")
+    "model_server": "http://localhost:11434",  # Model server URL for query classifier
     "context_length": 0,  # Model context length (auto-updated when model changes)
     "llm_temperature": 0.1,  # Lower temperature for consistent classification
     "llm_max_tokens": 10,  # Token limit for classification responses (auto-updated to 75% of context)

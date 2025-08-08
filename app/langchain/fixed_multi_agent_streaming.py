@@ -18,7 +18,7 @@ from app.core.intelligent_agent_selector import IntelligentAgentSelector
 from app.core.agent_performance_tracker import performance_tracker
 from app.core.langgraph_agents_cache import get_agent_by_name
 # from app.langchain.tool_executor import tool_executor  # Not needed for current implementation
-from app.langchain.service import call_mcp_tool
+# from app.langchain.service import call_mcp_tool  # Moved to delayed import to avoid circular import
 import logging
 
 logger = logging.getLogger(__name__)
@@ -45,8 +45,9 @@ async def fixed_multi_agent_streaming(
         workflow_span = None
         
         # Initialize system with LLM settings (with error handling)
+        llm_settings = None
         try:
-            get_llm_settings()  # Ensure settings are loaded
+            llm_settings = get_llm_settings()  # Ensure settings are loaded and stored
             logger.info("LLM settings loaded successfully for multi-agent system")
         except Exception as settings_error:
             logger.error(f"Failed to load LLM settings: {settings_error}")
@@ -61,6 +62,10 @@ async def fixed_multi_agent_streaming(
             try:
                 system = LangGraphMultiAgentSystem(conversation_id)
                 logger.info("Multi-agent system initialized successfully")
+                
+                # Verify Ollama connectivity before starting streaming
+                await system._verify_ollama_connectivity_async()
+                
             except ImportError as import_error:
                 logger.error(f"Multi-agent system dependency missing: {import_error}")
                 yield json.dumps({
@@ -395,6 +400,8 @@ async def fixed_multi_agent_streaming(
                                         # Fallback for tools without schema
                                         tool_params = {'query': question}
                                     
+                                    # Delayed import to avoid circular dependency
+                                    from app.langchain.service import call_mcp_tool
                                     return call_mcp_tool(tool, tool_params, trace=tool_span)
                                 
                                 # Execute tool in thread to avoid async conflicts
@@ -482,6 +489,7 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
 """
                     
                     # Determine model and parameters based on configuration flags
+                    is_gpt_oss = False  # Initialize here for proper scope
                     if config.get('use_main_llm'):
                         from app.core.llm_settings_cache import get_main_llm_full_config
                         main_llm_config = get_main_llm_full_config()
@@ -494,8 +502,8 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
                         logger.info(f"🔍 {agent_name} using main_llm: {agent_model}")
                     elif config.get('use_second_llm') or not config.get('model'):
                         # Use second_llm with dynamic detection
-                        from app.core.llm_settings_cache import get_llm_settings
-                        settings = get_llm_settings()
+                        # Use the pre-loaded settings or try to get them again
+                        settings = llm_settings if llm_settings else get_llm_settings()
                         
                         # Apply dynamic detection for second_llm (same logic as main_llm)
                         second_llm_base = settings.get('second_llm', {})
@@ -516,6 +524,12 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
                             config['max_tokens'] = second_llm_config.get('max_tokens', 2000)
                         if 'temperature' not in config:
                             config['temperature'] = second_llm_config.get('temperature', 0.7)
+                        
+                        # THINKING MODEL DETECTION: Add special handling for thinking models
+                        is_gpt_oss = agent_model and 'gpt-oss' in agent_model.lower()
+                        if is_gpt_oss:
+                            logger.info(f"🧠 {agent_name} GPT-OSS THINKING MODEL DETECTED: {agent_model}")
+                            logger.info(f"🧠 {agent_name} Will handle thinking tags and empty chunks specially")
                         
                         # Log effective configuration
                         logger.info(f"🔍 {agent_name} using second_llm: {agent_model}")
@@ -555,18 +569,77 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
                     in_thinking = False
                     thinking_detected = False
                     token_count = 0
+                    empty_chunk_count = 0  # Track empty chunks for GPT OSS models
                     
-                    # Add debug logging
-                    logger.info(f"Starting streaming for {agent_name}...")
+                    # CONTEXT-AWARE EMPTY CHUNK LIMITS: Later agents need higher tolerance
+                    # GPT-OSS models produce more empty chunks in sequential execution
+                    base_empty_chunks = 1000  # Increased base from 500 to 1000
+                    if is_gpt_oss:
+                        # Progressive tolerance based on agent position in sequence
+                        agent_position = i + 1  # 1-based position
+                        if agent_position >= 4:  # 4th+ agent
+                            max_empty_chunks = 3000  # Increased from 1500
+                        elif agent_position >= 3:  # 3rd agent  
+                            max_empty_chunks = 2000  # Increased from 1000
+                        else:  # 1st-2nd agent
+                            max_empty_chunks = 1000  # Increased from 500
+                        logger.info(f"[GPT-OSS] {agent_name} (position {agent_position}) max_empty_chunks: {max_empty_chunks}")
+                    else:
+                        max_empty_chunks = 100  # Non-GPT-OSS models need fewer empty chunks
+                    
+                    # Log if this is a GPT OSS thinking model (already detected above)
+                    if is_gpt_oss:
+                        logger.info(f"[GPT-OSS] {agent_name} using GPT OSS model: {agent_model} - expecting many empty chunks")
+                    
+                    # Add debug logging and timing
+                    stream_start_time = time.time()
+                    # Increased timeout for GPT-OSS models
+                    max_wait_time = 90.0 if is_gpt_oss else 45.0  # 90s for GPT-OSS, 45s for others
+                    logger.info(f"Starting streaming for {agent_name} (timeout: {max_wait_time}s)...")
                     
                     async for response_chunk in llm.generate_stream(agent_prompt):
                         chunk_text = response_chunk.text
+                        
+                        # CRITICAL FIX: Handle empty chunks differently for GPT OSS models
+                        # GPT OSS models return hundreds of empty chunks before content
+                        if not chunk_text:  # Empty chunk
+                            empty_chunk_count += 1
+                            elapsed_time = time.time() - stream_start_time
+                            
+                            if is_gpt_oss:
+                                # Progressive timeout: Use both chunk count AND time limits
+                                if empty_chunk_count <= max_empty_chunks and elapsed_time < max_wait_time:
+                                    # Continue waiting for GPT-OSS content
+                                    if empty_chunk_count % 200 == 0:  # Log less frequently
+                                        logger.info(f"[GPT-OSS] {agent_name} received {empty_chunk_count} empty chunks after {elapsed_time:.1f}s, still waiting (max: {max_empty_chunks} chunks, {max_wait_time}s)...")
+                                    continue
+                                else:
+                                    # Progressive timeout reached
+                                    if elapsed_time >= max_wait_time:
+                                        logger.warning(f"[GPT-OSS] {agent_name} timed out after {elapsed_time:.1f}s with {empty_chunk_count} empty chunks")
+                                    else:
+                                        logger.warning(f"[GPT-OSS] {agent_name} exceeded {max_empty_chunks} empty chunks after {elapsed_time:.1f}s")
+                                    break
+                            else:
+                                # For non-GPT OSS models, skip empty chunks normally
+                                logger.debug(f"[{agent_name}] Skipping empty chunk (prevents empty response bug)")
+                                continue
+                        
+                        # Reset empty chunk counter when we get content
+                        if empty_chunk_count > 0:
+                            logger.info(f"[{agent_name}] Got content after {empty_chunk_count} empty chunks")
+                            empty_chunk_count = 0
+                        
                         full_response += chunk_text
                         token_count += 1
                         
-                        # Log first few tokens for debugging
+                        # Enhanced debugging for first few tokens
                         if token_count <= 5:
-                            logger.info(f"[{agent_name}] Token {token_count}: '{chunk_text[:50]}...'")
+                            logger.info(f"[{agent_name}] Token {token_count}: '{chunk_text[:50]}...' (length: {len(chunk_text)})")
+                        
+                        # Additional debug for potential empty chunk patterns
+                        if token_count <= 10 and len(chunk_text.strip()) == 0:
+                            logger.warning(f"[{agent_name}] Token {token_count} is whitespace-only: {repr(chunk_text)}")
                         
                         # Detect thinking start
                         if "<think>" in chunk_text.lower():
@@ -632,7 +705,15 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
                         
                         await asyncio.sleep(0.02)
                     
-                    logger.info(f"Streaming completed for {agent_name}. Total tokens: {token_count}, thinking_detected: {thinking_detected}")
+                    logger.info(f"Streaming completed for {agent_name}. Total tokens: {token_count}, empty_chunks: {empty_chunk_count}, thinking_detected: {thinking_detected}, full_response_length: {len(full_response)}")
+                    
+                    # Additional debugging for the Service Delivery Manager issue
+                    if token_count > 0:
+                        logger.debug(f"[{agent_name}] Full response preview: {repr(full_response[:100])}...")
+                        if len(full_response) == 0:
+                            logger.error(f"[{agent_name}] CRITICAL: Streamed {token_count} tokens but full_response is empty - this should be fixed now!")
+                        elif len(full_response) < 50:
+                            logger.warning(f"[{agent_name}] Warning: Only {len(full_response)} characters accumulated from {token_count} tokens")
                     
                     # Fallback thinking if none detected
                     logger.info(f"[DEBUG] {agent_name}: thinking_detected = {thinking_detected}")
@@ -667,8 +748,60 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
                     else:
                         logger.error(f"[ERROR] {agent_name}: No response generated at all!")
                     
-                    # Store response for collaboration
-                    agent_response = system._clean_llm_response(full_response)
+                    # Store response for collaboration with validation
+                    try:
+                        agent_response = system._clean_llm_response(full_response)
+                    except Exception as clean_error:
+                        logger.error(f"[{agent_name}] Error cleaning response: {clean_error}")
+                        agent_response = full_response  # Use raw response as fallback
+                    
+                    # CRITICAL FIX: Handle thinking models (like GPT OSS) that wrap ALL content in <think> tags
+                    if thinking_detected and agent_response.strip():
+                        try:
+                            # Check if response is ONLY thinking content (wrapped in <think></think>)
+                            think_pattern = r'<think>(.*?)</think>'
+                            think_matches = re.findall(think_pattern, agent_response, re.DOTALL | re.IGNORECASE)
+                            
+                            # Also check for any content AFTER </think> tags (the actual response)
+                            after_think_pattern = r'</think>\s*(.+)'
+                            after_think_match = re.search(after_think_pattern, agent_response, re.DOTALL | re.IGNORECASE)
+                            
+                            if after_think_match and after_think_match.group(1).strip():
+                                # If there's content after </think>, that's the real response
+                                actual_content = after_think_match.group(1).strip()
+                                logger.info(f"[THINKING MODEL] {agent_name}: Found {len(actual_content)} chars after thinking tags")
+                                # Keep the full response for now (includes thinking for context)
+                            elif think_matches:
+                                # Response is mostly/only thinking content
+                                extracted_content = '\n'.join(think_matches).strip()
+                                # If extracted content is substantial, log it but keep full response
+                                if len(extracted_content) > len(agent_response) * 0.3:
+                                    logger.info(f"[THINKING MODEL] {agent_name}: Response contains {len(extracted_content)} chars in thinking tags")
+                                    # For GPT OSS, the thinking IS the content, so preserve it
+                                    if is_gpt_oss:
+                                        logger.info(f"[GPT-OSS] {agent_name}: Preserving thinking content as main response")
+                        except Exception as think_error:
+                            logger.error(f"[{agent_name}] Error processing thinking tags: {think_error}")
+                            # Continue with the response as-is
+                    
+                    # Enhanced validation with better debugging for Service Delivery Manager issue
+                    if token_count > 0 and not agent_response.strip():
+                        logger.error(f"[VALIDATION FAILURE] {agent_name}: Streamed {token_count} tokens but got empty response after cleaning")
+                        logger.error(f"[VALIDATION] Full response before cleaning: original_length={len(full_response)}, content={repr(full_response[:200])}...")
+                        logger.error(f"[VALIDATION] Cleaned response: cleaned_length={len(agent_response)}, content={repr(agent_response)}")
+                        
+                        # Use full_response as fallback if cleaning resulted in empty response
+                        if full_response.strip():
+                            agent_response = full_response
+                            logger.info(f"[VALIDATION RECOVERY] {agent_name}: Using original full_response as fallback, length={len(agent_response)}")
+                        else:
+                            agent_response = "Error: Response processing failed - no content generated"
+                            logger.error(f"[VALIDATION RECOVERY] {agent_name}: Both full_response and cleaned response empty - using error message")
+                    elif token_count > 0 and agent_response.strip():
+                        logger.debug(f"[VALIDATION SUCCESS] {agent_name}: {token_count} tokens -> {len(agent_response)} character response")
+                    elif token_count == 0:
+                        logger.warning(f"[VALIDATION WARNING] {agent_name}: No tokens streamed at all - possible connection issue")
+                    
                     agent_responses[agent_name] = agent_response
                     
                     # Record performance metrics
@@ -714,8 +847,16 @@ IMPORTANT: This is a professional analysis that requires depth and detail. Provi
                         
                         # IMPROVED: Clean thinking tags for communication messages (but preserve structure)
                         # Communication messages should be concise summaries, not full thinking content
-                        clean_response = re.sub(r'<think>.*?</think>', '', agent_response, flags=re.DOTALL | re.IGNORECASE).strip()
-                        clean_response = re.sub(r'</?think>', '', clean_response, flags=re.IGNORECASE).strip()
+                        try:
+                            # First remove any thinking content between tags
+                            clean_response = re.sub(r'<think>.*?</think>', '', agent_response, flags=re.DOTALL | re.IGNORECASE)
+                            # Then remove any remaining think tags
+                            clean_response = re.sub(r'</?think>', '', clean_response, flags=re.IGNORECASE)
+                            # Finally strip whitespace
+                            clean_response = clean_response.strip()
+                        except Exception as clean_error:
+                            logger.error(f"[{agent_name}] Error cleaning response for communication: {clean_error}")
+                            clean_response = agent_response[:400] if agent_response else ""  # Fallback to simple truncation
                         
                         # Additional cleanup for better communication messages
                         clean_response = re.sub(r'\n\s*\n+', ' ', clean_response)  # Collapse multiple newlines
@@ -1356,3 +1497,25 @@ Begin your synthesis now:"""
             }) + "\n"
     
     return stream_fixed_multi_agent()
+
+
+class FixedMultiAgentStreamingService:
+    """Service wrapper for fixed multi-agent streaming functionality"""
+    
+    async def stream_multi_agent_response(self, query: str, conversation_id: Optional[str] = None):
+        """
+        Stream multi-agent response using the fixed streaming implementation
+        
+        Args:
+            query: The query to process
+            conversation_id: Optional conversation ID for context
+            
+        Yields:
+            JSON-encoded streaming events from the multi-agent system
+        """
+        generator = await fixed_multi_agent_streaming(
+            question=query, 
+            conversation_id=conversation_id
+        )
+        async for event in generator:
+            yield event

@@ -2162,6 +2162,7 @@ const renderStandardForm = (
       // Query Classifier Settings
       'query_classifier.model': 'LLM model used for query classification and routing decisions.',
       'query_classifier.max_tokens': 'Maximum number of tokens the query classifier can use for analysis.',
+      'query_classifier.model_server': 'Server endpoint URL for the query classifier LLM model.',
       'query_classifier.system_prompt': 'System prompt that guides the query classifier in making routing decisions.',
       'query_classifier.min_confidence_threshold': 'Minimum confidence score required for classification decisions. Lower values = more permissive.',
       'query_classifier.enable_llm_classification': 'Use LLM-based classification in addition to pattern-based classification for better accuracy.',
@@ -2252,6 +2253,7 @@ const renderStandardForm = (
         'query_classifier.llm_system_prompt': 'LLM System Prompt',
         'query_classifier.fallback_to_patterns': 'Fallback to Patterns',
         'query_classifier.llm_classification_priority': 'Use LLM First (vs Patterns First)',
+        'query_classifier.model_server': 'Model Server URL',
         
         // Search Optimization fields
         'search_optimization.enable_search_optimization': 'Enable Search Optimization',
