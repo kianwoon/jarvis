@@ -16,6 +16,11 @@ logging.basicConfig(
 # Disable httpcore debug logging
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Suppress Neo4j debug logs
+logging.getLogger("neo4j").setLevel(logging.WARNING)
+logging.getLogger("neo4j.io").setLevel(logging.WARNING)
+logging.getLogger("neo4j.pool").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Check service dependencies
