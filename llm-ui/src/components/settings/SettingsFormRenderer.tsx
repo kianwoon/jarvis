@@ -3201,6 +3201,30 @@ const renderStandardForm = (
                       
                       console.log('[DEBUG] Search Optimization fields (excluding model):', otherFields.map(f => f.key));
                       
+                      // Organize fields into left and right columns
+                      const leftColumnFields = otherFields.filter(field => {
+                        const key = field.key.toLowerCase();
+                        // Left column: Enable, Max Tokens, Context Length, Top P
+                        return key.includes('enable_search_optimization') ||
+                               key.includes('max_tokens') ||
+                               key.includes('context_length') ||
+                               key === 'top_p' ||
+                               key.includes('.top_p');
+                      });
+                      
+                      const rightColumnFields = otherFields.filter(field => {
+                        const key = field.key.toLowerCase();
+                        // Right column: Temperature, Repeat Penalty, Timeout, Prompt Template, System Prompt
+                        return key.includes('temperature') ||
+                               key.includes('repeat_penalty') ||
+                               key.includes('timeout') ||
+                               key.includes('prompt') ||
+                               key.includes('system');
+                      });
+                      
+                      console.log('[DEBUG] Left column fields:', leftColumnFields.map(f => f.key));
+                      console.log('[DEBUG] Right column fields:', rightColumnFields.map(f => f.key));
+                      
                       return (
                         <div style={{ width: '100%' }}>
                           {/* Render the LLM Model Configuration card full width FIRST */}
@@ -3212,13 +3236,39 @@ const renderStandardForm = (
                             </div>
                           )}
                           
-                          {/* Use standard jarvis-form-grid for 2-column layout */}
-                          <div className="jarvis-form-grid">
-                            {otherFields.map(({ key, value }) => 
-                              renderField(key, value, 0, (fieldKey, fieldValue) => {
-                                onChange(fieldKey, fieldValue);
-                              }, category, onShowSuccess)
-                            )}
+                          {/* Use exact same 2-column structure as query classifier */}
+                          <div style={{ 
+                            display: 'flex',
+                            gap: '24px',
+                            width: '100%'
+                          }}>
+                            {/* Left Column */}
+                            <div style={{ 
+                              flex: '1 1 0%',
+                              display: 'flex', 
+                              flexDirection: 'column', 
+                              gap: '16px' 
+                            }}>
+                              {leftColumnFields.map(({ key, value }) => 
+                                renderField(key, value, 0, (fieldKey, fieldValue) => {
+                                  onChange(fieldKey, fieldValue);
+                                }, category, onShowSuccess)
+                              )}
+                            </div>
+                            
+                            {/* Right Column */}
+                            <div style={{ 
+                              flex: '1 1 0%',
+                              display: 'flex', 
+                              flexDirection: 'column', 
+                              gap: '16px' 
+                            }}>
+                              {rightColumnFields.map(({ key, value }) => 
+                                renderField(key, value, 0, (fieldKey, fieldValue) => {
+                                  onChange(fieldKey, fieldValue);
+                                }, category, onShowSuccess)
+                              )}
+                            </div>
                           </div>
                         </div>
                       );
