@@ -119,7 +119,6 @@
 
 /* Form Grid Layout for Multi-Column */
 .jarvis-form-grid {
-  display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--jarvis-spacing-md) var(--jarvis-spacing-lg);
   align-items: start;

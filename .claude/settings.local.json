@@ -137,7 +137,8 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''search_optimization'') FROM settings WHERE category = ''llm'';\")",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''search_optimization'') FROM settings WHERE category = ''llm'';\")",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''search_optimization'') FROM settings WHERE category = ''llm'';\")",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(open http://localhost:5176/settings.html)"
     ],
     "deny": []
   },

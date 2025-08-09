@@ -1410,7 +1410,6 @@ const renderStandardForm = (
   const preserveNested = [
     'main_llm',
     'second_llm',
-    'query_classifier',
     'knowledge_graph',
     'thinking_mode',
     'agent_config',
@@ -1537,6 +1536,9 @@ const renderStandardForm = (
 
     Object.entries(flattenedData).forEach(([key, value]) => {
       const lowerKey = key.toLowerCase();
+      if (category === 'llm') {
+        console.log('[DEBUG] Processing flattened key:', key, 'lowerKey:', lowerKey);
+      }
       
       // Skip keys that are already part of a preserved nested object
       const isPartOfNestedObject = key.includes('.') && 
@@ -1644,7 +1646,10 @@ const renderStandardForm = (
       } else if (category === 'llm') {
         // LLM-specific field categorization
         // Search Optimization Tab - All search_optimization-related settings
-        if (lowerKey.includes('search_optimization') || key === 'search_optimization') {
+        if ((lowerKey.includes('search_optimization') && key !== 'search_optimization') ||
+            key === 'enable_search_optimization' || key === 'optimization_timeout' || 
+            key === 'optimization_prompt' || key === 'top_p') {
+          console.log('[DEBUG] Adding to search_optimization tab:', key, value);
           categories.search_optimization.fields[key] = value;
         }
         // Second LLM Tab - All second_llm-related settings
@@ -2259,9 +2264,11 @@ const renderStandardForm = (
         'search_optimization.enable_search_optimization': 'Enable Search Optimization',
         'search_optimization.optimization_timeout': 'Optimization Timeout (seconds)',
         'search_optimization.optimization_prompt': 'Optimization Prompt Template',
+        'search_optimization.top_p': 'Top P',
         'enable_search_optimization': 'Enable Search Optimization',
         'optimization_timeout': 'Optimization Timeout (seconds)',
-        'optimization_prompt': 'Optimization Prompt Template'
+        'optimization_prompt': 'Optimization Prompt Template',
+        'top_p': 'Top P'
       };
       
       // Check for custom label first
@@ -2744,9 +2751,9 @@ const renderStandardForm = (
       );
     }
     
-    // Handle nested objects - but flatten query_classifier, main_llm, second_llm, and knowledge_graph to work like Settings
+    // Handle nested objects - but flatten query_classifier, main_llm, second_llm, knowledge_graph, and search_optimization to work like Settings
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      if (key === 'query_classifier' || key === 'main_llm' || key === 'second_llm' || key === 'knowledge_graph') {
+      if (key === 'query_classifier' || key === 'main_llm' || key === 'second_llm' || key === 'knowledge_graph' || key === 'search_optimization') {
         // Flatten these fields to work like Settings fields, but skip mode fields and apply ordering
         const getFieldOrder = (fieldKey: string): number => {
           const lowerKey = fieldKey.toLowerCase();
@@ -2967,19 +2974,21 @@ const renderStandardForm = (
               /* Regular form rendering for other tabs */
               <div style={{ width: '100%', maxWidth: 'none' }}>
                 {/* Mode Selection for Settings and Query Classifier tabs */}
-                {category === 'llm' && (categoryKey === 'settings' || categoryKey === 'second_llm' || categoryKey === 'knowledge_graph' || categoryKey === 'classifier') && (
+                {category === 'llm' && (categoryKey === 'settings' || categoryKey === 'second_llm' || categoryKey === 'knowledge_graph' || categoryKey === 'classifier' || categoryKey === 'search_optimization') && (
                   <Card variant="outlined" sx={{ mb: 3 }}>
                     <CardHeader 
                       title={
                         categoryKey === 'settings' ? "LLM Mode Selection" : 
                         categoryKey === 'second_llm' ? "Second LLM Mode Selection" : 
                         categoryKey === 'knowledge_graph' ? "Knowledge Graph Mode Selection" :
+                        categoryKey === 'search_optimization' ? "Search Optimization Mode Selection" :
                         "Query Classifier Mode Selection"
                       }
                       subheader={
                         categoryKey === 'settings' ? "Select between thinking and non-thinking modes" : 
                         categoryKey === 'second_llm' ? "Select mode for the second LLM" : 
                         categoryKey === 'knowledge_graph' ? "Select mode for knowledge graph extraction" :
+                        categoryKey === 'search_optimization' ? "Select mode for search query optimization" :
                         "Select mode for query classification"
                       }
                     />
@@ -2993,6 +3002,8 @@ const renderStandardForm = (
                               ? data.second_llm?.mode || 'thinking'
                               : categoryKey === 'knowledge_graph'
                               ? data.knowledge_graph?.mode || 'thinking'
+                              : categoryKey === 'search_optimization'
+                              ? data.search_optimization?.mode || 'thinking'
                               : data.query_classifier?.mode || 'non-thinking'
                           }
                           onChange={(e) => {
@@ -3005,6 +3016,9 @@ const renderStandardForm = (
                             } else if (categoryKey === 'knowledge_graph') {
                               const updatedKnowledgeGraph = { ...data.knowledge_graph, mode: e.target.value };
                               onChange('knowledge_graph', updatedKnowledgeGraph);
+                            } else if (categoryKey === 'search_optimization') {
+                              const updatedSearchOptimization = { ...data.search_optimization, mode: e.target.value };
+                              onChange('search_optimization', updatedSearchOptimization);
                             } else {
                               const updatedQueryClassifier = { ...data.query_classifier, mode: e.target.value };
                               onChange('query_classifier', updatedQueryClassifier);
@@ -3026,6 +3040,8 @@ const renderStandardForm = (
                                     ? "Enable step-by-step reasoning with <think> tags"
                                     : categoryKey === 'knowledge_graph'
                                     ? "Enable step-by-step reasoning for entity and relationship extraction"
+                                    : categoryKey === 'search_optimization'
+                                    ? "Enable step-by-step reasoning for query optimization"
                                     : "Use thinking mode parameters for classification"
                                   }
                                 </Typography>
@@ -3047,6 +3063,8 @@ const renderStandardForm = (
                                     ? "Direct responses without explicit reasoning steps"
                                     : categoryKey === 'knowledge_graph'
                                     ? "Direct extraction without explicit reasoning steps"
+                                    : categoryKey === 'search_optimization'
+                                    ? "Direct optimization without explicit reasoning steps"
                                     : "Use non-thinking mode parameters for classification"
                                   }
                                 </Typography>
@@ -3159,6 +3177,139 @@ const renderStandardForm = (
                         onShowSuccess={onShowSuccess}
                       />
                     );
+                  }
+                  
+                  // Special 2-column layout for Query Classifier and Search Optimization tabs
+                  if (category === 'llm' && (categoryKey === 'classifier' || categoryKey === 'search_optimization')) {
+                    // Debug: Log all field keys to see what we're working with
+                    console.log(`[DEBUG] ${categoryKey} fields:`, sortedFields.map(f => f.key));
+                    console.log(`[DEBUG] ${categoryKey} raw category data:`, categories[categoryKey].fields);
+                    
+                    // Extract the model field which will be rendered as full width
+                    const modelField = sortedFields.find(field => {
+                      const key = field.key.toLowerCase();
+                      return key.includes('.model') || key === 'model';
+                    });
+                    
+                    // Search Optimization specific field organization
+                    if (categoryKey === 'search_optimization') {
+                      // Filter out model field for separate rendering
+                      const otherFields = sortedFields.filter(field => {
+                        const key = field.key.toLowerCase();
+                        return !(key.includes('.model') || key === 'model');
+                      });
+                      
+                      console.log('[DEBUG] Search Optimization fields (excluding model):', otherFields.map(f => f.key));
+                      
+                      return (
+                        <div style={{ width: '100%' }}>
+                          {/* Render the LLM Model Configuration card full width FIRST */}
+                          {modelField && (
+                            <div style={{ width: '100%', marginBottom: '24px' }}>
+                              {renderField(modelField.key, modelField.value, 0, (fieldKey, fieldValue) => {
+                                onChange(fieldKey, fieldValue);
+                              }, category, onShowSuccess)}
+                            </div>
+                          )}
+                          
+                          {/* Use standard jarvis-form-grid for 2-column layout */}
+                          <div className="jarvis-form-grid">
+                            {otherFields.map(({ key, value }) => 
+                              renderField(key, value, 0, (fieldKey, fieldValue) => {
+                                onChange(fieldKey, fieldValue);
+                              }, category, onShowSuccess)
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+                    
+                    // Query Classifier layout (existing logic)
+                    else {
+                      // More precise matching for second column fields
+                      // Handles both 'search_optimization.field' and standalone 'field' patterns
+                      const secondColumnFields = sortedFields.filter(field => {
+                        const key = field.key.toLowerCase();
+                        
+                        // More precise matching for second column fields
+                        return key.endsWith('context_length') ||
+                               key.endsWith('max_tokens') ||
+                               key.includes('timeout') ||
+                               key.includes('threshold') ||
+                               (key.includes('context') && key.includes('length')) ||
+                               (key.includes('max') && key.includes('tokens'));
+                      });
+                      
+                      console.log('[DEBUG] Found second column fields:', secondColumnFields.map(f => f.key));
+                      
+                      // Get all other fields for first column - exclude the second column fields AND model field
+                      const firstColumnFields = sortedFields.filter(field => {
+                        const key = field.key.toLowerCase();
+                        
+                        // Exclude model field (will be rendered separately)
+                        if (key.includes('.model') || key === 'model') {
+                          return false;
+                        }
+                        
+                        // Exclude fields that go in second column (use same precise matching)
+                        return !(key.endsWith('context_length') ||
+                               key.endsWith('max_tokens') ||
+                               key.includes('timeout') ||
+                               key.includes('threshold') ||
+                               (key.includes('context') && key.includes('length')) ||
+                               (key.includes('max') && key.includes('tokens')));
+                      });
+                      
+                      console.log('[DEBUG] Found first column fields:', firstColumnFields.map(f => f.key));
+                      
+                      return (
+                        <div style={{ width: '100%' }}>
+                          {/* Render the LLM Model Configuration card full width FIRST */}
+                          {modelField && (
+                            <div style={{ width: '100%', marginBottom: '24px' }}>
+                              {renderField(modelField.key, modelField.value, 0, (fieldKey, fieldValue) => {
+                                onChange(fieldKey, fieldValue);
+                              }, category, onShowSuccess)}
+                            </div>
+                          )}
+                          
+                          {/* Then render the 2-column layout for other fields */}
+                          <div style={{ 
+                            display: 'flex',
+                            gap: '24px',
+                            width: '100%'
+                          }}>
+                            {/* First Column - Most fields */}
+                            <div style={{ 
+                              flex: 1,
+                              display: 'flex', 
+                              flexDirection: 'column', 
+                              gap: '16px' 
+                            }}>
+                              {firstColumnFields.map(({ key, value }) => 
+                                renderField(key, value, 0, (fieldKey, fieldValue) => {
+                                  onChange(fieldKey, fieldValue);
+                                }, category, onShowSuccess)
+                              )}
+                            </div>
+                            
+                            {/* Second Column - Context Length and Timeout fields */}
+                            <div style={{ 
+                              flex: 1,
+                              display: 'flex', 
+                              flexDirection: 'column', 
+                              gap: '16px' 
+                            }}>
+                              {secondColumnFields.map(({ key, value }) => 
+                                renderField(key, value, 0, (fieldKey, fieldValue) => {
+                                  onChange(fieldKey, fieldValue);
+                                }, category, onShowSuccess)
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
                   }
                   
                   // Render sorted fields normally for other categories
