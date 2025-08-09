@@ -138,7 +138,12 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''search_optimization'') FROM settings WHERE category = ''llm'';\")",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"SELECT jsonb_pretty(settings->''search_optimization'') FROM settings WHERE category = ''llm'';\")",
       "Bash(npm run:*)",
-      "Bash(open http://localhost:5176/settings.html)"
+      "Bash(open http://localhost:5176/settings.html)",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -f /tmp/enhanced_main_llm_prompt.sql)",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -f /tmp/add_conflict_prevention_setting.sql)",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"\\dt agent*\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"\\dt *prompt*\")",
+      "Bash(PGPASSWORD=postgres psql:*)"
     ],
     "deny": []
   },

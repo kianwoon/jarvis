@@ -3201,25 +3201,26 @@ const renderStandardForm = (
                       
                       console.log('[DEBUG] Search Optimization fields (excluding model):', otherFields.map(f => f.key));
                       
-                      // Organize fields into left and right columns
+                      // Organize fields into left and right columns for better visual balance
                       const leftColumnFields = otherFields.filter(field => {
                         const key = field.key.toLowerCase();
-                        // Left column: Enable, Max Tokens, Context Length, Top P
+                        // Left column: Enable, Max Tokens, Context Length, Top P, System Prompt (5 fields)
                         return key.includes('enable_search_optimization') ||
                                key.includes('max_tokens') ||
                                key.includes('context_length') ||
                                key === 'top_p' ||
-                               key.includes('.top_p');
+                               key.includes('.top_p') ||
+                               key.includes('system_prompt') ||
+                               key.includes('.system_prompt');
                       });
                       
                       const rightColumnFields = otherFields.filter(field => {
                         const key = field.key.toLowerCase();
-                        // Right column: Temperature, Repeat Penalty, Timeout, Prompt Template, System Prompt
+                        // Right column: Temperature, Repeat Penalty, Timeout, Optimization Prompt (4 fields)
                         return key.includes('temperature') ||
                                key.includes('repeat_penalty') ||
                                key.includes('timeout') ||
-                               key.includes('prompt') ||
-                               key.includes('system');
+                               (key.includes('optimization_prompt') || (key.includes('prompt') && !key.includes('system')));
                       });
                       
                       console.log('[DEBUG] Left column fields:', leftColumnFields.map(f => f.key));
