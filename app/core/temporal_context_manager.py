@@ -286,23 +286,49 @@ class TemporalContextManager:
             return base_prompt
     
     def _has_existing_time_context(self, prompt: str) -> bool:
-        """Check if prompt already has time context to avoid duplication"""
-        time_indicators = [
-            'current time', 'current date', 'today is', 'current datetime',
-            'business hours', 'timezone', 'time context', 'temporal'
-        ]
+        """Check if prompt already has COMPLETE time context to avoid duplication"""
+        import re
+        
         prompt_lower = prompt.lower()
-        return any(indicator in prompt_lower for indicator in time_indicators)
+        
+        # Don't trigger on just "Now is year YYYY" - this is not complete time context
+        if "now is year" in prompt_lower and not any(
+            indicator in prompt_lower for indicator in ['date', 'time', 'day', 'month']
+        ):
+            logger.debug("Found 'Now is year' but no complete date/time - will add temporal context")
+            return False
+        
+        # Check for actual complete time context patterns
+        time_indicators = [
+            'current date & time:', 'current datetime:', 
+            'today\'s date is', 'current time is',
+            'current date:', 'today is [a-z]+day',  # Today is Monday/Tuesday/etc
+            r'\d{4}-\d{2}-\d{2}',  # Date pattern YYYY-MM-DD
+            r'\d{1,2}:\d{2}\s*(am|pm|utc|sgt)',  # Time pattern with timezone
+            'business hours', 'timezone:', 'time context:'
+        ]
+        
+        # Check each pattern
+        for pattern in time_indicators:
+            if re.search(pattern, prompt_lower, re.IGNORECASE):
+                logger.debug(f"Found existing time context pattern: {pattern}")
+                return True
+        
+        logger.debug("No existing complete time context found - will add temporal context")
+        return False
     
     def _build_time_context_section(self, time_context: Dict) -> str:
         """Build the time context section for system prompts"""
         try:
             sections = []
             
-            # Current time information
-            sections.append(f"**Current Time Context:**")
-            sections.append(f"- Current Date & Time: {time_context['current_datetime']}")
+            # Current time information - make it VERY clear and prominent
+            sections.append(f"**IMPORTANT - Current Date and Time Information:**")
+            sections.append(f"- Today's Date: {time_context.get('date', 'Unknown')}")
+            sections.append(f"- Current Time: {time_context.get('time', 'Unknown')}")
+            sections.append(f"- Full DateTime: {time_context['current_datetime']}")
             sections.append(f"- Day of Week: {time_context['day_of_week']}")
+            sections.append(f"- Timezone: {time_context.get('timezone', 'Singapore')}")
             
             # Business context if available
             if 'business_context' in time_context:
@@ -314,13 +340,17 @@ class TemporalContextManager:
                     if business_ctx.get('next_business_day'):
                         sections.append(f"- Next Business Day: {business_ctx['next_business_day']}")
             
-            # Temporal reasoning guidance
+            # Temporal reasoning guidance - emphasize using actual date/time
             sections.append("")
             sections.append("**Temporal Reasoning Guidelines:**")
-            sections.append("- Always consider the current date and time when responding to queries")
-            sections.append("- For time-sensitive queries, use the get_datetime tool to get the most current information")
-            sections.append("- When discussing schedules, deadlines, or time-based events, reference the current time context")
+            sections.append("- ALWAYS use the current date and time shown above when mentioning dates or times")
+            sections.append("- NEVER make up or hallucinate dates - use the actual current date provided")
+            sections.append("- For time-sensitive queries, reference the exact date and time from above")
+            sections.append("- When discussing events or deadlines, always relate them to today's date shown above")
             sections.append("- Be aware of business hours when suggesting actions or recommendations")
+            
+            # Log what we're adding
+            logger.info(f"[TEMPORAL CONTEXT] Adding time context to prompt - Date: {time_context.get('date')}, Time: {time_context.get('time')}")
             
             return "\n".join(sections)
             

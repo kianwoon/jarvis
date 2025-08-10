@@ -1018,6 +1018,15 @@ def build_messages_for_synthesis(
     llm_settings = get_llm_settings()
     base_prompt = llm_settings.get('main_llm', {}).get('system_prompt', 'You are Jarvis, an AI assistant.')
     
+    # ALWAYS enhance with temporal context first - this was missing!
+    try:
+        from app.core.temporal_context_manager import get_temporal_context_manager
+        temporal_manager = get_temporal_context_manager()
+        base_prompt = temporal_manager.enhance_system_prompt_with_time_context(base_prompt)
+        logger.debug("[TEMPORAL FIX] Successfully enhanced system prompt with temporal context")
+    except Exception as e:
+        logger.warning(f"[TEMPORAL FIX] Failed to enhance system prompt with temporal context: {e}")
+    
     if tool_context or rag_context or conversation_messages or conversation_history:
         # INFORMATION HIERARCHY SYSTEM PROMPT
         system_prompt = f"""{base_prompt}
@@ -1266,14 +1275,10 @@ RESOLVED CONFLICTS:
                 )
                 
                 # Log cache cleanup action
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.info(f"[CACHE_CLEANUP] Scheduled removal of {len(conflict_analysis['messages_to_remove'])} conflicting messages from conversation {conversation_id}")
                 
             except Exception as e:
                 # Don't fail synthesis if cache cleanup fails
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.warning(f"[CACHE_CLEANUP] Failed to schedule cache cleanup: {e}")
     
     # Build user content with clear hierarchy
