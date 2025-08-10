@@ -1676,8 +1676,9 @@ const renderStandardForm = (
                  ))) {
           categories.knowledge_graph.fields[key] = value;
         }
-        // Query Classifier Tab - All classifier-related settings
-        else if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier')) {
+        // Query Classifier Tab - All classifier-related settings and conflict_prevention settings
+        else if (lowerKey.includes('query_classifier') || lowerKey.includes('classifier') || 
+                 lowerKey.includes('conflict_prevention')) {
           categories.classifier.fields[key] = value;
         }
         // Thinking Mode Tab - Include thinking mode related fields
@@ -2114,6 +2115,14 @@ const renderStandardForm = (
       'search_optimization.optimization_timeout': 'Maximum time in seconds to wait for query optimization. Lower values = faster response but may timeout on complex queries. Recommended: 8-15 seconds.',
       'search_optimization.optimization_prompt': 'Template prompt used by the LLM to optimize search queries. Includes guidelines and examples for query transformation.',
       
+      // Conflict Prevention Settings
+      'conflict_prevention.enabled': 'Enable conflict prevention to detect and handle conflicting or potentially harmful queries.',
+      'conflict_prevention.disclaimer_patterns': 'List of patterns that trigger disclaimer messages when detected in queries.',
+      'conflict_prevention.severity_thresholds.high': 'Threshold score for high severity conflicts that require special handling.',
+      'conflict_prevention.severity_thresholds.medium': 'Threshold score for medium severity conflicts that trigger warnings.',
+      'conflict_prevention.severity_thresholds.critical': 'Threshold score for critical conflicts that may block query execution.',
+      'conflict_prevention.allow_with_disclaimers': 'Allow queries to proceed with disclaimers even when conflicts are detected.',
+      
       // Main LLM Settings
       'main_llm.model': 'Primary LLM model used for main chat responses and reasoning tasks.',
       'main_llm.max_tokens': 'Maximum number of tokens the main LLM can generate in a single response.',
@@ -2268,7 +2277,15 @@ const renderStandardForm = (
         'enable_search_optimization': 'Enable Search Optimization',
         'optimization_timeout': 'Optimization Timeout (seconds)',
         'optimization_prompt': 'Optimization Prompt Template',
-        'top_p': 'Top P'
+        'top_p': 'Top P',
+        
+        // Conflict Prevention fields
+        'conflict_prevention.enabled': 'Conflict Prevention Enabled',
+        'conflict_prevention.disclaimer_patterns': 'Disclaimer Patterns',
+        'conflict_prevention.severity_thresholds.high': 'High Severity Threshold',
+        'conflict_prevention.severity_thresholds.medium': 'Medium Severity Threshold',
+        'conflict_prevention.severity_thresholds.critical': 'Critical Severity Threshold',
+        'conflict_prevention.allow_with_disclaimers': 'Allow With Disclaimers'
       };
       
       // Check for custom label first
