@@ -51,14 +51,13 @@ import { useDropzone } from 'react-dropzone';
 import { MessageContent } from '../shared/MessageContent';
 
 interface ReferenceDocument {
-  id: string;
-  document_id: string;
+  document_id: string;  // Primary identifier from API
   name: string;
   document_type: string;
   category?: string;
-  original_filename: string;
+  original_filename?: string;  // Made optional as API might not always return it
   file_size_bytes: number;
-  extraction_model: string;
+  extraction_model?: string;  // Made optional as API might not always return it
   extraction_confidence?: number;
   extracted_markdown?: string;
   recommended_extraction_modes?: string[];
@@ -243,11 +242,14 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
   const [availableModels, setAvailableModels] = useState<Array<{name: string, id: string, size: string, modified: string, context_length: string}>>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [selectedReference, setSelectedReference] = useState<ReferenceDocument | null>(null);
+  const [loadingPreviewDialog, setLoadingPreviewDialog] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [extractionProgress, setExtractionProgress] = useState(0);
+  const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
   // Inline preview state
@@ -262,6 +264,15 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
     category: '',
     extraction_model: 'qwen3:30b-a3b-q4_K_M',
     file: null as File | null
+  });
+
+  const [editFormData, setEditFormData] = useState({
+    name: '',
+    document_type: 'guidelines',
+    category: '',
+    extraction_model: 'qwen3:30b-a3b-q4_K_M',
+    content: '',
+    reExtract: false
   });
 
   useEffect(() => {
@@ -450,19 +461,158 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
     }
   };
 
-  const handlePreview = (reference: ReferenceDocument) => {
-    setSelectedReference(reference);
-    setPreviewDialogOpen(true);
+  const handleEdit = async (reference: ReferenceDocument) => {
+    setUpdating(true);
+    setError(null);
+    
+    try {
+      // Fetch the full content for editing
+      const response = await fetch(`/api/v1/idc/references/${reference.document_id}/content`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.status === 'success') {
+          // Populate edit form with current reference data including content
+          setEditFormData({
+            name: reference.name,
+            document_type: reference.document_type,
+            category: reference.category || '',
+            extraction_model: reference.extraction_model || (availableModels.length > 0 ? availableModels[0].name : 'qwen3:30b-a3b-q4_K_M'),
+            content: data.content || '',
+            reExtract: false
+          });
+          setSelectedReference(reference);
+          setEditDialogOpen(true);
+        } else {
+          throw new Error(data.message || 'Failed to load reference content');
+        }
+      } else {
+        // Fallback - use existing data without content editing
+        setEditFormData({
+          name: reference.name,
+          document_type: reference.document_type,
+          category: reference.category || '',
+          extraction_model: reference.extraction_model || (availableModels.length > 0 ? availableModels[0].name : 'qwen3:30b-a3b-q4_K_M'),
+          content: '',
+          reExtract: false
+        });
+        setSelectedReference(reference);
+        setEditDialogOpen(true);
+        setError('Could not load document content for editing. You can still update metadata.');
+      }
+    } catch (error) {
+      console.error('Failed to fetch reference content for editing:', error);
+      // Fallback - use existing data without content editing
+      setEditFormData({
+        name: reference.name,
+        document_type: reference.document_type,
+        category: reference.category || '',
+        extraction_model: reference.extraction_model || (availableModels.length > 0 ? availableModels[0].name : 'qwen3:30b-a3b-q4_K_M'),
+        content: '',
+        reExtract: false
+      });
+      setSelectedReference(reference);
+      setEditDialogOpen(true);
+      setError('Could not load document content for editing. You can still update metadata.');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const handleUpdate = async () => {
+    if (!selectedReference || !editFormData.name) {
+      setError('Please provide a name');
+      return;
+    }
+
+    setUpdating(true);
+    setError(null);
+
+    try {
+      const updateData = {
+        name: editFormData.name,
+        document_type: editFormData.document_type,
+        category: editFormData.category,
+        extraction_model: editFormData.extraction_model,
+        content: editFormData.content,
+        re_extract: editFormData.reExtract
+      };
+
+      const response = await fetch(`/api/v1/idc/reference/${selectedReference.document_id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updateData)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Update failed: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+
+      // Reset form and close dialog
+      setEditFormData({
+        name: '',
+        document_type: 'guidelines',
+        category: '',
+        extraction_model: availableModels.length > 0 ? availableModels[0].name : 'qwen3:30b-a3b-q4_K_M',
+        content: '',
+        reExtract: false
+      });
+      
+      setEditDialogOpen(false);
+      setSelectedReference(null);
+      onRefresh();
+    } catch (error) {
+      console.error('Update failed:', error);
+      setError(error instanceof Error ? error.message : 'Update failed');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const handlePreview = async (reference: ReferenceDocument) => {
+    setLoadingPreviewDialog(true);
+    try {
+      // First try to fetch the full content
+      // Use document_id which is the actual field from API
+      const response = await fetch(`/api/v1/idc/references/${reference.document_id}/content`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.status === 'success') {
+          // Create an enhanced reference with the full content
+          const enhancedReference = {
+            ...reference,
+            extracted_markdown: data.content
+          };
+          setSelectedReference(enhancedReference);
+          setPreviewDialogOpen(true);
+          return;
+        }
+      }
+      
+      // Fallback to existing markdown if API fails
+      setSelectedReference(reference);
+      setPreviewDialogOpen(true);
+    } catch (error) {
+      console.error('Error fetching preview content:', error);
+      // Still show the preview dialog with existing data
+      setSelectedReference(reference);
+      setPreviewDialogOpen(true);
+    } finally {
+      setLoadingPreviewDialog(false);
+    }
   };
 
   const handleInlinePreview = (reference: ReferenceDocument) => {
-    if (selectedForPreview === reference.id && showInlinePreview) {
+    if (selectedForPreview === reference.document_id && showInlinePreview) {
       // If same document is already selected and showing, toggle off
       setShowInlinePreview(false);
       setSelectedForPreview('');
     } else {
       // Select new document and show preview
-      setSelectedForPreview(reference.id);
+      setSelectedForPreview(reference.document_id);
       setShowInlinePreview(true);
     }
   };
@@ -505,9 +655,9 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
 
       <Grid container spacing={3}>
         {references.map((ref) => (
-          <Grid item xs={12} sm={6} md={4} key={ref.id}>
-            <Card elevation={2}>
-              <CardContent>
+          <Grid item xs={12} sm={6} md={4} key={ref.document_id}>
+            <Card elevation={2} sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '300px' }}>
+              <CardContent sx={{ flex: 1, pb: 1 }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                   <Typography variant="h6" gutterBottom noWrap>
                     {ref.name}
@@ -570,27 +720,59 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
                 </Typography>
               </CardContent>
               
-              <CardActions>
+              <CardActions 
+                sx={{ 
+                  justifyContent: 'flex-start', 
+                  px: 2, 
+                  py: 1.5,
+                  borderTop: '1px solid',
+                  borderColor: 'divider',
+                  backgroundColor: (theme) => theme.palette.mode === 'dark' ? theme.palette.grey[900] : theme.palette.grey[50],
+                  gap: 0.5,
+                  position: 'relative',
+                  zIndex: 1
+                }}
+              >
                 <Tooltip title="View extracted content">
                   <IconButton 
                     size="small" 
                     color="primary"
-                    onClick={() => handlePreview(ref)}
+                    disabled={loadingPreviewDialog}
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      console.log('Preview button clicked for ref:', ref.document_id, ref.name);
+                      await handlePreview(ref);
+                    }}
                   >
-                    <Visibility />
+                    {loadingPreviewDialog ? <CircularProgress size={16} /> : <Visibility />}
                   </IconButton>
                 </Tooltip>
                 <Tooltip title="Preview inline">
                   <IconButton 
                     size="small" 
-                    color={selectedForPreview === ref.id ? "secondary" : "primary"}
-                    onClick={() => handleInlinePreview(ref)}
+                    color={selectedForPreview === ref.document_id ? "secondary" : "primary"}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      console.log('Inline preview button clicked for ref:', ref.document_id, ref.name);
+                      handleInlinePreview(ref);
+                    }}
                   >
                     <PreviewIcon />
                   </IconButton>
                 </Tooltip>
                 <Tooltip title="Edit reference">
-                  <IconButton size="small" color="primary">
+                  <IconButton 
+                    size="small" 
+                    color="primary"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      console.log('Edit button clicked for ref:', ref.document_id, ref.name);
+                      handleEdit(ref);
+                    }}
+                  >
                     <Edit />
                   </IconButton>
                 </Tooltip>
@@ -598,7 +780,12 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
                   <IconButton 
                     size="small" 
                     color="error"
-                    onClick={() => handleDelete(ref.id)}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      console.log('Delete button clicked for ref:', ref.document_id, ref.name);
+                      handleDelete(ref.document_id);
+                    }}
                   >
                     <Delete />
                   </IconButton>
@@ -638,7 +825,7 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <PreviewIcon color="primary" />
                 <Typography variant="h6">
-                  Document Preview: {references.find(r => r.id === selectedForPreview)?.name}
+                  Document Preview: {references.find(r => r.document_id === selectedForPreview)?.name}
                 </Typography>
                 {loadingPreview && <CircularProgress size={16} />}
               </Box>
@@ -773,6 +960,130 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
         </DialogActions>
       </Dialog>
 
+      {/* Edit Dialog */}
+      <Dialog
+        open={editDialogOpen}
+        onClose={() => !updating && setEditDialogOpen(false)}
+        maxWidth="lg"
+        fullWidth
+        PaperProps={{
+          sx: { height: '90vh' }
+        }}
+      >
+        <DialogTitle>Edit Reference Document</DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+          <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
+            <TextField
+            fullWidth
+            label="Name"
+            value={editFormData.name}
+            onChange={(e) => setEditFormData({ ...editFormData, name: e.target.value })}
+            margin="normal"
+            required
+            disabled={updating}
+          />
+          
+          <TextField
+            fullWidth
+            label="Category (Optional)"
+            value={editFormData.category}
+            onChange={(e) => setEditFormData({ ...editFormData, category: e.target.value })}
+            margin="normal"
+            disabled={updating}
+            placeholder="e.g., Legal, Technical, Educational"
+          />
+          
+          <FormControl fullWidth margin="normal">
+            <InputLabel>Document Type</InputLabel>
+            <Select
+              value={editFormData.document_type}
+              onChange={(e: SelectChangeEvent) => setEditFormData({ ...editFormData, document_type: e.target.value })}
+              label="Document Type"
+              disabled={updating}
+            >
+              <MenuItem value="guidelines">Guidelines</MenuItem>
+              <MenuItem value="qa_sheet">Q&A Sheet</MenuItem>
+              <MenuItem value="template">Template</MenuItem>
+              <MenuItem value="rules">Rules</MenuItem>
+            </Select>
+          </FormControl>
+          
+          <FormControl fullWidth margin="normal">
+            <InputLabel>Extraction Model</InputLabel>
+            <Select
+              value={editFormData.extraction_model}
+              onChange={(e: SelectChangeEvent) => setEditFormData({ ...editFormData, extraction_model: e.target.value })}
+              label="Extraction Model"
+              disabled={updating || loadingModels}
+            >
+              {loadingModels ? (
+                <MenuItem disabled>Loading models...</MenuItem>
+              ) : (
+                availableModels.map(model => (
+                  <MenuItem key={model.name} value={model.name}>{model.name}</MenuItem>
+                ))
+              )}
+            </Select>
+          </FormControl>
+
+          <TextField
+            fullWidth
+            label="Markdown Content"
+            value={editFormData.content}
+            onChange={(e) => setEditFormData({ ...editFormData, content: e.target.value })}
+            margin="normal"
+            multiline
+            rows={12}
+            disabled={updating}
+            placeholder="Edit the markdown content of the document..."
+            helperText="You can edit the extracted markdown content directly. Changes will be saved when you update."
+          />
+
+          <Box sx={{ mt: 2, mb: 1 }}>
+            <FormControl>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={editFormData.reExtract}
+                  onChange={(e) => setEditFormData({ ...editFormData, reExtract: e.target.checked })}
+                  disabled={updating}
+                  style={{ marginRight: '8px' }}
+                />
+                Re-extract content with new model (will overwrite content above)
+              </label>
+            </FormControl>
+          </Box>
+          
+          {editFormData.reExtract && (
+            <Alert severity="info" sx={{ mt: 1 }}>
+              Re-extraction will process the document with the selected model and may take some time.
+            </Alert>
+          )}
+
+          {updating && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="body2" gutterBottom>
+                {editFormData.reExtract ? 'Updating document and re-extracting content...' : 'Updating document...'}
+              </Typography>
+              <LinearProgress />
+            </Box>
+          )}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditDialogOpen(false)} disabled={updating}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleUpdate}
+            variant="contained"
+            disabled={!editFormData.name || updating}
+          >
+            {updating ? 'Updating...' : 'Update'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Preview Dialog */}
       <Dialog
         open={previewDialogOpen}
@@ -793,22 +1104,22 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
                 </Typography>
                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 2 }}>
                   <Chip 
-                    label={`${selectedReference.extracted_markdown.length.toLocaleString()} characters`}
+                    label={`${selectedReference?.extracted_markdown?.length?.toLocaleString() || 0} characters`}
                     size="small" 
                     variant="outlined"
                   />
                   <Chip 
-                    label={`${selectedReference.extracted_markdown.split(' ').length.toLocaleString()} words`}
+                    label={`${selectedReference?.extracted_markdown?.split(' ')?.length?.toLocaleString() || 0} words`}
                     size="small" 
                     variant="outlined"
                   />
                   <Chip 
-                    label={`${selectedReference.extracted_markdown.split('\n').length.toLocaleString()} lines`}
+                    label={`${selectedReference?.extracted_markdown?.split('\n')?.length?.toLocaleString() || 0} lines`}
                     size="small" 
                     variant="outlined"
                   />
                   <Chip 
-                    label={`${(selectedReference.extracted_markdown.split(' ').length / 200).toFixed(0)} min read`}
+                    label={`${Math.ceil((selectedReference?.extracted_markdown?.split(' ')?.length || 0) / 200)} min read`}
                     size="small" 
                     color="info"
                     icon={<TimeIcon fontSize="small" />}
@@ -830,13 +1141,64 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
                   overflow: 'auto'
                 }}
               >
-                <MessageContent content={selectedReference.extracted_markdown} />
+                <MessageContent content={selectedReference?.extracted_markdown || ''} />
               </Paper>
             </Box>
           ) : (
-            <Alert severity="info">
-              No extracted content available for this document
-            </Alert>
+            <Box>
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                No extracted content available for this document. This could mean:
+              </Alert>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                • The document is still processing
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                • The extraction failed
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                • The document type is not supported for content extraction
+              </Typography>
+              
+              <Paper 
+                elevation={0} 
+                sx={{ 
+                  p: 3, 
+                  backgroundColor: 'background.default',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderRadius: 2
+                }}
+              >
+                <Typography variant="h6" gutterBottom>
+                  Document Information
+                </Typography>
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  <strong>Name:</strong> {selectedReference?.name || 'Unknown'}
+                </Typography>
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  <strong>Type:</strong> {selectedReference?.document_type || 'Unknown'}
+                </Typography>
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  <strong>Original File:</strong> {selectedReference?.original_filename || 'Unknown'}
+                </Typography>
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  <strong>Size:</strong> {selectedReference?.file_size_bytes ? formatFileSize(selectedReference?.file_size_bytes) : 'Unknown'}
+                </Typography>
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  <strong>Status:</strong> {selectedReference?.processing_status || 'Unknown'}
+                </Typography>
+                {selectedReference?.extraction_model && (
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    <strong>Extraction Model:</strong> {selectedReference?.extraction_model}
+                  </Typography>
+                )}
+                {selectedReference?.extraction_confidence && (
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    <strong>Extraction Confidence:</strong> {(selectedReference?.extraction_confidence * 100).toFixed(1)}%
+                  </Typography>
+                )}
+              </Paper>
+            </Box>
           )}
         </DialogContent>
         <DialogActions>

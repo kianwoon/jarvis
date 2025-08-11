@@ -43,8 +43,7 @@ import { useDropzone } from 'react-dropzone';
 import { MessageContent } from '../shared/MessageContent';
 
 interface ReferenceDocument {
-  id: string;
-  document_id: string;
+  document_id: string;  // Primary identifier from API - no 'id' field
   name: string;
   document_type: string;
 }
@@ -372,7 +371,7 @@ const IDCValidationPanel: React.FC<IDCValidationPanelProps> = ({
             disabled={validating}
           >
             {references.map(ref => (
-              <MenuItem key={ref.id} value={ref.id}>
+              <MenuItem key={ref.document_id} value={ref.document_id}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Typography>{ref.name}</Typography>
                   <Chip label={ref.document_type} size="small" />

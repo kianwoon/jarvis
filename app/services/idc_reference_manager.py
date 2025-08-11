@@ -245,7 +245,8 @@ class IDCReferenceManager:
                 # Update allowed fields
                 updateable_fields = [
                     'name', 'document_type', 'category', 
-                    'recommended_extraction_modes', 'is_active'
+                    'recommended_extraction_modes', 'is_active', 'extraction_model',
+                    'extracted_markdown'
                 ]
                 
                 for field, value in updates.items():
@@ -264,6 +265,90 @@ class IDCReferenceManager:
                 
         except Exception as e:
             logger.error(f"Failed to update reference document {document_id}: {str(e)}")
+            return False
+    
+    async def update_reference_document_with_reextraction(
+        self,
+        document_id: str,
+        updates: Dict[str, Any],
+        new_extraction_model: str
+    ) -> bool:
+        """
+        Update reference document with re-extraction using new model
+        """
+        try:
+            with get_db_session() as db:
+                reference_doc = db.query(IDCReferenceDocument).filter(
+                    IDCReferenceDocument.document_id == document_id
+                ).first()
+                
+                if not reference_doc:
+                    return False
+                
+                # Get the original file content (we need to store this or re-extract from existing markdown)
+                # For now, we'll re-extract from the existing markdown as a demonstration
+                # In production, you might want to store the original file content
+                
+                try:
+                    # Re-extract content with new model
+                    extracted_markdown, extraction_metadata = await self.extraction_service.extract_document_to_markdown(
+                        document_content=reference_doc.extracted_markdown,  # Using existing markdown as source
+                        document_type=updates.get('document_type', reference_doc.document_type),
+                        extraction_model=new_extraction_model
+                    )
+                    
+                    # Update the document with new content and metadata
+                    reference_doc.extracted_markdown = extracted_markdown
+                    reference_doc.extraction_metadata = extraction_metadata
+                    reference_doc.extraction_model = new_extraction_model
+                    reference_doc.extraction_confidence = extraction_metadata.get("confidence_score", 0.8)
+                    reference_doc.processing_time_ms = extraction_metadata.get("processing_time_ms")
+                    
+                    # Update other metadata fields
+                    updateable_fields = [
+                        'name', 'document_type', 'category', 
+                        'recommended_extraction_modes', 'is_active'
+                    ]
+                    
+                    for field, value in updates.items():
+                        if field in updateable_fields and hasattr(reference_doc, field):
+                            setattr(reference_doc, field, value)
+                    
+                    reference_doc.updated_at = datetime.utcnow()
+                    reference_doc.version = (reference_doc.version or 1) + 1
+                    
+                    db.commit()
+                    
+                    # Invalidate cache
+                    await self._invalidate_cache(document_id)
+                    
+                    logger.info(f"Reference document updated with re-extraction: {document_id}")
+                    return True
+                    
+                except Exception as extraction_error:
+                    logger.error(f"Re-extraction failed for {document_id}: {str(extraction_error)}")
+                    # Fall back to metadata-only update
+                    updateable_fields = [
+                        'name', 'document_type', 'category', 
+                        'recommended_extraction_modes', 'is_active', 'extraction_model'
+                    ]
+                    
+                    for field, value in updates.items():
+                        if field in updateable_fields and hasattr(reference_doc, field):
+                            setattr(reference_doc, field, value)
+                    
+                    reference_doc.updated_at = datetime.utcnow()
+                    
+                    db.commit()
+                    
+                    # Invalidate cache
+                    await self._invalidate_cache(document_id)
+                    
+                    logger.warning(f"Reference document updated with metadata only (re-extraction failed): {document_id}")
+                    return True
+                
+        except Exception as e:
+            logger.error(f"Failed to update reference document with re-extraction {document_id}: {str(e)}")
             return False
     
     async def delete_reference_document(self, document_id: str) -> bool:

@@ -42,6 +42,7 @@ import {
 } from '@mui/icons-material';
 import IDCConfigurationPanel from './components/idc/IDCConfigurationPanel';
 import IDCValidationPanel from './components/idc/IDCValidationPanel';
+import IDCReferenceManager from './components/idc/IDCReferenceManager';
 
 interface ReferenceDocument {
   id: string;
@@ -49,10 +50,16 @@ interface ReferenceDocument {
   name: string;
   document_type: string;
   category?: string;
-  created_at: string;
+  original_filename: string;
   file_size_bytes: number;
   extraction_model: string;
+  extraction_confidence?: number;
+  extracted_markdown?: string;
+  recommended_extraction_modes?: string[];
+  created_at: string;
+  updated_at: string;
   is_active: boolean;
+  processing_status?: 'uploading' | 'extracting' | 'completed' | 'failed';
 }
 
 interface ValidationSession {
@@ -288,93 +295,24 @@ function IDCApp() {
   };
 
   const renderReferenceManagement = () => (
-    <Grid container spacing={3}>
-      {/* Upload Section */}
-      <Grid item xs={12} md={6}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              <UploadIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
-              Upload Reference Document
-            </Typography>
-            <Box sx={{ mt: 2 }}>
-              <input
-                type="file"
-                id="reference-upload"
-                style={{ display: 'none' }}
-                accept=".pdf,.docx,.doc,.txt"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    handleReferenceUpload(file, file.name, 'guidelines');
-                  }
-                }}
-              />
-              <label htmlFor="reference-upload">
-                <Button
-                  variant="contained"
-                  component="span"
-                  disabled={uploadingReference}
-                  startIcon={<UploadIcon />}
-                >
-                  {uploadingReference ? 'Uploading...' : 'Select File'}
-                </Button>
-              </label>
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                Supported formats: PDF, DOCX, DOC, TXT
-              </Typography>
-            </Box>
-          </CardContent>
-        </Card>
-      </Grid>
-
-      {/* Reference List */}
-      <Grid item xs={12} md={6}>
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              <ReferenceIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
-              Reference Documents ({referenceDocuments.length})
-            </Typography>
-            {loadingReferences ? (
-              <LinearProgress />
-            ) : (
-              <List dense>
-                {referenceDocuments.map((doc) => (
-                  <ListItem key={doc.document_id} divider>
-                    <ListItemIcon>
-                      <DocumentIcon />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={doc.name}
-                      secondary={`${doc.document_type} • ${formatFileSize(doc.file_size_bytes)} • ${doc.extraction_model}`}
-                    />
-                    <Box>
-                      {doc.is_active ? (
-                        <Chip label="Active" color="success" size="small" />
-                      ) : (
-                        <Chip label="Inactive" color="default" size="small" />
-                      )}
-                    </Box>
-                  </ListItem>
-                ))}
-                {referenceDocuments.length === 0 && (
-                  <Alert severity="info">
-                    No reference documents uploaded yet. Upload a document to get started.
-                  </Alert>
-                )}
-              </List>
-            )}
-          </CardContent>
-        </Card>
-      </Grid>
-    </Grid>
+    <IDCReferenceManager 
+      references={referenceDocuments}
+      onRefresh={loadReferenceDocuments}
+      onUploadComplete={(document) => {
+        // Refresh the reference documents list after upload
+        loadReferenceDocuments();
+        setSnackbar({
+          open: true,
+          message: `Reference document "${document.name}" uploaded successfully`,
+          severity: 'success'
+        });
+      }}
+    />
   );
 
   const renderDocumentValidation = () => (
     <IDCValidationPanel 
       references={referenceDocuments.map(doc => ({
-        id: doc.document_id,
         document_id: doc.document_id, 
         name: doc.name,
         document_type: doc.document_type
@@ -388,9 +326,6 @@ function IDCApp() {
           message: `Validation started for session ${session.session_id}`,
           severity: 'success'
         });
-      }}
-      onRefresh={() => {
-        loadReferenceDocuments();
       }}
     />
   );

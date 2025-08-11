@@ -47,6 +47,14 @@ class ReferenceDocumentUpload(BaseModel):
     extraction_model: Optional[str] = Field(None, description="Ollama model to use for extraction")
     recommended_modes: Optional[List[str]] = Field(None, description="Recommended extraction modes")
 
+class ReferenceDocumentUpdate(BaseModel):
+    name: Optional[str] = Field(None, description="Updated name of the reference document")
+    document_type: Optional[str] = Field(None, description="Updated document type")
+    category: Optional[str] = Field(None, description="Updated document category")
+    extraction_model: Optional[str] = Field(None, description="Updated extraction model")
+    content: Optional[str] = Field(None, description="Updated markdown content")
+    re_extract: bool = Field(False, description="Whether to re-extract content with new model")
+
 class ValidationRequest(BaseModel):
     reference_id: str = Field(..., description="Reference document ID")
     extraction_mode: str = Field(..., description="Extraction mode (sentence/paragraph/qa_pairs/section)")
@@ -148,11 +156,20 @@ async def upload_reference_document(
         return {
             "status": "success",
             "document_id": result.document_id,
+            "name": name,
+            "document_type": document_type,
+            "category": category,
+            "original_filename": file.filename,
+            "file_size_bytes": len(file_content),
+            "extraction_model": extraction_model,
             "extraction_preview": result.extraction_preview,
             "recommended_extraction_modes": result.recommended_extraction_modes,
             "extraction_confidence": result.extraction_confidence,
             "processing_time_ms": result.processing_time_ms,
-            "model_used": result.model_used
+            "model_used": result.model_used,
+            "is_active": True,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
         }
         
     except Exception as e:
@@ -186,7 +203,10 @@ async def get_reference_documents(
                     "name": doc.name,
                     "document_type": doc.document_type,
                     "category": doc.category,
+                    "original_filename": doc.original_filename if hasattr(doc, 'original_filename') else None,
                     "file_size_bytes": doc.file_size_bytes,
+                    "extraction_model": doc.extraction_model if hasattr(doc, 'extraction_model') else None,
+                    "extraction_confidence": doc.extraction_confidence if hasattr(doc, 'extraction_confidence') else None,
                     "recommended_extraction_modes": doc.recommended_extraction_modes,
                     "is_active": doc.is_active,
                     "created_at": doc.created_at.isoformat(),
@@ -1091,3 +1111,102 @@ async def reload_idc_configuration():
     except Exception as e:
         logger.error(f"Failed to reload IDC configuration: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload configuration: {str(e)}")
+
+@router.delete("/reference/{reference_id}")
+async def delete_reference_document(
+    reference_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a reference document (soft delete - marks as inactive)
+    """
+    try:
+        success = await reference_manager.delete_reference_document(reference_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Reference document not found")
+        
+        return {
+            "status": "success",
+            "message": "Reference document deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete reference document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete reference: {str(e)}")
+
+@router.put("/reference/{reference_id}")
+async def update_reference_document(
+    reference_id: str,
+    update_data: ReferenceDocumentUpdate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Update a reference document
+    
+    Supports:
+    - Updating metadata (name, document type, category)
+    - Changing extraction model
+    - Re-extracting content with new model
+    """
+    try:
+        # Check if document exists
+        reference_doc = await reference_manager.get_reference_document(reference_id)
+        if not reference_doc:
+            raise HTTPException(status_code=404, detail="Reference document not found")
+        
+        # Prepare updates dict
+        updates = {}
+        if update_data.name is not None:
+            updates['name'] = update_data.name
+        if update_data.document_type is not None:
+            updates['document_type'] = update_data.document_type
+        if update_data.category is not None:
+            updates['category'] = update_data.category
+        if update_data.extraction_model is not None:
+            updates['extraction_model'] = update_data.extraction_model
+        if update_data.content is not None:
+            updates['extracted_markdown'] = update_data.content
+        
+        # If re-extraction is requested, handle it
+        if update_data.re_extract and update_data.extraction_model:
+            # Re-extract content with new model (ignores manual content edits)
+            success = await reference_manager.update_reference_document_with_reextraction(
+                document_id=reference_id,
+                updates=updates,
+                new_extraction_model=update_data.extraction_model
+            )
+        else:
+            # Simple metadata and/or content update
+            success = await reference_manager.update_reference_document(
+                document_id=reference_id,
+                updates=updates
+            )
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Reference document not found or update failed")
+        
+        # Get updated document info
+        updated_doc = await reference_manager.get_reference_document(reference_id)
+        
+        return {
+            "status": "success",
+            "message": "Reference document updated successfully",
+            "document": {
+                "document_id": updated_doc.document_id,
+                "name": updated_doc.name,
+                "document_type": updated_doc.document_type,
+                "category": updated_doc.category,
+                "extraction_model": getattr(updated_doc, 'extraction_model', None),
+                "updated_at": updated_doc.updated_at.isoformat()
+            } if updated_doc else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update reference document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update reference: {str(e)}")
