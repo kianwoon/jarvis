@@ -206,6 +206,9 @@ function MultiAgentApp() {
       case 4:
         goToKnowledgeGraph();
         break;
+      case 5:
+        window.location.href = '/idc.html';
+        break;
     }
   };
 
@@ -279,6 +282,11 @@ function MultiAgentApp() {
               label="Knowledge Graph" 
               id="tab-4"
               aria-controls="tabpanel-4"
+            />
+            <Tab 
+              label="IDC" 
+              id="tab-5"
+              aria-controls="tabpanel-5"
             />
           </Tabs>
         </Box>

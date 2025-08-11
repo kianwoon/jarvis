@@ -658,8 +658,26 @@ Important:
                 max_tokens=actual_max_tokens
             )
             
-            # Ollama base URL
-            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            # Get Ollama URL from settings or environment
+            ollama_url = None
+            
+            # Try to get from appropriate config based on which was used
+            if agent_config.get('use_second_llm') and 'second_llm_config' in locals():
+                # Using second_llm config
+                ollama_url = second_llm_config.get('model_server')
+            elif 'model_config' in locals() and model_config:
+                # Using thinking mode config
+                ollama_url = model_config.get('model_server')
+            
+            # Fall back to environment variable
+            if not ollama_url:
+                ollama_url = os.environ.get("OLLAMA_BASE_URL")
+            
+            # Use default based on environment
+            if not ollama_url:
+                in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+                ollama_url = "http://host.docker.internal:11434" if in_docker else "http://host.docker.internal:11434"
+            
             print(f"[DEBUG] {agent_name}: Using model {config.model_name} at {ollama_url}")
             
             # Create LLM instance with base URL
@@ -1640,7 +1658,26 @@ Now provide your synthesis:"""
                 max_tokens=max_tokens
             )
             
-            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            # Get Ollama URL from settings or environment
+            ollama_url = None
+            
+            # Try to get from appropriate config based on which was used
+            if synthesizer_config.get('use_second_llm') and 'second_llm_config' in locals():
+                # Using second_llm config
+                ollama_url = second_llm_config.get('model_server')
+            elif 'model_config' in locals() and model_config:
+                # Using thinking mode config
+                ollama_url = model_config.get('model_server')
+            
+            # Fall back to environment variable
+            if not ollama_url:
+                ollama_url = os.environ.get("OLLAMA_BASE_URL")
+            
+            # Use default based on environment
+            if not ollama_url:
+                in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+                ollama_url = "http://host.docker.internal:11434" if in_docker else "http://host.docker.internal:11434"
+            
             llm = OllamaLLM(config, base_url=ollama_url)
             
             print(f"[DEBUG] Synthesizer: Direct LLM call without thinking tag removal")

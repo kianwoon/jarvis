@@ -582,11 +582,23 @@ const AgentNode: React.FC<AgentNodeProps> = ({ data, id, updateNodeData, showIO 
         
         if (modelsResponse.ok) {
           const modelsData = await modelsResponse.json();
-          const modelNames = (modelsData.models || []).map((model: any) => model.name).filter(Boolean);
+          
+          let modelNames: string[] = [];
+          if (modelsData.success && modelsData.models) {
+            // Ollama is available - use actual models
+            modelNames = modelsData.models.map((model: any) => model.name).filter(Boolean);
+          } else if (modelsData.fallback_models) {
+            // Ollama not available - use fallback models from API
+            modelNames = modelsData.fallback_models.map((model: any) => model.name).filter(Boolean);
+          } else {
+            // Last resort fallback
+            modelNames = ['llama3.1:8b', 'deepseek-r1:8b', 'qwen2.5:32b'];
+          }
+          
           setAvailableModels(modelNames);
         } else {
           // Failed to fetch models - use fallback
-          setAvailableModels(['qwen3:30b-a3b', 'llama3.1:70b', 'llama3.1:8b']);
+          setAvailableModels(['llama3.1:8b', 'deepseek-r1:8b', 'qwen2.5:32b']);
         }
       } catch (error) {
         // Failed to fetch data

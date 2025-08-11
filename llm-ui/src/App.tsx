@@ -993,6 +993,11 @@ function App() {
       window.location.href = '/knowledge-graph.html';
       return;
     }
+    if (newValue === 5) {
+      // Redirect to IDC page
+      window.location.href = '/idc.html';
+      return;
+    }
     setTabValue(newValue);
     // Update URL parameter
     const url = new URL(window.location.href);
@@ -1150,6 +1155,11 @@ function App() {
               label="Knowledge Graph" 
               id="tab-4"
               aria-controls="tabpanel-4"
+            />
+            <Tab 
+              label="IDC" 
+              id="tab-5"
+              aria-controls="tabpanel-5"
             />
           </Tabs>
         </Box>

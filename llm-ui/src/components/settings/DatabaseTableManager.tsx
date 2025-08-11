@@ -141,11 +141,28 @@ const DatabaseTableManager: React.FC<DatabaseTableManagerProps> = ({
       const response = await fetch('/api/v1/ollama/models');
       if (response.ok) {
         const data = await response.json();
-        const modelNames = (data.models || []).map((model: any) => model.name).filter(Boolean);
+        
+        let modelNames: string[] = [];
+        if (data.success && data.models) {
+          // Ollama is available - use actual models
+          modelNames = data.models.map((model: any) => model.name).filter(Boolean);
+        } else if (data.fallback_models) {
+          // Ollama not available - use fallback models from API
+          modelNames = data.fallback_models.map((model: any) => model.name).filter(Boolean);
+        } else {
+          // Last resort fallback
+          modelNames = ['llama3.1:8b', 'deepseek-r1:8b', 'qwen2.5:32b'];
+        }
+        
         setAvailableModels(modelNames);
+      } else {
+        // HTTP error - use fallback
+        setAvailableModels(['llama3.1:8b', 'deepseek-r1:8b', 'qwen2.5:32b']);
       }
     } catch (error) {
       console.error('Error fetching models:', error);
+      // Use fallback models on error
+      setAvailableModels(['llama3.1:8b', 'deepseek-r1:8b', 'qwen2.5:32b']);
     }
   };
 

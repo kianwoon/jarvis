@@ -14,7 +14,9 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         'multi-agent': resolve(__dirname, 'multi-agent.html'),
         'settings': resolve(__dirname, 'settings.html'),
-        'workflow': resolve(__dirname, 'workflow.html')
+        'workflow': resolve(__dirname, 'workflow.html'),
+        'knowledge-graph': resolve(__dirname, 'knowledge-graph.html'),
+        'idc': resolve(__dirname, 'idc.html')
       }
     }
   },

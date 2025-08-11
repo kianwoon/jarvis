@@ -374,16 +374,21 @@ class RAGMCPService:
         main_llm_config = get_main_llm_full_config(llm_settings)
         model_name = main_llm_config.get("model", "qwen3:30b-a3b")
         
-        # Determine Ollama URL based on environment
+        # Determine Ollama URL based on settings and environment
         # Check if we're running inside Docker
         in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
         
-        # Use environment variable if set, otherwise use appropriate default
-        if os.environ.get("OLLAMA_BASE_URL"):
+        # Try to get from LLM settings first (use main_llm_config)
+        ollama_base_url = main_llm_config.get('model_server')
+        
+        # Use environment variable if no settings found
+        if not ollama_base_url:
             ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
-        else:
-            # Use appropriate default based on environment
-            ollama_base_url = "http://ollama:11434" if in_docker else "http://localhost:11434"
+        
+        # Use appropriate default based on environment
+        if not ollama_base_url:
+            # Use host.docker.internal to access host's Ollama from container
+            ollama_base_url = "http://host.docker.internal:11434" if in_docker else "http://host.docker.internal:11434"
         
         llm_api_url = f"{ollama_base_url}/api/generate"
         
@@ -467,16 +472,21 @@ class RAGMCPService:
         main_llm_config = get_main_llm_full_config(llm_settings)
         model_name = main_llm_config.get("model", "qwen3:30b-a3b")
         
-        # Determine Ollama URL based on environment
+        # Determine Ollama URL based on settings and environment
         # Check if we're running inside Docker
         in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
         
-        # Use environment variable if set, otherwise use appropriate default
-        if os.environ.get("OLLAMA_BASE_URL"):
+        # Try to get from LLM settings first (use main_llm_config)
+        ollama_base_url = main_llm_config.get('model_server')
+        
+        # Use environment variable if no settings found
+        if not ollama_base_url:
             ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
-        else:
-            # Use appropriate default based on environment
-            ollama_base_url = "http://ollama:11434" if in_docker else "http://localhost:11434"
+        
+        # Use appropriate default based on environment
+        if not ollama_base_url:
+            # Use host.docker.internal to access host's Ollama from container
+            ollama_base_url = "http://host.docker.internal:11434" if in_docker else "http://host.docker.internal:11434"
         
         llm_api_url = f"{ollama_base_url}/api/generate"
         

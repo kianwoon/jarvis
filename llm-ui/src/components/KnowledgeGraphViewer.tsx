@@ -1865,6 +1865,9 @@ const KnowledgeGraphViewer: React.FC = () => {
       case 4:
         // Already on knowledge graph page
         break;
+      case 5:
+        window.location.href = '/idc.html';
+        break;
     }
   };
 
@@ -1930,6 +1933,11 @@ const KnowledgeGraphViewer: React.FC = () => {
               label="Knowledge Graph" 
               id="tab-4"
               aria-controls="tabpanel-4"
+            />
+            <Tab 
+              label="IDC" 
+              id="tab-5"
+              aria-controls="tabpanel-5"
             />
           </Tabs>
         </Box>

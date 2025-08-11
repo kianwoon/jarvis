@@ -88,6 +88,9 @@ function WorkflowApp() {
       case 4:
         window.location.href = '/knowledge-graph.html';
         break;
+      case 5:
+        window.location.href = '/idc.html';
+        break;
     }
   };
 
@@ -217,6 +220,11 @@ function WorkflowApp() {
               label="Knowledge Graph" 
               id="tab-4"
               aria-controls="tabpanel-4"
+            />
+            <Tab 
+              label="IDC" 
+              id="tab-5"
+              aria-controls="tabpanel-5"
             />
           </Tabs>
         </Box>

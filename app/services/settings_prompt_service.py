@@ -371,6 +371,88 @@ CRITICAL SUCCESS CRITERIA:
 Provide ONLY the JSON output without any additional text or formatting.''',
                             'variables': ['text', 'context_info', 'domain_guidance', 'entity_types', 'relationship_types'],
                             'required': ['text']
+                        },
+                        {
+                            'name': 'IDC Extraction Prompt',
+                            'prompt_type': 'idc_extraction',
+                            'description': 'Prompt for extracting documents to structured markdown',
+                            'prompt_template': '''Extract and convert the following {document_type} document to clean, structured markdown format.
+
+REQUIREMENTS:
+1. Preserve all important information and structure
+2. Use appropriate markdown headers (# ## ###)
+3. Format lists, tables, and code blocks properly
+4. Remove formatting artifacts and noise
+5. Maintain logical document flow
+6. Extract key-value pairs as tables where appropriate
+
+DOCUMENT CONTENT:
+{document_content}
+
+INSTRUCTIONS:
+- Return ONLY the clean markdown content
+- No explanations or meta-commentary
+- Preserve factual accuracy
+- Use consistent formatting
+
+CLEAN MARKDOWN OUTPUT:''',
+                            'variables': ['document_type', 'document_content'],
+                            'required': ['document_content']
+                        },
+                        {
+                            'name': 'IDC Validation Prompt',
+                            'prompt_type': 'idc_validation',
+                            'description': 'Prompt for validating documents against references',
+                            'prompt_template': '''Analyze the following comparison result and identify the key differences.
+
+INPUT DOCUMENT:
+{input_document}
+
+REFERENCE DOCUMENT:
+{reference_document}
+
+VALIDATION TASK:
+1. Compare content for accuracy and completeness
+2. Identify missing information
+3. Note any discrepancies or conflicts
+4. Assess structural differences
+5. Evaluate compliance with reference standards
+
+Focus on:
+- Content additions or removals
+- Structural changes
+- Value modifications
+- Formatting differences
+
+Provide a detailed validation report with scores and specific feedback.''',
+                            'variables': ['input_document', 'reference_document'],
+                            'required': ['input_document', 'reference_document']
+                        },
+                        {
+                            'name': 'IDC Unit Validation Prompt',
+                            'prompt_type': 'idc_unit_validation',
+                            'description': 'Prompt for validating individual document units',
+                            'prompt_template': '''You are validating unit {position} of {total} from an input document against a reference document.
+
+VALIDATION TASK:
+Systematically compare the input unit against the reference document and provide a detailed validation assessment.
+
+INPUT UNIT ({unit_type}):
+{unit_content}
+
+REFERENCE DOCUMENT:
+{reference}
+
+VALIDATION INSTRUCTIONS:
+1. Compare the input unit content against ALL relevant sections of the reference document
+2. Identify how well the unit aligns with reference requirements/standards
+3. Note any discrepancies, missing information, or areas of concern
+4. Provide specific feedback with reference to exact sections
+5. Assign numerical scores based on accuracy and completeness
+
+RESPOND WITH STRUCTURED VALIDATION REPORT including scores, matched sections, and detailed feedback.''',
+                            'variables': ['position', 'total', 'unit_type', 'unit_content', 'reference'],
+                            'required': ['unit_content', 'reference']
                         }
                     ]
                 

@@ -12,16 +12,36 @@ import re
 
 router = APIRouter()
 
-# Determine Ollama URL based on environment following established codebase patterns
+# Determine Ollama URL based on environment and settings
 # Check if we're running inside Docker
 in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
 
-# Use environment variable if set, otherwise use appropriate default
-if os.environ.get("OLLAMA_BASE_URL"):
-    ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
-else:
+# Get Ollama URL from settings first, then environment, then defaults
+def get_ollama_url():
+    """Get Ollama URL from settings cache, environment, or defaults"""
+    try:
+        # Try to get from LLM settings first (model_config.model_server)
+        settings = get_llm_settings()
+        model_config = settings.get('model_config', {})
+        if model_config.get('model_server'):
+            return model_config['model_server']
+        
+        # Check main_llm config as fallback
+        main_llm = settings.get('main_llm', {})
+        if main_llm.get('model_server'):
+            return main_llm['model_server']
+    except Exception:
+        pass  # Fall back to environment/defaults if settings unavailable
+    
+    # Use environment variable if set
+    if os.environ.get("OLLAMA_BASE_URL"):
+        return os.environ.get("OLLAMA_BASE_URL")
+    
     # Use appropriate default based on environment
-    ollama_base_url = "http://ollama:11434" if in_docker else "http://localhost:11434"
+    # For Docker, use host.docker.internal to access host's Ollama
+    return "http://host.docker.internal:11434" if in_docker else "http://host.docker.internal:11434"
+
+ollama_base_url = get_ollama_url()
 
 # Helper to create a new inference object with the latest settings
 def get_inference(thinking: bool = False):
@@ -36,20 +56,25 @@ def get_inference(thinking: bool = False):
     if missing:
         raise HTTPException(status_code=500, detail=f"Missing required LLM config fields: {', '.join(missing)}")
     
+    # Get the model server URL dynamically
+    current_ollama_url = get_ollama_url()
+    
     config = LLMConfig(
         model_name=mode["model"],
         temperature=float(mode["temperature"]),
         top_p=float(mode["top_p"]),
         max_tokens=int(mode["max_tokens"])
     )
-    return OllamaLLM(config, base_url=ollama_base_url)
+    return OllamaLLM(config, base_url=current_ollama_url)
 
 @router.get("/ollama/models")
 async def list_ollama_models():
     """List available Ollama models from the Ollama server with detailed information."""
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{ollama_base_url}/api/tags")
+        # Get the current Ollama URL dynamically
+        current_ollama_url = get_ollama_url()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            resp = await client.get(f"{current_ollama_url}/api/tags")
             resp.raise_for_status()
             data = resp.json()
             
@@ -128,9 +153,48 @@ async def list_ollama_models():
                     "context_length": context_length
                 })
             
-            return {"models": models}
+            return {
+                "success": True,
+                "models": models,
+                "ollama_url": ollama_base_url
+            }
+            
+    except httpx.ConnectError:
+        # Ollama is not reachable - return graceful fallback
+        print(f"Ollama service not available at {ollama_base_url}")
+        return {
+            "success": False,
+            "error": f"Ollama service not available at {ollama_base_url}. Please ensure Ollama is running and accessible.",
+            "models": [],
+            "ollama_url": ollama_base_url,
+            "fallback_models": [
+                {"name": "llama3.1:8b", "id": "fallback-01", "size": "4.7 GB", "modified": "N/A", "context_length": "128,000"},
+                {"name": "llama3.1:70b", "id": "fallback-02", "size": "40 GB", "modified": "N/A", "context_length": "128,000"},
+                {"name": "qwen2.5:32b", "id": "fallback-03", "size": "19 GB", "modified": "N/A", "context_length": "32,768"},
+                {"name": "deepseek-r1:8b", "id": "fallback-04", "size": "4.9 GB", "modified": "N/A", "context_length": "65,536"},
+                {"name": "gemma2:27b", "id": "fallback-05", "size": "16 GB", "modified": "N/A", "context_length": "8,192"}
+            ]
+        }
+        
+    except httpx.TimeoutException:
+        # Ollama is slow to respond
+        print(f"Timeout connecting to Ollama at {ollama_base_url}")
+        return {
+            "success": False,
+            "error": f"Ollama service timeout at {ollama_base_url}. The service may be starting up or overloaded.",
+            "models": [],
+            "ollama_url": ollama_base_url
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch models from Ollama: {str(e)}")
+        # Other connection or parsing errors
+        print(f"Failed to get Ollama models: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Failed to fetch models from Ollama: {str(e)}",
+            "models": [],
+            "ollama_url": ollama_base_url
+        }
 
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., description="Prompt for the LLM")
@@ -146,56 +210,84 @@ class GenerateResponse(BaseModel):
 
 @router.get("/current_model")
 async def get_current_model():
-    inference = get_inference()
-    model_name = inference.model_name
-    
-    # Try to get model details from Ollama
-    display_name = model_name  # Default to model name
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{ollama_base_url}/api/show",
-                json={"name": model_name}
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                # Extract display name from model details if available
-                if "details" in data and "family" in data["details"]:
-                    family = data["details"]["family"]
-                    # Format the display name based on model info
-                    if "parameter_size" in data["details"]:
-                        param_size = data["details"]["parameter_size"]
-                        display_name = f"{family.title()} {param_size}"
-                    else:
-                        display_name = family.title()
-                elif "modelfile" in data:
-                    # Try to extract from modelfile
-                    display_name = model_name.replace(":", " ").replace("-", " ").title()
-                
-                # Special handling for deepseek models
-                if "deepseek" in model_name.lower():
-                    # Parse deepseek-r1:8b format
-                    parts = model_name.split(":")
-                    if len(parts) == 2:
-                        model_type = parts[0].replace("-", " ").title()
-                        size = parts[1].upper()
-                        display_name = f"{model_type} {size}"
-                    else:
-                        display_name = model_name.replace("-", " ").title()
+        inference = get_inference()
+        model_name = inference.model_name
+        
+        # Try to get model details from Ollama
+        display_name = model_name  # Default to model name
+        ollama_available = True
+        
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                resp = await client.post(
+                    f"{ollama_base_url}/api/show",
+                    json={"name": model_name}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Extract display name from model details if available
+                    if "details" in data and "family" in data["details"]:
+                        family = data["details"]["family"]
+                        # Format the display name based on model info
+                        if "parameter_size" in data["details"]:
+                            param_size = data["details"]["parameter_size"]
+                            display_name = f"{family.title()} {param_size}"
+                        else:
+                            display_name = family.title()
+                    elif "modelfile" in data:
+                        # Try to extract from modelfile
+                        display_name = model_name.replace(":", " ").replace("-", " ").title()
+                    
+                    # Special handling for deepseek models
+                    if "deepseek" in model_name.lower():
+                        # Parse deepseek-r1:8b format
+                        parts = model_name.split(":")
+                        if len(parts) == 2:
+                            model_type = parts[0].replace("-", " ").title()
+                            size = parts[1].upper()
+                            display_name = f"{model_type} {size}"
+                        else:
+                            display_name = model_name.replace("-", " ").title()
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            print(f"Failed to get model details from Ollama: {e}")
+            ollama_available = False
+            # Fallback parsing for common patterns
+            if ":" in model_name:
+                parts = model_name.split(":")
+                if len(parts) == 2:
+                    base = parts[0].replace("-", " ").title()
+                    size = parts[1].upper()
+                    display_name = f"{base} {size}"
+        except Exception as e:
+            print(f"Failed to get model details from Ollama: {e}")
+            ollama_available = False
+            # Fallback parsing for common patterns  
+            if ":" in model_name:
+                parts = model_name.split(":")
+                if len(parts) == 2:
+                    base = parts[0].replace("-", " ").title()
+                    size = parts[1].upper()
+                    display_name = f"{base} {size}"
+        
+        return {
+            "success": True,
+            "model_name": model_name,
+            "display_name": display_name,
+            "ollama_available": ollama_available,
+            "ollama_url": ollama_base_url
+        }
+        
     except Exception as e:
-        print(f"Failed to get model details from Ollama: {e}")
-        # Fallback parsing for common patterns
-        if ":" in model_name:
-            parts = model_name.split(":")
-            if len(parts) == 2:
-                base = parts[0].replace("-", " ").title()
-                size = parts[1].upper()
-                display_name = f"{base} {size}"
-    
-    return {
-        "model_name": model_name,
-        "display_name": display_name
-    }
+        print(f"Failed to get current model configuration: {e}")
+        return {
+            "success": False,
+            "error": f"Failed to get current model configuration: {str(e)}",
+            "model_name": "unknown",
+            "display_name": "Unknown Model",
+            "ollama_available": False,
+            "ollama_url": ollama_base_url
+        }
 
 @router.post("/generate", response_model=GenerateResponse)
 async def generate(request: GenerateRequest):

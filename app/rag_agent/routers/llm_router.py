@@ -129,8 +129,20 @@ class LLMRouter:
             payload["temperature"] = 0.05  # Even more deterministic for urgent queries
         
         try:
-            # Call LLM endpoint - use model_server from settings
-            model_server = llm_settings.get("model_server", "http://localhost:11434").strip()
+            # Get model server URL from settings or environment
+            import os
+            model_server = llm_settings.get("model_server")
+            
+            # Fall back to environment variable
+            if not model_server:
+                model_server = os.environ.get("OLLAMA_BASE_URL")
+            
+            # Use default based on environment
+            if not model_server:
+                in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+                model_server = "http://host.docker.internal:11434" if in_docker else "http://host.docker.internal:11434"
+            
+            model_server = model_server.strip()
             llm_endpoint = f"{model_server}/v1/chat/completions"
             
             # Use centralized timeout configuration

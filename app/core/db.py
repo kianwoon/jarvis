@@ -402,6 +402,167 @@ class DocumentCrossReference(Base):
         UniqueConstraint('milvus_chunk_id', 'neo4j_entity_id', name='uq_chunk_entity_mapping'),
     )
 
+# IDC (Intelligent Document Comparison) Models
+class IDCReferenceDocument(Base):
+    """Reference documents with extracted markdown for validation purposes"""
+    __tablename__ = "idc_reference_documents"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(String(255), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    document_type = Column(String(50), nullable=False)
+    category = Column(String(100), nullable=True)
+    
+    # Original document info
+    original_filename = Column(String(255), nullable=True)
+    file_hash = Column(String(64), nullable=False, index=True)
+    file_size_bytes = Column(Integer, nullable=True)
+    
+    # Extracted content (LLM-generated markdown)
+    extracted_markdown = Column(String, nullable=False)
+    extraction_metadata = Column(JSON, nullable=True)
+    
+    # Model configuration for extraction
+    extraction_model = Column(String(100), nullable=True)
+    extraction_config = Column(JSON, nullable=True)
+    extraction_confidence = Column(Float, nullable=True)
+    
+    # Default validation settings
+    default_validation_config = Column(JSON, nullable=True)
+    recommended_extraction_modes = Column(JSON, nullable=True)  # ['paragraph', 'sentence', 'qa_pairs']
+    
+    # Processing metrics
+    processing_time_ms = Column(Integer, nullable=True)
+    version = Column(Integer, default=1)
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    
+    # Metadata
+    created_by = Column(String(255), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Relationships
+    validation_sessions = relationship("IDCValidationSession", back_populates="reference_document", cascade="all, delete-orphan")
+    templates = relationship("IDCTemplate", back_populates="reference_document", cascade="all, delete-orphan")
+
+class IDCValidationSession(Base):
+    """Validation sessions with granular processing tracking"""
+    __tablename__ = "idc_validation_sessions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(255), unique=True, nullable=False, index=True)
+    reference_document_id = Column(Integer, ForeignKey('idc_reference_documents.id'), nullable=False)
+    
+    # Input document info
+    input_filename = Column(String(255), nullable=True)
+    input_file_hash = Column(String(64), nullable=True)
+    input_file_size_bytes = Column(Integer, nullable=True)
+    
+    # Granular extraction configuration
+    extraction_mode = Column(String(50), nullable=False)  # 'sentence', 'paragraph', 'qa_pairs', 'section'
+    extraction_config = Column(JSON, nullable=True)
+    
+    # Processing configuration
+    validation_model = Column(String(100), nullable=True)
+    max_context_usage = Column(Float, default=0.35)  # Conservative limit
+    
+    # Systematic processing tracking
+    total_units_extracted = Column(Integer, default=0)
+    units_processed = Column(Integer, default=0)
+    units_failed = Column(Integer, default=0)
+    
+    # Extracted content
+    extracted_units = Column(JSON, nullable=True)  # Array of extracted units with metadata
+    
+    # Validation results
+    validation_results = Column(JSON, nullable=True)  # Detailed unit-by-unit results
+    overall_score = Column(Float, nullable=True)
+    confidence_score = Column(Float, nullable=True)
+    completeness_score = Column(Float, nullable=True)
+    
+    # Processing metrics
+    status = Column(String(50), default='pending', index=True)
+    processing_start_time = Column(TIMESTAMP(timezone=True), nullable=True)
+    processing_end_time = Column(TIMESTAMP(timezone=True), nullable=True)
+    total_processing_time_ms = Column(Integer, nullable=True)
+    average_context_usage = Column(Float, nullable=True)
+    max_context_usage_recorded = Column(Float, nullable=True)
+    
+    # Error tracking
+    error_message = Column(String, nullable=True)
+    failed_units = Column(JSON, nullable=True)  # Units that failed processing
+    
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    
+    # Relationships
+    reference_document = relationship("IDCReferenceDocument", back_populates="validation_sessions")
+    unit_results = relationship("IDCUnitValidationResult", back_populates="validation_session", cascade="all, delete-orphan")
+
+class IDCUnitValidationResult(Base):
+    """Detailed validation results for each extracted unit"""
+    __tablename__ = "idc_unit_validation_results"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(255), ForeignKey('idc_validation_sessions.session_id'), nullable=False, index=True)
+    
+    # Unit information
+    unit_index = Column(Integer, nullable=False)
+    unit_type = Column(String(50), nullable=True)  # 'sentence', 'paragraph', 'qa_pair', 'section'
+    unit_content = Column(String, nullable=False)
+    unit_metadata = Column(JSON, nullable=True)  # position, length, etc.
+    
+    # Validation details
+    validation_score = Column(Float, nullable=True)
+    confidence_score = Column(Float, nullable=True)
+    validation_feedback = Column(String, nullable=True)
+    
+    # Reference matching
+    matched_reference_sections = Column(JSON, nullable=True)
+    similarity_scores = Column(JSON, nullable=True)
+    
+    # Processing metrics
+    context_tokens_used = Column(Integer, nullable=True)
+    context_usage_percentage = Column(Float, nullable=True)
+    processing_time_ms = Column(Integer, nullable=True)
+    llm_model_used = Column(String(100), nullable=True)
+    
+    # Quality indicators
+    requires_human_review = Column(Boolean, default=False)
+    quality_flags = Column(JSON, nullable=True)  # low_confidence, context_overflow, etc.
+    
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    
+    # Relationships
+    validation_session = relationship("IDCValidationSession", back_populates="unit_results")
+
+class IDCTemplate(Base):
+    """Pre-configured validation templates for common use cases"""
+    __tablename__ = "idc_templates"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    template_id = Column(String(255), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(String, nullable=True)
+    template_type = Column(String(50), nullable=False)  # 'contract_review', 'exam_grading', 'resume_screening'
+    
+    # Template configuration
+    reference_document_id = Column(Integer, ForeignKey('idc_reference_documents.id'), nullable=True)
+    default_extraction_mode = Column(String(50), nullable=False)
+    validation_config = Column(JSON, nullable=False)
+    
+    # Usage tracking
+    usage_count = Column(Integer, default=0)
+    success_rate = Column(Float, nullable=True)
+    
+    # Metadata
+    is_public = Column(Boolean, default=False)
+    created_by = Column(String(255), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Relationships
+    reference_document = relationship("IDCReferenceDocument", back_populates="templates")
+
 @contextmanager
 def get_db_session():
     """Context manager for database sessions with automatic cleanup"""

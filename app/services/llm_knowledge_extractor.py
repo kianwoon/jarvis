@@ -247,14 +247,27 @@ class LLMKnowledgeExtractor:
     
     def _get_extraction_model_config(self) -> Dict[str, Any]:
         """Get LLM configuration optimized for knowledge extraction"""
+        import os
+        
         # Get model config from the nested model_config section
         model_config = self.kg_settings.get('model_config', {})
+        
+        # Get model server URL dynamically - prioritize settings, then env, then default
+        model_server = model_config.get('model_server')
+        if not model_server:
+            # Fall back to environment variable
+            model_server = os.environ.get("OLLAMA_BASE_URL")
+        if not model_server:
+            # Check if we're in Docker
+            in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+            # Use host.docker.internal to access host's Ollama from container
+            model_server = "http://host.docker.internal:11434" if in_docker else "http://host.docker.internal:11434"
         
         config = {
             'model': model_config.get('model', 'qwen3:30b-a3b-q4_K_M'),
             'temperature': model_config.get('temperature', 0.1),
             'max_tokens': model_config.get('max_tokens', 4096),
-            'model_server': model_config.get('model_server', 'http://localhost:11434')
+            'model_server': model_server
         }
         return config
     

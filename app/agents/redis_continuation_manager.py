@@ -532,7 +532,21 @@ Generate items {chunk.start_index} to {chunk.end_index}:"""
                 max_tokens=3500
             )
             
-            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            # Get Ollama URL from settings or environment
+            ollama_url = None
+            
+            # Try to get from model_config first
+            if model_config.get('model_server'):
+                ollama_url = model_config['model_server']
+            
+            # Fall back to environment variable
+            if not ollama_url:
+                ollama_url = os.environ.get("OLLAMA_BASE_URL")
+            
+            # Use default based on environment
+            if not ollama_url:
+                in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+                ollama_url = "http://host.docker.internal:11434" if in_docker else "http://host.docker.internal:11434"
             llm = OllamaLLM(config, base_url=ollama_url)
             
             response_text = ""

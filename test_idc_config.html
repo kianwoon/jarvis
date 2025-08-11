@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IDC Configuration Test</title>
+    <script>
+        // Test to check if the IDC Configuration page is loading correctly
+        async function testIDCConfig() {
+            try {
+                // Fetch the IDC configuration
+                const response = await fetch('http://localhost:8000/api/v1/idc/configuration');
+                const data = await response.json();
+                
+                console.log('IDC Configuration loaded:', data);
+                
+                // Check if system prompts exist
+                if (data.configuration) {
+                    console.log('Extraction System Prompt:', data.configuration.extraction?.system_prompt ? 'EXISTS' : 'MISSING');
+                    console.log('Validation System Prompt:', data.configuration.validation?.system_prompt ? 'EXISTS' : 'MISSING');
+                    
+                    // Display the prompts
+                    document.getElementById('extraction-prompt').textContent = 
+                        data.configuration.extraction?.system_prompt || 'No extraction prompt found';
+                    document.getElementById('validation-prompt').textContent = 
+                        data.configuration.validation?.system_prompt || 'No validation prompt found';
+                }
+            } catch (error) {
+                console.error('Error loading configuration:', error);
+                document.getElementById('error').textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        window.onload = testIDCConfig;
+    </script>
+</head>
+<body>
+    <h1>IDC Configuration Test</h1>
+    <div id="error" style="color: red;"></div>
+    
+    <h2>Extraction System Prompt:</h2>
+    <pre id="extraction-prompt" style="background: #f0f0f0; padding: 10px; white-space: pre-wrap;"></pre>
+    
+    <h2>Validation System Prompt:</h2>
+    <pre id="validation-prompt" style="background: #f0f0f0; padding: 10px; white-space: pre-wrap;"></pre>
+    
+    <p>Open browser console to see detailed output.</p>
+</body>
+</html>

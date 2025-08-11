@@ -32,12 +32,20 @@ def _load_llm_settings_from_db():
 
 def _get_default_llm_settings():
     """Default LLM settings factory - using new schema"""
+    import os
+    
+    # Get model server URL from environment or use default
+    in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+    model_server = os.environ.get("OLLAMA_BASE_URL")
+    if not model_server:
+        model_server = "http://host.docker.internal:11434" if in_docker else "http://host.docker.internal:11434"
+    
     return {
         "main_llm": {
             "mode": "thinking",
             "model": "llama3.1:8b",
             "max_tokens": 4000,
-            "model_server": "http://localhost:11434",
+            "model_server": model_server,
             "system_prompt": "You are Jarvis, an AI assistant."
         },
         "thinking_mode_params": {"temperature": 0.7, "top_p": 0.9, "min_p": 0, "top_k": 20},

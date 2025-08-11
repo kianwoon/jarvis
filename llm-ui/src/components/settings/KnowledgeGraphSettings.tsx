@@ -214,22 +214,45 @@ const KnowledgeGraphModelSelector: React.FC<{
       const response = await fetch('/api/v1/ollama/models');
       if (response.ok) {
         const data = await response.json();
-        setModels(data.models || []);
+        
+        if (data.success) {
+          // Ollama is available - use actual models
+          setModels(data.models || []);
+        } else {
+          // Ollama not available - use fallback models from API if provided
+          if (data.fallback_models && data.fallback_models.length > 0) {
+            setModels(data.fallback_models);
+          } else {
+            // Last resort fallback
+            setModels([
+              { name: 'llama3.1:8b', id: 'fallback-01', size: '4.7 GB', modified: 'N/A', context_length: '128,000' },
+              { name: 'deepseek-r1:8b', id: 'fallback-04', size: '4.9 GB', modified: 'N/A', context_length: '65,536' }
+            ]);
+          }
+        }
       } else {
-        // Fallback to hardcoded models if API fails
-        setModels([
-          { name: 'qwen3:0.6b', id: '7df6b6e09427', size: '522 MB', modified: '2 minutes ago', context_length: 'Unknown' },
-          { name: 'deepseek-r1:8b', id: '6995872bfe4c', size: '5.2 GB', modified: '5 weeks ago', context_length: 'Unknown' },
-          { name: 'qwen3:30b-a3b', id: '2ee832bc15b5', size: '18 GB', modified: '7 weeks ago', context_length: 'Unknown' }
-        ]);
+        // HTTP error - try to parse response for fallback models
+        try {
+          const data = await response.json();
+          if (data.fallback_models && data.fallback_models.length > 0) {
+            setModels(data.fallback_models);
+          } else {
+            throw new Error('No fallback models in error response');
+          }
+        } catch {
+          // Last resort fallback
+          setModels([
+            { name: 'llama3.1:8b', id: 'fallback-01', size: '4.7 GB', modified: 'N/A', context_length: '128,000' },
+            { name: 'deepseek-r1:8b', id: 'fallback-04', size: '4.9 GB', modified: 'N/A', context_length: '65,536' }
+          ]);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch models:', error);
-      // Use hardcoded models as fallback
+      // Last resort fallback
       setModels([
-        { name: 'qwen3:0.6b', id: '7df6b6e09427', size: '522 MB', modified: '2 minutes ago', context_length: 'Unknown' },
-        { name: 'deepseek-r1:8b', id: '6995872bfe4c', size: '5.2 GB', modified: '5 weeks ago', context_length: 'Unknown' },
-        { name: 'qwen3:30b-a3b', id: '2ee832bc15b5', size: '18 GB', modified: '7 weeks ago', context_length: 'Unknown' }
+        { name: 'llama3.1:8b', id: 'fallback-01', size: '4.7 GB', modified: 'N/A', context_length: '128,000' },
+        { name: 'deepseek-r1:8b', id: 'fallback-04', size: '4.9 GB', modified: 'N/A', context_length: '65,536' }
       ]);
     } finally {
       setLoading(false);
