@@ -224,8 +224,25 @@ const InlinePreviewContent: React.FC<{ referenceId: string }> = ({ referenceId }
           border: '1px solid',
           borderColor: 'divider',
           borderRadius: 2,
-          maxHeight: '500px',
-          overflow: 'auto'
+          minHeight: '200px',
+          height: '400px',
+          maxHeight: '70vh',
+          overflow: 'auto',
+          resize: 'vertical',
+          position: 'relative',
+          '&::after': {
+            content: '""',
+            position: 'absolute',
+            bottom: 0,
+            right: 0,
+            width: '16px',
+            height: '16px',
+            cursor: 'ns-resize',
+            backgroundImage: `linear-gradient(135deg, transparent 0%, transparent 50%, rgba(128, 128, 128, 0.5) 50%, rgba(128, 128, 128, 0.5) 100%)`,
+            backgroundSize: '4px 4px',
+            backgroundPosition: 'bottom right',
+            borderBottomRightRadius: 'inherit',
+          }
         }}
       >
         <MessageContent content={content.content} />
@@ -1026,18 +1043,70 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
             </Select>
           </FormControl>
 
-          <TextField
-            fullWidth
-            label="Markdown Content"
-            value={editFormData.content}
-            onChange={(e) => setEditFormData({ ...editFormData, content: e.target.value })}
-            margin="normal"
-            multiline
-            rows={12}
-            disabled={updating}
-            placeholder="Edit the markdown content of the document..."
-            helperText="You can edit the extracted markdown content directly. Changes will be saved when you update."
-          />
+          <Box sx={{ mt: 2, mb: 1 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Markdown Content
+            </Typography>
+            <Box
+              component="textarea"
+              value={editFormData.content}
+              onChange={(e) => setEditFormData({ ...editFormData, content: e.target.value })}
+              disabled={updating}
+              placeholder="Edit the markdown content of the document..."
+              sx={{
+                width: '100%',
+                minHeight: '200px',
+                height: '400px',
+                maxHeight: '80vh',
+                padding: '12px',
+                border: 1,
+                borderColor: 'divider',
+                borderRadius: 1,
+                fontSize: '14px',
+                fontFamily: 'inherit',
+                resize: 'vertical',
+                outline: 'none',
+                backgroundColor: 'background.paper',
+                color: 'text.primary',
+                overflowY: 'auto',
+                boxSizing: 'border-box',
+                '&:focus': {
+                  borderColor: 'primary.main',
+                  borderWidth: 2
+                },
+                '&:disabled': {
+                  backgroundColor: 'action.disabledBackground',
+                  color: 'text.disabled',
+                  cursor: 'not-allowed'
+                },
+                '&::placeholder': {
+                  color: 'text.secondary',
+                  opacity: 0.7
+                },
+                // Ensure the resize handle is visible
+                '&::-webkit-resizer': {
+                  backgroundColor: 'transparent',
+                  backgroundImage: `linear-gradient(135deg, 
+                    transparent 0%, 
+                    transparent 50%, 
+                    rgba(128, 128, 128, 0.4) 50%, 
+                    rgba(128, 128, 128, 0.4) 60%, 
+                    transparent 60%, 
+                    transparent 70%, 
+                    rgba(128, 128, 128, 0.4) 70%, 
+                    rgba(128, 128, 128, 0.4) 80%, 
+                    transparent 80%, 
+                    transparent 90%, 
+                    rgba(128, 128, 128, 0.4) 90%, 
+                    rgba(128, 128, 128, 0.4) 100%)`,
+                  backgroundSize: '4px 4px',
+                }
+              }}
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+              You can edit the extracted markdown content directly. Changes will be saved when you update. Drag the bottom-right corner to resize.
+            </Typography>
+          </Box>
 
           <Box sx={{ mt: 2, mb: 1 }}>
             <FormControl>
@@ -1137,8 +1206,32 @@ const IDCReferenceManager: React.FC<IDCReferenceManagerProps> = ({
                   border: '1px solid',
                   borderColor: 'divider',
                   borderRadius: 2,
+                  minHeight: '300px',
+                  height: '500px',
                   maxHeight: '70vh',
-                  overflow: 'auto'
+                  overflow: 'auto',
+                  resize: 'vertical',
+                  position: 'relative',
+                  '&::after': {
+                    content: '""',
+                    position: 'absolute',
+                    bottom: 0,
+                    right: 0,
+                    width: '20px',
+                    height: '20px',
+                    cursor: 'ns-resize',
+                    background: `linear-gradient(135deg, 
+                      transparent 0%, 
+                      transparent 40%, 
+                      rgba(128, 128, 128, 0.3) 40%, 
+                      rgba(128, 128, 128, 0.3) 50%, 
+                      transparent 50%, 
+                      transparent 90%, 
+                      rgba(128, 128, 128, 0.3) 90%, 
+                      rgba(128, 128, 128, 0.3) 100%)`,
+                    backgroundSize: '5px 5px',
+                    borderBottomRightRadius: 'inherit',
+                  }
                 }}
               >
                 <MessageContent content={selectedReference?.extracted_markdown || ''} />
