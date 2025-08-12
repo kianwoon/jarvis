@@ -85,9 +85,25 @@ interface UnitValidationResult {
 }
 
 interface ValidationResults {
-  session: ValidationSession;
+  session_id: string;
+  overall_results: {
+    overall_score: number;
+    confidence_score: number;
+    completeness_score: number;
+    total_units: number;
+    units_processed: number;
+    units_failed: number;
+    processing_status: string;
+  };
+  processing_stats: {
+    total_processing_time_ms: number;
+    average_context_usage: number;
+    max_context_usage: number;
+    extraction_mode: string;
+    validation_model: string;
+  };
   unit_results: UnitValidationResult[];
-  summary: {
+  summary?: {
     total_units: number;
     average_score: number;
     high_scores: number;
@@ -125,6 +141,53 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
     }
   }, [selectedSession]);
 
+  const calculateSummaryFromUnits = (unitResults: UnitValidationResult[], totalUnits: number) => {
+    if (!unitResults || unitResults.length === 0) {
+      return {
+        total_units: totalUnits,
+        average_score: 0,
+        high_scores: 0,
+        medium_scores: 0,
+        low_scores: 0,
+        coverage_percentage: 0,
+        uncovered_sections: [],
+        recommendations: []
+      };
+    }
+
+    let highScores = 0;
+    let mediumScores = 0;
+    let lowScores = 0;
+    let totalScore = 0;
+
+    unitResults.forEach(unit => {
+      const scorePercent = unit.validation_score * 100;
+      totalScore += scorePercent;
+      
+      if (scorePercent >= 80) {
+        highScores++;
+      } else if (scorePercent >= 60) {
+        mediumScores++;
+      } else {
+        lowScores++;
+      }
+    });
+
+    const averageScore = totalScore / unitResults.length;
+    const coveragePercentage = totalUnits > 0 ? (unitResults.length / totalUnits) * 100 : 0;
+
+    return {
+      total_units: totalUnits,
+      average_score: averageScore,
+      high_scores: highScores,
+      medium_scores: mediumScores,
+      low_scores: lowScores,
+      coverage_percentage: coveragePercentage,
+      uncovered_sections: [],
+      recommendations: []
+    };
+  };
+
   const loadSessionResults = async (sessionId: string) => {
     setLoading(true);
     setError(null);
@@ -137,6 +200,12 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
       }
       
       const data = await response.json();
+      
+      // Calculate summary if missing or incorrect
+      if (!data.summary || (data.summary.high_scores === 0 && data.summary.medium_scores === 0 && data.summary.low_scores === 0 && data.unit_results && data.unit_results.length > 0)) {
+        data.summary = calculateSummaryFromUnits(data.unit_results, data.overall_results?.total_units || 0);
+      }
+      
       setResults(data);
     } catch (error) {
       console.error('Failed to load results:', error);
@@ -266,7 +335,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                     <ListItemText
                       primary={session.input_filename}
                       secondary={
-                        <Box>
+                        <>
                           <Typography variant="caption" display="block">
                             Mode: {session.extraction_mode}
                           </Typography>
@@ -274,14 +343,15 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                             {new Date(session.created_at).toLocaleString()}
                           </Typography>
                           {session.overall_score !== undefined && (
-                            <Chip
-                              label={`Score: ${(session.overall_score * 100).toFixed(0)}%`}
-                              size="small"
-                              color={getScoreColor(session.overall_score) as any}
-                              sx={{ mt: 0.5 }}
-                            />
+                            <Box component="span" sx={{ display: 'block', mt: 0.5 }}>
+                              <Chip
+                                label={`Score: ${(session.overall_score * 100).toFixed(0)}%`}
+                                size="small"
+                                color={getScoreColor(session.overall_score) as any}
+                              />
+                            </Box>
                           )}
-                        </Box>
+                        </>
                       }
                     />
                   </ListItem>
@@ -312,7 +382,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                       <Box sx={{ textAlign: 'center' }}>
                         <Score color="primary" sx={{ fontSize: 40 }} />
                         <Typography variant="h4">
-                          {(results.session.overall_score! * 100).toFixed(0)}%
+                          {results?.overall_results?.overall_score !== undefined ? ((results.overall_results.overall_score || 0) * 100).toFixed(0) : '0'}%
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
                           Overall Score
@@ -324,7 +394,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                       <Box sx={{ textAlign: 'center' }}>
                         <Assessment color="info" sx={{ fontSize: 40 }} />
                         <Typography variant="h4">
-                          {results.session.units_processed}/{results.session.total_units_extracted}
+                          {results?.overall_results?.units_processed || 0}/{results?.overall_results?.total_units || 0}
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
                           Units Processed
@@ -336,7 +406,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                       <Box sx={{ textAlign: 'center' }}>
                         <Memory color="warning" sx={{ fontSize: 40 }} />
                         <Typography variant="h4">
-                          {(results.session.average_context_usage! * 100).toFixed(0)}%
+                          {results?.processing_stats?.average_context_usage !== undefined ? ((results.processing_stats.average_context_usage || 0) * 100).toFixed(0) : '0'}%
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
                           Avg Context Usage
@@ -348,7 +418,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                       <Box sx={{ textAlign: 'center' }}>
                         <Speed color="success" sx={{ fontSize: 40 }} />
                         <Typography variant="h4">
-                          {formatDuration(results.session.processing_time_ms!)}
+                          {formatDuration(results?.processing_stats?.total_processing_time_ms || 0)}
                         </Typography>
                         <Typography variant="body2" color="text.secondary">
                           Processing Time
@@ -365,7 +435,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                         Extraction Mode
                       </Typography>
                       <Typography variant="body1">
-                        {results.session.extraction_mode}
+                        {results?.processing_stats?.extraction_mode || 'Unknown'}
                       </Typography>
                     </Grid>
                     
@@ -374,7 +444,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                         Validation Model
                       </Typography>
                       <Typography variant="body1">
-                        {results.session.validation_model}
+                        {results?.processing_stats?.validation_model || 'Unknown'}
                       </Typography>
                     </Grid>
                     
@@ -383,7 +453,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                         Reference Document
                       </Typography>
                       <Typography variant="body1">
-                        {results.session.reference_name || 'N/A'}
+                        {'N/A'}
                       </Typography>
                     </Grid>
                   </Grid>
@@ -411,21 +481,21 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                   <Grid container spacing={2}>
                     <Grid item xs={4}>
                       <Paper sx={{ p: 2, bgcolor: 'success.light', color: 'success.contrastText' }}>
-                        <Typography variant="h4">{results.summary.high_scores}</Typography>
+                        <Typography variant="h4">{results?.summary?.high_scores || 0}</Typography>
                         <Typography variant="body2">High Scores (80%+)</Typography>
                       </Paper>
                     </Grid>
                     
                     <Grid item xs={4}>
                       <Paper sx={{ p: 2, bgcolor: 'warning.light', color: 'warning.contrastText' }}>
-                        <Typography variant="h4">{results.summary.medium_scores}</Typography>
+                        <Typography variant="h4">{results?.summary?.medium_scores || 0}</Typography>
                         <Typography variant="body2">Medium Scores (60-80%)</Typography>
                       </Paper>
                     </Grid>
                     
                     <Grid item xs={4}>
                       <Paper sx={{ p: 2, bgcolor: 'error.light', color: 'error.contrastText' }}>
-                        <Typography variant="h4">{results.summary.low_scores}</Typography>
+                        <Typography variant="h4">{results?.summary?.low_scores || 0}</Typography>
                         <Typography variant="body2">Low Scores (&lt;60%)</Typography>
                       </Paper>
                     </Grid>
@@ -433,11 +503,11 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                   
                   <Box sx={{ mt: 2 }}>
                     <Typography variant="body2" gutterBottom>
-                      Coverage: {results.summary.coverage_percentage}%
+                      Coverage: {results?.summary?.coverage_percentage || 0}%
                     </Typography>
                     <LinearProgress 
                       variant="determinate" 
-                      value={results.summary.coverage_percentage}
+                      value={results?.summary?.coverage_percentage || 0}
                       sx={{ height: 8, borderRadius: 4 }}
                     />
                   </Box>
@@ -465,7 +535,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {results.unit_results.map((unit) => (
+                        {(results?.unit_results || []).map((unit) => (
                           <TableRow key={unit.unit_index}>
                             <TableCell>{unit.unit_index}</TableCell>
                             <TableCell>
@@ -484,20 +554,22 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
                             <TableCell>
                               <Tooltip title={`${unit.context_tokens_used} tokens`}>
                                 <Chip
-                                  label={`${unit.context_usage_percentage.toFixed(0)}%`}
+                                  label={`${(unit.context_usage_percentage * 100).toFixed(0)}%`}
                                   size="small"
-                                  color={unit.context_usage_percentage < 40 ? 'success' : 'warning'}
+                                  color={(unit.context_usage_percentage * 100) < 40 ? 'success' : 'warning'}
                                 />
                               </Tooltip>
                             </TableCell>
                             <TableCell>{formatDuration(unit.processing_time_ms)}</TableCell>
                             <TableCell>
-                              <IconButton
-                                size="small"
-                                onClick={() => handleUnitClick(unit)}
-                              >
-                                <Visibility />
-                              </IconButton>
+                              <Tooltip title="View Details">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => handleUnitClick(unit)}
+                                >
+                                  <Visibility />
+                                </IconButton>
+                              </Tooltip>
                             </TableCell>
                           </TableRow>
                         ))}
@@ -508,14 +580,14 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
               </Card>
 
               {/* Recommendations */}
-              {results.summary.recommendations && results.summary.recommendations.length > 0 && (
+              {results?.summary?.recommendations && results?.summary?.recommendations.length > 0 && (
                 <Card sx={{ mt: 3 }}>
                   <CardContent>
                     <Typography variant="h6" gutterBottom>
                       Recommendations
                     </Typography>
                     <List>
-                      {results.summary.recommendations.map((rec, index) => (
+                      {results?.summary?.recommendations.map((rec, index) => (
                         <ListItem key={index}>
                           <ListItemIcon>
                             <Warning color="warning" />
@@ -607,7 +679,7 @@ const IDCResultsViewer: React.FC<IDCResultsViewerProps> = ({
               <Box sx={{ mt: 2 }}>
                 <Typography variant="caption" color="text.secondary">
                   Processing Time: {formatDuration(selectedUnit.processing_time_ms)} | 
-                  Context Usage: {selectedUnit.context_usage_percentage.toFixed(1)}% ({selectedUnit.context_tokens_used} tokens)
+                  Context Usage: {(selectedUnit.context_usage_percentage * 100).toFixed(1)}% ({selectedUnit.context_tokens_used} tokens)
                 </Typography>
               </Box>
             </Box>

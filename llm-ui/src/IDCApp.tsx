@@ -14,35 +14,24 @@ import {
   Tab,
   Grid,
   Card,
-  CardContent,
   Button,
-  List,
-  ListItem,
-  ListItemIcon,
-  ListItemText,
   Alert,
-  LinearProgress,
-  Chip,
   Snackbar
 } from '@mui/material';
 import {
   LightMode as LightModeIcon,
   DarkMode as DarkModeIcon,
-  Description as DocumentIcon,
   CompareArrows as CompareIcon,
-  CloudUpload as UploadIcon,
   Assessment as ResultsIcon,
   Tune as ConfigIcon,
   LibraryBooks as ReferenceIcon,
-  CheckCircle as CheckIcon,
-  Error as ErrorIcon,
-  Schedule as ScheduleIcon,
   ViewModule as ViewModuleIcon,
   ViewList as ViewListIcon
 } from '@mui/icons-material';
 import IDCConfigurationPanel from './components/idc/IDCConfigurationPanel';
 import IDCValidationPanel from './components/idc/IDCValidationPanel';
 import IDCReferenceManager from './components/idc/IDCReferenceManager';
+import IDCResultsViewer from './components/idc/IDCResultsViewer';
 
 interface ReferenceDocument {
   id: string;
@@ -67,7 +56,7 @@ interface ValidationSession {
   session_id: string;
   reference_document_id: string;
   input_filename: string;
-  status: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
   overall_score?: number;
   created_at: string;
   completed_at?: string;
@@ -110,7 +99,6 @@ function IDCApp() {
 
   // Reference documents state
   const [referenceDocuments, setReferenceDocuments] = useState<ReferenceDocument[]>([]);
-  const [loadingReferences, setLoadingReferences] = useState(false);
   
   // Snackbar for notifications
   const [snackbar, setSnackbar] = useState<SnackbarState>({
@@ -121,7 +109,6 @@ function IDCApp() {
 
   // Validation sessions state
   const [validationSessions, setValidationSessions] = useState<ValidationSession[]>([]);
-  const [loadingSessions, setLoadingSessions] = useState(false);
 
   // Configuration state
   const [configuration, setConfiguration] = useState<IDCConfiguration>({
@@ -135,8 +122,6 @@ function IDCApp() {
     parallel_workers: 5
   });
 
-  // Upload and validation state
-  const [uploadingReference, setUploadingReference] = useState(false);
 
   // Create theme
   const theme = createTheme({
@@ -201,7 +186,6 @@ function IDCApp() {
   };
 
   const loadReferenceDocuments = async () => {
-    setLoadingReferences(true);
     try {
       const response = await fetch('/api/v1/idc/references');
       if (response.ok) {
@@ -210,13 +194,10 @@ function IDCApp() {
       }
     } catch (error) {
       console.error('Failed to load reference documents:', error);
-    } finally {
-      setLoadingReferences(false);
     }
   };
 
   const loadValidationSessions = async () => {
-    setLoadingSessions(true);
     try {
       const response = await fetch('/api/v1/idc/validate/sessions');
       if (response.ok) {
@@ -225,74 +206,9 @@ function IDCApp() {
       }
     } catch (error) {
       console.error('Failed to load validation sessions:', error);
-    } finally {
-      setLoadingSessions(false);
     }
   };
 
-  const handleReferenceUpload = async (file: File, name: string, documentType: string, category?: string) => {
-    setUploadingReference(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('name', name);
-      formData.append('document_type', documentType);
-      formData.append('extraction_model', configuration.extraction_model);
-      if (category) formData.append('category', category);
-
-      const response = await fetch('/api/v1/idc/reference/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (response.ok) {
-        await loadReferenceDocuments();
-      }
-    } catch (error) {
-      console.error('Failed to upload reference document:', error);
-    } finally {
-      setUploadingReference(false);
-    }
-  };
-
-
-  const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return <CheckIcon color="success" />;
-      case 'failed':
-        return <ErrorIcon color="error" />;
-      case 'processing':
-        return <ScheduleIcon color="primary" />;
-      default:
-        return <ScheduleIcon color="disabled" />;
-    }
-  };
-
-  const getStatusChip = (status: string) => {
-    const colors: { [key: string]: "success" | "error" | "warning" | "default" } = {
-      completed: 'success',
-      failed: 'error',
-      processing: 'warning',
-      pending: 'default'
-    };
-    
-    return (
-      <Chip 
-        label={status.charAt(0).toUpperCase() + status.slice(1)} 
-        color={colors[status] || 'default'}
-        size="small"
-      />
-    );
-  };
 
   const renderReferenceManagement = () => (
     <IDCReferenceManager 
@@ -331,53 +247,14 @@ function IDCApp() {
   );
 
   const renderResults = () => (
-    <Card>
-      <CardContent>
-        <Typography variant="h6" gutterBottom>
-          <ResultsIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
-          Validation Results
-        </Typography>
-        {loadingSessions ? (
-          <LinearProgress />
-        ) : (
-          <List>
-            {validationSessions.map((session) => (
-              <ListItem key={session.session_id} divider>
-                <ListItemIcon>
-                  {getStatusIcon(session.status)}
-                </ListItemIcon>
-                <ListItemText
-                  primary={session.input_filename}
-                  secondary={
-                    <Box>
-                      <Typography variant="body2" component="span">
-                        {session.extraction_mode} • {session.validation_method}
-                      </Typography>
-                      {session.overall_score !== undefined && (
-                        <Typography variant="body2" component="span" sx={{ ml: 1 }}>
-                          Score: {Math.round(session.overall_score * 100)}%
-                        </Typography>
-                      )}
-                    </Box>
-                  }
-                />
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  {getStatusChip(session.status)}
-                  <Button size="small" variant="outlined">
-                    View Details
-                  </Button>
-                </Box>
-              </ListItem>
-            ))}
-            {validationSessions.length === 0 && (
-              <Alert severity="info">
-                No validation sessions yet. Upload a document for validation to see results here.
-              </Alert>
-            )}
-          </List>
-        )}
-      </CardContent>
-    </Card>
+    <IDCResultsViewer 
+      sessions={validationSessions}
+      onRefresh={loadValidationSessions}
+      onSessionSelect={(sessionId) => {
+        console.log('Selected session:', sessionId);
+        // Optional: Add any additional logic when a session is selected
+      }}
+    />
   );
 
   const renderConfiguration = () => (
