@@ -514,6 +514,15 @@ class TemporalContextManager:
                     # Parse message timestamp if available
                     if 'timestamp' in message:
                         msg_time = datetime.fromisoformat(message['timestamp'])
+                        
+                        # Handle both timezone-aware and naive datetimes
+                        if msg_time.tzinfo is None:
+                            # Convert naive datetime to timezone-aware using default timezone
+                            msg_time = msg_time.replace(tzinfo=ZoneInfo(self.default_timezone))
+                        elif msg_time.tzinfo != current_time.tzinfo:
+                            # Convert to the same timezone as current_time for comparison
+                            msg_time = msg_time.astimezone(ZoneInfo(self.default_timezone))
+                        
                         time_diff = current_time - msg_time
                         
                         # Only include recent messages for time-related queries (within last hour)

@@ -325,10 +325,15 @@ class UnifiedMCPService:
         """
         EMERGENCY BYPASS: Direct Google Search API call to avoid MCP subprocess issues
         Uses proper async context management to prevent HTTP resource leaks.
+        Enhanced with comprehensive temporal relevance engine for accurate, time-aware results.
         """
         try:
             import os
+            import re
             import aiohttp
+            from datetime import datetime, timedelta
+            from zoneinfo import ZoneInfo
+            from app.core.temporal_relevance_engine import get_relevance_engine
             
             # Get Google Search API credentials from environment (with fallbacks)
             api_key = os.getenv("GOOGLE_SEARCH_API_KEY", "AIzaSyA2U7MBpH7cNDykiZ_OlGsdJJlXumsMps4")
@@ -350,14 +355,50 @@ class UnifiedMCPService:
             
             logger.debug(f"Searching for: {query}")
             
+            # Initialize temporal relevance engine
+            relevance_engine = get_relevance_engine()
+            
+            # Analyze query for temporal sensitivity
+            query_classification = relevance_engine.analyze_query(query)
+            logger.info(f"Query classification: {query_classification.sensitivity.value}, "
+                       f"intent: {query_classification.intent}, max_age: {query_classification.max_age_days} days")
+            
+            # Detect product-specific queries for enhanced filtering
+            query_lower = query.lower()
+            is_chatgpt_pro_query = "chatgpt" in query_lower and "pro" in query_lower
+            is_chatgpt_plus_query = "chatgpt" in query_lower and "plus" in query_lower
+            is_chatgpt_enterprise_query = "chatgpt" in query_lower and "enterprise" in query_lower
+            is_chatgpt_team_query = "chatgpt" in query_lower and "team" in query_lower
+            
             # Direct Google Custom Search API call
             search_url = "https://www.googleapis.com/customsearch/v1"
             search_params = {
                 "key": api_key,
                 "cx": search_engine_id,
                 "q": query,
-                "num": min(num_results, 10)  # Google API max is 10
+                "num": min(num_results * 3, 10)  # Get more results to filter from (max 10)
             }
+            
+            # Add temporal filtering based on query classification
+            if query_classification.intent == "current":
+                # Map max_age_days to Google dateRestrict format
+                if query_classification.max_age_days <= 30:
+                    search_params["dateRestrict"] = "m1"
+                elif query_classification.max_age_days <= 90:
+                    search_params["dateRestrict"] = "m3"
+                elif query_classification.max_age_days <= 180:
+                    search_params["dateRestrict"] = "m6"
+                elif query_classification.max_age_days <= 365:
+                    search_params["dateRestrict"] = "y1"
+                else:
+                    search_params["dateRestrict"] = "y2"
+                logger.debug(f"Applied date restriction based on classification: {search_params.get('dateRestrict')}")
+            elif query_classification.intent != "historical":
+                # For non-historical queries, apply some reasonable limit
+                if query_classification.max_age_days <= 365:
+                    search_params["dateRestrict"] = "y1"
+                elif query_classification.max_age_days <= 730:
+                    search_params["dateRestrict"] = "y2"
             
             # CRITICAL FIX: Use dedicated session with proper async context management
             # to prevent HTTP resource leaks
@@ -367,22 +408,204 @@ class UnifiedMCPService:
                     if response.status == 200:
                         data = await response.json()
                         
-                        # Format results in expected MCP format
-                        results = []
-                        for item in data.get("items", []):
-                            results.append({
-                                "title": item.get("title", ""),
-                                "link": item.get("link", ""),
-                                "snippet": item.get("snippet", "")
-                            })
+                        # Get current date for temporal scoring
+                        current_date = datetime.now(ZoneInfo("Asia/Singapore"))
+                        current_year = current_date.year
                         
-                        logger.debug(f"Found {len(results)} results")
+                        # Process results through temporal relevance engine
+                        results_for_engine = []
+                        for item in data.get("items", []):
+                            result = {
+                                "id": str(hash(item.get("link", ""))),
+                                "url": item.get("link", ""),
+                                "title": item.get("title", ""),
+                                "snippet": item.get("snippet", ""),
+                            }
+                            
+                            # Extract publication date from snippet
+                            snippet_text = result["snippet"]
+                            title_text = result["title"]
+                            combined_text = f"{title_text} {snippet_text}"
+                            
+                            # Date extraction patterns
+                            date_patterns = [
+                                (r'(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})', '%b %d, %Y'),  # "Nov 6, 2024"
+                                (r'(\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})', '%d %b %Y'),  # "6 Nov 2024"
+                                (r'(\d{4}-\d{2}-\d{2})', '%Y-%m-%d'),  # "2024-11-06"
+                                (r'(\d{1,2}/\d{1,2}/\d{4})', '%m/%d/%Y'),  # "11/6/2024"
+                            ]
+                            
+                            pub_date = None
+                            for pattern, date_format in date_patterns:
+                                match = re.search(pattern, combined_text, re.IGNORECASE)
+                                if match:
+                                    try:
+                                        date_str = match.group(1).replace(',', '')
+                                        # Handle abbreviated month names
+                                        date_str = re.sub(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b', 
+                                                        lambda m: m.group(0)[:3], date_str, flags=re.IGNORECASE)
+                                        pub_date = datetime.strptime(date_str, date_format.replace('%b', '%b'))
+                                        # Add timezone awareness
+                                        pub_date = pub_date.replace(tzinfo=ZoneInfo("UTC"))
+                                        break
+                                    except:
+                                        continue
+                            
+                            # Store date for temporal scoring
+                            if pub_date:
+                                days_old = (current_date - pub_date).days
+                                result["publication_date"] = pub_date.isoformat()
+                                result["days_old"] = days_old
+                                result["date"] = pub_date
+                            
+                            results_for_engine.append(result)
+                        
+                        # Use temporal relevance engine to filter and rank results
+                        filtered_results, filter_metadata = relevance_engine.filter_and_rank_results(
+                            results_for_engine, 
+                            query, 
+                            max_results=num_results
+                        )
+                        
+                        logger.info(f"Temporal filtering: {len(results_for_engine)} -> {len(filtered_results)} results "
+                                   f"(removed {filter_metadata['filtering_stats']['removed_outdated']} outdated)")
+                        
+                        # Process filtered results for product-specific scoring
+                        scored_results = []
+                        for result in filtered_results:
+                            # Extract temporal relevance scores
+                            temporal_data = result.get("temporal_relevance", {})
+                            
+                            # Prepare result with temporal and product scores
+                            scored_result = {
+                                "title": result.get("title", ""),
+                                "link": result.get("url", ""),
+                                "snippet": result.get("snippet", ""),
+                                "relevance_score": 1.0,  # Will be updated for product-specific queries
+                                "temporal_score": temporal_data.get("temporal_score", 0.5),
+                                "authority_score": temporal_data.get("authority_score", 0.5),
+                                "combined_score": temporal_data.get("combined_score", 0.5),
+                                "publication_date": result.get("publication_date"),
+                                "days_old": result.get("days_old"),
+                                "recency_label": self._get_recency_label(result.get("days_old"))
+                            }
+                            
+                            title_lower = scored_result["title"].lower()
+                            snippet_lower = scored_result["snippet"].lower()
+                            
+                            # Product-specific relevance scoring
+                            if is_chatgpt_pro_query:
+                                # Boost Pro-specific results
+                                if "pro" in title_lower or "$200" in snippet_lower or "200/month" in snippet_lower:
+                                    scored_result["relevance_score"] = 1.8
+                                    logger.debug(f"Boosted Pro result: {scored_result['title'][:50]}")
+                                # Moderate boost for general ChatGPT Pro mentions
+                                elif "chatgpt pro" in snippet_lower:
+                                    scored_result["relevance_score"] = 1.5
+                                # Penalize Plus-only results
+                                elif ("plus" in title_lower and "pro" not in title_lower) or \
+                                     ("$20" in snippet_lower and "$200" not in snippet_lower):
+                                    scored_result["relevance_score"] = 0.3
+                                    logger.debug(f"Penalized Plus-only result: {scored_result['title'][:50]}")
+                                # Penalize other tier results
+                                elif "enterprise" in title_lower or "team" in title_lower:
+                                    scored_result["relevance_score"] = 0.4
+                            
+                            elif is_chatgpt_plus_query:
+                                # Boost Plus-specific results
+                                if "plus" in title_lower or "$20" in snippet_lower or "20/month" in snippet_lower:
+                                    scored_result["relevance_score"] = 1.8
+                                # Penalize Pro/Enterprise results
+                                elif ("pro" in title_lower and "plus" not in title_lower) or "$200" in snippet_lower:
+                                    scored_result["relevance_score"] = 0.3
+                            
+                            elif is_chatgpt_enterprise_query:
+                                # Boost Enterprise-specific results
+                                if "enterprise" in title_lower:
+                                    scored_result["relevance_score"] = 1.8
+                                # Penalize consumer tier results
+                                elif "plus" in title_lower or "pro" in title_lower:
+                                    scored_result["relevance_score"] = 0.4
+                            
+                            elif is_chatgpt_team_query:
+                                # Boost Team-specific results
+                                if "team" in title_lower:
+                                    scored_result["relevance_score"] = 1.8
+                                # Penalize other tier results
+                                elif "plus" in title_lower or "pro" in title_lower or "enterprise" in title_lower:
+                                    scored_result["relevance_score"] = 0.4
+                            
+                            # Recalculate combined score with product-specific adjustments
+                            # Use the temporal relevance engine's combined score as base, then adjust for product
+                            base_combined = scored_result["combined_score"]
+                            product_adjustment = scored_result["relevance_score"] / 1.0  # Normalize product score
+                            
+                            # Final score combines temporal relevance engine score with product-specific adjustments
+                            scored_result["final_score"] = base_combined * 0.7 + (base_combined * product_adjustment * 0.3)
+                            
+                            scored_results.append(scored_result)
+                        
+                        # Sort by final score
+                        scored_results.sort(key=lambda x: x.get("final_score", x["combined_score"]), reverse=True)
+                        
+                        # Results are already filtered by temporal relevance engine
+                        # Just limit to requested number
+                        final_results = scored_results[:num_results]
+                        
+                        # Add disambiguation and temporal notes
+                        disambiguation_note = ""
+                        has_mixed_results = len([r for r in scored_results[:5] if r["relevance_score"] < 1.0]) > 0
+                        
+                        # Check if results are outdated
+                        results_with_dates = [r for r in final_results if r.get("days_old") is not None]
+                        all_old = all(r["days_old"] > 365 for r in results_with_dates) if results_with_dates else False
+                        mostly_old = len([r for r in results_with_dates if r["days_old"] > 180]) > len(final_results) / 2 if results_with_dates else False
+                        
+                        # Extract date range from results
+                        dates_found = [r.get("publication_date") for r in final_results if r.get("publication_date")]
+                        if dates_found:
+                            oldest_date = min(dates_found)
+                            newest_date = max(dates_found)
+                            # Parse year from ISO format
+                            oldest_year = oldest_date[:4] if oldest_date else "unknown"
+                            newest_year = newest_date[:4] if newest_date else "unknown"
+                        
+                        # Build disambiguation note
+                        if all_old and dates_found:
+                            disambiguation_note = f"\n\n⚠️ Warning: Search results are from {oldest_year}-{newest_year} and may be outdated. For current {current_year} information, try adding \"2025\" or \"latest\" to your search query. Current date: {current_date.strftime('%B %d, %Y')}.\n"
+                        elif mostly_old and dates_found:
+                            disambiguation_note = f"\n\n⚠️ Note: Most search results are from {oldest_year}-{newest_year}. Some information may be outdated. Current date: {current_date.strftime('%B %d, %Y')}.\n"
+                        elif has_mixed_results:
+                            if is_chatgpt_pro_query:
+                                disambiguation_note += "\n\n⚠️ Note: Search results may include information about different ChatGPT tiers. Focusing on ChatGPT Pro ($200/month) information. ChatGPT Plus is $20/month, which is a different subscription tier.\n"
+                            elif is_chatgpt_plus_query:
+                                disambiguation_note += "\n\n⚠️ Note: Search results may include information about different ChatGPT tiers. Focusing on ChatGPT Plus ($20/month) information. ChatGPT Pro is $200/month, which is a different subscription tier.\n"
+                        
+                        logger.debug(f"Processed {len(scored_results)} results, returning top {len(final_results)}")
+                        if dates_found:
+                            logger.info(f"Search results date range: {oldest_year} to {newest_year}")
+                        
+                        # Format filtered results with temporal information
+                        result_text = f"Found {len(final_results)} relevant search results for '{query}':"
+                        if disambiguation_note:
+                            result_text += disambiguation_note
+                        
+                        # Format each result with temporal metadata
+                        formatted_results = []
+                        for r in final_results:
+                            result_entry = f"**{r['title']}**\n"
+                            # Add recency label if available
+                            if r.get("recency_label"):
+                                result_entry += f"[{r['recency_label']}] "
+                            result_entry += f"{r['snippet']}\n{r['link']}"
+                            formatted_results.append(result_entry)
+                        
+                        result_text += "\n\n" + "\n\n".join(formatted_results)
                         
                         return {
                             "content": [{
                                 "type": "text", 
-                                "text": f"Found {len(results)} search results for '{query}':\n\n" + 
-                                       "\n\n".join([f"**{r['title']}**\n{r['snippet']}\n{r['link']}" for r in results])
+                                "text": result_text
                             }]
                         }
                     else:
@@ -393,6 +616,24 @@ class UnifiedMCPService:
         except Exception as e:
             logger.error(f"Direct Google Search failed: {e}")
             return {"error": f"Direct Google Search failed: {str(e)}"}
+    
+    def _get_recency_label(self, days_old: Optional[int]) -> str:
+        """Get human-readable recency label for a document based on its age"""
+        if days_old is None:
+            return ""
+        
+        if days_old < 7:
+            return "This week"
+        elif days_old < 30:
+            return "This month" 
+        elif days_old < 90:
+            return "Recent"
+        elif days_old < 180:
+            return "Few months old"
+        elif days_old < 365:
+            return "Months old"
+        else:
+            return "Over a year old"
         
     async def _get_http_session(self):
         """Get or create aiohttp session for HTTP MCP servers

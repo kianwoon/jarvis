@@ -4,6 +4,10 @@ import httpx
 import json
 import logging
 from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # For Python < 3.9
 from typing import List, Optional, Dict, Any, Tuple
 from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config, get_query_classifier_full_config
 from app.core.embedding_settings_cache import get_embedding_settings
@@ -397,7 +401,7 @@ def store_conversation_message(conversation_id: str, role: str, content: str):
     message = {
         "role": role,
         "content": enhanced_content,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now(ZoneInfo("Asia/Singapore")).isoformat()
     }
     
     try:
@@ -1069,11 +1073,44 @@ When information sources contradict each other, apply these rules automatically:
    - Flag temporal inconsistencies (dates, versions, availability)
    - Highlight when "does not exist" conflicts with "now available"
 
+TEMPORAL RELEVANCE RULES:
+1. **Always consider information age** - Newer information typically supersedes older information
+2. **Recognize temporal context** - Today's date is critical for evaluating information relevance
+3. **Handle outdated information**:
+   - Information over 1 year old for tech products/pricing should be noted as potentially outdated
+   - Information over 6 months old for rapidly changing topics should be verified
+   - Always mention the date/age of information when it matters
+4. **Date awareness in responses**:
+   - When sources are from different time periods, explicitly state the dates
+   - If all sources are old (>1 year), warn the user that information may be outdated
+   - For current queries (latest, now, current), prioritize recent sources
+5. **Conflicting temporal information**:
+   - When sources from different dates conflict, prefer newer information
+   - Explicitly note when older sources contradict newer ones
+   - State "As of [date]" when providing time-sensitive information
+
+PRODUCT DISAMBIGUATION RULES (for ChatGPT, OpenAI, and similar products):
+When search results or sources mention similar product names or tiers:
+1. **Focus on the specific product requested** - If user asks about "Pro", prioritize Pro-specific information
+2. **Use pricing as a key identifier**:
+   - ChatGPT Plus = $20/month (GPT-4 with usage limits)
+   - ChatGPT Pro = $200/month (unlimited access to all models including o1)
+   - ChatGPT Team = $25-30/user/month
+   - ChatGPT Enterprise = Custom pricing
+3. **Clarify distinctions** - When results mix different products, explicitly state which product each piece of information refers to
+4. **Feature-based disambiguation**:
+   - Pro: Unlimited access to all models, priority access
+   - Plus: Limited messages per time period, GPT-4 access
+   - Team: Collaboration features, admin controls
+   - Enterprise: SSO, advanced security, custom terms
+5. **Handle mixed results** - If search results include multiple products, clearly separate information by product tier
+
 REQUIREMENTS:
 - Base ALL factual statements on the highest priority source available
 - Automatically detect and resolve conflicts without asking for clarification
 - DO NOT generate tool calls like <tool>...</tool>
 - Be explicit about which source informed each claim
+- When products are similar (Plus vs Pro), ALWAYS clarify which specific product the information applies to
 
 Answer using this automatic conflict resolution protocol while maintaining transparency about information sources and any corrections made."""
     else:
@@ -1095,8 +1132,7 @@ Answer using this automatic conflict resolution protocol while maintaining trans
     
     # 1. Tool results = Priority 1 (highest freshness, most authoritative)
     if tool_context:
-        from datetime import datetime
-        current_time = datetime.now()
+        current_time = datetime.now(ZoneInfo("Asia/Singapore"))
         info_sources.append({
             'priority': 1,
             'freshness_score': 1.0,  # Always fresh
