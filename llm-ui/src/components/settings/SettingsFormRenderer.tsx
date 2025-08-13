@@ -75,6 +75,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   const [activeTab, setActiveTab] = React.useState(() => {
     if (category === 'rag') return 'retrieval';
     if (category === 'storage') return 'vector';
+    if (category === 'overflow') return 'thresholds';
     return 'settings';
   });
   const [passwordVisibility, setPasswordVisibility] = React.useState<Record<string, boolean>>({});
@@ -87,6 +88,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   React.useEffect(() => {
     if (category === 'rag') setActiveTab('retrieval');
     else if (category === 'storage') setActiveTab('vector');
+    else if (category === 'overflow') setActiveTab('thresholds');
     else setActiveTab('settings');
   }, [category]);
 
@@ -1459,6 +1461,13 @@ const renderStandardForm = (
         vector: { title: 'Vector Databases (Unstructured)', fields: {} },
         structured: { title: 'Iceberg (Structured)', fields: {} }
       };
+    } else if (category === 'overflow') {
+      categories = {
+        thresholds: { title: 'Thresholds', fields: {} },
+        storage_tiers: { title: 'Storage Tiers', fields: {} },
+        retrieval: { title: 'Retrieval', fields: {} },
+        auto_promotion: { title: 'Auto-Promotion', fields: {} }
+      };
     } else if (category === 'large_generation') {
       categories = {
         detection: { title: 'Detection & Scoring', fields: {} },
@@ -1640,6 +1649,33 @@ const renderStandardForm = (
         else {
           categories.vector.fields[key] = value;
         }
+      } else if (category === 'overflow') {
+        // Overflow-specific field categorization
+        
+        // Thresholds Tab - token-related settings
+        if (lowerKey.includes('threshold') || lowerKey.includes('token') || lowerKey.includes('chunk_size') || 
+            lowerKey.includes('chunk_overlap') || lowerKey.includes('max_overflow_context_ratio')) {
+          categories.thresholds.fields[key] = value;
+        }
+        // Storage Tiers Tab - TTL and tier settings  
+        else if (lowerKey.includes('ttl') || lowerKey.includes('l1_') || lowerKey.includes('l2_') || 
+                 lowerKey.includes('hour') || lowerKey.includes('day')) {
+          categories.storage_tiers.fields[key] = value;
+        }
+        // Retrieval Tab - search and retrieval settings
+        else if (lowerKey.includes('retrieval') || lowerKey.includes('top_k') || lowerKey.includes('semantic') || 
+                 lowerKey.includes('search') || lowerKey.includes('keyword')) {
+          categories.retrieval.fields[key] = value;
+        }
+        // Auto-Promotion Tab - promotion and access settings
+        else if (lowerKey.includes('promote') || lowerKey.includes('auto') || lowerKey.includes('access') || 
+                 lowerKey.includes('threshold_accesses')) {
+          categories.auto_promotion.fields[key] = value;
+        }
+        // Default: put other overflow settings in thresholds
+        else {
+          categories.thresholds.fields[key] = value;
+        }
       } else if (category === 'large_generation') {
         // Performance Optimization field categorization
         
@@ -1785,6 +1821,52 @@ const renderStandardForm = (
       'query_processing.enable_stop_word_removal': 'Remove common words like "the", "and" to focus on important terms.',
       'query_processing.max_query_length': 'Maximum query length in characters. Longer queries are truncated. Recommended: 2000-8000.',
       'query_processing.window_size': 'Size of context window for query processing. Recommended: 50-200.'
+    };
+    
+    const lowerKey = key.toLowerCase();
+    
+    // Try exact match first
+    if (helpTexts[lowerKey]) {
+      return helpTexts[lowerKey];
+    }
+    
+    // Try partial matches
+    for (const [helpKey, helpText] of Object.entries(helpTexts)) {
+      if (lowerKey.includes(helpKey.toLowerCase()) || helpKey.toLowerCase().includes(lowerKey)) {
+        return helpText;
+      }
+    }
+    
+    return null;
+  };
+
+  const getOverflowHelpText = (key: string): string | null => {
+    const helpTexts: Record<string, string> = {
+      // Threshold Settings
+      'overflow_threshold_tokens': 'Maximum tokens before triggering overflow storage (default: 8000). When conversation context exceeds this limit, older content is automatically chunked and moved to storage tiers. Higher values keep more content in active memory but use more resources. Lower values trigger overflow sooner but may break conversation continuity. Recommended: 6000-12000 tokens depending on available memory.',
+      
+      'chunk_size_tokens': 'Size of each text chunk in tokens when content overflows (default: 2000). Smaller chunks provide more precise retrieval but may lose semantic context across chunk boundaries. Larger chunks preserve context better but may include irrelevant content during retrieval. Balance between retrieval precision and context preservation. Recommended: 1500-3000 tokens.',
+      
+      'chunk_overlap_tokens': 'Number of overlapping tokens between consecutive chunks (default: 200). Prevents important information from being lost at chunk boundaries and maintains conversation flow. Higher overlap improves context continuity but increases storage usage and processing time. Too low may cause context gaps. Recommended: 10-15% of chunk size (150-400 tokens).',
+      
+      // Storage Tier Settings  
+      'l1_ttl_hours': 'Time-to-live for hot storage (L1) in hours (default: 24). L1 stores recently accessed or frequently used chunks for fastest retrieval. Longer TTL keeps content readily available but uses more memory. Shorter TTL frees resources faster but may cause performance hits on re-access. Recommended: 12-48 hours based on conversation patterns.',
+      
+      'l2_ttl_days': 'Time-to-live for warm storage (L2) in days (default: 7). L2 stores older content that may still be referenced. After TTL expires, content is permanently deleted. Longer retention supports longer conversations but increases storage costs. Consider user privacy and storage limitations. Recommended: 3-14 days depending on use case.',
+      
+      // Retrieval Settings
+      'max_overflow_context_ratio': 'Maximum percentage of total context window to allocate for retrieved overflow content (default: 0.3). Controls the balance between current conversation and historical context. Higher ratios provide more historical context but leave less room for new content. Lower ratios prioritize current conversation but may lose important background. Recommended: 0.2-0.5 (20-50%).',
+      
+      'retrieval_top_k': 'Number of most relevant chunks to retrieve when querying overflow storage (default: 5). More chunks provide broader context but may include less relevant information and consume more tokens. Fewer chunks are more focused but might miss important details. Performance impact increases with higher values. Recommended: 3-8 chunks based on context window size.',
+      
+      'enable_semantic_search': 'Use AI embeddings to find semantically similar chunks (default: true). Provides much better relevance matching by understanding meaning rather than just keywords. Requires more computational resources and embedding generation time. Disable only if performance is critical and keyword matching is sufficient. Strongly recommended to keep enabled for better user experience.',
+      
+      'enable_keyword_extraction': 'Extract and index keywords from chunks for faster text-based searching (default: true). Complements semantic search with traditional keyword matching. Minimal performance impact with significant search speed improvements. Helps find specific terms, names, or technical concepts. Should typically be enabled alongside semantic search.',
+      
+      // Auto-Promotion Settings
+      'auto_promote_to_l1': 'Automatically promote frequently accessed chunks from L2 to L1 storage (default: true). Improves performance by moving popular content to faster storage tier. Creates adaptive performance optimization based on usage patterns. Disable if you want manual control over storage tiers or have limited L1 capacity. Recommended to keep enabled for optimal performance.',
+      
+      'promotion_threshold_accesses': 'Number of times a chunk must be accessed before auto-promoting to L1 (default: 3). Lower values promote content more aggressively, improving performance but potentially filling L1 with less critical content. Higher values are more conservative but may delay performance improvements. Balance between responsiveness and resource utilization. Recommended: 2-5 accesses depending on conversation frequency.'
     };
     
     const lowerKey = key.toLowerCase();
@@ -2347,7 +2429,7 @@ const renderStandardForm = (
     
     // Helper function to render label with help tooltip
     const renderLabelWithHelp = (labelText: string, helpText: string | null = null, isInlineCheckbox: boolean = false) => {
-      if ((fieldCategory === 'rag' || fieldCategory === 'large_generation') && helpText) {
+      if ((fieldCategory === 'rag' || fieldCategory === 'large_generation' || fieldCategory === 'overflow' || fieldCategory === 'langfuse' || fieldCategory === 'environment' || fieldCategory === 'llm') && helpText) {
         return (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
             <span>{labelText}</span>
@@ -2386,7 +2468,7 @@ const renderStandardForm = (
     };
     
     if (typeof value === 'boolean') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : fieldCategory === 'overflow' ? getOverflowHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">
@@ -2404,7 +2486,7 @@ const renderStandardForm = (
     }
 
     if (typeof value === 'number') {
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : fieldCategory === 'overflow' ? getOverflowHelpText(key) : null;
       
       // Check if this looks like a slider parameter (temperature, top_p, etc.)
       const isSliderParam = key.toLowerCase().includes('temperature') || 
@@ -2490,7 +2572,7 @@ const renderStandardForm = (
 
     if (typeof value === 'string') {
       const lowerKey = key.toLowerCase();
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : fieldCategory === 'overflow' ? getOverflowHelpText(key) : null;
       
       // Always use textarea for prompt fields to prevent height changes while typing
       const isLongText = value.length > 100 || lowerKey.includes('prompt') || lowerKey.includes('system');
@@ -2608,7 +2690,7 @@ const renderStandardForm = (
         );
       }
       
-      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : null;
+      const helpText = fieldCategory === 'rag' ? getRAGHelpText(key) : fieldCategory === 'large_generation' ? getPerformanceHelpText(key) : fieldCategory === 'langfuse' ? getLangfuseHelpText(key) : fieldCategory === 'environment' ? getEnvironmentHelpText(key) : fieldCategory === 'llm' ? getLLMHelpText(key) : fieldCategory === 'overflow' ? getOverflowHelpText(key) : null;
       return (
         <div key={key} className={fieldClass} style={{ marginLeft: `${depth * 20}px` }}>
           <label className="jarvis-form-label">{renderLabelWithHelp(formatLabel(key), helpText)}</label>

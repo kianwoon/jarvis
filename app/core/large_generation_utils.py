@@ -88,7 +88,13 @@ class LargeGenerationConfigAccessor:
     # Memory management
     @property
     def redis_conversation_ttl(self) -> int:
-        return self.get('memory_management.redis_conversation_ttl', 7 * 24 * 3600)
+        """
+        Get conversation TTL from centralized timeout settings.
+        This ensures single source of truth for timeout configuration.
+        """
+        from app.core.timeout_settings_cache import get_timeout_value
+        # Use centralized timeout settings instead of large_generation settings
+        return get_timeout_value("session_cache", "conversation_cache_ttl", 86400)
     
     @property
     def max_redis_messages(self) -> int:

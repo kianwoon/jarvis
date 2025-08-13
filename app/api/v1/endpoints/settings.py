@@ -106,6 +106,22 @@ def reload_knowledge_graph_cache():
         logger.error(f"Failed to reload knowledge graph cache: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload knowledge graph cache: {str(e)}")
 
+@router.post("/overflow/cache/reload")
+def reload_overflow_cache():
+    """Force reload overflow settings cache from database"""
+    try:
+        from app.core.overflow_settings_cache import reload_overflow_settings
+        settings = reload_overflow_settings()
+        return {
+            "success": True,
+            "message": "Overflow cache reloaded successfully",
+            "settings": settings,
+            "cache_size": len(str(settings))
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload overflow cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload overflow cache: {str(e)}")
+
 # Dependency to get DB session
 def get_db():
     db = SessionLocal()
@@ -346,6 +362,11 @@ def get_settings(category: str, db: Session = Depends(get_db)):
             # Return default timeout settings
             from app.core.timeout_settings_cache import DEFAULT_TIMEOUT_SETTINGS
             return {"category": category, "settings": DEFAULT_TIMEOUT_SETTINGS}
+        elif category == 'overflow':
+            # Return default overflow settings
+            from app.schemas.overflow import OverflowConfig
+            default_config = OverflowConfig()
+            return {"category": category, "settings": default_config.dict()}
         raise HTTPException(status_code=404, detail="Settings not found")
     
     # Special handling for large_generation to flatten nested structure for UI
@@ -656,6 +677,12 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         # Reload cache
         reload_timeout_settings()
         logger.info("Timeout settings validated and cache reloaded")
+    
+    # If updating overflow settings, reload cache
+    if category == 'overflow':
+        from app.core.overflow_settings_cache import reload_overflow_settings
+        reload_overflow_settings()
+        logger.info("Overflow settings validated and cache reloaded")
     
     # If updating self_reflection settings, save as YAML structure and update database settings
     if category == 'self_reflection':

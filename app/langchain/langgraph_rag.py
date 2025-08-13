@@ -22,7 +22,8 @@ import hashlib
 
 # Redis configuration for conversation persistence
 from app.core.redis_client import get_redis_client_for_langgraph, get_redis_client
-CONVERSATION_TTL = 3600 * 24  # 24 hours
+from app.core.timeout_settings_cache import get_timeout_value
+CONVERSATION_TTL = get_timeout_value("session_cache", "conversation_cache_ttl", 86400)
 
 # Context window limits
 MAX_CONTEXT_CHARS = 32000  # Conservative limit for most LLMs

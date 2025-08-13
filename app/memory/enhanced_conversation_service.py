@@ -29,7 +29,8 @@ class EnhancedConversationService:
         
         # Cache for frequently accessed conversations
         self._context_cache = {}
-        self._cache_ttl = 300  # 5 minutes
+        from app.core.timeout_settings_cache import get_timeout_value
+        self._cache_ttl = get_timeout_value("session_cache", "temp_data_ttl", 1800)  # Use centralized timeout
     
     # ==========================================
     # DROP-IN REPLACEMENTS FOR EXISTING FUNCTIONS

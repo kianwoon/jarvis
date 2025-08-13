@@ -176,7 +176,9 @@ class OllamaLLM(BaseLLM):
         
         
         try:
-            async with httpx.AsyncClient(timeout=600.0) as client:  # 10 minute timeout
+            from app.core.timeout_settings_cache import get_timeout_value
+            timeout = get_timeout_value("llm_ai", "llm_streaming_timeout", 120)
+            async with httpx.AsyncClient(timeout=float(timeout)) as client:
                 async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
                     if response.status_code != 200:
                         error_text = await response.aread()

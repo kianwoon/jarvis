@@ -25,6 +25,7 @@ from app.models.temp_document_models import (
     TempDocumentUploadRequest, TempDocumentUploadResponse, TempDocumentResponse,
     ChatContextRequest, TempDocumentContextInfo
 )
+from app.services.chat_overflow_handler import ChatOverflowHandler
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -624,6 +625,55 @@ def parse_function_parameters(params_str: str) -> Dict[str, Any]:
 async def intelligent_chat_endpoint(request: IntelligentChatRequest):
     """Intelligent chat endpoint with LLM-driven decision making and structured function calling"""
     
+    # Initialize overflow handler
+    overflow_handler = ChatOverflowHandler()
+    
+    # Check for overflow in the user's question
+    is_overflow, token_count = overflow_handler.detect_overflow(request.question)
+    overflow_handled = False
+    original_question = request.question
+    
+    if is_overflow:
+        logger.info(f"Overflow detected in user question: {token_count} tokens")
+        
+        # Ensure we have a conversation_id
+        if not request.conversation_id:
+            import uuid
+            request.conversation_id = str(uuid.uuid4())
+        
+        # Chunk and store the overflow content
+        try:
+            chunks = await overflow_handler.chunk_intelligently(
+                content=request.question,
+                conversation_id=request.conversation_id
+            )
+            
+            # Store in L2 (warm storage) for 7-day retention
+            success = await overflow_handler.store_overflow(
+                chunks=chunks,
+                conversation_id=request.conversation_id,
+                storage_layer="L2"
+            )
+            
+            if success:
+                overflow_handled = True
+                # Create a summary for the immediate context
+                summary = f"[Large input received: {token_count} tokens, {len(chunks)} chunks stored. Full content available for reference.]"
+                
+                # Get first chunk as preview
+                preview = chunks[0]["content"][:500] if chunks else ""
+                if len(chunks[0]["content"]) > 500:
+                    preview += "..."
+                
+                # Replace the question with summary + preview for immediate processing
+                request.question = f"{summary}\n\nPreview of content:\n{preview}\n\nUser's actual question/request: Please analyze or work with the content provided above."
+                
+                logger.info(f"Overflow content stored successfully for conversation {request.conversation_id}")
+        except Exception as e:
+            logger.error(f"Failed to handle overflow: {str(e)}")
+            # Continue with truncated version if overflow handling fails
+            request.question = request.question[:8000] + "... [Content truncated due to length]"
+    
     # Initialize Langfuse tracing
     from app.core.langfuse_integration import get_tracer
     tracer = get_tracer()
@@ -688,6 +738,17 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
         temp_doc_context = None
         
         try:
+            # Send overflow notification if content was stored
+            if overflow_handled:
+                overflow_summary = await overflow_handler.get_overflow_summary(request.conversation_id)
+                yield json.dumps({
+                    "type": "overflow_handled",
+                    "conversation_id": request.conversation_id,
+                    "original_tokens": token_count,
+                    "chunks_created": overflow_summary["total_chunks"] if overflow_summary else 0,
+                    "message": f"Large input ({token_count} tokens) has been intelligently chunked and stored. The most relevant portions will be retrieved as needed."
+                }) + "\n"
+            
             # Initialize temp document manager
             temp_manager = TempDocumentManager()
             

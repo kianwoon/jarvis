@@ -126,8 +126,9 @@ class RedisContinuityManager:
         self.chunks_key = f"chunked_results:{self.session_id}"
         self.context_key = f"chunked_context:{self.session_id}"
         
-        # TTL settings (24 hours)
-        self.session_ttl = 86400
+        # TTL settings from centralized configuration
+        from app.core.timeout_settings_cache import get_timeout_value
+        self.session_ttl = get_timeout_value("session_cache", "conversation_cache_ttl", 86400)
         
         logger.info(f"[REDIS_CONTINUITY] Initialized session {self.session_id}")
         logger.info(f"[REDIS_CONTINUITY] Using Redis URL: {self.redis_url}")

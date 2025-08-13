@@ -122,11 +122,13 @@ class AgentBridge:
             asyncio.set_event_loop(loop)
             try:
                 # Add timeout wrapper for agent LLM calls
-                logger.info(f"[AGENT NODE DEBUG] Calling LLM with timeout of 45 seconds...")
+                from app.core.timeout_settings_cache import get_timeout_value
+                agent_timeout = get_timeout_value("llm_ai", "agent_processing_timeout", 90)
+                logger.info(f"[AGENT NODE DEBUG] Calling LLM with timeout of {agent_timeout} seconds...")
                 response = loop.run_until_complete(
                     asyncio.wait_for(
                         llm.generate(full_prompt), 
-                        timeout=45.0  # 45 second timeout for agent execution
+                        timeout=float(agent_timeout)
                     )
                 )
                 

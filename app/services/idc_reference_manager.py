@@ -61,8 +61,9 @@ class IDCReferenceManager:
         self.redis_client = get_redis_client()
         self.extraction_service = IDCExtractionService()
         
-        # Cache settings
-        self.cache_ttl = 3600  # 1 hour cache TTL
+        # Cache settings - use centralized timeout configuration
+        from app.core.timeout_settings_cache import get_timeout_value
+        self.cache_ttl = get_timeout_value("session_cache", "temp_data_ttl", 1800)
         self.cache_prefix = "idc_reference"
         
     def _calculate_file_hash(self, content: bytes) -> str:

@@ -141,7 +141,9 @@ class IDCValidationService:
         }
         
         try:
-            response = requests.post(url, json=payload, timeout=300)
+            from app.core.timeout_settings_cache import get_timeout_value
+            timeout = get_timeout_value("document_processing", "document_processing_timeout", 120)
+            response = requests.post(url, json=payload, timeout=timeout)
             response.raise_for_status()
             result = response.json()
             

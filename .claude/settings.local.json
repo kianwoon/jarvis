@@ -144,9 +144,57 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"\\dt agent*\")",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d llm_platform -c \"\\dt *prompt*\")",
       "Bash(PGPASSWORD=postgres psql:*)",
-      "Bash(npm --prefix llm-ui run type-check)"
+      "Bash(npm --prefix llm-ui run type-check)",
+      "Bash(open http://localhost:5174/settings.html)",
+      "Bash(claude config get:*)",
+      "Bash(if ! grep -n \"num_results.*[^0-9]5[^0-9]\" app/core/unified_mcp_service.py app/langchain/multi_agent_system_simple.py)",
+      "Bash(then)",
+      "Bash(else)",
+      "Bash(fi)",
+      "Bash(if ! grep -n \"num_results.*[^a-zA-Z0-9_]5[^0-9]\" app/core/unified_mcp_service.py app/langchain/multi_agent_system_simple.py)"
     ],
     "deny": []
   },
-  "enableAllProjectMcpServers": false
+  "enableAllProjectMcpServers": false,
+  "tools": {
+    "permissions": {
+      "deny": [
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+        "TodoWrite",
+        "Bash"
+      ],
+      "allow": [
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
+        "WebSearch",
+        "WebFetch",
+        "BashOutput",
+        "KillBash",
+        "mcp__ide__getDiagnostics",
+        "mcp__ide__executeCode"
+      ],
+      "bash_restrictions": [
+        "python:*",
+        "node:*",
+        "npm:*",
+        "docker:*",
+        "git:*",
+        "psql:*",
+        "redis-cli:*",
+        "curl:*",
+        "wget:*",
+        "rm:*",
+        "mv:*",
+        "cp:*",
+        "chmod:*",
+        "chown:*",
+        "sudo:*"
+      ]
+    }
+  }
 }

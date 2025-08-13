@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     REDIS_DB: Optional[int] = 0
     REDIS_PASSWORD: Optional[str] = None
     
+    # Google Search Configuration
+    GOOGLE_SEARCH_DEFAULT_RESULTS: int = 10
+    
     # Security
     SECRET_KEY: Optional[str] = "dev-secret-key-change-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30

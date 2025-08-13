@@ -348,7 +348,11 @@ class UnifiedMCPService:
                 }
             
             query = parameters.get("query", "")
-            num_results = parameters.get("num_results", 5)
+            
+            # Use configuration instead of hardcoding
+            from .config import get_settings
+            settings = get_settings()
+            num_results = parameters.get("num_results", settings.GOOGLE_SEARCH_DEFAULT_RESULTS)
             
             if not query:
                 return {"error": "No search query provided"}

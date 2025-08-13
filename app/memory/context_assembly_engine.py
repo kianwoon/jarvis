@@ -9,8 +9,12 @@ from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 import json
+import logging
 
 from app.memory.conversation_memory_manager import ConversationMemoryManager, ConversationMessage
+from app.services.chat_overflow_handler import ChatOverflowHandler
+
+logger = logging.getLogger(__name__)
 
 
 class ContextStrategy(Enum):
@@ -20,6 +24,7 @@ class ContextStrategy(Enum):
     THREAD_AWARE = "thread_aware"       # Organize by conversation threads
     HIERARCHICAL = "hierarchical"       # Multi-level context hierarchy
     ADAPTIVE = "adaptive"               # Dynamically choose best strategy
+    OVERFLOW_AWARE = "overflow_aware"   # Include relevant overflow chunks
 
 
 @dataclass
@@ -54,6 +59,7 @@ class ContextAssemblyEngine:
     
     def __init__(self, memory_manager: ConversationMemoryManager):
         self.memory_manager = memory_manager
+        self.overflow_handler = None  # Lazy initialization to avoid circular imports
         
         # Token estimation multiplier (conservative)
         self.token_multiplier = 1.4
@@ -69,6 +75,12 @@ class ContextAssemblyEngine:
         # Minimum guarantees
         self.min_recent_messages = 8
         self.min_relevant_messages = 5
+        
+    def _get_overflow_handler(self) -> ChatOverflowHandler:
+        """Lazy initialization of overflow handler to avoid circular imports"""
+        if self.overflow_handler is None:
+            self.overflow_handler = ChatOverflowHandler()
+        return self.overflow_handler
         
     def estimate_tokens(self, text: str) -> int:
         """Conservative token estimation"""
@@ -123,6 +135,14 @@ class ContextAssemblyEngine:
         """Intelligently choose the best strategy for this context"""
         
         try:
+            # Check for overflow content first
+            overflow_handler = self._get_overflow_handler()
+            overflow_summary = await overflow_handler.get_overflow_summary(conversation_id)
+            
+            if overflow_summary and overflow_summary["total_chunks"] > 0:
+                logger.info(f"Conversation {conversation_id} has overflow content, using OVERFLOW_AWARE strategy")
+                return ContextStrategy.OVERFLOW_AWARE
+            
             # Get basic conversation stats
             recent_messages = await self.memory_manager.storage.get_messages(
                 conversation_id, limit=20
@@ -154,7 +174,7 @@ class ContextAssemblyEngine:
                 return ContextStrategy.RECENT_FOCUS
                 
         except Exception as e:
-            print(f"[CONTEXT_ENGINE] Strategy selection failed: {e}")
+            logger.error(f"Strategy selection failed: {e}")
             return ContextStrategy.RECENT_FOCUS
     
     async def _gather_context_segments(
@@ -182,6 +202,10 @@ class ContextAssemblyEngine:
             )
         elif strategy == ContextStrategy.HIERARCHICAL:
             segments = await self._gather_hierarchical_segments(
+                conversation_id, current_query, max_tokens
+            )
+        elif strategy == ContextStrategy.OVERFLOW_AWARE:
+            segments = await self._gather_overflow_aware_segments(
                 conversation_id, current_query, max_tokens
             )
         else:
@@ -589,6 +613,100 @@ class ContextAssemblyEngine:
         """Create a context segment from a thread"""
         # Simplified implementation
         return None
+    
+    async def _gather_overflow_aware_segments(
+        self,
+        conversation_id: str,
+        current_query: str,
+        max_tokens: int
+    ) -> List[ContextSegment]:
+        """
+        Strategy that includes relevant overflow chunks along with recent messages.
+        Handles large content that was stored in overflow storage.
+        """
+        segments = []
+        overflow_handler = self._get_overflow_handler()
+        
+        # Check if conversation has overflow content
+        overflow_summary = await overflow_handler.get_overflow_summary(conversation_id)
+        
+        if overflow_summary and overflow_summary["total_chunks"] > 0:
+            # Allocate budget: 30% for overflow, 70% for recent messages
+            overflow_budget = int(max_tokens * 0.3)
+            recent_budget = max_tokens - overflow_budget
+            
+            # Get relevant overflow chunks
+            overflow_chunks = await overflow_handler.retrieve_relevant_chunks(
+                query=current_query,
+                conversation_id=conversation_id,
+                top_k=overflow_handler.config.retrieval_top_k
+            )
+            
+            if overflow_chunks:
+                # Create overflow context segment
+                overflow_content_parts = []
+                overflow_tokens = 0
+                chunk_ids = []
+                
+                for chunk in overflow_chunks:
+                    chunk_text = chunk["content"]
+                    chunk_tokens = self.estimate_tokens(chunk_text)
+                    
+                    if overflow_tokens + chunk_tokens <= overflow_budget:
+                        # Add separator between chunks for clarity
+                        if overflow_content_parts:
+                            overflow_content_parts.append("---")
+                        overflow_content_parts.append(f"[Overflow Chunk {chunk['position']}]:")
+                        overflow_content_parts.append(chunk_text)
+                        overflow_tokens += chunk_tokens
+                        chunk_ids.append(chunk["chunk_id"])
+                    else:
+                        break
+                
+                if overflow_content_parts:
+                    # Add overflow segment with high priority
+                    segments.append(ContextSegment(
+                        content="\n".join(overflow_content_parts),
+                        segment_type="overflow",
+                        priority=0.9,  # High priority for overflow content
+                        token_estimate=overflow_tokens,
+                        source_messages=chunk_ids,
+                        timestamp_range=(
+                            datetime.fromisoformat(overflow_chunks[0]["created_at"]),
+                            datetime.fromisoformat(overflow_chunks[-1]["created_at"])
+                        )
+                    ))
+                    
+                    logger.info(f"Added {len(chunk_ids)} overflow chunks to context for conversation {conversation_id}")
+        else:
+            # No overflow content, use full budget for recent messages
+            recent_budget = max_tokens
+        
+        # Add recent messages with remaining budget
+        recent_segments = await self._add_recent_context(
+            conversation_id, recent_budget, set()
+        )
+        segments.extend(recent_segments)
+        
+        # If there's still budget and we have overflow, add a summary note
+        if overflow_summary and overflow_summary["total_chunks"] > 0:
+            remaining_budget = max_tokens - sum(seg.token_estimate for seg in segments)
+            if remaining_budget > 100:
+                summary_text = (
+                    f"[Note: This conversation has {overflow_summary['total_chunks']} overflow chunks "
+                    f"containing {overflow_summary['total_tokens']} tokens of additional context. "
+                    f"The most relevant chunks have been included above.]"
+                )
+                segments.append(ContextSegment(
+                    content=summary_text,
+                    segment_type="overflow_summary",
+                    priority=0.5,
+                    token_estimate=self.estimate_tokens(summary_text),
+                    source_messages=[],
+                    timestamp_range=(datetime.utcnow(), datetime.utcnow())
+                ))
+        
+        return segments
     
     async def _assemble_final_context(
         self,

@@ -1420,7 +1420,10 @@ Remember {context['client']} is a major bank requiring highest service standards
                     search_query = query
                     for word in ['search', 'internet', 'web', 'google', 'find', 'about', 'for']:
                         search_query = search_query.replace(word, '').strip()
-                    tools_to_execute.append((tool_name, {'query': search_query, 'num_results': 5}))
+                    # Use configuration instead of hardcoding
+                    from ..core.config import get_settings
+                    settings = get_settings()
+                    tools_to_execute.append((tool_name, {'query': search_query, 'num_results': settings.GOOGLE_SEARCH_DEFAULT_RESULTS}))
                 
                 elif any(keyword in query_lower for keyword in ['time', 'date', 'now', 'current']) and 'datetime' in tool_name.lower():
                     # DateTime tool
@@ -1447,7 +1450,10 @@ Remember {context['client']} is a major bank requiring highest service standards
                 # Look for commonly useful tools
                 for tool_name in enabled_tools.keys():
                     if 'search' in tool_name.lower() or 'google' in tool_name.lower():
-                        tools_to_execute.append((tool_name, {'query': query, 'num_results': 3}))
+                        # Use configuration instead of hardcoding
+                        from ..core.config import get_settings
+                        settings = get_settings()
+                        tools_to_execute.append((tool_name, {'query': query, 'num_results': settings.GOOGLE_SEARCH_DEFAULT_RESULTS}))
                         break
                 
                 # If still no tools and we have datetime, use it as fallback

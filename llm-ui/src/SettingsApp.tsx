@@ -34,7 +34,8 @@ import {
   Computer as SystemIcon,
   Save as SaveIcon,
   Refresh as RefreshIcon,
-  AccessTime as AccessTimeIcon
+  AccessTime as AccessTimeIcon,
+  Memory as MemoryIcon
 } from '@mui/icons-material';
 import SettingsFormRenderer from './components/settings/SettingsFormRenderer';
 import './styles/settings-theme.css';
@@ -62,6 +63,12 @@ const settingsCategories: SettingsCategory[] = [
     name: 'RAG & Search',
     icon: <SearchIcon />,
     description: 'Document retrieval, search strategies, and reranking settings'
+  },
+  {
+    id: 'overflow',
+    name: 'Chat Overflow',
+    icon: <MemoryIcon />,
+    description: 'Manage long conversation overflow, chunking, and intelligent retrieval'
   },
   {
     id: 'storage',
