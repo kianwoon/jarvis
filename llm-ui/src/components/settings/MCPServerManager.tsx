@@ -160,6 +160,19 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
     message: '',
     severity: 'info'
   });
+  
+  // State for JSON editing with validation
+  const [jsonEditingState, setJsonEditingState] = useState<{
+    argsText: string;
+    argsError: string | null;
+    envText: string;
+    envError: string | null;
+  }>({
+    argsText: '',
+    argsError: null,
+    envText: '',
+    envError: null
+  });
 
   const getServerTypeIcon = (type: string) => {
     switch (type) {
@@ -187,6 +200,62 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
 
   const showNotification = (message: string, severity: 'success' | 'error' | 'info' = 'info') => {
     setSnackbar({ open: true, message, severity });
+  };
+
+  // Helper function to validate and update JSON fields
+  const handleJsonFieldChange = (
+    fieldName: 'args' | 'env',
+    newValue: string,
+    isArray: boolean = false
+  ) => {
+    const stateKey = fieldName === 'args' ? 'argsText' : 'envText';
+    const errorKey = fieldName === 'args' ? 'argsError' : 'envError';
+    
+    // Update the text state immediately for responsive typing
+    setJsonEditingState(prev => ({
+      ...prev,
+      [stateKey]: newValue,
+      [errorKey]: null
+    }));
+    
+    // Try to parse and update the server state
+    try {
+      const parsed = JSON.parse(newValue);
+      
+      // Validate the expected type
+      if (isArray && !Array.isArray(parsed)) {
+        setJsonEditingState(prev => ({
+          ...prev,
+          [errorKey]: 'Expected a JSON array'
+        }));
+        return;
+      }
+      
+      if (!isArray && (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null)) {
+        setJsonEditingState(prev => ({
+          ...prev,
+          [errorKey]: 'Expected a JSON object'
+        }));
+        return;
+      }
+      
+      // Update the server state with valid JSON
+      if (editingServer) {
+        setEditingServer({
+          ...editingServer,
+          [fieldName]: parsed
+        });
+      }
+      
+    } catch (error) {
+      // Only show error if the field is not empty (allow empty state for deletion)
+      if (newValue.trim() !== '') {
+        setJsonEditingState(prev => ({
+          ...prev,
+          [errorKey]: 'Invalid JSON format'
+        }));
+      }
+    }
   };
 
   const getNewServerTemplate = (type: 'manifest' | 'command' | 'remote_http'): MCPServer => {
@@ -250,12 +319,31 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
   };
 
   const handleAdd = (type: 'manifest' | 'command' | 'remote_http') => {
-    setEditingServer(getNewServerTemplate(type));
+    const newServer = getNewServerTemplate(type);
+    setEditingServer(newServer);
+    
+    // Initialize JSON editing state for new server
+    setJsonEditingState({
+      argsText: JSON.stringify(newServer.args || [], null, 2),
+      argsError: null,
+      envText: JSON.stringify(newServer.env || {}, null, 2),
+      envError: null
+    });
+    
     setEditDialog(true);
   };
 
   const handleEdit = (server: MCPServer) => {
     setEditingServer({ ...server });
+    
+    // Initialize JSON editing state with properly formatted JSON
+    setJsonEditingState({
+      argsText: JSON.stringify(server.args || [], null, 2),
+      argsError: null,
+      envText: JSON.stringify(server.env || {}, null, 2),
+      envError: null
+    });
+    
     setEditDialog(true);
   };
 
@@ -547,31 +635,25 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
                 <Grid item xs={12}>
                   <TextField
                     label="Arguments (JSON array)"
-                    value={JSON.stringify(editingServer.args || [])}
-                    onChange={(e) => {
-                      try {
-                        const args = JSON.parse(e.target.value);
-                        updateServer({ args });
-                      } catch {}
-                    }}
+                    value={jsonEditingState.argsText}
+                    onChange={(e) => handleJsonFieldChange('args', e.target.value, true)}
                     fullWidth
                     multiline
                     rows={2}
+                    error={!!jsonEditingState.argsError}
+                    helperText={jsonEditingState.argsError || 'Enter a valid JSON array, e.g., ["--port", "8080"]'}
                   />
                 </Grid>
                 <Grid item xs={12}>
                   <TextField
                     label="Environment Variables (JSON object)"
-                    value={JSON.stringify(editingServer.env || {})}
-                    onChange={(e) => {
-                      try {
-                        const env = JSON.parse(e.target.value);
-                        updateServer({ env });
-                      } catch {}
-                    }}
+                    value={jsonEditingState.envText}
+                    onChange={(e) => handleJsonFieldChange('env', e.target.value, false)}
                     fullWidth
                     multiline
                     rows={3}
+                    error={!!jsonEditingState.envError}
+                    helperText={jsonEditingState.envError || 'Enter a valid JSON object, e.g., {"API_KEY": "your-key", "PORT": "8080"}'}
                   />
                 </Grid>
               </Grid>
