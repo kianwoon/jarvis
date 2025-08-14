@@ -1,5 +1,6 @@
 import json
 from app.core.redis_base import RedisCache
+from app.core.timeout_settings_cache import get_settings_cache_ttl
 from app.utils.vector_db_migration import migrate_vector_db_settings
 
 VECTOR_DB_SETTINGS_KEY = 'vector_db_settings_cache'
@@ -43,7 +44,7 @@ def get_vector_db_settings():
         }
 
 def set_vector_db_settings(settings_dict):
-    cache.set(VECTOR_DB_SETTINGS_KEY, settings_dict)
+    cache.set(VECTOR_DB_SETTINGS_KEY, settings_dict, expire=get_settings_cache_ttl())
 
 # Call this after updating settings in DB
 def reload_vector_db_settings():
@@ -56,7 +57,7 @@ def reload_vector_db_settings():
                 # Migrate to new format if needed
                 try:
                     migrated = migrate_vector_db_settings(row.settings['vector_db'])
-                    cache.set(VECTOR_DB_SETTINGS_KEY, migrated)
+                    cache.set(VECTOR_DB_SETTINGS_KEY, migrated, expire=get_settings_cache_ttl())
                     return migrated
                 except Exception as migrate_error:
                     print(f"[ERROR] Failed to migrate vector DB settings from database: {str(migrate_error)}")
@@ -90,7 +91,7 @@ def reload_vector_db_settings():
                         }
                     ]
                 }
-                cache.set(VECTOR_DB_SETTINGS_KEY, default)
+                cache.set(VECTOR_DB_SETTINGS_KEY, default, expire=get_settings_cache_ttl())
                 return default
         finally:
             db.close()
@@ -113,5 +114,5 @@ def reload_vector_db_settings():
                 }
             ]
         }
-        cache.set(VECTOR_DB_SETTINGS_KEY, default)
+        cache.set(VECTOR_DB_SETTINGS_KEY, default, expire=get_settings_cache_ttl())
         return default 

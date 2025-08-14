@@ -66,8 +66,10 @@ def set_rag_settings(settings_dict):
             redis_client = _get_redis_client()
             if redis_client:
                 try:
-                    redis_client.set(RAG_SETTINGS_KEY, json.dumps(settings_dict))
-                    logger.debug("Cached RAG settings in Redis")
+                    from app.core.timeout_settings_cache import get_settings_cache_ttl
+                    ttl = get_settings_cache_ttl()
+                    redis_client.setex(RAG_SETTINGS_KEY, ttl, json.dumps(settings_dict))
+                    logger.debug(f"Cached RAG settings in Redis with TTL {ttl}s")
                 except Exception as e:
                     logger.warning(f"Failed to cache RAG settings in Redis: {e}")
             
@@ -97,8 +99,10 @@ def reload_rag_settings():
                 redis_client = _get_redis_client()
                 if redis_client:
                     try:
-                        redis_client.set(RAG_SETTINGS_KEY, json.dumps(settings))
-                        logger.debug("Cached RAG settings in Redis")
+                        from app.core.timeout_settings_cache import get_settings_cache_ttl
+                        ttl = get_settings_cache_ttl()
+                        redis_client.setex(RAG_SETTINGS_KEY, ttl, json.dumps(settings))
+                        logger.debug(f"Cached RAG settings in Redis with TTL {ttl}s")
                     except Exception as e:
                         logger.warning(f"Failed to cache RAG settings in Redis: {e}")
                 

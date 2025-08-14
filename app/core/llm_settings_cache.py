@@ -55,7 +55,9 @@ def set_llm_settings(settings_dict):
     redis_client = _get_redis_client()
     if redis_client:
         try:
-            redis_client.set(LLM_SETTINGS_KEY, json.dumps(settings_dict))
+            from app.core.timeout_settings_cache import get_settings_cache_ttl
+            ttl = get_settings_cache_ttl()
+            redis_client.setex(LLM_SETTINGS_KEY, ttl, json.dumps(settings_dict))
         except Exception as e:
             print(f"Failed to cache settings in Redis: {e}")
 
@@ -122,7 +124,9 @@ def reload_llm_settings():
                 redis_client = _get_redis_client()
                 if redis_client:
                     try:
-                        redis_client.set(LLM_SETTINGS_KEY, json.dumps(settings))
+                        from app.core.timeout_settings_cache import get_settings_cache_ttl
+                        ttl = get_settings_cache_ttl()
+                        redis_client.setex(LLM_SETTINGS_KEY, ttl, json.dumps(settings))
                     except Exception as e:
                         print(f"Failed to cache settings in Redis: {e}")
                 

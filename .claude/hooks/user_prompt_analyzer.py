@@ -300,7 +300,10 @@ class UserPromptAnalyzer:
     
     def _build_delegation_command(self, prompt: str, agents: List[Dict], 
                                   context: str, priority: str) -> str:
-        """Build the delegation command for request_agent_work.py"""
+        """Build the delegation command for Jarvis agents via request_agent_work.py
+        
+        NOTE: This is for Jarvis agents (database), NOT Claude Code agents (.claude/agents/)
+        """
         agent_names = [a['name'] for a in agents]
         
         # Escape quotes in prompt and context

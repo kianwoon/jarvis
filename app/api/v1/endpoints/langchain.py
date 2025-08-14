@@ -1268,12 +1268,145 @@ async def cleanup_generation_session(session_id: str):
             "timestamp": datetime.now().isoformat()
         }
 
+async def decide_tools_with_llm(query: str, available_tools: Dict, agent_name: str, llm_config: Dict) -> List[tuple]:
+    """
+    Use LLM to intelligently decide which tools to use based on the query.
+    Returns a list of (tool_name, parameters) tuples.
+    """
+    from app.llm.ollama import OllamaLLM
+    from app.llm.base import LLMConfig
+    import os
+    import re
+    
+    try:
+        # Build tool descriptions for the prompt
+        tool_descriptions = []
+        for tool_name, tool_info in available_tools.items():
+            if isinstance(tool_info, dict):
+                description = tool_info.get('description', f'Tool: {tool_name}')
+                # Get detailed description from manifest if available
+                manifest = tool_info.get('manifest', {})
+                if manifest and 'tools' in manifest:
+                    for tool_def in manifest['tools']:
+                        if tool_def.get('name') == tool_name:
+                            description = tool_def.get('description', description)
+                            break
+                
+                # Get input schema for parameters
+                input_schema = {}
+                if manifest and 'tools' in manifest:
+                    for tool_def in manifest['tools']:
+                        if tool_def.get('name') == tool_name:
+                            input_schema = tool_def.get('inputSchema', {}).get('properties', {})
+                            break
+                
+                tool_descriptions.append(f"- {tool_name}: {description}")
+                if input_schema:
+                    params_desc = ", ".join([f"{k}: {v.get('description', v.get('type', 'any'))}" for k, v in input_schema.items()])
+                    tool_descriptions.append(f"  Parameters: {params_desc}")
+        
+        # Create the tool decision prompt
+        tool_decision_prompt = f"""You are {agent_name}, analyzing a user query to determine which tools (if any) would be helpful.
+
+User Query: {query}
+
+Available Tools:
+{chr(10).join(tool_descriptions)}
+
+Instructions:
+1. Analyze the user's query carefully
+2. Determine which tools (if any) would help answer the query
+3. For each tool you want to use, output a function call in this exact format:
+   call_tool_TOOLNAME(param1="value1", param2="value2")
+4. If no tools are needed, simply write "No tools needed"
+5. Extract parameters intelligently from the user's query
+6. Multiple tools can be called if needed
+
+Examples:
+- For "search for information about Python": call_tool_google_search(query="Python programming language", num_results=5)
+- For "what time is it?": call_tool_datetime()
+- For "weather in New York": call_tool_weather(location="New York")
+
+Your response (only function calls or "No tools needed"):"""
+
+        # Initialize LLM for tool decision
+        decision_llm_config = LLMConfig(
+            model_name=llm_config["model"],
+            temperature=0.3,  # Lower temperature for more deterministic tool selection
+            top_p=0.9,
+            max_tokens=500  # Tool decisions should be concise
+        )
+        
+        # Get model server URL from settings
+        llm_settings = get_llm_settings()
+        model_server = os.environ.get("OLLAMA_BASE_URL") or llm_settings.get('model_server', '').strip()
+        if not model_server:
+            from app.core.config import get_settings
+            settings = get_settings()
+            model_server = settings.OLLAMA_BASE_URL
+        
+        llm = OllamaLLM(decision_llm_config, base_url=model_server)
+        
+        # Get LLM decision
+        response = await llm.generate(tool_decision_prompt)
+        logger.info(f"🤖 LLM tool decision response: {response}")
+        
+        # Parse the response for function calls
+        tools_to_execute = []
+        
+        if "no tools needed" in response.lower():
+            logger.info("🔍 LLM decided no tools are needed")
+            return []
+        
+        # Pattern to match function calls: call_tool_NAME(params)
+        function_pattern = r'call_tool_(\w+)\s*\(([^)]*)\)'
+        matches = re.finditer(function_pattern, response, re.IGNORECASE)
+        
+        for match in matches:
+            tool_name = match.group(1)
+            params_str = match.group(2)
+            
+            # Parse parameters
+            parameters = {}
+            if params_str.strip():
+                # Pattern to match parameter assignments
+                param_pattern = r'(\w+)\s*=\s*["\']([^"\']*)["\']'
+                param_matches = re.finditer(param_pattern, params_str)
+                
+                for param_match in param_matches:
+                    param_name = param_match.group(1)
+                    param_value = param_match.group(2)
+                    
+                    # Convert to appropriate type
+                    if param_name == 'num_results' and param_value.isdigit():
+                        parameters[param_name] = int(param_value)
+                    elif param_value.lower() in ['true', 'false']:
+                        parameters[param_name] = param_value.lower() == 'true'
+                    else:
+                        parameters[param_name] = param_value
+            
+            # Verify tool exists in available tools
+            if tool_name in available_tools:
+                tools_to_execute.append((tool_name, parameters))
+                logger.info(f"📌 LLM selected tool: {tool_name} with params: {parameters}")
+            else:
+                logger.warning(f"⚠️ LLM selected unavailable tool: {tool_name}")
+        
+        return tools_to_execute
+        
+    except Exception as e:
+        logger.error(f"Error in LLM tool decision: {e}")
+        return []
+
 def handle_single_agent_query(request: RAGRequest, agent_name: str, trace=None, rag_span=None):
     """Handle single agent queries (@agent feature)"""
     from fastapi.responses import StreamingResponse
     from app.core.langgraph_agents_cache import get_agent_by_name
     from app.llm.ollama import OllamaLLM
     from app.llm.base import LLMConfig
+    from app.core.mcp_tools_cache import get_enabled_mcp_tools
+    from app.langchain.service import call_mcp_tool
+    from app.core.config import get_settings
     import os
     import json
     
@@ -1329,8 +1462,70 @@ def handle_single_agent_query(request: RAGRequest, agent_name: str, trace=None, 
                 if history:
                     conversation_history = conversation_manager.format_history_for_prompt(history, "")
             
-            # Prepare the full prompt
-            full_prompt = f"{system_prompt}\n\n{conversation_history}\n\nUser: {request.question}\n\nAssistant:"
+            # Check if agent has tools and execute them if needed
+            tool_results_context = ""
+            tools_used = []
+            
+            if agent_data and agent_data.get("tools"):
+                agent_tools = agent_data.get("tools", [])
+                logger.info(f"🔧 Agent {agent_name} has tools: {agent_tools}")
+                
+                # Get all enabled MCP tools
+                enabled_tools = get_enabled_mcp_tools()
+                
+                # Filter to only agent's assigned tools
+                available_tools = {
+                    tool_name: tool_info 
+                    for tool_name, tool_info in enabled_tools.items() 
+                    if tool_name in agent_tools
+                }
+                
+                if available_tools:
+                    logger.info(f"📋 Available tools for {agent_name}: {list(available_tools.keys())}")
+                    
+                    # Use LLM to intelligently decide which tools to use
+                    tools_to_execute = await decide_tools_with_llm(
+                        request.question, 
+                        available_tools, 
+                        agent_name,
+                        mode_config
+                    )
+                    
+                    # Execute selected tools
+                    if tools_to_execute:
+                        tool_results = []
+                        for tool_name, params in tools_to_execute:
+                            try:
+                                logger.info(f"🚀 Executing {tool_name} with params: {params}")
+                                result = call_mcp_tool(tool_name, params, trace)
+                                
+                                tools_used.append(tool_name)
+                                tool_results.append({
+                                    "tool": tool_name,
+                                    "result": result,
+                                    "success": True
+                                })
+                                logger.info(f"✅ Tool {tool_name} executed successfully")
+                                
+                            except Exception as tool_error:
+                                logger.error(f"❌ Error executing {tool_name}: {tool_error}")
+                                tool_results.append({
+                                    "tool": tool_name,
+                                    "error": str(tool_error),
+                                    "success": False
+                                })
+                        
+                        # Format tool results for inclusion in prompt
+                        if tool_results:
+                            successful_results = [r for r in tool_results if r.get("success")]
+                            if successful_results:
+                                tool_results_context = "\n\n📊 Tool Results:\n"
+                                for result in successful_results:
+                                    tool_results_context += f"\n[{result['tool']}]:\n{json.dumps(result['result'], indent=2)}\n"
+                                tool_results_context += "\nPlease use the above tool results to provide an informed response.\n"
+            
+            # Prepare the full prompt with tool results
+            full_prompt = f"{system_prompt}\n\n{tool_results_context}{conversation_history}\n\nUser: {request.question}\n\nAssistant:"
             
             # Initialize LLM
             llm_config = LLMConfig(
@@ -1355,6 +1550,13 @@ def handle_single_agent_query(request: RAGRequest, agent_name: str, trace=None, 
                 "confidence": 1.0,
                 "classification": "direct_agent"
             }) + "\n"
+            
+            # Send tool execution status if tools were used
+            if tools_used:
+                yield json.dumps({
+                    "type": "status",
+                    "message": f"🔧 Executed tools: {', '.join(tools_used)}"
+                }) + "\n"
             
             yield json.dumps({
                 "type": "status",
@@ -1393,7 +1595,9 @@ def handle_single_agent_query(request: RAGRequest, agent_name: str, trace=None, 
                         metadata={
                             "selected_agent": agent_name,
                             "model": mode_config["model"],
-                            "bypass_classification": True
+                            "bypass_classification": True,
+                            "tools_used": tools_used,
+                            "tool_execution": len(tools_used) > 0
                         }
                     )
                     rag_span.end()

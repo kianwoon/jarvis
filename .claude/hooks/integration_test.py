@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
-Integration Test for Claude Code Hook System
+Integration Test for Claude Code Hook System  
 =============================================
 Verifies that the entire hook system works end-to-end.
+
+NOTE: This tests the Jarvis agent delegation features (request_agent_work.py),
+which is different from Claude Code agent enforcement (.claude/agents/).
+
+SYSTEM SEPARATION:
+- Claude Code agents: .claude/agents/*.md files - FOR CLAUDE'S INTERNAL USE
+- Jarvis agents: PostgreSQL database - FOR END USER @agent FEATURE (tested here)
 """
 
 import json

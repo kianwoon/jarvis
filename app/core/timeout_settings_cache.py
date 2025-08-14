@@ -97,6 +97,25 @@ DEFAULT_TIMEOUT_SETTINGS = {
         "temp_data_ttl": 1800,
         "session_cleanup_interval": 3600,
         "cache_cleanup_interval": 7200
+    },
+    
+    # Redis Cache TTL Settings (in seconds)
+    "redis_cache_ttl": {
+        "settings_cache_ttl": 3600,          # Settings cache TTL (1 hour)
+        "pipeline_cache_ttl": 3600,          # Pipeline state cache TTL (1 hour)
+        "list_cache_ttl": 300,               # List cache TTL (5 minutes)
+        "agent_response_cache_ttl": 600,     # Agent response cache TTL (10 minutes)
+        "collection_registry_ttl": 300,      # Collection registry TTL (5 minutes)
+        "conversation_cache_ttl": 86400,     # Conversation cache TTL (24 hours)
+        "temporary_data_ttl": 1800,          # Temporary data TTL (30 minutes)
+        "idc_cache_ttl": 3600,               # IDC extraction cache TTL (1 hour)
+        "validation_cache_ttl": 7200,        # Validation cache TTL (2 hours)
+        "knowledge_graph_cache_ttl": 1800,   # Knowledge graph cache TTL (30 minutes)
+        "rag_cache_ttl": 3600,               # RAG cache TTL (1 hour)
+        "embedding_cache_ttl": 7200,         # Embedding cache TTL (2 hours)
+        "vector_search_cache_ttl": 1800,     # Vector search cache TTL (30 minutes)
+        "workflow_state_ttl": 3600,          # Workflow state TTL (1 hour)
+        "mcp_tool_cache_ttl": 600            # MCP tool cache TTL (10 minutes)
     }
 }
 
@@ -228,7 +247,7 @@ def validate_timeout_settings(settings: Dict) -> Dict:
                 timeout_value = int(value)
                 
                 # Set reasonable bounds based on category
-                if category == "session_cache":
+                if category == "session_cache" or category == "redis_cache_ttl":
                     # Cache timeouts can be longer (1 second to 7 days)
                     min_val, max_val = 1, 604800
                 elif category == "workflow_automation":
@@ -367,3 +386,40 @@ def get_kg_max_timeout() -> int:
 def get_kg_fallback_timeout() -> int:
     """Get knowledge graph fallback timeout"""
     return get_knowledge_graph_timeout("fallback_timeout", 360)
+
+# Redis Cache TTL convenience functions
+def get_redis_cache_ttl(setting_key: str, default: int = 3600) -> int:
+    """Get Redis cache TTL setting"""
+    return get_timeout_value("redis_cache_ttl", setting_key, default)
+
+def get_settings_cache_ttl() -> int:
+    """Get settings cache TTL"""
+    return get_redis_cache_ttl("settings_cache_ttl", 3600)
+
+def get_pipeline_cache_ttl() -> int:
+    """Get pipeline cache TTL"""
+    return get_redis_cache_ttl("pipeline_cache_ttl", 3600)
+
+def get_list_cache_ttl() -> int:
+    """Get list cache TTL"""
+    return get_redis_cache_ttl("list_cache_ttl", 300)
+
+def get_agent_response_cache_ttl() -> int:
+    """Get agent response cache TTL"""
+    return get_redis_cache_ttl("agent_response_cache_ttl", 600)
+
+def get_collection_registry_ttl() -> int:
+    """Get collection registry TTL"""
+    return get_redis_cache_ttl("collection_registry_ttl", 300)
+
+def get_conversation_cache_ttl() -> int:
+    """Get conversation cache TTL"""
+    return get_redis_cache_ttl("conversation_cache_ttl", 86400)
+
+def get_temporary_data_ttl() -> int:
+    """Get temporary data TTL"""
+    return get_redis_cache_ttl("temporary_data_ttl", 1800)
+
+def get_mcp_tool_cache_ttl() -> int:
+    """Get MCP tool cache TTL"""
+    return get_redis_cache_ttl("mcp_tool_cache_ttl", 600)

@@ -8,6 +8,7 @@ import json
 import logging
 from typing import Dict, Optional
 from app.core.config import get_settings
+from app.core.timeout_settings_cache import get_settings_cache_ttl
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def set_query_classifier_settings(settings_dict):
     redis_client = _get_redis_client()
     if redis_client:
         try:
-            redis_client.set(CACHE_KEY, json.dumps(settings_dict))
+            redis_client.set(CACHE_KEY, json.dumps(settings_dict), ex=get_settings_cache_ttl())
         except Exception as e:
             logger.warning(f"Failed to cache settings in Redis: {e}")
 
@@ -113,7 +114,7 @@ def reload_query_classifier_settings():
                 redis_client = _get_redis_client()
                 if redis_client:
                     try:
-                        redis_client.set(CACHE_KEY, json.dumps(settings))
+                        redis_client.set(CACHE_KEY, json.dumps(settings), ex=get_settings_cache_ttl())
                     except Exception as e:
                         logger.warning(f"Failed to cache settings in Redis: {e}")
                 
@@ -141,7 +142,7 @@ def reload_query_classifier_settings():
                 redis_client = _get_redis_client()
                 if redis_client:
                     try:
-                        redis_client.set(CACHE_KEY, json.dumps(DEFAULT_QUERY_CLASSIFIER_SETTINGS))
+                        redis_client.set(CACHE_KEY, json.dumps(DEFAULT_QUERY_CLASSIFIER_SETTINGS), ex=get_settings_cache_ttl())
                     except Exception as e:
                         logger.warning(f"Failed to cache default settings in Redis: {e}")
                 return DEFAULT_QUERY_CLASSIFIER_SETTINGS
@@ -205,7 +206,7 @@ def update_query_classifier_settings(settings: Dict) -> bool:
                 redis_client = _get_redis_client()
                 if redis_client:
                     try:
-                        redis_client.set(CACHE_KEY, json.dumps(validated_settings))
+                        redis_client.set(CACHE_KEY, json.dumps(validated_settings), ex=get_settings_cache_ttl())
                     except Exception as e:
                         logger.warning(f"Failed to update Redis cache: {e}")
                 

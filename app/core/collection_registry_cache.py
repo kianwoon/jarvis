@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from app.core.redis_base import RedisCache
+from app.core.timeout_settings_cache import get_collection_registry_ttl
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class CollectionRegistryCache(RedisCache):
     
     def __init__(self):
         super().__init__(key_prefix="collection_registry:")
-        self.cache_ttl = 3600  # 1 hour cache
+        self.cache_ttl = get_collection_registry_ttl()  # Use configurable TTL
         
     def _get_cache_key(self, collection_name: str) -> str:
         """Generate cache key for a collection"""

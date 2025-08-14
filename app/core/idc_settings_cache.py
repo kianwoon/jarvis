@@ -8,6 +8,7 @@ import json
 import logging
 from typing import Dict, Any, Optional
 from app.core.config import get_settings
+from app.core.timeout_settings_cache import get_settings_cache_ttl
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def set_idc_settings(settings_dict: Dict[str, Any]):
     redis_client = _get_redis_client()
     if redis_client:
         try:
-            redis_client.set(IDC_SETTINGS_KEY, json.dumps(settings_dict), ex=3600)  # 1 hour TTL
+            redis_client.set(IDC_SETTINGS_KEY, json.dumps(settings_dict), ex=get_settings_cache_ttl())
             logger.info("[IDC_SETTINGS] Settings cached in Redis")
         except Exception as e:
             logger.error(f"[IDC_SETTINGS] Failed to cache settings in Redis: {e}")
@@ -87,7 +88,7 @@ def reload_idc_settings() -> Dict[str, Any]:
                 redis_client = _get_redis_client()
                 if redis_client:
                     try:
-                        redis_client.set(IDC_SETTINGS_KEY, json.dumps(settings), ex=3600)
+                        redis_client.set(IDC_SETTINGS_KEY, json.dumps(settings), ex=get_settings_cache_ttl())
                         logger.info("[IDC_SETTINGS] Settings cached in Redis")
                     except Exception as e:
                         logger.warning(f"[IDC_SETTINGS] Failed to cache settings in Redis: {e}")
@@ -319,7 +320,7 @@ def _get_emergency_fallback_settings() -> Dict[str, Any]:
     try:
         redis_client = _get_redis_client()
         if redis_client:
-            redis_client.set(f"{IDC_SETTINGS_KEY}_emergency", json.dumps(emergency_settings), ex=3600)
+            redis_client.set(f"{IDC_SETTINGS_KEY}_emergency", json.dumps(emergency_settings), ex=get_settings_cache_ttl())
             logger.info("[IDC_SETTINGS] Emergency settings cached for future fallbacks")
     except Exception as e:
         logger.warning(f"[IDC_SETTINGS] Could not cache emergency settings: {e}")

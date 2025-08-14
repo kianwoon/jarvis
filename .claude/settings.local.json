@@ -152,7 +152,9 @@
       "Bash(else)",
       "Bash(fi)",
       "Bash(if ! grep -n \"num_results.*[^a-zA-Z0-9_]5[^0-9]\" app/core/unified_mcp_service.py app/langchain/multi_agent_system_simple.py)",
-      "Bash(bash:*)"
+      "Bash(bash:*)",
+      "Bash(for key in rag_settings_cache mcp_tools_cache embedding_settings_cache)",
+      "Bash(done)"
     ],
     "deny": [],
     "defaultMode": "acceptEdits"

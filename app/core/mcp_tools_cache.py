@@ -1,6 +1,7 @@
 import json
 import logging
 from app.core.redis_base import RedisCache
+from app.core.timeout_settings_cache import get_mcp_tool_cache_ttl
 
 MCP_TOOLS_KEY = 'mcp_tools_cache'
 
@@ -98,7 +99,7 @@ def reload_enabled_mcp_tools():
             else:
                 logger.warning("[MCP CACHE] No Gmail/Email tools found in cache!")
             
-            cache.set(MCP_TOOLS_KEY, enabled_tools)
+            cache.set(MCP_TOOLS_KEY, enabled_tools, expire=get_mcp_tool_cache_ttl())
             logger.info(f"[MCP CACHE] Successfully cached {len(enabled_tools)} MCP tools")
             return enabled_tools
         finally:

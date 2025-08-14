@@ -26,6 +26,7 @@ from app.core.idc_settings_cache import (
 )
 from app.core.db import get_db_session
 from app.core.redis_client import get_redis_client
+from app.core.timeout_settings_cache import get_redis_cache_ttl
 from app.services.settings_prompt_service import get_prompt_service
 
 logger = logging.getLogger(__name__)
@@ -583,9 +584,11 @@ class IDCExtractionService:
         if self.redis_client:
             try:
                 cache_key = f"idc_extraction_progress:{session_id}"
+                # Use configurable TTL from timeout settings
+                idc_cache_ttl = get_redis_cache_ttl("idc_cache_ttl", 3600)
                 self.redis_client.setex(
                     cache_key, 
-                    3600,  # 1 hour TTL
+                    idc_cache_ttl,  # Use configurable TTL
                     json.dumps(progress_data)
                 )
             except Exception as e:

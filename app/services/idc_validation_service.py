@@ -25,6 +25,7 @@ from app.core.idc_settings_cache import (
 )
 from app.core.db import get_db_session, IDCValidationSession, IDCUnitValidationResult
 from app.core.redis_client import get_redis_client
+from app.core.timeout_settings_cache import get_redis_cache_ttl
 from app.services.idc_extraction_service import ExtractedUnit, ExtractionResult
 from app.services.settings_prompt_service import get_prompt_service
 
@@ -638,7 +639,9 @@ REQUIRES_REVIEW: [YES/NO] (Whether this unit needs human review)
                 }
                 
                 cache_key = f"idc_validation_progress:{session_id}"
-                self.redis_client.setex(cache_key, 7200, json.dumps(progress_data))  # 2 hour TTL
+                # Use configurable TTL from timeout settings
+                validation_cache_ttl = get_redis_cache_ttl("validation_cache_ttl", 7200)
+                self.redis_client.setex(cache_key, validation_cache_ttl, json.dumps(progress_data))
                 
             except Exception as e:
                 logger.warning(f"Failed to initialize progress tracking: {e}")

@@ -2,6 +2,7 @@ import redis
 import json
 import os
 import time
+from app.core.timeout_settings_cache import get_agent_response_cache_ttl
 
 LANGGRAPH_AGENTS_KEY = "langgraph_agents"
 
@@ -85,7 +86,7 @@ def _update_redis_cache(agents_dict):
     redis_client = _get_redis_client()
     if redis_client:
         try:
-            redis_client.set(LANGGRAPH_AGENTS_KEY, json.dumps(agents_dict))
+            redis_client.set(LANGGRAPH_AGENTS_KEY, json.dumps(agents_dict), ex=get_agent_response_cache_ttl())
             print(f"[DEBUG] Updated Redis cache with {len(agents_dict)} agents")
             return True
         except Exception as e:

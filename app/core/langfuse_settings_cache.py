@@ -1,6 +1,7 @@
 import redis
 import json
 from app.core.config import get_settings
+from app.core.timeout_settings_cache import get_settings_cache_ttl
 
 config = get_settings()
 REDIS_HOST = config.REDIS_HOST
@@ -42,7 +43,7 @@ def set_langfuse_settings(settings_dict):
     redis_client = _get_redis_client()
     if redis_client:
         try:
-            redis_client.set(LANGFUSE_SETTINGS_KEY, json.dumps(settings_dict))
+            redis_client.set(LANGFUSE_SETTINGS_KEY, json.dumps(settings_dict), ex=get_settings_cache_ttl())
         except Exception as e:
             print(f"Failed to cache settings in Redis: {e}")
 
@@ -62,7 +63,7 @@ def reload_langfuse_settings():
                 redis_client = _get_redis_client()
                 if redis_client:
                     try:
-                        redis_client.set(LANGFUSE_SETTINGS_KEY, json.dumps(settings))
+                        redis_client.set(LANGFUSE_SETTINGS_KEY, json.dumps(settings), ex=get_settings_cache_ttl())
                     except Exception as e:
                         print(f"Failed to cache settings in Redis: {e}")
                 

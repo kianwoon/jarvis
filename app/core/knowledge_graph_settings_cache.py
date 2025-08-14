@@ -1,5 +1,6 @@
 import json
 from app.core.redis_base import RedisCache
+from app.core.timeout_settings_cache import get_settings_cache_ttl
 from typing import Dict, Any, Optional
 
 KNOWLEDGE_GRAPH_SETTINGS_KEY = 'knowledge_graph_settings_cache'
@@ -486,7 +487,7 @@ def set_knowledge_graph_settings(settings_dict: Dict[str, Any]):
     settings_dict = _synchronize_model_fields(settings_dict)
     
     # Always save to cache first
-    cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings_dict)
+    cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings_dict, expire=get_settings_cache_ttl())
     
     # Then persist to database
     try:
@@ -561,7 +562,7 @@ def reload_knowledge_graph_settings() -> Dict[str, Any]:
                     print("Added default Neo4j configuration to knowledge graph settings")
                 
                 # Cache the settings
-                cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings)
+                cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings, expire=get_settings_cache_ttl())
                 return settings
             
             # Fallback: check for legacy knowledge_graph in LLM settings
@@ -575,7 +576,7 @@ def reload_knowledge_graph_settings() -> Dict[str, Any]:
                     settings['neo4j'] = get_default_neo4j_config()
                 
                 # Cache the settings
-                cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings)
+                cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, settings, expire=get_settings_cache_ttl())
                 return settings
             
             # CRITICAL SAFETY: Check if there are existing cached settings before overwriting with defaults
@@ -591,7 +592,7 @@ def reload_knowledge_graph_settings() -> Dict[str, Any]:
             
             # No existing complex settings found, safe to use defaults  
             default_settings = get_default_knowledge_graph_settings()
-            cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, default_settings)
+            cache.set(KNOWLEDGE_GRAPH_SETTINGS_KEY, default_settings, expire=get_settings_cache_ttl())
             print("Using default knowledge graph settings (no existing complex data to preserve)")
             return default_settings
         finally:

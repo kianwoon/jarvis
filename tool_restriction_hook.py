@@ -2,8 +2,14 @@
 """
 Tool Restriction Hook
 =====================
-This hook enforces tool restrictions to ensure Claude uses agents instead of direct execution.
-It intercepts tool calls and blocks restricted operations.
+This hook enforces tool restrictions to ensure Claude uses Claude Code agents via Task tool 
+instead of direct execution. It intercepts tool calls and blocks restricted operations.
+
+CRITICAL SYSTEM SEPARATION:
+- Claude Code agents: .claude/agents/*.md files - FOR CLAUDE'S INTERNAL USE
+- Jarvis agents: PostgreSQL database - FOR END USER @agent FEATURE
+
+This hook enforces Claude Code agent usage ONLY, not Jarvis agent usage.
 """
 
 import json
@@ -27,7 +33,7 @@ def log_message(level: str, message: str):
 class ToolRestrictionEnforcer:
     """Enforces tool usage restrictions"""
     
-    # Tools that are completely denied
+    # Tools that are completely denied - MUST USE CLAUDE CODE AGENTS VIA TASK TOOL
     DENIED_TOOLS = {
         "Write",
         "Edit", 
@@ -83,12 +89,22 @@ class ToolRestrictionEnforcer:
         
         # Check if tool is explicitly denied
         if tool_name in self.DENIED_TOOLS:
-            log_message("BLOCKED", f"Denied tool '{tool_name}' - must use agents")
+            log_message("BLOCKED", f"Denied tool '{tool_name}' - MUST use Claude Code agents from .claude/agents/")
+            
+            # Log violation for enforcement monitoring
+            violation_log = "/Users/kianwoonwong/Downloads/jarvis/.claude/logs/violations.log"
+            os.makedirs(os.path.dirname(violation_log), exist_ok=True)
+            with open(violation_log, "a") as f:
+                f.write(f"[{datetime.now().isoformat()}] VIOLATION: Attempted to use {tool_name}\n")
+                f.write(f"  MUST USE: Claude Code agent from .claude/agents/\n\n")
+            
             return {
                 "allowed": False,
-                "reason": f"Tool '{tool_name}' is restricted. Please use request_agent_work.py to delegate this task to appropriate agents.",
-                "suggestion": self._get_agent_suggestion(tool_name),
-                "enforcement": "strict"
+                "reason": f"🚨 CRITICAL: Tool '{tool_name}' is STRICTLY FORBIDDEN! You MUST use Claude Code agents from /Users/kianwoonwong/Downloads/jarvis/.claude/agents/",
+                "suggestion": self._get_claude_agent_suggestion(tool_name),
+                "enforcement": "MANDATORY",
+                "violation_logged": True,
+                "agent_path": "/Users/kianwoonwong/Downloads/jarvis/.claude/agents/"
             }
         
         # Special handling for Bash commands
@@ -111,7 +127,7 @@ class ToolRestrictionEnforcer:
                 return {
                     "allowed": False,
                     "reason": "Direct code execution is restricted. Use agents for execution.",
-                    "suggestion": "Use 'Code Agent' via request_agent_work.py"
+                    "suggestion": "Use Claude Code agent via Task tool (e.g. Task(task='...', subagent_type='coder'))"
                 }
             
             log_message("ALLOWED", f"Permitted MCP tool '{tool_name}'")
@@ -125,7 +141,7 @@ class ToolRestrictionEnforcer:
         return {
             "allowed": False,
             "reason": f"Tool '{tool_name}' not in allowed list",
-            "suggestion": "Use request_agent_work.py for this operation"
+            "suggestion": "Use Claude Code agent via Task tool with appropriate subagent_type"
         }
     
     def _is_database_read_command(self, command: str) -> bool:
@@ -234,27 +250,31 @@ class ToolRestrictionEnforcer:
         }
     
     def _get_agent_suggestion(self, tool_name: str) -> str:
-        """Get suggestion for which agent to use"""
-        suggestions = {
-            "Write": "Use 'Code Agent' to create files",
-            "Edit": "Use 'Code Agent' to modify files", 
-            "MultiEdit": "Use 'Code Agent' for multiple file edits",
-            "NotebookEdit": "Use 'Data Agent' for notebook operations",
-            "TodoWrite": "Use 'Planning Agent' for task management"
+        """Get suggestion for which agent to use (deprecated - use _get_claude_agent_suggestion)"""
+        return self._get_claude_agent_suggestion(tool_name)
+    
+    def _get_claude_agent_suggestion(self, tool_name: str) -> str:
+        """Get CLAUDE CODE agent suggestion for blocked tools"""
+        claude_agents = {
+            "Write": "🔴 MUST USE: ./delegate_to_agent.sh coder 'Create the file' OR ./delegate_to_agent.sh senior-coder 'Implement the feature'",
+            "Edit": "🔴 MUST USE: ./delegate_to_agent.sh coder 'Modify the file' OR ./delegate_to_agent.sh senior-coder 'Fix the issue'", 
+            "MultiEdit": "🔴 MUST USE: ./delegate_to_agent.sh senior-coder 'Make multiple edits to the file'",
+            "NotebookEdit": "🔴 MUST USE: ./delegate_to_agent.sh database-administrator 'Modify the notebook'",
+            "TodoWrite": "🔴 MUST USE: ./delegate_to_agent.sh general-purpose 'Manage the task list'"
         }
-        return suggestions.get(tool_name, "Use appropriate agent via request_agent_work.py")
+        default = "🔴 MUST USE: ./delegate_to_agent.sh --list (to see available Claude Code agents)"
+        return claude_agents.get(tool_name, default)
     
     def _get_bash_agent_suggestion(self, command: str) -> str:
-        """Get agent suggestion based on Bash command"""
+        """Get CLAUDE CODE agent suggestion based on Bash command"""
         if "python" in command or "node" in command:
-            return "Use 'Code Agent' to execute code"
+            return "🔴 MUST USE: ./delegate_to_agent.sh coder 'Execute the code' OR senior-coder for complex tasks"
         elif "docker" in command:
-            return "Use 'Integration Agent' for container operations"
+            return "🔴 MUST USE: ./delegate_to_agent.sh senior-coder 'Handle container operations'"
         elif "git" in command:
-            return "Use 'Code Agent' for version control"
-        # Database operations are now allowed for read operations
+            return "🔴 MUST USE: ./delegate_to_agent.sh coder 'Perform git operations'"
         else:
-            return "Use appropriate agent via request_agent_work.py"
+            return "🔴 MUST USE: ./delegate_to_agent.sh --list (see Claude Code agents in .claude/agents/)"
     
     def process_hook(self, hook_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process the hook and return response"""
@@ -270,7 +290,9 @@ class ToolRestrictionEnforcer:
                 "action": "block",
                 "message": permission_result["reason"],
                 "suggestion": permission_result.get("suggestion", ""),
-                "alternative": "python /Users/kianwoonwong/Downloads/jarvis/request_agent_work.py --help"
+                "alternative": "./delegate_to_agent.sh --list",
+                "critical_reminder": "⚠️ YOU MUST USE CLAUDE CODE AGENTS FROM .claude/agents/ - NO EXCEPTIONS!",
+                "agent_location": "/Users/kianwoonwong/Downloads/jarvis/.claude/agents/"
             }
         
         return {

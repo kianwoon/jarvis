@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-UserPromptSubmit hook script to automatically append "get agent to work on" reminder
+UserPromptSubmit hook script to automatically append Claude Code agent enforcement reminder
 to every message the user sends in Claude Code.
+
+CRITICAL SYSTEM SEPARATION:
+- Claude Code agents: .claude/agents/*.md files - FOR CLAUDE'S INTERNAL USE
+- Jarvis agents: PostgreSQL database - FOR END USER @agent FEATURE
+
+This script enforces Claude Code agent usage ONLY, not Jarvis agent usage.
 
 This script reads JSON input from stdin and outputs the reminder as additionalContext.
 """
@@ -60,19 +66,48 @@ def main():
         log_event(f"Processing UserPromptSubmit for session {session_id}")
         
         # Check if the reminder is already present to avoid duplication
-        reminder_text = "get agent from agents list to work on"
+        reminder_text = "Task tool"
+        claude_agents_text = ".claude/agents"
         
-        if reminder_text.lower() in user_prompt.lower():
-            log_event(f"Reminder already present in prompt, skipping", "INFO")
+        # Skip if Claude Code agent enforcement is already mentioned
+        if claude_agents_text in user_prompt.lower() or reminder_text in user_prompt.lower():
+            log_event(f"Claude Code agent enforcement already mentioned, skipping additional reminder", "INFO")
             # Still output hook response when reminder already present
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}))
             sys.exit(0)
         
-        # Create the reminder message to append as additional context
-        # This will be added to the context that Claude sees
+        # Create the STRONGEST possible reminder message
         reminder_context = f"""
 
-IMPORTANT REMINDER: Always get agent to work on this task. Follow the multi-agent coordination patterns in the codebase and ensure work is executed by agents from the agents list - NO EXCEPTIONS!"""
+🚨 CRITICAL CLAUDE CODE AGENT ENFORCEMENT 🚨
+
+YOU MUST USE TASK TOOL WITH CLAUDE CODE AGENTS!
+
+⚠️ SYSTEM SEPARATION:
+• Claude Code agents (.claude/agents/*.md) - FOR CLAUDE'S INTERNAL USE
+• Jarvis agents (database) - FOR END USER @agent FEATURE
+• DO NOT CONFUSE THESE TWO SYSTEMS!
+
+CLAUDE CODE AGENTS (use Task tool):
+• senior-coder ⭐ (RECOMMENDED for complex tasks)  
+• coder (general coding)
+• database-administrator (database tasks)
+• codebase-error-analyzer (debugging)
+• general-purpose (planning)
+• llm-ai-architect (AI/ML)
+• ui-theme-designer (UI/UX)
+
+CORRECT USAGE:
+Task(task="Fix the cache implementation", subagent_type="senior-coder")
+Task(task="Add error handling", subagent_type="coder")
+
+❌ NEVER use Edit, Write, MultiEdit, or NotebookEdit directly!
+❌ NEVER confuse with request_agent_work.py (that's for Jarvis @agent system)!
+✅ ALWAYS use Task tool with Claude Code agents!
+🔴 VIOLATIONS ARE BEING MONITORED AND LOGGED!
+
+Claude Code agent location: /Users/kianwoonwong/Downloads/jarvis/.claude/agents/
+Monitoring: python /Users/kianwoonwong/Downloads/jarvis/enforcement_monitor.py --report"""
         
         # Output JSON with hookSpecificOutput.additionalContext for Claude Code
         hook_output = {
@@ -85,7 +120,7 @@ IMPORTANT REMINDER: Always get agent to work on this task. Follow the multi-agen
         # Print JSON output that Claude Code expects
         print(json.dumps(hook_output))
         
-        log_event(f"Successfully appended reminder to user prompt via JSON output", "SUCCESS")
+        log_event(f"Successfully appended STRONG Claude Code agent enforcement reminder with system separation", "SUCCESS")
         
     except Exception as e:
         log_event(f"Unexpected error: {str(e)}", "ERROR")

@@ -3540,6 +3540,11 @@ const TimeoutConfiguration: React.FC<{
       title: 'Session & Cache', 
       description: 'Redis TTL, conversation memory, and cache expiration',
       fields: {} 
+    },
+    redis_cache_ttl: {
+      title: 'Redis Cache TTL',
+      description: 'Time-to-live settings for various Redis caches (controls how long data is kept in cache)',
+      fields: {}
     }
   };
 
@@ -3609,7 +3614,24 @@ const TimeoutConfiguration: React.FC<{
         'result_cache_ttl': 'Result cache TTL (seconds)',
         'temp_data_ttl': 'Temporary data TTL (seconds)',
         'session_cleanup_interval': 'Session cleanup interval (seconds)',
-        'cache_cleanup_interval': 'Cache cleanup interval (seconds)'
+        'cache_cleanup_interval': 'Cache cleanup interval (seconds)',
+        
+        // Redis Cache TTL Settings
+        'settings_cache_ttl': 'How long to cache system settings (default: 3600s / 1 hour)',
+        'pipeline_cache_ttl': 'How long to cache pipeline states (default: 3600s / 1 hour)',
+        'list_cache_ttl': 'How long to cache list data like pipeline lists (default: 300s / 5 minutes)',
+        'agent_response_cache_ttl': 'How long to cache agent responses (default: 600s / 10 minutes)',
+        'collection_registry_ttl': 'How long to cache collection registry data (default: 300s / 5 minutes)',
+        'conversation_cache_ttl': 'How long to keep conversation history in cache (default: 86400s / 24 hours)',
+        'temporary_data_ttl': 'How long to keep temporary/intermediate data (default: 1800s / 30 minutes)',
+        'idc_cache_ttl': 'How long to cache IDC extraction results (default: 3600s / 1 hour)',
+        'validation_cache_ttl': 'How long to cache validation results (default: 7200s / 2 hours)',
+        'knowledge_graph_cache_ttl': 'How long to cache knowledge graph data (default: 1800s / 30 minutes)',
+        'rag_cache_ttl': 'How long to cache RAG retrieval results (default: 3600s / 1 hour)',
+        'embedding_cache_ttl': 'How long to cache generated embeddings (default: 7200s / 2 hours)',
+        'vector_search_cache_ttl': 'How long to cache vector search results (default: 1800s / 30 minutes)',
+        'workflow_state_ttl': 'How long to keep workflow execution states (default: 3600s / 1 hour)',
+        'mcp_tool_cache_ttl': 'How long to cache MCP tool configurations (default: 600s / 10 minutes)'
       };
       
       return helpTexts[fieldKey] || null;
@@ -3622,7 +3644,7 @@ const TimeoutConfiguration: React.FC<{
     let minValue = 1;
     let maxValue = 600; // 10 minutes default
     
-    if (categoryKey === 'session_cache') {
+    if (categoryKey === 'session_cache' || categoryKey === 'redis_cache_ttl') {
       maxValue = 604800; // 7 days for cache TTL
     } else if (categoryKey === 'workflow_automation') {
       maxValue = 1800; // 30 minutes for workflows
