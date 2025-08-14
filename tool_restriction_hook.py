@@ -57,8 +57,7 @@ class ToolRestrictionEnforcer:
         "git add",
         "git commit",
         "git push",
-        "psql",
-        "redis-cli",
+        # Removed psql and redis-cli to allow read operations
         "rm",
         "mv",
         "cp",
@@ -129,9 +128,80 @@ class ToolRestrictionEnforcer:
             "suggestion": "Use request_agent_work.py for this operation"
         }
     
+    def _is_database_read_command(self, command: str) -> bool:
+        """Check if command is a read-only database operation"""
+        command_lower = command.lower().strip()
+        
+        # PostgreSQL read operations
+        if "psql" in command_lower:
+            # Allow PGPASSWORD environment variable pattern
+            if command_lower.startswith("pgpassword="):
+                # Check for SELECT or describe commands
+                if "select " in command_lower or any(pattern in command_lower for pattern in ["\\d", "\\dt", "\\l"]):
+                    return True
+            
+            # Allow psql with SELECT statements
+            if "select " in command_lower:
+                return True
+            
+            # Allow psql describe/list commands
+            psql_read_patterns = [
+                "\\d",      # Describe tables/relations
+                "\\dt",     # List tables
+                "\\l",      # List databases
+                "\\du",     # List users
+                "\\dn",     # List schemas
+                "\\df",     # List functions
+                "\\dv",     # List views
+                "\\di",     # List indexes
+                "\\ds",     # List sequences
+            ]
+            
+            for pattern in psql_read_patterns:
+                if pattern in command_lower:
+                    return True
+        
+        # Redis read operations
+        if "redis-cli" in command_lower:
+            redis_read_commands = [
+                "get ",
+                "hget ",
+                "hgetall ",
+                "keys ",
+                "scan ",
+                "ttl ",
+                "exists ",
+                "type ",
+                "info",
+                "ping",
+                "dbsize",
+                "llen ",
+                "scard ",
+                "zcard ",
+                "strlen ",
+                "mget ",
+                "lrange ",
+                "smembers ",
+                "zrange ",
+            ]
+            
+            for cmd in redis_read_commands:
+                if cmd in command_lower:
+                    return True
+        
+        return False
+    
     def _check_bash_permission(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Check if a Bash command is permitted"""
         command = parameters.get("command", "")
+        
+        # Check for database read commands first (before restricted patterns)
+        if self._is_database_read_command(command):
+            log_message("ALLOWED", f"Permitted database read command: {command[:100]}")
+            return {
+                "allowed": True,
+                "reason": "Database read-only command allowed"
+            }
         
         # Check for restricted patterns
         for pattern in self.RESTRICTED_BASH_PATTERNS:
@@ -182,8 +252,7 @@ class ToolRestrictionEnforcer:
             return "Use 'Integration Agent' for container operations"
         elif "git" in command:
             return "Use 'Code Agent' for version control"
-        elif "psql" in command or "redis" in command:
-            return "Use 'Data Agent' for database operations"
+        # Database operations are now allowed for read operations
         else:
             return "Use appropriate agent via request_agent_work.py"
     

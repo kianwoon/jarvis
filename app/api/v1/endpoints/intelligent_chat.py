@@ -34,6 +34,7 @@ class IntelligentChatRequest(BaseModel):
     question: str
     conversation_id: Optional[str] = None
     thinking: bool = False
+    selected_agent: Optional[str] = None
     include_temp_docs: Optional[bool] = None
     active_temp_doc_ids: Optional[List[str]] = None
 
@@ -621,9 +622,47 @@ def parse_function_parameters(params_str: str) -> Dict[str, Any]:
     
     return parameters
 
+@router.get("/agents/autocomplete")
+async def get_agents_for_autocomplete():
+    """Get lightweight agent list for autocomplete UI"""
+    from app.core.langgraph_agents_cache import get_active_agents
+    
+    agents = get_active_agents()
+    
+    # Format for autocomplete UI
+    autocomplete_agents = []
+    for name, agent_data in agents.items():
+        autocomplete_agents.append({
+            "name": name,
+            "role": agent_data.get("role", ""),
+            "description": agent_data.get("description", ""),
+            "avatar": _get_agent_avatar(agent_data.get("role", ""))
+        })
+    
+    return {"agents": autocomplete_agents}
+
+def _get_agent_avatar(role: str) -> str:
+    """Get emoji avatar based on agent role"""
+    avatars = {
+        "financial": "💰",
+        "technical": "💻", 
+        "sales": "📈",
+        "research": "🔍",
+        "security": "🔒",
+        "data": "📊",
+        "planning": "📋",
+        "communication": "💬"
+    }
+    return avatars.get(role.lower(), "🤖")
+
 @router.post("/intelligent-chat")
 async def intelligent_chat_endpoint(request: IntelligentChatRequest):
     """Intelligent chat endpoint with LLM-driven decision making and structured function calling"""
+    
+    # Debug: Log the incoming request details
+    logger.info(f"🎯 INTELLIGENT_CHAT_REQUEST - Question: '{request.question[:100]}{'...' if len(request.question) > 100 else ''}'")
+    logger.info(f"🤖 SELECTED_AGENT: '{request.selected_agent}'")
+    logger.info(f"📝 CONVERSATION_ID: '{request.conversation_id}'")
     
     # Initialize overflow handler
     overflow_handler = ChatOverflowHandler()
@@ -778,7 +817,157 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                     prefs = await temp_manager.get_conversation_preferences(request.conversation_id)
                     should_include_temp_docs = prefs.get('include_temp_docs_in_chat', True)
             
-            # Step 1: Use intelligent routing to check confidence
+            # Step 1: Check if specific agent is selected - if so, bypass classification entirely
+            if request.selected_agent:
+                logger.info(f"🎯 AGENT SELECTED: {request.selected_agent} - Bypassing query classification")
+                logger.info(f"🚀 ROUTING DIRECTLY TO SELECTED AGENT")
+                
+                # Get agent configuration
+                from app.core.langgraph_agents_cache import get_agent_by_name
+                agent_data = get_agent_by_name(request.selected_agent)
+                
+                if not agent_data:
+                    # Agent not found - use default configuration
+                    logger.warning(f"Agent {request.selected_agent} not found, using default config")
+                    llm_settings = get_llm_settings()
+                    mode_config = get_main_llm_full_config(llm_settings)
+                    system_prompt = f"You are {request.selected_agent}, a specialized AI assistant. Please respond directly to the user's question using your expertise."
+                else:
+                    # Use agent's specific configuration
+                    agent_system_prompt = agent_data.get("system_prompt", "You are a specialized assistant.")
+                    
+                    # Get agent's LLM config
+                    agent_config = agent_data.get("config", {})
+                    
+                    # Determine model to use based on agent configuration
+                    if agent_config.get('use_main_llm'):
+                        main_llm_config = get_main_llm_full_config()
+                        model_name = main_llm_config.get('model', 'qwen3:30b-a3b-q4_K_M')
+                        # Use main_llm settings for params if not overridden in agent config
+                        actual_max_tokens = agent_config.get('max_tokens', main_llm_config.get('max_tokens', 2000))
+                        actual_temperature = agent_config.get('temperature', main_llm_config.get('temperature', 0.7))
+                        top_p = agent_config.get('top_p', main_llm_config.get('top_p', 0.9))
+                    elif agent_config.get('use_second_llm'):
+                        from app.core.llm_settings_cache import get_second_llm_full_config
+                        second_llm_config = get_second_llm_full_config()
+                        model_name = second_llm_config.get('model', 'qwen3:30b-a3b-q4_K_M')
+                        # Use second_llm settings for params if not overridden in agent config
+                        actual_max_tokens = agent_config.get('max_tokens', second_llm_config.get('max_tokens', 2000))
+                        actual_temperature = agent_config.get('temperature', second_llm_config.get('temperature', 0.7))
+                        top_p = agent_config.get('top_p', second_llm_config.get('top_p', 0.9))
+                    else:
+                        # Use agent-specific model or main LLM as fallback
+                        model_name = agent_config.get("model")
+                        if not model_name:
+                            main_llm_config = get_main_llm_full_config()
+                            model_name = main_llm_config.get('model', 'qwen3:30b-a3b-q4_K_M')
+                        
+                        # Use agent-specific parameters with sensible defaults
+                        actual_max_tokens = agent_config.get('max_tokens', 2000)
+                        actual_temperature = agent_config.get('temperature', 0.7)
+                        top_p = agent_config.get('top_p', 0.9)
+                    
+                    mode_config = {
+                        "model": model_name,
+                        "temperature": float(actual_temperature),
+                        "top_p": float(top_p),
+                        "max_tokens": int(actual_max_tokens)
+                    }
+                    
+                    # Create focused system prompt for the agent - no tool instructions needed for direct routing
+                    system_prompt = f"You are {request.selected_agent}. {agent_system_prompt}\n\nPlease respond directly to the user's question using your specialized knowledge and capabilities. Focus on providing a comprehensive and helpful response."
+                
+                # Prepare the conversation with agent-specific prompt
+                full_prompt = f"{system_prompt}\n\nUser: {request.question}\n\nAssistant:"
+                
+                llm_config = LLMConfig(
+                    model_name=mode_config["model"],
+                    temperature=float(mode_config["temperature"]),
+                    top_p=float(mode_config["top_p"]),
+                    max_tokens=int(mode_config["max_tokens"])
+                )
+                
+                # Get model server URL
+                import os
+                model_server = os.environ.get("OLLAMA_BASE_URL")
+                if not model_server:
+                    model_server = llm_settings.get('model_server', '').strip()
+                    if not model_server:
+                        model_server = "http://ollama:11434"
+                
+                llm = OllamaLLM(llm_config, base_url=model_server)
+                
+                # Send initial event indicating direct agent routing
+                yield json.dumps({
+                    "type": "chat_start",
+                    "conversation_id": request.conversation_id,
+                    "model": mode_config["model"],
+                    "thinking": request.thinking,
+                    "selected_agent": request.selected_agent,
+                    "confidence": 1.0,
+                    "classification": "direct_agent_bypass"
+                }) + "\n"
+                
+                yield json.dumps({
+                    "type": "status",
+                    "message": f"🤖 {request.selected_agent} is responding..."
+                }) + "\n"
+                
+                # Stream the agent response directly - no tool calls or RAG
+                final_response = ""
+                async for response_chunk in llm.generate_stream(full_prompt):
+                    final_response += response_chunk.text
+                    
+                    # Stream tokens in real-time
+                    if response_chunk.text.strip():
+                        yield json.dumps({
+                            "token": response_chunk.text
+                        }) + "\n"
+                
+                # Send completion event
+                yield json.dumps({
+                    "answer": final_response,
+                    "source": f"direct_agent_{request.selected_agent}",
+                    "conversation_id": request.conversation_id,
+                    "bypass_classification": True
+                }) + "\n"
+                
+                # Update tracing if enabled
+                if tracer.is_enabled() and generation:
+                    try:
+                        usage = tracer.estimate_token_usage(request.question, final_response)
+                        generation.end(
+                            output=final_response,
+                            usage_details=usage,
+                            metadata={
+                                "success": True,
+                                "source": f"direct_agent_{request.selected_agent}",
+                                "agent_bypass": True,
+                                "classification_bypassed": True,
+                                "selected_agent": request.selected_agent,
+                                "conversation_id": request.conversation_id
+                            }
+                        )
+                        
+                        # Update trace
+                        if trace:
+                            trace.update(
+                                output=final_response,
+                                metadata={
+                                    "success": True,
+                                    "source": f"direct_agent_{request.selected_agent}",
+                                    "classification_bypassed": True,
+                                    "selected_agent": request.selected_agent
+                                }
+                            )
+                        
+                        tracer.flush()
+                    except Exception as e:
+                        logger.warning(f"Failed to update tracing: {e}")
+                
+                return  # Exit early - bypass all classification and tool/RAG processing
+            
+            # Step 1: Use intelligent routing for non-agent queries
             routing_result = await intelligent_routing(request.question)
             
             # If low confidence, use direct online search result
@@ -803,7 +992,7 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 }) + "\n"
                 return
             
-            # Step 1.5: Check for high-confidence direct execution bypass
+            # Step 1.5: Check for high-confidence direct execution bypass (but not for selected agents)
             confidence = routing_result.get("confidence", 0.0)
             classification = routing_result.get("classification", "")
             
@@ -811,8 +1000,9 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
             classifier_settings = get_query_classifier_settings()
             direct_execution_threshold = classifier_settings.get("direct_execution_threshold", 0.9)
             
-            # If high confidence and tool classification, bypass intelligent planning
-            if (confidence >= direct_execution_threshold and 
+            # If high confidence and tool classification, bypass intelligent planning (but not when agent is selected)
+            if (not request.selected_agent and 
+                confidence >= direct_execution_threshold and 
                 classification.upper() in ["TOOL", "TOOLS"] and 
                 routing_result.get("suggested_tools")):
                 
@@ -824,6 +1014,7 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                     "conversation_id": request.conversation_id,
                     "model": "direct-execution",
                     "thinking": request.thinking,
+                    "selected_agent": request.selected_agent,
                     "confidence": confidence,
                     "classification": classification,
                     "bypass_planning": True
@@ -895,17 +1086,20 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                         logger.warning(f"Direct execution failed for {tool_name}: {tool_result.get('error', 'Unknown error')}")
                         break
             
-            # Step 2: Build lightweight decision prompt - Phase 1 approach
+            # Step 2: Handle normal flow (only reached when no agent is selected)
+            # Since agent queries return early above, this is only for regular classification flow
+            
+            # Use standard main_llm configuration for non-agent queries
+            logger.info(f"🎯 NO SELECTED AGENT - Using standard classification routing")
+            classification = routing_result.get("classification", "unknown")
+            confidence = routing_result.get("confidence", 0.0)
+            logger.info(f"📊 Classification: {classification}, Confidence: {confidence:.3f}")
+            llm_settings = get_llm_settings()
+            mode_config = get_main_llm_full_config(llm_settings)
             system_prompt = build_lightweight_decision_prompt()
             
             # Prepare the conversation
             full_prompt = f"{system_prompt}\n\nUser: {request.question}\n\nAssistant:"
-            
-            # Get LLM settings and create LLM instance
-            llm_settings = get_llm_settings()
-            
-            # Get full LLM configuration
-            mode_config = get_main_llm_full_config(llm_settings)
             
             llm_config = LLMConfig(
                 model_name=mode_config["model"],
@@ -930,6 +1124,7 @@ async def intelligent_chat_endpoint(request: IntelligentChatRequest):
                 "conversation_id": request.conversation_id,
                 "model": mode_config["model"],
                 "thinking": request.thinking,
+                "selected_agent": request.selected_agent,
                 "confidence": routing_result.get("confidence", 0.0),
                 "classification": routing_result.get("classification", "unknown")
             }) + "\n"

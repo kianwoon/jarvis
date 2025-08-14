@@ -7,6 +7,7 @@ import {
   IconButton,
   CircularProgress,
   Chip,
+  Avatar,
   Alert,
   Accordion,
   AccordionSummary,
@@ -18,6 +19,7 @@ import {
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import ClearIcon from '@mui/icons-material/Clear';
+import CloseIcon from '@mui/icons-material/Close';
 import { 
   ExpandMore as ExpandMoreIcon, 
   Description as DocumentIcon,
@@ -29,6 +31,7 @@ import {
 import TempDocumentPanel from './temp-documents/TempDocumentPanel';
 import FileUploadComponent from './shared/FileUploadComponent';
 import { MessageContent } from './shared/MessageContent';
+import AgentAutocomplete from './AgentAutocomplete';
 
 interface Message {
   id: string;
@@ -45,6 +48,13 @@ interface Message {
   }>;
 }
 
+interface Agent {
+  name: string;
+  role: string;
+  description: string;
+  avatar: string;
+}
+
 interface ChatInterfaceProps {
   endpoint?: string;
   title?: string;
@@ -52,7 +62,7 @@ interface ChatInterfaceProps {
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
-  endpoint = '/api/v1/langchain/rag',
+  endpoint = '/api/v1/intelligent-chat/intelligent-chat',
   title = 'Jarvis Chat',
   enableTemporaryDocuments = true
 }) => {
@@ -87,6 +97,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [documentCount, setDocumentCount] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const storageKey = `jarvis-chat-${title.toLowerCase().replace(/\s+/g, '-')}`;
+
+  // Agent selection state
+  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [autocompletePosition, setAutocompletePosition] = useState({ top: 0, left: 0 });
+  const [agentSearchTerm, setAgentSearchTerm] = useState('');
 
   console.log('📝 Storage key generated:', storageKey);
 
@@ -125,6 +141,32 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     scrollToBottom();
   }, [messages]);
 
+  // Monitor input changes for agent clearing
+  useEffect(() => {
+    const handleInputMonitoring = () => {
+      const input = inputRef.current?.value || '';
+      if (selectedAgent && !input.includes(`@${selectedAgent.name}`)) {
+        console.log(`🧹 CLEARING selectedAgent: ${selectedAgent.name} not found in input: "${input}"`);
+        setSelectedAgent(null);
+      }
+    };
+
+    const interval = setInterval(handleInputMonitoring, 500);
+    return () => clearInterval(interval);
+  }, [selectedAgent]);
+
+  // Handle click outside to close autocomplete
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (showAutocomplete && inputRef.current && !inputRef.current.contains(event.target as Node)) {
+        setShowAutocomplete(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showAutocomplete]);
+
   const sendMessage = async () => {
     const currentInput = inputRef.current?.value.trim() || '';
     if (!currentInput || loading) return;
@@ -138,6 +180,45 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
     setMessages(prev => [...prev, userMessage]);
     if (inputRef.current) inputRef.current.value = '';
+    
+    // Clear selected agent after sending message if the input no longer contains the @ mention
+    if (selectedAgent && !currentInput.includes(`@${selectedAgent.name}`)) {
+      console.log(`🧹 CLEARING selectedAgent after send: ${selectedAgent.name} not in message`);
+      setSelectedAgent(null);
+    }
+    
+    // Auto-detect agent mentions before sending if no agent is selected
+    let effectiveSelectedAgent = selectedAgent;
+    if (!selectedAgent && currentInput.includes('@')) {
+      // Look for @agent_name patterns in the input
+      const atMentionMatch = currentInput.match(/@([\w\s]+?)(?:\s|$)/);
+      if (atMentionMatch) {
+        const mentionedAgentName = atMentionMatch[1].trim();
+        console.log(`🔍 Auto-detecting agent mention: "${mentionedAgentName}"`);
+        
+        // Fetch available agents and find a match
+        try {
+          const agentsResponse = await fetch('/api/v1/intelligent-chat/agents/autocomplete');
+          if (agentsResponse.ok) {
+            const { agents } = await agentsResponse.json();
+            const matchedAgent = agents.find((agent: Agent) => 
+              agent.name.toLowerCase() === mentionedAgentName.toLowerCase()
+            );
+            
+            if (matchedAgent) {
+              effectiveSelectedAgent = matchedAgent;
+              console.log(`✅ Auto-selected agent: ${matchedAgent.name}`);
+              setSelectedAgent(matchedAgent); // Update state for UI
+            } else {
+              console.log(`⚠️ Agent "${mentionedAgentName}" not found in available agents`);
+            }
+          }
+        } catch (error) {
+          console.warn('Failed to fetch agents for auto-detection:', error);
+        }
+      }
+    }
+    
     setLoading(true);
 
     // Add timeout protection for loading state
@@ -150,11 +231,17 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       setLoading(false);
     }, 120000); // 2 minute emergency release
 
+    let assistantMessage: Message | undefined;
+
     try {
       const requestBody = {
         question: currentInput,
         conversation_id: conversationId,
         use_langgraph: false,
+        // Include selected agent (either manually selected or auto-detected)
+        ...(effectiveSelectedAgent && {
+          selected_agent: effectiveSelectedAgent.name
+        }),
         // Include temporary document preferences if enabled
         ...(enableTemporaryDocuments && {
           use_hybrid_rag: documentCount > 0,
@@ -165,6 +252,18 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       };
       
       console.log('🚀 SENDING REQUEST:', requestBody);
+      console.log('🤖 SELECTED AGENT STATE:', selectedAgent);
+      console.log('🤖 EFFECTIVE SELECTED AGENT:', effectiveSelectedAgent);
+      console.log('🔍 INPUT TEXT:', currentInput);
+      if (effectiveSelectedAgent) {
+        console.log(`✅ Agent Selected: ${effectiveSelectedAgent.name} - Should be included in request`);
+        console.log(`🎯 Agent details:`, effectiveSelectedAgent);
+        if (effectiveSelectedAgent !== selectedAgent) {
+          console.log(`🔧 Agent was auto-detected from @mention`);
+        }
+      } else {
+        console.log('❌ No agent selected and no valid @mention found');
+      }
       
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -181,7 +280,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
 
-      let assistantMessage: Message = {
+      assistantMessage = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
         content: '',
@@ -341,7 +440,127 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
+  // Handle input changes to detect @ mentions
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const input = e.target.value;
+    const cursorPosition = e.target.selectionStart;
+    
+    console.log('Input changed:', input, 'Cursor at:', cursorPosition);
+    
+    // Find the last @ character before cursor position
+    const textBeforeCursor = input.substring(0, cursorPosition);
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+    
+    console.log('Last @ index:', lastAtIndex, 'Text before cursor:', textBeforeCursor);
+    
+    if (lastAtIndex !== -1) {
+      // Check if there's a space after the @ but before cursor
+      const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
+      
+      // Only show autocomplete if there's no space after @ and we're right after @ or typing the agent name
+      if (!textAfterAt.includes(' ') && textAfterAt.length <= 50) {
+        // Calculate position for autocomplete dropdown
+        const textArea = e.target;
+        const rect = textArea.getBoundingClientRect();
+        
+        // Simple approximation of cursor position - in real implementation you'd want more precise positioning
+        const lineHeight = parseInt(getComputedStyle(textArea).lineHeight, 10) || 20;
+        const lines = textBeforeCursor.split('\n').length;
+        
+        setAutocompletePosition({
+          top: rect.top + (lines * lineHeight) + 25,
+          left: rect.left + 50
+        });
+        
+        setAgentSearchTerm(textAfterAt);
+        setShowAutocomplete(true);
+        console.log('Showing autocomplete with search term:', textAfterAt);
+        console.log('Position:', { top: rect.top + (lines * lineHeight) + 25, left: rect.left + 50 });
+        console.log('State will be - showAutocomplete: true, agentSearchTerm:', textAfterAt);
+        return;
+      }
+    }
+    
+    // Hide autocomplete if conditions aren't met
+    setShowAutocomplete(false);
+  };
+
+  // Handle agent selection from autocomplete
+  const handleAgentSelect = (agent: Agent) => {
+    console.log('handleAgentSelect called with agent:', agent);
+    if (!inputRef.current) {
+      console.log('No input ref found');
+      return;
+    }
+    
+    try {
+      const input = inputRef.current.value;
+      const cursorPosition = inputRef.current.selectionStart || 0;
+      const textBeforeCursor = input.substring(0, cursorPosition);
+      const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+      
+      console.log('Current input:', input);
+      console.log('Cursor position:', cursorPosition);
+      console.log('Text before cursor:', textBeforeCursor);
+      console.log('Last @ index:', lastAtIndex);
+      
+      if (lastAtIndex !== -1) {
+        // Replace @searchterm with @agent_name
+        const beforeAt = input.substring(0, lastAtIndex);
+        const afterCursor = input.substring(cursorPosition);
+        const newValue = `${beforeAt}@${agent.name} ${afterCursor}`;
+        
+        console.log('New value:', newValue);
+        inputRef.current.value = newValue;
+        
+        // Set cursor position after the agent name
+        const newCursorPos = lastAtIndex + agent.name.length + 2;
+        console.log('Setting cursor to position:', newCursorPos);
+        inputRef.current.setSelectionRange(newCursorPos, newCursorPos);
+        
+        // Trigger onChange to update any state if needed
+        const event = new Event('input', { bubbles: true });
+        inputRef.current.dispatchEvent(event);
+      }
+      
+      setSelectedAgent(agent);
+      setShowAutocomplete(false);
+      
+      console.log('🎯 AGENT SELECTED SUCCESSFULLY:', agent.name);
+      console.log('🤖 Full agent data:', agent);
+      console.log('✅ selectedAgent state should now be set');
+      
+      // Focus input after a small delay to ensure autocomplete closes first
+      setTimeout(() => {
+        if (inputRef.current) {
+          inputRef.current.focus();
+        }
+      }, 50);
+    } catch (error) {
+      console.error('Error in handleAgentSelect:', error);
+      setShowAutocomplete(false);
+    }
+  };
+
+  // Handle closing autocomplete
+  const handleAutocompleteClose = () => {
+    setShowAutocomplete(false);
+  };
+
+  // Clear selected agent when input is cleared or @ mention is removed
+  const handleInputClear = () => {
+    const input = inputRef.current?.value || '';
+    if (selectedAgent && !input.includes(`@${selectedAgent.name}`)) {
+      setSelectedAgent(null);
+    }
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
+    // Don't handle Enter if autocomplete is visible - let autocomplete handle it
+    if (showAutocomplete && (e.key === 'Enter' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Escape')) {
+      return;
+    }
+    
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -387,6 +606,30 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         >
           {statusMessage}
         </Alert>
+      )}
+
+      {/* Selected Agent Badge */}
+      {selectedAgent && (
+        <Box sx={{ mb: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              Selected Agent:
+            </Typography>
+            <Chip
+              avatar={
+                <Avatar sx={{ bgcolor: 'primary.main', fontSize: '0.875rem' }}>
+                  {selectedAgent.avatar}
+                </Avatar>
+              }
+              label={selectedAgent.name}
+              variant="filled"
+              color="primary"
+              onDelete={() => setSelectedAgent(null)}
+              deleteIcon={<CloseIcon />}
+              sx={{ fontSize: '0.875rem' }}
+            />
+          </Box>
+        </Box>
       )}
 
       {/* Messages */}
@@ -537,12 +780,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       </Paper>
 
       {/* Input */}
-      <Box sx={{ display: 'flex', gap: 1 }}>
+      <Box sx={{ display: 'flex', gap: 1, position: 'relative' }}>
         <Box
           component="textarea"
           ref={inputRef}
+          onChange={handleInputChange}
           onKeyDown={handleKeyPress}
-          placeholder="Ask Jarvis anything..."
+          placeholder="Ask Jarvis anything... Type @ to mention an agent"
           disabled={loading}
           sx={{
             flex: 1,
@@ -582,6 +826,19 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         >
           {loading ? <CircularProgress size={24} /> : <SendIcon />}
         </Button>
+
+        {/* Agent Autocomplete Debug */}
+        {showAutocomplete && console.log('Rendering AgentAutocomplete')}
+        {/* Agent Autocomplete */}
+        {showAutocomplete && (
+          <AgentAutocomplete
+            searchTerm={agentSearchTerm}
+            position={autocompletePosition}
+            onSelect={handleAgentSelect}
+            onClose={handleAutocompleteClose}
+            visible={showAutocomplete}
+          />
+        )}
       </Box>
     </Box>
   );

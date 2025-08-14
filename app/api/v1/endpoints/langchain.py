@@ -7,6 +7,7 @@ from app.core.query_classifier_settings_cache import get_query_classifier_settin
 from app.core.temp_document_manager import TempDocumentManager
 from app.langchain.hybrid_rag_orchestrator import HybridRAGOrchestrator
 from app.core.simple_conversation_manager import conversation_manager
+from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
 from fastapi.responses import StreamingResponse
 import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any
@@ -32,6 +33,7 @@ class RAGRequest(BaseModel):
     conversation_id: Optional[str] = None
     session_id: Optional[str] = None  # Add this for backward compatibility
     use_langgraph: bool = True
+    selected_agent: Optional[str] = None  # For single agent mode (@agent feature)
     collections: Optional[List[str]] = None  # Specific collections to search
     collection_strategy: str = "auto"  # "auto", "specific", or "all"
     skip_classification: bool = False  # Allow bypassing classification if needed
@@ -60,7 +62,6 @@ async def rag_endpoint(request: RAGRequest):
     generation = None
     
     # Get model name from LLM settings for proper tracing
-    from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
     llm_settings = get_llm_settings()
     main_llm_config = get_main_llm_full_config(llm_settings)
     model_name = main_llm_config.get("model", "unknown")
@@ -173,6 +174,12 @@ async def rag_endpoint(request: RAGRequest):
         logger.info(f"[EXECUTION TRACKER] Unified search found {len(extracted_documents)} documents")
         
         return extracted_documents
+    
+    # Check for single agent mode (@agent feature)
+    if request.selected_agent:
+        logger.info(f"🎯 SINGLE AGENT MODE: {request.selected_agent} - Bypassing classification")
+        # Handle single agent query directly
+        return handle_single_agent_query(request, request.selected_agent, trace, rag_span)
     
     # Check if we should bypass classification for hybrid RAG mode
     if request.use_hybrid_rag and conversation_id:
@@ -781,7 +788,6 @@ async def multi_agent_endpoint(request: MultiAgentRequest):
     generation = None
     
     # Get model name from LLM settings for proper tracing
-    from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
     llm_settings = get_llm_settings()
     main_llm_config = get_main_llm_full_config(llm_settings)
     model_name = main_llm_config.get("model", "unknown")
@@ -998,7 +1004,6 @@ async def large_generation_endpoint(request: LargeGenerationRequest):
     generation = None
     
     # Get model name from LLM settings for proper tracing
-    from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
     llm_settings = get_llm_settings()
     main_llm_config = get_main_llm_full_config(llm_settings)
     model_name = main_llm_config.get("model", "unknown")
@@ -1262,6 +1267,148 @@ async def cleanup_generation_session(session_id: str):
             "status": "cleanup_failed",
             "timestamp": datetime.now().isoformat()
         }
+
+def handle_single_agent_query(request: RAGRequest, agent_name: str, trace=None, rag_span=None):
+    """Handle single agent queries (@agent feature)"""
+    from fastapi.responses import StreamingResponse
+    from app.core.langgraph_agents_cache import get_agent_by_name
+    from app.llm.ollama import OllamaLLM
+    from app.llm.base import LLMConfig
+    import os
+    import json
+    
+    conversation_id = request.conversation_id or request.session_id
+    
+    async def stream():
+        try:
+            # Get agent configuration
+            agent_data = get_agent_by_name(agent_name)
+            
+            if not agent_data:
+                # Fallback configuration if agent not found
+                llm_settings = get_llm_settings()
+                mode_config = get_main_llm_full_config(llm_settings)
+                system_prompt = f"You are {agent_name}, a specialized AI assistant. Please respond directly to the user's question using your expertise."
+            else:
+                # Use agent's specific configuration
+                agent_system_prompt = agent_data.get("system_prompt", "")
+                agent_config = agent_data.get("config", {})
+                
+                # Determine model and parameters based on agent config
+                if agent_config.get('use_main_llm'):
+                    main_llm_config = get_main_llm_full_config()
+                    model_name = main_llm_config.get('model', 'qwen3:30b-a3b-instruct-2507-q4_K_M')
+                    actual_max_tokens = agent_config.get('max_tokens', main_llm_config.get('max_tokens', 2000))
+                    actual_temperature = agent_config.get('temperature', main_llm_config.get('temperature', 0.7))
+                    top_p = agent_config.get('top_p', main_llm_config.get('top_p', 0.9))
+                else:
+                    # Agent-specific model or fallback
+                    model_name = agent_config.get("model")
+                    if not model_name:
+                        main_llm_config = get_main_llm_full_config()
+                        model_name = main_llm_config.get('model', 'qwen3:30b-a3b-instruct-2507-q4_K_M')
+                    
+                    actual_max_tokens = agent_config.get('max_tokens', 2000)
+                    actual_temperature = agent_config.get('temperature', 0.7)
+                    top_p = agent_config.get('top_p', 0.9)
+                
+                mode_config = {
+                    "model": model_name,
+                    "temperature": float(actual_temperature),
+                    "top_p": float(top_p),
+                    "max_tokens": int(actual_max_tokens)
+                }
+                
+                system_prompt = f"You are {agent_name}. {agent_system_prompt}\n\nPlease respond directly to the user's question using your specialized knowledge and capabilities."
+            
+            # Get conversation history if available
+            conversation_history = ""
+            if conversation_id:
+                from app.core.simple_conversation_manager import conversation_manager
+                history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
+                if history:
+                    conversation_history = conversation_manager.format_history_for_prompt(history, "")
+            
+            # Prepare the full prompt
+            full_prompt = f"{system_prompt}\n\n{conversation_history}\n\nUser: {request.question}\n\nAssistant:"
+            
+            # Initialize LLM
+            llm_config = LLMConfig(
+                model_name=mode_config["model"],
+                temperature=float(mode_config["temperature"]),
+                top_p=float(mode_config["top_p"]),
+                max_tokens=int(mode_config["max_tokens"])
+            )
+            
+            # Get model server URL
+            llm_settings = get_llm_settings()
+            model_server = os.environ.get("OLLAMA_BASE_URL") or llm_settings.get('model_server', '').strip() or "http://ollama:11434"
+            llm = OllamaLLM(llm_config, base_url=model_server)
+            
+            # Send initial event
+            yield json.dumps({
+                "type": "chat_start",
+                "conversation_id": conversation_id,
+                "model": mode_config["model"],
+                "thinking": request.thinking,
+                "selected_agent": agent_name,
+                "confidence": 1.0,
+                "classification": "direct_agent"
+            }) + "\n"
+            
+            yield json.dumps({
+                "type": "status",
+                "message": f"🤖 {agent_name} is responding..."
+            }) + "\n"
+            
+            # Stream agent response
+            final_response = ""
+            async for response_chunk in llm.generate_stream(full_prompt):
+                final_response += response_chunk.text
+                
+                if response_chunk.text.strip():
+                    yield json.dumps({
+                        "token": response_chunk.text
+                    }) + "\n"
+            
+            # Save to conversation history
+            if conversation_id:
+                await conversation_manager.add_message(conversation_id, "user", request.question)
+                await conversation_manager.add_message(conversation_id, "assistant", final_response)
+            
+            # Send completion event
+            yield json.dumps({
+                "answer": final_response,
+                "source": f"direct_agent_{agent_name}",
+                "conversation_id": conversation_id,
+                "bypass_classification": True,
+                "selected_agent": agent_name
+            }) + "\n"
+            
+            # Update tracing if enabled
+            if trace and rag_span:
+                try:
+                    rag_span.update(
+                        output=final_response,
+                        metadata={
+                            "selected_agent": agent_name,
+                            "model": mode_config["model"],
+                            "bypass_classification": True
+                        }
+                    )
+                    rag_span.end()
+                except:
+                    pass
+            
+        except Exception as e:
+            logger.error(f"Single agent query error: {e}")
+            yield json.dumps({
+                "answer": f"Error in agent {agent_name}: {str(e)}",
+                "source": "ERROR",
+                "conversation_id": conversation_id
+            }) + "\n"
+    
+    return StreamingResponse(stream(), media_type="application/json")
 
 def handle_tool_query(request: RAGRequest, routing: Dict):
     """Handle queries that require tool usage"""
@@ -1641,7 +1788,6 @@ ALWAYS trust the search results as they contain the most up-to-date information.
                     # Get LLM settings first
                     from app.llm.ollama import OllamaLLM
                     from app.llm.base import LLMConfig
-                    from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
                     
                     llm_settings = get_llm_settings()
                     

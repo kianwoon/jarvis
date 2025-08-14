@@ -94,7 +94,7 @@ api_router.include_router(
 
 api_router.include_router(
     intelligent_chat.router,
-    prefix="/chat",
+    prefix="/intelligent-chat",
     tags=["intelligent-chat"]
 )
 

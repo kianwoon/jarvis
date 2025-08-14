@@ -35,6 +35,8 @@ def main():
         
         if not input_data:
             log_event("No input received from stdin", "WARNING")
+            # Still output empty hook response
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}))
             sys.exit(0)
         
         # Parse the JSON input from Claude Code
@@ -47,6 +49,8 @@ def main():
         # Validate that this is a UserPromptSubmit hook
         if hook_data.get("hook_event_name") != "UserPromptSubmit":
             log_event(f"Unexpected hook event: {hook_data.get('hook_event_name', 'unknown')}", "WARNING")
+            # Still output hook response for unexpected events
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}))
             sys.exit(0)
         
         # Get the user's prompt
@@ -60,6 +64,8 @@ def main():
         
         if reminder_text.lower() in user_prompt.lower():
             log_event(f"Reminder already present in prompt, skipping", "INFO")
+            # Still output hook response when reminder already present
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}))
             sys.exit(0)
         
         # Create the reminder message to append as additional context
