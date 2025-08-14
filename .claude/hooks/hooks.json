@@ -1,0 +1,47 @@
+{
+  "version": "1.0.0",
+  "hooks": [
+    {
+      "name": "user-prompt-submit",
+      "description": "Analyzes every user message and selects appropriate agents for delegation",
+      "enabled": true,
+      "script": "user-prompt-submit.py",
+      "type": "pre-process",
+      "triggers": ["user_message", "user_prompt"],
+      "settings": {
+        "timeout": 5000,
+        "require_delegation": true,
+        "log_activity": true,
+        "fallback_agent": "general-purpose"
+      }
+    },
+    {
+      "name": "agent-selection",
+      "description": "Validates and optimizes agent selection",
+      "enabled": true,
+      "script": "user_prompt_analyzer.py",
+      "type": "analyzer",
+      "triggers": ["analyze_prompt"],
+      "settings": {
+        "max_agents": 3,
+        "min_relevance_score": 0.1,
+        "enable_logging": true
+      }
+    }
+  ],
+  "global_settings": {
+    "enforce_read_only": true,
+    "delegation_required": true,
+    "agent_work_script": "/Users/kianwoonwong/Downloads/jarvis/request_agent_work.py",
+    "log_directory": "/Users/kianwoonwong/Downloads/jarvis/.claude/hooks/logs",
+    "analysis_directory": "/Users/kianwoonwong/Downloads/jarvis/.claude/hooks/analysis"
+  },
+  "agent_mappings": {
+    "code_implementation": ["coder", "senior-coder"],
+    "database_operations": ["database-administrator"],
+    "ui_design": ["ui-theme-designer"],
+    "error_analysis": ["codebase-error-analyzer"],
+    "ai_ml_tasks": ["llm-ai-architect"],
+    "general_tasks": ["general-purpose"]
+  }
+}
