@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 class MCPStdioBridge:
     """Bridge between HTTP requests and stdio-based MCP servers"""
     
-    def __init__(self, command: str, args: List[str], env_vars: Optional[Dict[str, str]] = None):
+    def __init__(self, command: str, args: List[str], env_vars: Optional[Dict[str, str]] = None, working_directory: Optional[str] = None):
         self.command = command
         self.args = args
         self.env_vars = env_vars or {}
+        self.working_directory = working_directory
         self.process: Optional[subprocess.Popen] = None
         self.request_id = 0
         self.initialized = False
@@ -160,17 +161,23 @@ class MCPStdioBridge:
                 logger.debug("Using subprocess.Popen instead of asyncio")
                 import subprocess
                 
-                # Determine working directory - use actual MCP server directory if outside Docker
+                # Determine working directory - prioritize explicitly provided directory
                 import os
-                cwd = '/mcp-servers'
-                if not os.path.exists(cwd):
-                    # Not in Docker environment, use MCP server directory from args
-                    if self.args and os.path.dirname(self.args[0]):
-                        cwd = os.path.dirname(self.args[0])
-                        logger.debug(f"Using MCP server directory: {cwd}")
-                    else:
-                        cwd = None  # Use current working directory
-                        logger.debug("Using current working directory")
+                cwd = self.working_directory  # Use explicitly provided working directory first
+                
+                if not cwd:
+                    # Fallback to Docker default if no working directory provided
+                    cwd = '/mcp-servers'
+                    if not os.path.exists(cwd):
+                        # Not in Docker environment, use MCP server directory from args
+                        if self.args and os.path.dirname(self.args[0]):
+                            cwd = os.path.dirname(self.args[0])
+                            logger.debug(f"Using MCP server directory from args: {cwd}")
+                        else:
+                            cwd = None  # Use current working directory
+                            logger.debug("Using current working directory")
+                else:
+                    logger.debug(f"Using provided working directory: {cwd}")
                 
                 self.process = subprocess.Popen(
                     [self.command] + self.args,
@@ -597,7 +604,7 @@ async def call_mcp_tool_via_stdio(
                 return {"error": "Invalid Docker exec command format"}
         else:
             # Generic stdio bridge
-            bridge = MCPStdioBridge(command, args, server_config.get("env", {}))
+            bridge = MCPStdioBridge(command, args, server_config.get("env", {}), server_config.get("working_directory"))
             await bridge.start()
             
             try:

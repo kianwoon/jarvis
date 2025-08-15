@@ -76,7 +76,7 @@ class MCPServer(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False, index=True)
-    config_type = Column(String(20), nullable=False)  # 'manifest', 'command', or 'remote_http'
+    config_type = Column(String(20), nullable=False)  # 'manifest', 'command', 'remote_http', or 'http'
     
     # Manifest-based configuration
     manifest_url = Column(String(255), nullable=True)

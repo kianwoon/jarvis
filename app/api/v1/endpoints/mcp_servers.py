@@ -32,7 +32,7 @@ def get_db():
 # Pydantic models for API
 class MCPServerBase(BaseModel):
     name: str
-    config_type: str  # 'manifest', 'command', or 'remote_http'
+    config_type: str  # 'manifest', 'command', 'remote_http', or 'http'
     
     # Manifest-based configuration
     manifest_url: Optional[str] = None
@@ -213,8 +213,8 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
     """Create a new MCP server."""
     try:
         # Validate configuration type
-        if server.config_type not in ["manifest", "command", "remote_http"]:
-            raise HTTPException(status_code=400, detail="config_type must be 'manifest', 'command', or 'remote_http'")
+        if server.config_type not in ["manifest", "command", "remote_http", "http"]:
+            raise HTTPException(status_code=400, detail="config_type must be 'manifest', 'command', 'remote_http', or 'http'")
         
         # Validate required fields based on config type
         if server.config_type == "manifest" and not server.manifest_url:
@@ -226,6 +226,10 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
         if server.config_type == "remote_http":
             if not server.remote_config or not server.remote_config.get("server_url"):
                 raise HTTPException(status_code=400, detail="remote_config.server_url is required for remote HTTP servers")
+                
+        if server.config_type == "http":
+            if not server.hostname:
+                raise HTTPException(status_code=400, detail="hostname is required for HTTP servers")
         
         # Set default enhanced error handling configuration if not provided
         default_error_config = {
@@ -323,6 +327,37 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
                     # Don't fail the creation, just log the warning
             else:
                 logger.warning("Process manager not available, command-based server created but not started")
+        
+        # Handle HTTP server
+        elif server.config_type == "http":
+            # For HTTP servers, we can try to discover tools if there's a discovery endpoint
+            # For now, just mark as healthy if we can connect
+            try:
+                if server.hostname:
+                    # Try a simple health check
+                    hostname = server.hostname
+                    if not hostname.startswith(('http://', 'https://')):
+                        health_url = f"http://{hostname}/health"
+                    else:
+                        health_url = hostname.rstrip('/') + '/health'
+                    
+                    headers = {}
+                    if server.api_key:
+                        headers["Authorization"] = f"Bearer {server.api_key}"
+                    
+                    # Try to connect
+                    try:
+                        resp = requests.get(health_url, headers=headers, timeout=5)
+                        if resp.status_code < 500:
+                            new_server.health_status = "healthy"
+                            new_server.is_running = True
+                    except:
+                        # Server might not have a health endpoint, that's ok
+                        new_server.health_status = "unknown"
+                        
+            except Exception as e:
+                logger.warning(f"Could not perform initial health check for HTTP server: {e}")
+                new_server.health_status = "unknown"
         
         # Handle remote HTTP/SSE server
         elif server.config_type == "remote_http":
@@ -513,6 +548,10 @@ def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = 
         
         elif db_server.config_type == "remote_http":
             # Remote HTTP servers primarily use remote_config, which is handled above
+            pass
+            
+        elif db_server.config_type == "http":
+            # HTTP servers use hostname and api_key, which are handled above
             pass
         
         db.commit()
@@ -1030,6 +1069,66 @@ async def check_server_health(server_id: int, db: Session = Depends(get_db)):
                 message = f"Remote health check failed: {str(e)}"
                 logger.warning(f"Remote health check failed for server {server_id}: {e}")
         
+        elif server.config_type == "http":
+            # Handle HTTP server health check
+            try:
+                if not server.hostname:
+                    status = 'unhealthy'
+                    message = "No hostname configured for HTTP server"
+                else:
+                    # Build health check URL
+                    hostname = server.hostname
+                    # Add http:// if not present
+                    if not hostname.startswith(('http://', 'https://')):
+                        health_url = f"http://{hostname}/health"
+                    else:
+                        # Parse and add /health endpoint
+                        health_url = hostname.rstrip('/') + '/health'
+                    
+                    # Add authentication if configured
+                    headers = {}
+                    if server.api_key:
+                        headers["Authorization"] = f"Bearer {server.api_key}"
+                    
+                    logger.info(f"Health check for HTTP server: {health_url}")
+                    
+                    # Perform health check
+                    import requests
+                    resp = requests.get(health_url, headers=headers, timeout=5)
+                    
+                    # Check response status
+                    if resp.status_code == 200:
+                        try:
+                            data = resp.json()
+                            if data.get('status') == 'healthy' or data.get('ok') or data.get('healthy'):
+                                status = 'healthy'
+                                server_name = data.get('server', data.get('name', 'Unknown'))
+                                version = data.get('version', 'Unknown')
+                                message = f"HTTP server is healthy: {server_name} v{version}"
+                            else:
+                                status = 'healthy'  # Server responded, consider it healthy
+                                message = f"HTTP server responded with status {resp.status_code}"
+                        except:
+                            # Not JSON response, but server is reachable
+                            status = 'healthy'
+                            message = f"HTTP server is reachable (status {resp.status_code})"
+                    elif resp.status_code == 404:
+                        # No health endpoint, but server is reachable
+                        status = 'healthy'
+                        message = "HTTP server is reachable (no health endpoint)"
+                    else:
+                        status = 'unhealthy'
+                        message = f"HTTP server returned status {resp.status_code}"
+                        
+            except requests.RequestException as e:
+                status = 'unhealthy'
+                message = f"HTTP health check failed: {str(e)}"
+                logger.warning(f"HTTP health check failed for server {server_id}: {e}")
+            except Exception as e:
+                status = 'unhealthy'
+                message = f"Unexpected error during HTTP health check: {str(e)}"
+                logger.error(f"Unexpected error during HTTP health check for server {server_id}: {e}")
+        
         else:
             # Unknown server type
             status = 'unknown'
@@ -1037,7 +1136,7 @@ async def check_server_health(server_id: int, db: Session = Depends(get_db)):
         
         # Update health status
         server.health_status = status
-        server.last_health_check = datetime.utcnow()
+        server.last_health_check = datetime.now(timezone.utc)
         db.commit()
         
         return {"status": status, "message": message}
@@ -1064,8 +1163,8 @@ async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     
-    if server.config_type not in ["command", "remote_http"]:
-        raise HTTPException(status_code=400, detail="Tool discovery is only for command-based or remote HTTP servers")
+    if server.config_type not in ["command", "remote_http", "http"]:
+        raise HTTPException(status_code=400, detail="Tool discovery is only for command-based, remote HTTP, or HTTP servers")
     
     try:
         if server.config_type == "command":
@@ -1095,7 +1194,7 @@ async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
                     raise ValueError("Invalid Docker exec command format")
             else:
                 # Generic stdio server
-                bridge = MCPStdioBridge(server.command, server.args or [], server.env or {})
+                bridge = MCPStdioBridge(server.command, server.args or [], server.env or {}, server.working_directory)
             
             # Start the bridge and discover tools
             await bridge.start()
@@ -1117,6 +1216,42 @@ async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
             
             tools = await remote_mcp_manager.discover_tools(server_config)
             endpoint_prefix = f"remote://{server.name}"
+            
+        elif server.config_type == "http":
+            # For HTTP servers, we need to implement tool discovery
+            # This would typically involve calling a /tools or /discover endpoint
+            # For now, return empty tools list or attempt discovery
+            tools = []
+            endpoint_prefix = f"http://{server.hostname}"
+            
+            if server.hostname:
+                try:
+                    # Build discovery URL
+                    hostname = server.hostname
+                    if not hostname.startswith(('http://', 'https://')):
+                        discover_url = f"http://{hostname}/tools"
+                    else:
+                        discover_url = hostname.rstrip('/') + '/tools'
+                    
+                    # Add authentication if configured
+                    headers = {}
+                    if server.api_key:
+                        headers["Authorization"] = f"Bearer {server.api_key}"
+                    
+                    logger.info(f"Discovering tools from HTTP server: {discover_url}")
+                    
+                    # Try to discover tools
+                    resp = requests.get(discover_url, headers=headers, timeout=5)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, list):
+                            tools = data
+                        elif isinstance(data, dict) and 'tools' in data:
+                            tools = data['tools']
+                        logger.info(f"Discovered {len(tools)} tools from HTTP server")
+                except Exception as e:
+                    logger.warning(f"Could not discover tools from HTTP server: {e}")
+                    # Continue without tools
         
         # Update server status
         server.health_status = "healthy"

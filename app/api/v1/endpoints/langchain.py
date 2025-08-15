@@ -1351,16 +1351,19 @@ Your response (only function calls or "No tools needed"):"""
         response = await llm.generate(tool_decision_prompt)
         logger.info(f"🤖 LLM tool decision response: {response}")
         
+        # Extract text from response object
+        response_text = response.text if hasattr(response, 'text') else str(response)
+        
         # Parse the response for function calls
         tools_to_execute = []
         
-        if "no tools needed" in response.lower():
+        if "no tools needed" in response_text.lower():
             logger.info("🔍 LLM decided no tools are needed")
             return []
         
         # Pattern to match function calls: call_tool_NAME(params)
         function_pattern = r'call_tool_(\w+)\s*\(([^)]*)\)'
-        matches = re.finditer(function_pattern, response, re.IGNORECASE)
+        matches = re.finditer(function_pattern, response_text, re.IGNORECASE)
         
         for match in matches:
             tool_name = match.group(1)
@@ -1452,7 +1455,10 @@ def handle_single_agent_query(request: RAGRequest, agent_name: str, trace=None, 
                     "max_tokens": int(actual_max_tokens)
                 }
                 
-                system_prompt = f"You are {agent_name}. {agent_system_prompt}\n\nPlease respond directly to the user's question using your specialized knowledge and capabilities."
+                # Construct system prompt - simplified to avoid infinite compliance loops
+                system_prompt = f"""You are {agent_name}. {agent_system_prompt}
+
+Important: Respond directly to the user's question. Do not include any meta-commentary, instructions, or explanations of your process."""
             
             # Get conversation history if available
             conversation_history = ""
@@ -1525,7 +1531,19 @@ def handle_single_agent_query(request: RAGRequest, agent_name: str, trace=None, 
                                 tool_results_context += "\nPlease use the above tool results to provide an informed response.\n"
             
             # Prepare the full prompt with tool results
-            full_prompt = f"{system_prompt}\n\n{tool_results_context}{conversation_history}\n\nUser: {request.question}\n\nAssistant:"
+            # Add additional reminder to not expose instructions
+            full_prompt = f"""{system_prompt}
+
+{tool_results_context}{conversation_history}
+
+User: {request.question}
+
+FINAL REMINDER - OUTPUT ONLY THE REQUESTED CONTENT:
+- If asked for a LinkedIn post, output ONLY the post text
+- If asked for analysis, output ONLY the analysis
+- DO NOT output section headers, templates, or instructions
+- DO NOT explain your process or methodology unless specifically asked
+- START your response with the actual content, not meta-commentary"""
             
             # Initialize LLM
             llm_config = LLMConfig(

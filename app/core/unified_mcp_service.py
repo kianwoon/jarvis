@@ -1193,14 +1193,6 @@ async def call_mcp_tool_unified(tool_info: Dict[str, Any], tool_name: str,
         server_id = tool_info.get("server_id")
         logger.debug(f"Tool {tool_name} - endpoint: {endpoint}, server_id: {server_id}")
         
-        # CRITICAL FIX: Direct routing bypass for google_search to avoid subprocess issues
-        if tool_name == "google_search":
-            logger.info(f"[BYPASS] Routing google_search directly to avoid subprocess issues")
-            service = UnifiedMCPService()
-            result = await service._direct_google_search(parameters)
-            logger.info(f"[BYPASS] Direct google_search completed successfully")
-            return result
-        
         # CRITICAL FIX: Direct routing bypass for get_datetime to avoid MCP server issues
         if tool_name == "get_datetime":
             logger.info(f"[BYPASS] Routing get_datetime directly to fallback to avoid server issues")
@@ -1276,7 +1268,8 @@ async def call_mcp_tool_unified(tool_info: Dict[str, Any], tool_name: str,
                 server_config = {
                     "command": server.command,
                     "args": server.args if server.args else [],
-                    "env": server.env if server.env else {}
+                    "env": server.env if server.env else {},
+                    "working_directory": server.working_directory
                 }
                 logger.debug(f"Server config for {tool_name}: {server_config}")
                 

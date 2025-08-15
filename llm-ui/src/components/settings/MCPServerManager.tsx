@@ -60,7 +60,7 @@ import {
 interface MCPServer {
   id?: number;
   name: string;
-  config_type: 'manifest' | 'command' | 'remote_http';
+  config_type: 'manifest' | 'command' | 'remote_http' | 'http';
   is_active: boolean;
   
   // Manifest-based config
@@ -180,6 +180,8 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
         return <ManifestIcon />;
       case 'command':
         return <CommandIcon />;
+      case 'http':
+        return <ServerIcon />;
       case 'remote_http':
         return <RemoteIcon />;
       default:
@@ -258,7 +260,7 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
     }
   };
 
-  const getNewServerTemplate = (type: 'manifest' | 'command' | 'remote_http'): MCPServer => {
+  const getNewServerTemplate = (type: 'manifest' | 'command' | 'remote_http' | 'http'): MCPServer => {
     const base = {
       name: '',
       config_type: type,
@@ -301,6 +303,12 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
           restart_policy: 'on-failure',
           max_restarts: 3
         };
+      case 'http':
+        return {
+          ...base,
+          hostname: '',
+          api_key: ''
+        };
       case 'remote_http':
         return {
           ...base,
@@ -318,7 +326,7 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
     }
   };
 
-  const handleAdd = (type: 'manifest' | 'command' | 'remote_http') => {
+  const handleAdd = (type: 'manifest' | 'command' | 'remote_http' | 'http') => {
     const newServer = getNewServerTemplate(type);
     setEditingServer(newServer);
     
@@ -503,7 +511,7 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
     const updateNestedConfig = (key: keyof MCPServer, updates: any) => {
       setEditingServer({
         ...editingServer,
-        [key]: { ...editingServer[key], ...updates }
+        [key]: { ...(editingServer[key] as any || {}), ...updates }
       });
     };
 
@@ -531,7 +539,8 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
                     onChange={(e) => updateServer({ config_type: e.target.value as any })}
                   >
                     <MenuItem value="manifest">Manifest-based</MenuItem>
-                    <MenuItem value="command">Command-based</MenuItem>
+                    <MenuItem value="command">Command-based (stdio)</MenuItem>
+                    <MenuItem value="http">HTTP Server</MenuItem>
                     <MenuItem value="remote_http">Remote HTTP/SSE</MenuItem>
                   </Select>
                 </FormControl>
@@ -552,6 +561,36 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
         </Card>
 
         {/* Type-specific Configuration */}
+        {editingServer.config_type === 'http' && (
+          <Card>
+            <CardHeader title="HTTP Server Configuration" />
+            <CardContent>
+              <Grid container spacing={2}>
+                <Grid item xs={12}>
+                  <TextField
+                    label="Hostname/URL"
+                    value={editingServer.hostname || ''}
+                    onChange={(e) => updateServer({ hostname: e.target.value })}
+                    fullWidth
+                    required
+                    helperText="e.g., host.docker.internal:3001 or http://localhost:3001"
+                  />
+                </Grid>
+                <Grid item xs={12}>
+                  <TextField
+                    label="API Key (Optional)"
+                    value={editingServer.api_key || ''}
+                    onChange={(e) => updateServer({ api_key: e.target.value })}
+                    fullWidth
+                    type="password"
+                    helperText="Optional API key for authentication"
+                  />
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        )}
+
         {editingServer.config_type === 'manifest' && (
           <Card>
             <CardHeader title="Manifest Configuration" />
@@ -824,6 +863,13 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
             startIcon={<AddIcon />}
           >
             Add Command Server
+          </Button>
+          <Button 
+            onClick={() => handleAdd('http')} 
+            variant="contained" 
+            startIcon={<AddIcon />}
+          >
+            Add HTTP Server
           </Button>
           <Button 
             onClick={() => handleAdd('remote_http')} 
