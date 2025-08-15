@@ -202,10 +202,10 @@ class DomainDecayProfiles:
     PROFILES = {
         "news": DecayConfig(
             function_type="exponential",
-            half_life_days=3,
-            cutoff_days=30,
-            minimum_score=0.0,
-            steepness=1.5
+            half_life_days=7,  # Increased from 3 to 7 days for less aggressive decay
+            cutoff_days=90,  # Increased from 30 to 90 days to include more results
+            minimum_score=0.05,  # Set minimum to 0.05 instead of 0.0
+            steepness=1.2  # Reduced from 1.5 to 1.2 for gentler decay curve
         ),
         "tech_product": DecayConfig(
             function_type="exponential",

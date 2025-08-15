@@ -144,8 +144,9 @@ class TemporalRelevanceEngine:
             if extracted_date:
                 age_days = (self.current_date - extracted_date).days
             else:
-                # Default to assuming it's recent if no date found
-                age_days = 30
+                # Default to assuming it's relatively recent if no date found
+                # Use 7 days as default to avoid hitting cutoff thresholds
+                age_days = 7
         
         # Ensure non-negative age
         age_days = max(0, age_days)
@@ -388,14 +389,14 @@ class TemporalRelevanceEngine:
         if classification.intent == "historical":
             return True
         
-        # For current information queries, be strict
+        # For current information queries, be reasonable but not overly strict
         if classification.intent == "current":
             if classification.sensitivity in [TemporalSensitivity.VERY_HIGH, TemporalSensitivity.HIGH]:
-                # Very strict for volatile information
-                return temporal_score >= 0.3 and combined_score >= 0.25
+                # Reasonable filtering for volatile information
+                return temporal_score >= 0.15 and combined_score >= 0.15
             else:
-                # Moderate strictness
-                return temporal_score >= 0.2 and combined_score >= 0.2
+                # More lenient for general current queries
+                return temporal_score >= 0.1 and combined_score >= 0.1
         
         # For high authority sources, be more lenient
         if authority_score >= 0.8:
