@@ -5474,7 +5474,12 @@ def refresh_gmail_token(server_id):
         return {"error": f"Exception refreshing token: {str(e)}"}
 
 def _map_tool_parameters_service(tool_name: str, params: dict) -> tuple[str, dict]:
-    """Map common parameter mismatches to correct parameter names for service layer"""
+    """Map common parameter mismatches to correct parameter names for service layer
+    
+    This function now uses the MCP-compliant parameter injector to dynamically
+    add parameters based on the tool's inputSchema, making it work with any MCP
+    tool regardless of its name.
+    """
     # Ensure logger is available in this function context
     import logging
     logger = logging.getLogger(__name__)
@@ -5519,13 +5524,25 @@ def _map_tool_parameters_service(tool_name: str, params: dict) -> tuple[str, dic
         logger.info(f"[TOOL CORRECTION] Mapped '{original_tool_name}' -> '{corrected_name}'")
         tool_name = corrected_name
     
-    # Apply search query optimization for search tools if enabled
-    if _is_search_tool(tool_name) and 'query' in mapped_params:
+    # Get tool information to access inputSchema
+    try:
+        from app.core.mcp_tools_cache import get_enabled_mcp_tools
+        enabled_tools = get_enabled_mcp_tools()
+        tool_info = enabled_tools.get(tool_name, {})
+        
+        # Use MCP-compliant parameter injector to add parameters based on schema
+        from app.core.mcp_parameter_injector import inject_mcp_parameters
+        mapped_params = inject_mcp_parameters(tool_name, mapped_params, tool_info)
+        
+    except Exception as e:
+        logger.warning(f"[MCP PARAMETER INJECTION] Failed to inject parameters for {tool_name}: {e}")
+    
+    # Apply search query optimization if we have a query parameter
+    if 'query' in mapped_params:
         try:
             from app.langchain.search_query_optimizer import optimize_search_query
             import asyncio
             import concurrent.futures
-            import threading
             
             original_query = mapped_params['query']
             
@@ -5558,6 +5575,54 @@ def _is_search_tool(tool_name: str) -> bool:
     search_keywords = ['search', 'google', 'web', 'tavily', 'find', 'lookup']
     tool_lower = tool_name.lower()
     return any(keyword in tool_lower for keyword in search_keywords)
+
+def _detect_temporal_query(query: str) -> bool:
+    """Detect if a query is asking for recent/current information
+    
+    Uses the temporal query classifier to determine if the query needs recent results.
+    This function is generic and works regardless of the tool name.
+    """
+    try:
+        from app.core.temporal_query_classifier import get_temporal_classifier
+        
+        # Get the temporal classifier
+        classifier = get_temporal_classifier()
+        
+        # Classify the query
+        classification = classifier.classify(query)
+        
+        # Check if the query has 'current' intent or high temporal sensitivity
+        is_temporal = (
+            classification.intent == 'current' or
+            classification.sensitivity.value in ['real-time', 'volatile'] or
+            any(keyword in query.lower() for keyword in [
+                'latest', 'recent', 'current', 'newest', 'today', 
+                'this week', 'this month', 'this year', 'now', 
+                'updated', 'modern', '2025', 'breaking', 'new'
+            ])
+        )
+        
+        if is_temporal:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[TEMPORAL DETECTION] Query classified as temporal: intent={classification.intent}, sensitivity={classification.sensitivity.value}")
+        
+        return is_temporal
+        
+    except Exception as e:
+        # If temporal detection fails, fall back to simple keyword matching
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"[TEMPORAL DETECTION] Classifier failed, using fallback: {e}")
+        
+        temporal_keywords = [
+            'latest', 'recent', 'current', 'newest', 'today',
+            'this week', 'this month', 'this year', 'now',
+            'updated', 'modern', '2025', 'breaking', 'new'
+        ]
+        
+        query_lower = query.lower()
+        return any(keyword in query_lower for keyword in temporal_keywords)
 
 def call_internal_service(tool_name: str, parameters: dict, tool_info: dict) -> dict:
     """Handle calls to internal services"""
