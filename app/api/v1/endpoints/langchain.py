@@ -44,6 +44,9 @@ class RAGRequest(BaseModel):
     hybrid_strategy: str = "temp_priority"  # "temp_priority", "parallel_fusion", "persistent_only"
     fallback_to_persistent: bool = True  # Fallback to persistent RAG if no temp results
     temp_results_weight: float = 0.7  # Weight for temp results in fusion (0.0-1.0)
+    # Radiating mode parameters
+    use_radiating: bool = False  # Enable radiating coverage mode
+    radiating_config: Optional[Dict[str, Any]] = None  # Radiating settings (depth, strategy, filters, etc.)
 
 class RAGResponse(BaseModel):
     answer: str
@@ -180,6 +183,12 @@ async def rag_endpoint(request: RAGRequest):
         logger.info(f"🎯 SINGLE AGENT MODE: {request.selected_agent} - Bypassing classification")
         # Handle single agent query directly
         return handle_single_agent_query(request, request.selected_agent, trace, rag_span)
+    
+    # Check for radiating mode
+    if request.use_radiating:
+        logger.info(f"🌟 RADIATING MODE ACTIVATED - Bypassing classification")
+        # Handle radiating query directly
+        return handle_radiating_query(request, trace, rag_span)
     
     # Check if we should bypass classification for hybrid RAG mode
     if request.use_hybrid_rag and conversation_id:
@@ -1628,6 +1637,199 @@ FINAL REMINDER - OUTPUT ONLY THE REQUESTED CONTENT:
                 "answer": f"Error in agent {agent_name}: {str(e)}",
                 "source": "ERROR",
                 "conversation_id": conversation_id
+            }) + "\n"
+    
+    return StreamingResponse(stream(), media_type="application/json")
+
+def handle_radiating_query(request: RAGRequest, trace=None, rag_span=None):
+    """Handle radiating coverage queries"""
+    from fastapi.responses import StreamingResponse
+    from app.langchain.radiating_agent_system import RadiatingAgent
+    from app.core.simple_conversation_manager import conversation_manager
+    import json
+    from datetime import datetime
+    
+    conversation_id = request.conversation_id or request.session_id
+    
+    async def stream():
+        try:
+            # Store user message in conversation history
+            if conversation_id:
+                await conversation_manager.add_message(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=request.question
+                )
+            
+            # Get conversation history if available
+            conversation_history = ""
+            if conversation_id:
+                history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
+                if history:
+                    conversation_history = conversation_manager.format_history_for_prompt(history, request.question)
+            
+            # Extract radiating configuration
+            radiating_config = request.radiating_config or {}
+            max_depth = radiating_config.get('max_depth', 3)
+            strategy = radiating_config.get('strategy', 'hybrid')
+            filters = radiating_config.get('filters', {})
+            include_coverage = radiating_config.get('include_coverage_data', True)
+            
+            # Initialize the RadiatingAgent with config if provided
+            radiating_agent = RadiatingAgent(trace=trace, radiating_config=radiating_config)
+            
+            # Send initial event
+            yield json.dumps({
+                "type": "chat_start",
+                "conversation_id": conversation_id,
+                "mode": "radiating",
+                "confidence": 1.0,
+                "classification": "radiating_coverage",
+                "config": {
+                    "max_depth": max_depth,
+                    "strategy": strategy,
+                    "filters": filters
+                }
+            }) + "\n"
+            
+            # Send status
+            yield json.dumps({
+                "type": "status",
+                "message": f"🌟 Initiating radiating coverage exploration (depth: {max_depth}, strategy: {strategy})..."
+            }) + "\n"
+            
+            # Build context for radiating processing
+            context = {
+                'max_depth': max_depth,
+                'strategy': strategy,
+                'filters': filters,
+                'include_coverage': include_coverage,
+                'conversation_history': conversation_history,
+                'conversation_id': conversation_id
+            }
+            
+            # Process with radiating coverage
+            final_response = ""
+            entities_found = []
+            relationships_found = []
+            coverage_data = None
+            
+            async for chunk in radiating_agent.process_with_radiation(
+                query=request.question,
+                context=context,
+                stream=True
+            ):
+                # Handle different chunk types
+                chunk_type = chunk.get('type')
+                
+                if chunk_type == 'entity':
+                    # Entity discovered
+                    entities_found.append(chunk.get('entity'))
+                    yield json.dumps({
+                        "type": "entity_discovered",
+                        "entity": chunk.get('entity'),
+                        "confidence": chunk.get('confidence', 0.8)
+                    }) + "\n"
+                    
+                elif chunk_type == 'relationship':
+                    # Relationship found
+                    relationships_found.append(chunk.get('relationship'))
+                    yield json.dumps({
+                        "type": "relationship_found",
+                        "relationship": chunk.get('relationship')
+                    }) + "\n"
+                    
+                elif chunk_type == 'traversal_progress':
+                    # Traversal progress update
+                    yield json.dumps({
+                        "type": "traversal_progress",
+                        "current_depth": chunk.get('current_depth'),
+                        "entities_explored": chunk.get('entities_explored'),
+                        "total_entities": chunk.get('total_entities')
+                    }) + "\n"
+                    
+                elif chunk_type in ['text', 'content', 'response']:
+                    # Text response chunk - handle both 'text' and 'content' types
+                    text = chunk.get('text', '') or chunk.get('content', '')
+                    final_response += text
+                    if text.strip():
+                        yield json.dumps({
+                            "token": text
+                        }) + "\n"
+                        
+                elif chunk_type == 'coverage':
+                    # Coverage data
+                    coverage_data = chunk.get('coverage')
+                    
+                elif chunk_type == 'status':
+                    # Status update
+                    yield json.dumps({
+                        "type": "status",
+                        "message": chunk.get('message', '')
+                    }) + "\n"
+                    
+                elif chunk_type == 'metadata':
+                    # Metadata from radiating system
+                    entities_count = chunk.get('entities_discovered', 0)
+                    relationships_count = chunk.get('relationships_found', 0)
+                    if entities_count > 0:
+                        entities_found.extend([{}] * entities_count)  # Placeholder for count
+                    if relationships_count > 0:
+                        relationships_found.extend([{}] * relationships_count)  # Placeholder for count
+                    coverage_data = {
+                        'entities_discovered': entities_count,
+                        'relationships_found': relationships_count,
+                        'processing_time_ms': chunk.get('processing_time_ms'),
+                        'coverage_depth': chunk.get('coverage_depth', 0)
+                    }
+            
+            # Save to conversation history
+            if conversation_id and final_response:
+                await conversation_manager.add_message(conversation_id, "assistant", final_response)
+            
+            # Send completion event with full results
+            completion_event = {
+                "answer": final_response,
+                "source": "radiating_coverage",
+                "conversation_id": conversation_id,
+                "bypass_classification": True,
+                "mode": "radiating",
+                "entities_found": len(entities_found),
+                "relationships_found": len(relationships_found)
+            }
+            
+            # Add coverage data if available
+            if coverage_data:
+                completion_event["coverage"] = coverage_data
+            
+            yield json.dumps(completion_event) + "\n"
+            
+            # Update tracing if enabled
+            if trace and rag_span:
+                try:
+                    rag_span.update(
+                        output=final_response,
+                        metadata={
+                            "mode": "radiating",
+                            "max_depth": max_depth,
+                            "strategy": strategy,
+                            "entities_found": len(entities_found),
+                            "relationships_found": len(relationships_found),
+                            "bypass_classification": True
+                        }
+                    )
+                    rag_span.end()
+                except:
+                    pass
+            
+        except Exception as e:
+            logger.error(f"Radiating query error: {e}", exc_info=True)
+            yield json.dumps({
+                "type": "error",
+                "message": f"Error in radiating coverage: {str(e)}",
+                "source": "ERROR",
+                "conversation_id": conversation_id,
+                "timestamp": datetime.now().isoformat()
             }) + "\n"
     
     return StreamingResponse(stream(), media_type="application/json")

@@ -35,7 +35,8 @@ import {
   Save as SaveIcon,
   Refresh as RefreshIcon,
   AccessTime as AccessTimeIcon,
-  Memory as MemoryIcon
+  Memory as MemoryIcon,
+  Hub as HubIcon
 } from '@mui/icons-material';
 import SettingsFormRenderer from './components/settings/SettingsFormRenderer';
 import './styles/settings-theme.css';
@@ -81,6 +82,12 @@ const settingsCategories: SettingsCategory[] = [
     name: 'Knowledge Graph',
     icon: <AIIcon />,
     description: 'Knowledge graph extraction, entity types, relationships, and Neo4j database settings'
+  },
+  {
+    id: 'radiating',
+    name: 'Radiating Coverage',
+    icon: <HubIcon />,
+    description: 'Universal radiating coverage for knowledge graph exploration'
   },
   {
     id: 'langfuse',

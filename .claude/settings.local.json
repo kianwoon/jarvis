@@ -198,5 +198,6 @@
         "sudo:*"
       ]
     }
-  }
+  },
+  "outputStyle": "Explanatory"
 }

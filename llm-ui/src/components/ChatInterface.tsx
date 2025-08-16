@@ -15,7 +15,11 @@ import {
   List,
   ListItem,
   ListItemIcon,
-  ListItemText
+  ListItemText,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import ClearIcon from '@mui/icons-material/Clear';
@@ -26,12 +30,26 @@ import {
   Search as SearchIcon,
   Public as WebIcon,
   AccessTime as TimeIcon,
-  Build as ToolIcon
+  Build as ToolIcon,
+  Hub as RadiatingIcon,
+  Settings as SettingsIcon,
+  Timeline as GraphIcon
 } from '@mui/icons-material';
 import TempDocumentPanel from './temp-documents/TempDocumentPanel';
 import FileUploadComponent from './shared/FileUploadComponent';
 import { MessageContent } from './shared/MessageContent';
 import AgentAutocomplete from './AgentAutocomplete';
+import RadiatingToggle from './radiating/RadiatingToggle';
+import RadiatingDepthControl from './radiating/RadiatingDepthControl';
+import RadiatingProgress from './radiating/RadiatingProgress';
+import RadiatingResultsViewer from './radiating/RadiatingResultsViewer';
+import RadiatingVisualization from './radiating/RadiatingVisualization';
+import { 
+  RadiatingConfig, 
+  RadiatingProgress as RadiatingProgressType, 
+  RadiatingResults,
+  RadiatingVisualizationData
+} from '../types/radiating';
 
 interface Message {
   id: string;
@@ -103,6 +121,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompletePosition, setAutocompletePosition] = useState({ top: 0, left: 0 });
   const [agentSearchTerm, setAgentSearchTerm] = useState('');
+  
+  // Radiating Coverage state
+  const [radiatingEnabled, setRadiatingEnabled] = useState(false);
+  const [radiatingConfig, setRadiatingConfig] = useState<RadiatingConfig | null>(null);
+  const [radiatingProgress, setRadiatingProgress] = useState<RadiatingProgressType | null>(null);
+  const [radiatingResults, setRadiatingResults] = useState<RadiatingResults | null>(null);
+  const [radiatingJobId, setRadiatingJobId] = useState<string | null>(null);
+  const [showRadiatingSettings, setShowRadiatingSettings] = useState(false);
+  const [showRadiatingVisualization, setShowRadiatingVisualization] = useState(false);
 
   console.log('📝 Storage key generated:', storageKey);
 
@@ -248,6 +275,17 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           hybrid_strategy: "temp_priority",
           fallback_to_persistent: true,
           temp_results_weight: 0.7
+        }),
+        // Include radiating coverage configuration if enabled
+        ...(radiatingEnabled && {
+          use_radiating: true,
+          radiating_config: radiatingConfig || {
+            maxDepth: 3,
+            strategy: 'breadth-first',
+            relevanceThreshold: 0.5,
+            maxEntitiesPerLevel: 20,
+            includeRelationships: true
+          }
         })
       };
       
@@ -302,8 +340,30 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           try {
             const data = JSON.parse(line);
             
-            // Handle status messages for user feedback
-            if (data.type === 'status' && data.message) {
+            // Handle radiating-specific events
+            if (data.type === 'radiating_start' && data.job_id) {
+              setRadiatingJobId(data.job_id);
+              setRadiatingProgress({
+                isActive: true,
+                currentDepth: 0,
+                totalDepth: data.max_depth || 3,
+                entitiesDiscovered: 0,
+                relationshipsFound: 0,
+                processedEntities: 0,
+                queueSize: 0,
+                elapsedTime: 0,
+                status: 'initializing'
+              });
+            } else if (data.type === 'radiating_progress' && data.progress) {
+              setRadiatingProgress(data.progress);
+            } else if (data.type === 'radiating_complete' && data.results) {
+              setRadiatingResults(data.results);
+              setRadiatingProgress({
+                ...data.progress,
+                isActive: false,
+                status: 'completed'
+              });
+            } else if (data.type === 'status' && data.message) {
               setStatusMessage(data.message);
               // Clear status message after 3 seconds unless it's replaced
               setTimeout(() => {
@@ -573,6 +633,42 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
         <Typography variant="h5">{title}</Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          {/* Radiating Coverage Toggle */}
+          <RadiatingToggle
+            conversationId={conversationId}
+            onToggle={(enabled) => {
+              setRadiatingEnabled(enabled);
+              if (!enabled) {
+                setRadiatingProgress(null);
+                setRadiatingResults(null);
+              }
+            }}
+            disabled={loading}
+            size="medium"
+            showLabel={true}
+            showStatus={false}
+          />
+          
+          {/* Radiating Settings Button */}
+          {radiatingEnabled && (
+            <IconButton 
+              onClick={() => setShowRadiatingSettings(!showRadiatingSettings)}
+              color={showRadiatingSettings ? 'primary' : 'default'}
+            >
+              <SettingsIcon />
+            </IconButton>
+          )}
+          
+          {/* Radiating Visualization Button */}
+          {radiatingResults && (
+            <IconButton 
+              onClick={() => setShowRadiatingVisualization(true)}
+              color="primary"
+            >
+              <GraphIcon />
+            </IconButton>
+          )}
+          
           <IconButton onClick={clearChat} disabled={loading}>
             <ClearIcon />
           </IconButton>
@@ -590,6 +686,55 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             setDocumentCount(activeCount);
           }}
         />
+      )}
+      
+      {/* Radiating Settings Panel */}
+      {radiatingEnabled && showRadiatingSettings && (
+        <Box sx={{ mb: 2 }}>
+          <RadiatingDepthControl
+            conversationId={conversationId}
+            onConfigChange={(config) => setRadiatingConfig(config)}
+            disabled={loading}
+            compact={true}
+          />
+        </Box>
+      )}
+      
+      {/* Radiating Progress */}
+      {radiatingProgress && radiatingProgress.isActive && (
+        <Box sx={{ mb: 2 }}>
+          <RadiatingProgress
+            jobId={radiatingJobId || undefined}
+            progress={radiatingProgress}
+            onCancel={() => {
+              setRadiatingProgress(null);
+              setRadiatingJobId(null);
+            }}
+            compact={true}
+            showDetails={false}
+          />
+        </Box>
+      )}
+      
+      {/* Radiating Results Summary */}
+      {radiatingResults && !radiatingProgress?.isActive && (
+        <Box sx={{ mb: 2 }}>
+          <RadiatingResultsViewer
+            results={radiatingResults}
+            onEntityClick={(entity) => {
+              console.log('Entity clicked:', entity);
+            }}
+            onExploreEntity={(entity) => {
+              // Could trigger a new search based on the entity
+              if (inputRef.current) {
+                inputRef.current.value = `Tell me more about ${entity.name}`;
+                sendMessage();
+              }
+            }}
+            compact={true}
+            maxHeight={200}
+          />
+        </Box>
       )}
 
       {/* Status Message */}
@@ -840,6 +985,57 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           />
         )}
       </Box>
+      
+      {/* Radiating Visualization Dialog */}
+      <Dialog
+        open={showRadiatingVisualization}
+        onClose={() => setShowRadiatingVisualization(false)}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Typography variant="h6">Radiating Coverage Visualization</Typography>
+            <IconButton onClick={() => setShowRadiatingVisualization(false)}>
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        
+        <DialogContent>
+          {radiatingResults && (
+            <RadiatingVisualization
+              data={{
+                nodes: radiatingResults.entities.map(entity => ({
+                  id: entity.id,
+                  name: entity.name,
+                  type: entity.type,
+                  group: entity.depth,
+                  radius: entity.relevanceScore,
+                  color: ''
+                })),
+                links: radiatingResults.relationships.map(rel => ({
+                  source: rel.sourceId,
+                  target: rel.targetId,
+                  value: rel.weight,
+                  type: rel.type
+                }))
+              }}
+              width={900}
+              height={600}
+              onNodeClick={(node) => {
+                console.log('Node clicked in visualization:', node);
+              }}
+            />
+          )}
+        </DialogContent>
+        
+        <DialogActions>
+          <Button onClick={() => setShowRadiatingVisualization(false)}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

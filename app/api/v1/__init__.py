@@ -22,6 +22,7 @@ from app.api.v1.endpoints import knowledge_graph_anti_silo
 from app.api.v1.endpoints import prompt_management
 from app.api.v1.endpoints import unified_processing
 from app.api.v1.endpoints import idc
+from app.api.v1.endpoints import radiating
 import logging
 
 logger = logging.getLogger(__name__)
@@ -221,4 +222,10 @@ api_router.include_router(
     idc.router,
     prefix="/idc",
     tags=["intelligent-document-comparison"]
+)
+
+api_router.include_router(
+    radiating.router,
+    prefix="/radiating",
+    tags=["radiating-coverage"]
 )

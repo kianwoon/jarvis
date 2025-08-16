@@ -1,0 +1,72 @@
+{
+  "before_enhancement": {},
+  "after_enhancement": {},
+  "comparison": {},
+  "basic_extraction": {
+    "query": "what are the essential technologies of AI implementation, favor open source",
+    "entities_found": 0,
+    "entity_types": {},
+    "processing_time": 0.142614,
+    "sample_entities": []
+  },
+  "enhanced_extraction": {
+    "query": "what are the essential technologies of AI implementation, favor open source",
+    "entities_found": 0,
+    "entity_types": {},
+    "processing_time": 0.155291,
+    "sample_entities": [],
+    "web_search_used": true
+  },
+  "basic_coverage": {
+    "query": "what are the essential technologies of AI implementation, favor open source",
+    "status": "error",
+    "processing_time": 0.016732,
+    "web_search_used": false,
+    "coverage": {},
+    "entities": [],
+    "relationships": [],
+    "metrics": {
+      "total_entities": 0,
+      "total_relationships": 0,
+      "max_depth_reached": 0,
+      "coverage_percentage": 0,
+      "explored_paths": 0,
+      "entity_types": {},
+      "relationship_types": {}
+    }
+  },
+  "enhanced_coverage": {
+    "query": "what are the essential technologies of AI implementation, favor open source",
+    "status": "error",
+    "processing_time": 0.088404,
+    "web_search_used": true,
+    "coverage": {},
+    "entities": [],
+    "relationships": [],
+    "metrics": {
+      "total_entities": 0,
+      "total_relationships": 0,
+      "max_depth_reached": 0,
+      "coverage_percentage": 0,
+      "explored_paths": 0,
+      "entity_types": {},
+      "relationship_types": {}
+    }
+  },
+  "agent_processing": {
+    "query": "what are the essential technologies of AI implementation, favor open source",
+    "entities_discovered": 0,
+    "relationships_found": 0,
+    "processing_time": 0.111973,
+    "processing_messages": [
+      "Analyzing query and preparing radiating exploration..."
+    ],
+    "agent_metrics": {
+      "queries_processed": 1,
+      "entities_discovered": 0,
+      "relationships_found": 0,
+      "avg_response_time": 0,
+      "total_processing_time": 0
+    }
+  }
+}

@@ -11,6 +11,7 @@ from app.core.rag_settings_cache import reload_rag_settings
 from app.core.query_classifier_settings_cache import reload_query_classifier_settings
 from app.core.timeout_settings_cache import reload_timeout_settings
 from app.core.knowledge_graph_settings_cache import reload_knowledge_graph_settings
+from app.core.radiating_settings_cache import reload_radiating_settings
 from app.services.neo4j_service import test_neo4j_connection
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
@@ -105,6 +106,21 @@ def reload_knowledge_graph_cache():
     except Exception as e:
         logger.error(f"Failed to reload knowledge graph cache: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload knowledge graph cache: {str(e)}")
+
+@router.post("/radiating/cache/reload")
+def reload_radiating_cache():
+    """Force reload radiating settings cache from database"""
+    try:
+        settings = reload_radiating_settings()
+        return {
+            "success": True, 
+            "message": "Radiating cache reloaded successfully",
+            "settings": settings,
+            "cache_size": len(str(settings))
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload radiating cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload radiating cache: {str(e)}")
 
 @router.post("/overflow/cache/reload")
 def reload_overflow_cache():
@@ -367,6 +383,10 @@ def get_settings(category: str, db: Session = Depends(get_db)):
             from app.schemas.overflow import OverflowConfig
             default_config = OverflowConfig()
             return {"category": category, "settings": default_config.dict()}
+        elif category == 'radiating':
+            # Return default radiating settings
+            from app.core.radiating_settings_cache import get_default_radiating_config
+            return {"category": category, "settings": get_default_radiating_config()}
         raise HTTPException(status_code=404, detail="Settings not found")
     
     # Special handling for large_generation to flatten nested structure for UI
@@ -779,6 +799,11 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         except Exception as e:
             logger.error(f"Error writing to .env file: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to update .env file: {str(e)}")
+    
+    # If updating radiating settings, reload cache
+    if category == 'radiating':
+        reload_radiating_settings()
+        logger.info("Radiating settings validated and cache reloaded")
     
     # If updating knowledge graph settings, sync model fields and reload cache
     if category == 'knowledge_graph':

@@ -715,7 +715,21 @@ async def intelligent_upload_with_progress(
                 # Initialize embedding function
                 yield f"data: {json.dumps({'current_step': 7, 'total_steps': 8, 'progress_percent': 72, 'step_name': 'Connecting to embedding service', 'details': {'message': 'Initializing Qwen embedder'}})}\n\n"
                 
-                embedding_function = HTTPEmbeddingFunction("http://qwen-embedder:8050")
+                # Get embedding endpoint from settings instead of hardcoding
+                from app.core.embedding_settings_cache import get_embedding_settings
+                embedding_settings = get_embedding_settings()
+                embedding_endpoint = embedding_settings.get('embedding_endpoint', 'http://qwen-embedder:8050/embed')
+                
+                # Handle Docker vs local environment
+                is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+                if not is_docker and 'qwen-embedder:8050' in embedding_endpoint:
+                    embedding_endpoint = embedding_endpoint.replace('qwen-embedder:8050', 'localhost:8050')
+                
+                # Remove '/embed' suffix if present for HTTPEmbeddingFunction
+                if embedding_endpoint.endswith('/embed'):
+                    embedding_endpoint = embedding_endpoint[:-6]
+                
+                embedding_function = HTTPEmbeddingFunction(embedding_endpoint)
                 
                 # Generate embeddings with progress
                 texts = [chunk.page_content for chunk in chunks]

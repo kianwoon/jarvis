@@ -11,6 +11,7 @@ import logging
 import time
 import json as json_module
 import requests
+import os
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -236,9 +237,16 @@ def get_simple_embedder(embedding_settings: Dict[str, Any]):
         
         # If we have a remote endpoint, use HTTP embedder
         if embedding_endpoint and embedding_endpoint.startswith('http'):
-            # Replace Docker hostname with localhost for local access
-            if 'qwen-embedder:8050' in embedding_endpoint:
+            # Check if we're running in Docker
+            is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+            
+            # Only replace Docker hostname with localhost when NOT in Docker (for local development)
+            if not is_docker and 'qwen-embedder:8050' in embedding_endpoint:
+                logger.info(f"[RAG FALLBACK] Running locally, replacing qwen-embedder with localhost")
                 embedding_endpoint = embedding_endpoint.replace('qwen-embedder:8050', 'localhost:8050')
+            elif is_docker:
+                logger.info(f"[RAG FALLBACK] Running in Docker, keeping service name: {embedding_endpoint}")
+            
             return HTTPEmbedder(embedding_endpoint)
         
         # Try sentence transformers with the configured model

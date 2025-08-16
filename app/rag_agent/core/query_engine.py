@@ -8,6 +8,7 @@ using the existing RAG infrastructure while providing enhanced query processing.
 import asyncio
 import logging
 import time
+import os
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
@@ -434,7 +435,22 @@ class QueryEngine:
                 try:
                     # Lazy import to avoid circular dependency
                     from app.api.v1.endpoints.document import HTTPEmbeddingFunction
-                    self.embedding_function = HTTPEmbeddingFunction("http://qwen-embedder:8050")
+                    from app.core.embedding_settings_cache import get_embedding_settings
+                    
+                    # Get embedding endpoint from settings
+                    embedding_settings = get_embedding_settings()
+                    embedding_endpoint = embedding_settings.get('embedding_endpoint', 'http://qwen-embedder:8050/embed')
+                    
+                    # Handle Docker vs local environment
+                    is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+                    if not is_docker and 'qwen-embedder:8050' in embedding_endpoint:
+                        embedding_endpoint = embedding_endpoint.replace('qwen-embedder:8050', 'localhost:8050')
+                    
+                    # Remove '/embed' suffix if present for HTTPEmbeddingFunction
+                    if embedding_endpoint.endswith('/embed'):
+                        embedding_endpoint = embedding_endpoint[:-6]
+                    
+                    self.embedding_function = HTTPEmbeddingFunction(embedding_endpoint)
                 except Exception as e:
                     logger.warning(f"Failed to initialize embedding function: {e}")
 

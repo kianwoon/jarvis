@@ -47,6 +47,7 @@ import MCPServerManager from './MCPServerManager';
 import MCPToolManager from './MCPToolManager';
 import VectorDatabaseManager from './VectorDatabaseManager';
 import KnowledgeGraphSettings from './KnowledgeGraphSettings';
+import RadiatingSettings from './RadiatingSettings';
 import PromptManagement from './PromptManagement';
 
 interface SettingsFormRendererProps {
@@ -236,6 +237,11 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   // Special handling for timeout configuration
   if (category === 'timeout') {
     return <TimeoutConfiguration data={data} onChange={onChange} onShowSuccess={onShowSuccess} />;
+  }
+
+  // Special handling for radiating configuration
+  if (category === 'radiating') {
+    return <RadiatingSettings onSettingsChange={(settings) => onChange('settings', settings)} />;
   }
 
   // Knowledge graph settings are now consolidated under LLM category
@@ -3610,7 +3616,6 @@ const TimeoutConfiguration: React.FC<{
         
         // Session & Cache
         'redis_ttl_seconds': 'Redis cache TTL (seconds)',
-        'conversation_cache_ttl': 'Conversation cache TTL (seconds)',
         'result_cache_ttl': 'Result cache TTL (seconds)',
         'temp_data_ttl': 'Temporary data TTL (seconds)',
         'session_cleanup_interval': 'Session cleanup interval (seconds)',
