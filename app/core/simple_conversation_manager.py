@@ -9,6 +9,7 @@ from datetime import datetime
 import redis.asyncio as redis
 from app.core.redis_client import get_async_redis_client
 from app.core.conflict_prevention_engine import conflict_prevention_engine
+from app.core.llm_settings_cache import get_llm_settings
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,13 +30,31 @@ class SimpleConversationManager:
     async def add_message(self, conversation_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Add a message to conversation history with conflict prevention and dynamic TTL"""
         try:
-            # CONFLICT PREVENTION: Check for conflicts before adding
-            conflict_check = await conflict_prevention_engine.check_for_conflicts(
-                new_content=content,
-                conversation_id=conversation_id,
-                role=role,
-                metadata=metadata
-            )
+            # Check if conflict prevention is enabled in settings
+            llm_settings = get_llm_settings()
+            conflict_prevention_enabled = llm_settings.get('conflict_prevention', {}).get('enabled', False)
+            
+            # Initialize conflict check result with defaults
+            conflict_check = {
+                'has_conflicts': False,
+                'conflicts': [],
+                'recommended_ttl': self.ttl,
+                'volatility_score': 0.0,
+                'should_add': True,
+                'resolution_strategy': 'normal'
+            }
+            
+            # Only run conflict prevention if enabled
+            if conflict_prevention_enabled:
+                # CONFLICT PREVENTION: Check for conflicts before adding
+                conflict_check = await conflict_prevention_engine.check_for_conflicts(
+                    new_content=content,
+                    conversation_id=conversation_id,
+                    role=role,
+                    metadata=metadata
+                )
+            else:
+                logger.debug(f"[PREVENTION] Conflict prevention is disabled, skipping checks")
             
             # Log conflict analysis
             if conflict_check['has_conflicts']:

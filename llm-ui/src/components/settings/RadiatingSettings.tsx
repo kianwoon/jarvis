@@ -46,7 +46,8 @@ import {
   Bookmark as PresetIcon,
   Speed as PerformanceIcon,
   Palette as VisualizationIcon,
-  Code as PromptsIcon
+  Code as PromptsIcon,
+  Psychology as AIIcon
 } from '@mui/icons-material';
 import { 
   RadiatingSettings as RadiatingSettingsType,
@@ -55,12 +56,13 @@ import {
 } from '../../types/radiating';
 import RadiatingDepthControl from '../radiating/RadiatingDepthControl';
 import RadiatingPromptsSettings from './RadiatingPromptsSettings';
+import RadiatingModelSettings from './RadiatingModelSettings';
 
 interface RadiatingSettingsProps {
   onSettingsChange?: (settings: RadiatingSettingsType) => void;
 }
 
-const DEFAULT_SETTINGS: RadiatingSettingsType & { prompts?: any } = {
+const DEFAULT_SETTINGS: RadiatingSettingsType & { prompts?: any; model_config?: any } = {
   defaultConfig: {
     enabled: true,
     maxDepth: 3,
@@ -73,6 +75,15 @@ const DEFAULT_SETTINGS: RadiatingSettingsType & { prompts?: any } = {
     timeoutMs: 30000
   },
   prompts: {},
+  model_config: {
+    model: 'llama3.1:8b',
+    max_tokens: 4096,
+    temperature: 0.7,
+    context_length: 128000,
+    model_server: 'http://localhost:11434',
+    system_prompt: '',
+    llm_mode: 'non-thinking'
+  },
   presets: [
     {
       id: 'quick',
@@ -134,7 +145,7 @@ const DEFAULT_SETTINGS: RadiatingSettingsType & { prompts?: any } = {
 };
 
 const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange }) => {
-  const [settings, setSettings] = useState<RadiatingSettingsType & { prompts?: any }>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<RadiatingSettingsType & { prompts?: any; model_config?: any }>(DEFAULT_SETTINGS);
   const [activeTab, setActiveTab] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -158,10 +169,17 @@ const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange 
       const response = await fetch('/api/v1/settings/radiating');
       if (response.ok) {
         const data = await response.json();
+        console.log('=== LOAD SETTINGS DEBUG ===');
+        console.log('API Response:', data);
+        console.log('Has model_config in response:', !!data.settings?.model_config);
+        
         // Extract settings from the API response structure
         if (data.settings) {
+          // CRITICAL: Always ensure model_config exists
+          const modelConfigFromAPI = data.settings.model_config || DEFAULT_SETTINGS.model_config;
+          
           // Map API response to component state structure
-          const mappedSettings: RadiatingSettingsType & { prompts?: any } = {
+          const mappedSettings: RadiatingSettingsType & { prompts?: any; model_config?: any } = {
             defaultConfig: {
               enabled: data.settings.enabled ?? true,
               maxDepth: data.settings.max_depth ?? 3,
@@ -182,14 +200,22 @@ const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange 
               showLabels: data.settings.visualization_preferences?.show_labels ?? true,
               animationSpeed: data.settings.visualization_preferences?.animation_speed ?? 1
             },
-            prompts: data.settings.prompts || {}
+            prompts: data.settings.prompts || {},
+            model_config: modelConfigFromAPI  // ALWAYS use the validated model_config
           };
+          
+          console.log('Mapped settings with model_config:', {
+            hasModelConfig: !!mappedSettings.model_config,
+            modelConfig: mappedSettings.model_config
+          });
+          
           setSettings(mappedSettings);
           
           // Save to localStorage as backup
           localStorage.setItem('radiating-settings', JSON.stringify(mappedSettings));
         } else {
           // If no settings in response, use defaults
+          console.log('No settings in response, using defaults');
           setSettings(DEFAULT_SETTINGS);
         }
       }
@@ -218,6 +244,29 @@ const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange 
     setSuccess(null);
 
     try {
+      // CRITICAL DEBUG: Log the exact state being saved
+      console.log('=== SAVE SETTINGS DEBUG ===');
+      console.log('Active Tab:', activeTab);
+      console.log('Settings state:', {
+        hasPrompts: !!settings.prompts,
+        promptsKeys: Object.keys(settings.prompts || {}),
+        hasModelConfig: !!settings.model_config,
+        modelConfig: settings.model_config,
+        hasDefaultConfig: !!settings.defaultConfig,
+        hasPresets: !!settings.presets,
+        hasVisualization: !!settings.visualizationPreferences
+      });
+      console.log('Full settings object:', JSON.stringify(settings, null, 2));
+
+      // DEFENSIVE: Ensure critical fields are ALWAYS present
+      const modelConfig = settings.model_config || DEFAULT_SETTINGS.model_config;
+      const prompts = settings.prompts || {};
+      
+      // Validate that we have model_config
+      if (!modelConfig || Object.keys(modelConfig).length === 0) {
+        console.error('WARNING: model_config is missing or empty!');
+      }
+
       // Map component state to API structure (SettingsUpdate model)
       const apiPayload = {
         settings: {
@@ -262,13 +311,24 @@ const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange 
             enable_confidence_scoring: true,
             enable_contradiction_detection: true
           },
-          // Include prompts if they exist
-          prompts: settings.prompts || {},
+          // Include prompts - guaranteed to be an object
+          prompts: prompts,
+          // Include model configuration - guaranteed to have default values
+          model_config: modelConfig,
           cache_ttl: 3600
         },
         persist_to_db: true,
         reload_cache: true
       };
+
+      // Debug: Log what we're sending to API
+      console.log('API payload being sent:', {
+        hasPrompts: !!apiPayload.settings.prompts,
+        hasModelConfig: !!apiPayload.settings.model_config,
+        modelConfig: apiPayload.settings.model_config,
+        promptsKeys: Object.keys(apiPayload.settings.prompts || {}),
+        settingsKeys: Object.keys(apiPayload.settings)
+      });
 
       const response = await fetch('/api/v1/settings/radiating', {
         method: 'PUT',
@@ -429,6 +489,7 @@ const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange 
       {/* Tabs */}
       <Tabs value={activeTab} onChange={(event, newValue) => setActiveTab(newValue)} sx={{ mb: 3 }}>
         <Tab label="Configuration" icon={<SettingsIcon />} iconPosition="start" />
+        <Tab label="Model" icon={<AIIcon />} iconPosition="start" />
         <Tab label="Presets" icon={<PresetIcon />} iconPosition="start" />
         <Tab label="Performance" icon={<PerformanceIcon />} iconPosition="start" />
         <Tab label="Visualization" icon={<VisualizationIcon />} iconPosition="start" />
@@ -447,6 +508,22 @@ const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange 
       )}
 
       {activeTab === 1 && (
+        <Box>
+          <RadiatingModelSettings
+            modelConfig={settings.model_config || DEFAULT_SETTINGS.model_config}
+            onChange={(config) => {
+              console.log('Model config updated:', config);
+              setSettings(prevSettings => ({ 
+                ...prevSettings, 
+                model_config: config 
+              }));
+            }}
+            onShowSuccess={setSuccess}
+          />
+        </Box>
+      )}
+
+      {activeTab === 2 && (
         <Box>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
             <Typography variant="h6">Configuration Presets</Typography>
@@ -526,7 +603,7 @@ const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange 
         </Box>
       )}
 
-      {activeTab === 2 && (
+      {activeTab === 3 && (
         <Box>
           <Typography variant="h6" gutterBottom>Performance Settings</Typography>
           
@@ -589,7 +666,7 @@ const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange 
         </Box>
       )}
 
-      {activeTab === 3 && (
+      {activeTab === 4 && (
         <Box>
           <Typography variant="h6" gutterBottom>Visualization Preferences</Typography>
           
@@ -693,16 +770,46 @@ const RadiatingSettings: React.FC<RadiatingSettingsProps> = ({ onSettingsChange 
         </Box>
       )}
 
-      {activeTab === 4 && (
+      {activeTab === 5 && (
         <Box>
           <RadiatingPromptsSettings
             settings={settings}
             onUpdate={(updatedSettings) => {
-              setSettings(updatedSettings);
+              // CRITICAL FIX: Only update the prompts field, preserve everything else
+              // The child component should only be updating prompts
+              setSettings(prevSettings => ({
+                ...prevSettings,
+                prompts: updatedSettings.prompts,
+                // Ensure model_config is NEVER lost
+                model_config: prevSettings.model_config || DEFAULT_SETTINGS.model_config
+              }));
             }}
           />
         </Box>
       )}
+
+      {/* Save Button Bar */}
+      <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+        <Button
+          variant="outlined"
+          startIcon={<ResetIcon />}
+          onClick={() => {
+            setSettings(DEFAULT_SETTINGS);
+            setSuccess('Settings reset to defaults');
+            setTimeout(() => setSuccess(null), 3000);
+          }}
+        >
+          Reset to Defaults
+        </Button>
+        <Button
+          variant="contained"
+          startIcon={<SaveIcon />}
+          onClick={saveSettings}
+          disabled={loading}
+        >
+          {loading ? 'Saving...' : 'Save All Settings'}
+        </Button>
+      </Box>
 
       {/* Preset Dialog */}
       <Dialog

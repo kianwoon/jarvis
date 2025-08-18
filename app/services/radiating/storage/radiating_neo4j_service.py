@@ -113,7 +113,7 @@ class RadiatingNeo4jService(Neo4jService):
                 neighbor.name as name,
                 labels(neighbor)[0] as label,
                 neighbor.confidence as confidence,
-                neighbor.properties as properties,
+                properties(neighbor) as properties,
                 type_weight,
                 count(r) as connection_count
             ORDER BY type_weight DESC, connection_count DESC, neighbor.confidence DESC
@@ -214,9 +214,9 @@ class RadiatingNeo4jService(Neo4jService):
                         type(r) as rel_type,
                         r.confidence as confidence,
                         r.context as context,
-                        r.properties as properties,
-                        r.strength as strength,
-                        r.bidirectional as bidirectional
+                        properties(r) as properties,
+                        r.confidence as strength,
+                        false as bidirectional
                     """
                     
                     result = session.run(query, {

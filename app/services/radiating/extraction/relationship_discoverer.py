@@ -70,7 +70,8 @@ class RelationshipDiscoverer:
                 
                 # Initialize JarvisLLM with max_tokens from config
                 max_tokens = model_config.get('max_tokens', 4096)
-                self.llm_client = JarvisLLM(mode='non-thinking', max_tokens=max_tokens)
+                llm_mode = model_config.get('llm_mode', 'non-thinking')  # Get mode from config
+                self.llm_client = JarvisLLM(mode=llm_mode, max_tokens=max_tokens)
             except Exception as e:
                 logger.error(f"Failed to initialize LLM client: {e}")
                 self.llm_client = None

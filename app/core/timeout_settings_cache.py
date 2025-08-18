@@ -89,6 +89,22 @@ DEFAULT_TIMEOUT_SETTINGS = {
         "multi_pass_timeout": 600
     },
     
+    # Radiating coverage system timeouts
+    "radiating_coverage": {
+        "entity_extraction_timeout": 60,         # Increased from 30 to prevent timeouts
+        "concept_expansion_timeout": 120,        # Increased timeout for concept expansion
+        "query_analysis_timeout": 45,            # Timeout for query analysis
+        "traversal_timeout": 180,                # Overall traversal timeout
+        "semantic_expansion_timeout": 60,        # Semantic relationship discovery
+        "hierarchical_expansion_timeout": 60,    # Hierarchical relationship discovery
+        "llm_call_timeout": 45,                  # Increased from 30 for complex prompts
+        "retry_base_delay": 2,                   # Base delay for exponential backoff (seconds)
+        "max_retries": 3,                        # Maximum number of retries
+        "circuit_breaker_threshold": 0.5,        # Failure rate threshold for circuit breaker
+        "circuit_breaker_cooldown": 60,          # Circuit breaker cooldown period (seconds)
+        "parallel_task_timeout": 45              # Timeout for individual parallel tasks
+    },
+    
     # Session & cache timeouts (in seconds)
     "session_cache": {
         "redis_ttl_seconds": 3600,
@@ -423,3 +439,36 @@ def get_temporary_data_ttl() -> int:
 def get_mcp_tool_cache_ttl() -> int:
     """Get MCP tool cache TTL"""
     return get_redis_cache_ttl("mcp_tool_cache_ttl", 600)
+
+# Radiating coverage convenience functions
+def get_radiating_timeout(setting_key: str, default: int = 30) -> int:
+    """Get radiating coverage specific timeout"""
+    return get_timeout_value("radiating_coverage", setting_key, default)
+
+def get_entity_extraction_timeout() -> int:
+    """Get entity extraction timeout for radiating coverage"""
+    return get_radiating_timeout("entity_extraction_timeout", 30)
+
+def get_concept_expansion_timeout() -> int:
+    """Get concept expansion timeout for radiating coverage"""
+    return get_radiating_timeout("concept_expansion_timeout", 120)
+
+def get_query_analysis_timeout() -> int:
+    """Get query analysis timeout for radiating coverage"""
+    return get_radiating_timeout("query_analysis_timeout", 45)
+
+def get_traversal_timeout() -> int:
+    """Get traversal timeout for radiating coverage"""
+    return get_radiating_timeout("traversal_timeout", 180)
+
+def get_radiating_llm_timeout() -> int:
+    """Get LLM call timeout for radiating coverage"""
+    return get_radiating_timeout("llm_call_timeout", 30)
+
+def get_radiating_max_retries() -> int:
+    """Get maximum retries for radiating coverage"""
+    return get_radiating_timeout("max_retries", 3)
+
+def get_radiating_retry_delay() -> int:
+    """Get base retry delay for radiating coverage"""
+    return get_radiating_timeout("retry_base_delay", 2)

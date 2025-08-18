@@ -800,8 +800,34 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
             logger.error(f"Error writing to .env file: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to update .env file: {str(e)}")
     
-    # If updating radiating settings, reload cache
+    # If updating radiating settings, use deep merge and reload cache
     if category == 'radiating':
+        logger.info("Processing radiating settings with deep merge")
+        
+        # Use deep merge to preserve existing settings like prompts
+        existing_settings = settings_row.settings or {}
+        logger.info(f"Existing radiating settings keys: {list(existing_settings.keys()) if existing_settings else 'None'}")
+        logger.info(f"New radiating settings keys: {list(settings_for_db.keys())}")
+        
+        # Deep merge to preserve existing complex fields
+        merged_settings = deep_merge_settings(existing_settings, settings_for_db)
+        logger.info(f"Merged radiating settings keys: {list(merged_settings.keys())}")
+        
+        # Validate that critical fields are preserved
+        critical_fields = ['prompts', 'model_config', 'query_expansion', 'extraction', 'traversal', 'coverage', 'synthesis', 'performance', 'monitoring']
+        preserved_fields = [field for field in critical_fields if field in existing_settings and field in merged_settings]
+        if preserved_fields:
+            logger.info(f"Preserved critical radiating fields: {preserved_fields}")
+        
+        # Update the database with merged settings
+        settings_row.settings = merged_settings
+        db.commit()
+        db.refresh(settings_row)
+        logger.info("Radiating settings saved with deep merge")
+        
+        # Use merged settings for database save (to ensure it's returned correctly)
+        settings_for_db = merged_settings
+        
         reload_radiating_settings()
         logger.info("Radiating settings validated and cache reloaded")
     

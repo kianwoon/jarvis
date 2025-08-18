@@ -9,8 +9,16 @@ import logging
 from typing import Dict, List, Any, Optional, Set
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import asyncio
+import re
 
 from app.core.radiating_settings_cache import get_query_expansion_config, get_radiating_settings, get_prompt
+from app.core.timeout_settings_cache import (
+    get_concept_expansion_timeout,
+    get_radiating_max_retries,
+    get_radiating_retry_delay
+)
+from app.services.radiating.circuit_breaker import CircuitBreakerOpen, get_global_llm_circuit_breaker
 from .query_analyzer import QueryIntent, AnalyzedQuery
 
 logger = logging.getLogger(__name__)
@@ -72,12 +80,23 @@ class SemanticExpansionStrategy(ExpansionStrategy):
         if not self.llm_client:
             try:
                 from app.llm.ollama import JarvisLLM
-                settings = get_radiating_settings()
-                model_config = settings.get('model_config', {})
+                from app.core.radiating_settings_cache import get_model_config
                 
-                # Initialize JarvisLLM with max_tokens from config
-                max_tokens = model_config.get('max_tokens', 4096)
-                self.llm_client = JarvisLLM(mode='non-thinking', max_tokens=max_tokens)
+                # Get model configuration from settings
+                model_config = get_model_config()
+                
+                # Initialize JarvisLLM with configuration from settings
+                self.llm_client = JarvisLLM(
+                    model=model_config.get('model', 'llama3.1:8b'),
+                    mode=model_config.get('llm_mode', 'non-thinking'),  # Use mode from config
+                    max_tokens=model_config.get('max_tokens', 4096),
+                    temperature=model_config.get('temperature', 0.7),
+                    model_server=model_config['model_server']  # Required, no fallback
+                )
+                
+                # Set a JSON-only system prompt for radiating
+                self.llm_client.system_prompt = "You are a JSON-only API for query expansion. You must ALWAYS respond with valid JSON and nothing else. Never include explanations, markdown, or any text outside the JSON structure."
+                    
             except Exception as e:
                 logger.error(f"Failed to initialize LLM client: {e}")
                 self.llm_client = None
@@ -132,10 +151,10 @@ class SemanticExpansionStrategy(ExpansionStrategy):
         entity_type: str,
         domains: List[str]
     ) -> Dict[str, List]:
-        """Find semantically related terms and entities"""
+        """Find semantically related terms and entities with retry logic"""
         
         if not self.llm_client:
-            return {'terms': [], 'entities': []}
+            return self._simple_semantic_extraction(entity, entity_type)
         
         domain_context = f"in the context of {', '.join(domains)}" if domains else ""
         
@@ -145,11 +164,25 @@ class SemanticExpansionStrategy(ExpansionStrategy):
             'semantic_expansion',
             # Fallback prompt if not in database
             """Find semantically related terms and entities for:
-        Entity: {entity}
-        Type: {entity_type}
-        {domain_context}
-        
-        Return as JSON..."""
+
+Entity: {entity}
+Type: {entity_type}
+{domain_context}
+
+Return ONLY a valid JSON object with this exact structure:
+{{
+  "terms": ["related term 1", "related term 2"],
+  "entities": [
+    {{
+      "text": "Related Entity",
+      "type": "EntityType",
+      "confidence": 0.8,
+      "relationship": "how it relates"
+    }}
+  ]
+}}
+
+CRITICAL: You MUST return ONLY the JSON object above, with NO additional text, NO explanations, NO markdown formatting. Start your response with { and end with }."""
         )
         
         prompt = prompt_template.format(
@@ -160,18 +193,122 @@ class SemanticExpansionStrategy(ExpansionStrategy):
         
         try:
             import json
-            response = await self.llm_client.invoke(prompt)
-            result = json.loads(response)
+            # Add JSON instruction to prompt
+            json_prompt = prompt + "\n\nREMEMBER: Respond with ONLY the JSON, no other text."
+            
+            # Use circuit breaker for LLM call
+            circuit_breaker = get_global_llm_circuit_breaker()
+            try:
+                response = await circuit_breaker.call(self.llm_client.invoke, json_prompt)
+            except CircuitBreakerOpen:
+                logger.warning(f"[ExpansionStrategy] Circuit breaker open for semantic expansion of {entity}")
+                return self._simple_semantic_extraction(entity, entity_type)
+            
+            # Handle empty or invalid response
+            if not response or response.strip() == "" or response.strip() == "{}":
+                logger.warning(f"[ExpansionStrategy] Empty response for semantic expansion of {entity}")
+                return {'terms': [], 'entities': []}
+            
+            try:
+                result = json.loads(response)
+                # Ensure result has expected structure
+                if not isinstance(result, dict):
+                    # If it's a list, wrap it
+                    if isinstance(result, list):
+                        result = {'terms': result, 'entities': []}
+                    else:
+                        logger.error(f"[ExpansionStrategy] Expected dict but got {type(result)}")
+                        return {'terms': [], 'entities': []}
+                # Ensure keys exist
+                if 'terms' not in result:
+                    result['terms'] = []
+                if 'entities' not in result:
+                    result['entities'] = []
+            except json.JSONDecodeError as e:
+                logger.error(f"[ExpansionStrategy] Invalid JSON response: {response[:200]}")
+                return {'terms': [], 'entities': []}
             return result
         except Exception as e:
             logger.debug(f"Semantic expansion failed for {entity}: {e}")
             return {'terms': [], 'entities': []}
     
+    def _simple_semantic_extraction(self, entity: str, entity_type: str) -> Dict[str, List]:
+        """Simple semantic extraction without LLM as fallback"""
+        terms = []
+        entities = []
+        
+        # Simple semantic expansion based on common patterns
+        entity_lower = entity.lower()
+        
+        # Technology-related expansions
+        tech_expansions = {
+            'python': ['programming', 'scripting', 'development'],
+            'javascript': ['web development', 'frontend', 'node.js'],
+            'react': ['frontend framework', 'ui library', 'components'],
+            'database': ['data storage', 'sql', 'nosql'],
+            'api': ['interface', 'endpoint', 'rest'],
+            'cloud': ['aws', 'azure', 'gcp', 'hosting'],
+            'ai': ['machine learning', 'deep learning', 'neural networks'],
+            'llm': ['language model', 'gpt', 'transformer'],
+        }
+        
+        for key, expansions in tech_expansions.items():
+            if key in entity_lower:
+                terms.extend(expansions[:2])
+                break
+        
+        # Type-based expansions
+        if entity_type:
+            type_lower = entity_type.lower()
+            if 'person' in type_lower:
+                terms.extend(['professional', 'expert'])
+            elif 'company' in type_lower or 'organization' in type_lower:
+                terms.extend(['business', 'enterprise'])
+            elif 'technology' in type_lower or 'tool' in type_lower:
+                terms.extend(['software', 'platform'])
+            elif 'concept' in type_lower:
+                terms.extend(['idea', 'principle'])
+        
+        return {'terms': terms[:3], 'entities': entities}
+    
     async def _expand_concepts(self, query: str, domains: List[str]) -> List[str]:
-        """Expand conceptual understanding of the query"""
+        """Expand conceptual understanding of the query with retry logic"""
         
         if not self.llm_client:
-            return []
+            return self._simple_concept_extraction(query, domains)
+        
+        max_retries = get_radiating_max_retries()
+        base_delay = get_radiating_retry_delay()
+        timeout = get_concept_expansion_timeout()
+        
+        for attempt in range(max_retries):
+            try:
+                # Try LLM expansion with timeout
+                result = await asyncio.wait_for(
+                    self._expand_concepts_with_llm(query, domains),
+                    timeout=timeout
+                )
+                if result:  # Success
+                    return result
+                    
+            except asyncio.TimeoutError:
+                logger.warning(f"[ExpansionStrategy] Concept expansion timeout (attempt {attempt + 1}/{max_retries})")
+                
+            except Exception as e:
+                logger.warning(f"[ExpansionStrategy] Concept expansion failed (attempt {attempt + 1}/{max_retries}): {e}")
+            
+            # Exponential backoff if not the last attempt
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.info(f"[ExpansionStrategy] Retrying in {delay} seconds...")
+                await asyncio.sleep(delay)
+        
+        # All retries failed, fall back to simple extraction
+        logger.info("[ExpansionStrategy] Falling back to simple concept extraction")
+        return self._simple_concept_extraction(query, domains)
+    
+    async def _expand_concepts_with_llm(self, query: str, domains: List[str]) -> List[str]:
+        """Internal method to expand concepts using LLM with circuit breaker"""
         
         domain_context = f"focusing on {', '.join(domains)}" if domains else ""
         
@@ -181,10 +318,14 @@ class SemanticExpansionStrategy(ExpansionStrategy):
             'concept_expansion',
             # Fallback prompt if not in database
             """Identify related concepts and topics for this query:
-        Query: {query}
-        {domain_context}
-        
-        Return as JSON array of related concepts (max 5)..."""
+
+Query: {query}
+{domain_context}
+
+Return ONLY a valid JSON array of related concepts (max 5):
+["concept1", "concept2", "concept3"]
+
+CRITICAL: You MUST return ONLY the JSON array above, with NO additional text, NO explanations, NO markdown formatting. Start your response with [ and end with ]."""
         )
         
         prompt = prompt_template.format(
@@ -192,14 +333,165 @@ class SemanticExpansionStrategy(ExpansionStrategy):
             domain_context=domain_context
         )
         
+        import json
+        # Add JSON instruction to prompt
+        json_prompt = prompt + "\n\nREMEMBER: Respond with ONLY the JSON, no other text."
+        
+        # Use circuit breaker for LLM call
+        circuit_breaker = get_global_llm_circuit_breaker()
         try:
-            import json
-            response = await self.llm_client.invoke(prompt)
-            concepts = json.loads(response)
-            return concepts[:5]
-        except Exception as e:
-            logger.debug(f"Concept expansion failed: {e}")
+            response = await circuit_breaker.call(self.llm_client.invoke, json_prompt)
+        except CircuitBreakerOpen:
+            logger.warning("[ExpansionStrategy] Circuit breaker is open, skipping LLM call")
             return []
+        
+        # Try to extract JSON from response
+        concepts = self._extract_json_from_response(response, expected_type='list')
+        
+        if concepts is None:
+            # Try regex extraction as fallback
+            concepts = self._extract_json_with_regex(response, 'list')
+        
+        if not concepts:
+            logger.warning("[ExpansionStrategy] Could not extract concepts from LLM response")
+            return []
+        
+        return concepts[:5]
+    
+    def _simple_concept_extraction(self, query: str, domains: List[str]) -> List[str]:
+        """Simple concept extraction without LLM as fallback"""
+        concepts = []
+        query_lower = query.lower()
+        
+        # Extract key phrases based on patterns
+        # Look for "about X", "related to X", "X and Y", etc.
+        patterns = [
+            r'about\s+(\w+(?:\s+\w+)*)',
+            r'related\s+to\s+(\w+(?:\s+\w+)*)',
+            r'regarding\s+(\w+(?:\s+\w+)*)',
+            r'(\w+(?:\s+\w+)*)\s+and\s+(\w+(?:\s+\w+)*)',
+            r'between\s+(\w+(?:\s+\w+)*)\s+and\s+(\w+(?:\s+\w+)*)',
+            r'from\s+(\w+(?:\s+\w+)*)\s+to\s+(\w+(?:\s+\w+)*)',
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, query_lower)
+            for match in matches:
+                if isinstance(match, tuple):
+                    concepts.extend([m.strip() for m in match if m.strip()])
+                else:
+                    concepts.append(match.strip())
+        
+        # Add domain-based concepts
+        if domains:
+            for domain in domains[:2]:
+                concepts.append(f"{domain.lower()} concepts")
+        
+        # Common expansions based on keywords
+        keyword_expansions = {
+            'ai': ['artificial intelligence', 'machine learning', 'deep learning'],
+            'llm': ['large language models', 'language models', 'generative ai'],
+            'rag': ['retrieval augmented generation', 'vector search', 'embeddings'],
+            'database': ['data storage', 'data management', 'sql'],
+            'api': ['web services', 'rest api', 'integration'],
+            'cloud': ['cloud computing', 'aws', 'azure', 'gcp'],
+            'security': ['cybersecurity', 'data protection', 'encryption'],
+            'web': ['web development', 'frontend', 'backend'],
+        }
+        
+        for keyword, expansions in keyword_expansions.items():
+            if keyword in query_lower:
+                concepts.extend(expansions[:2])
+        
+        # Remove duplicates and filter
+        seen = set()
+        unique_concepts = []
+        for concept in concepts:
+            if concept and concept not in seen and len(concept) > 2:
+                seen.add(concept)
+                unique_concepts.append(concept)
+        
+        return unique_concepts[:5]
+    
+    def _extract_json_from_response(self, response: str, expected_type: str = 'list') -> Optional[Any]:
+        """Extract JSON from LLM response with improved handling"""
+        if not response or response.strip() == "":
+            return None
+        
+        import json
+        
+        # Try direct JSON parsing
+        try:
+            result = json.loads(response)
+            if expected_type == 'list' and isinstance(result, list):
+                return result
+            elif expected_type == 'dict' and isinstance(result, dict):
+                return result
+            elif expected_type == 'any':
+                return result
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to find JSON in the response
+        response = response.strip()
+        
+        # Remove markdown code blocks if present
+        if '```json' in response:
+            start = response.find('```json') + 7
+            end = response.find('```', start)
+            if end != -1:
+                response = response[start:end].strip()
+        elif '```' in response:
+            start = response.find('```') + 3
+            end = response.find('```', start)
+            if end != -1:
+                response = response[start:end].strip()
+        
+        # Try parsing again
+        try:
+            result = json.loads(response)
+            if expected_type == 'list' and isinstance(result, list):
+                return result
+            elif expected_type == 'dict' and isinstance(result, dict):
+                return result
+            elif expected_type == 'any':
+                return result
+                
+            # Handle wrapped responses
+            if isinstance(result, dict):
+                # Look for common wrapper keys
+                for key in ['results', 'items', 'data', 'concepts', 'entities', 'terms']:
+                    if key in result and isinstance(result[key], list if expected_type == 'list' else dict):
+                        return result[key]
+        except json.JSONDecodeError:
+            pass
+        
+        return None
+    
+    def _extract_json_with_regex(self, response: str, json_type: str = 'list') -> Optional[Any]:
+        """Extract JSON using regex as fallback"""
+        import json
+        
+        if json_type == 'list':
+            # Look for array pattern
+            pattern = r'\[.*?\]'
+        else:
+            # Look for object pattern
+            pattern = r'\{.*?\}'
+        
+        matches = re.findall(pattern, response, re.DOTALL)
+        
+        for match in matches:
+            try:
+                result = json.loads(match)
+                if json_type == 'list' and isinstance(result, list):
+                    return result
+                elif json_type == 'dict' and isinstance(result, dict):
+                    return result
+            except json.JSONDecodeError:
+                continue
+        
+        return None
 
 class HierarchicalExpansionStrategy(ExpansionStrategy):
     """
@@ -216,12 +508,23 @@ class HierarchicalExpansionStrategy(ExpansionStrategy):
         if not self.llm_client:
             try:
                 from app.llm.ollama import JarvisLLM
-                settings = get_radiating_settings()
-                model_config = settings.get('model_config', {})
+                from app.core.radiating_settings_cache import get_model_config
                 
-                # Initialize JarvisLLM with max_tokens from config
-                max_tokens = model_config.get('max_tokens', 4096)
-                self.llm_client = JarvisLLM(mode='non-thinking', max_tokens=max_tokens)
+                # Get model configuration from settings
+                model_config = get_model_config()
+                
+                # Initialize JarvisLLM with configuration from settings
+                self.llm_client = JarvisLLM(
+                    model=model_config.get('model', 'llama3.1:8b'),
+                    mode=model_config.get('llm_mode', 'non-thinking'),  # Use mode from config
+                    max_tokens=model_config.get('max_tokens', 4096),
+                    temperature=model_config.get('temperature', 0.7),
+                    model_server=model_config['model_server']  # Required, no fallback
+                )
+                
+                # Set a JSON-only system prompt for radiating
+                self.llm_client.system_prompt = "You are a JSON-only API for query expansion. You must ALWAYS respond with valid JSON and nothing else. Never include explanations, markdown, or any text outside the JSON structure."
+                    
             except Exception as e:
                 logger.error(f"Failed to initialize LLM client: {e}")
                 self.llm_client = None
@@ -285,10 +588,18 @@ class HierarchicalExpansionStrategy(ExpansionStrategy):
             'hierarchical_expansion',
             # Fallback prompt if not in database
             """Find hierarchical relationships for:
-        Entity: {entity}
-        Type: {entity_type}
-        
-        Return as JSON..."""
+
+Entity: {entity}
+Type: {entity_type}
+
+Return ONLY a valid JSON object with this exact structure:
+{{
+  "parents": ["parent1", "parent2"],
+  "children": ["child1", "child2"],
+  "siblings": ["sibling1", "sibling2"]
+}}
+
+CRITICAL: You MUST return ONLY the JSON object above, with NO additional text, NO explanations, NO markdown formatting. Start your response with { and end with }."""
         )
         
         prompt = prompt_template.format(
@@ -298,9 +609,43 @@ class HierarchicalExpansionStrategy(ExpansionStrategy):
         
         try:
             import json
-            response = await self.llm_client.invoke(prompt)
-            hierarchy = json.loads(response)
-            return hierarchy
+            # Add JSON instruction to prompt
+            json_prompt = prompt + "\n\nREMEMBER: Respond with ONLY the JSON, no other text."
+            
+            # Use circuit breaker for LLM call
+            circuit_breaker = get_global_llm_circuit_breaker()
+            try:
+                response = await circuit_breaker.call(self.llm_client.invoke, json_prompt)
+            except CircuitBreakerOpen:
+                logger.warning(f"[HierarchicalExpansion] Circuit breaker open for {entity}")
+                return {'parents': [], 'children': [], 'siblings': []}
+            
+            # Handle empty or invalid response
+            if not response or response.strip() == "" or response.strip() == "{}":
+                logger.warning(f"[HierarchicalExpansion] Empty response for {entity}")
+                return {'parents': [], 'children': [], 'siblings': []}
+            
+            try:
+                hierarchy = json.loads(response)
+                # Ensure result has expected structure
+                if not isinstance(hierarchy, dict):
+                    # If it's a list, create default structure
+                    if isinstance(hierarchy, list):
+                        hierarchy = {'parents': [], 'children': hierarchy, 'siblings': []}
+                    else:
+                        logger.error(f"[HierarchicalExpansion] Expected dict but got {type(hierarchy)}")
+                        return {'parents': [], 'children': [], 'siblings': []}
+                # Ensure keys exist
+                if 'parents' not in hierarchy:
+                    hierarchy['parents'] = []
+                if 'children' not in hierarchy:
+                    hierarchy['children'] = []
+                if 'siblings' not in hierarchy:
+                    hierarchy['siblings'] = []
+                return hierarchy
+            except json.JSONDecodeError as e:
+                logger.error(f"[HierarchicalExpansion] Invalid JSON response: {response[:200]}")
+                return {'parents': [], 'children': [], 'siblings': []}
         except Exception as e:
             logger.debug(f"Hierarchical expansion failed for {entity}: {e}")
             return {'parents': [], 'children': [], 'siblings': []}

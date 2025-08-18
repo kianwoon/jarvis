@@ -7,11 +7,13 @@ Uses LLM intelligence for sophisticated query understanding without hardcoded ru
 
 import logging
 import json
+import asyncio
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
 from app.core.radiating_settings_cache import get_radiating_settings, get_query_expansion_config, get_prompt
+from app.core.timeout_settings_cache import get_query_analysis_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -59,19 +61,30 @@ class QueryAnalyzer:
         if not self.llm_client:
             try:
                 from app.llm.ollama import JarvisLLM
-                settings = get_radiating_settings()
-                model_config = settings.get('model_config', {})
+                from app.core.radiating_settings_cache import get_model_config
                 
-                # Initialize JarvisLLM with max_tokens from config
-                max_tokens = model_config.get('max_tokens', 4096)
-                self.llm_client = JarvisLLM(mode='non-thinking', max_tokens=max_tokens)
+                # Get model configuration from settings
+                model_config = get_model_config()
+                
+                # Initialize JarvisLLM with configuration from settings
+                self.llm_client = JarvisLLM(
+                    model=model_config.get('model', 'llama3.1:8b'),
+                    mode=model_config.get('llm_mode', 'non-thinking'),  # Use mode from config
+                    max_tokens=model_config.get('max_tokens', 4096),
+                    temperature=model_config.get('temperature', 0.7),
+                    model_server=model_config['model_server']  # Required, no fallback
+                )
+                
+                # Set a JSON-only system prompt for radiating
+                self.llm_client.system_prompt = "You are a JSON-only API that analyzes queries. You must ALWAYS respond with valid JSON and nothing else. Never include explanations, markdown, or any text outside the JSON structure."
+                    
             except Exception as e:
                 logger.error(f"Failed to initialize LLM client: {e}")
                 self.llm_client = None
     
     async def analyze_query(self, query: str) -> AnalyzedQuery:
         """
-        Analyze a query to extract key information.
+        Analyze a query to extract key information using parallel processing.
         
         Args:
             query: The user's query text
@@ -80,19 +93,45 @@ class QueryAnalyzer:
             AnalyzedQuery object with extracted information
         """
         try:
-            # Extract entities using LLM
-            entities = await self._extract_entities(query)
+            # Get timeout for analysis
+            timeout = get_query_analysis_timeout()
             
-            # Identify query intent
-            intent = await self._identify_intent(query, entities)
+            # Run entity extraction, intent identification, and domain extraction in parallel
+            # These are independent operations that can be parallelized
+            entities_task = asyncio.create_task(self._extract_entities(query))
+            domain_hints_task = asyncio.create_task(self._extract_domain_hints(query))
+            temporal_context_task = asyncio.create_task(self._extract_temporal_context(query))
             
-            # Extract domain hints
-            domain_hints = await self._extract_domain_hints(query)
+            # Wait for entities first as intent depends on it (with timeout)
+            try:
+                entities = await asyncio.wait_for(entities_task, timeout=timeout/3)
+            except asyncio.TimeoutError:
+                logger.warning("Entity extraction timed out, using fallback")
+                entities = self.parse_entities_from_text(query)
             
-            # Extract temporal context if present
-            temporal_context = await self._extract_temporal_context(query)
+            # Now identify intent with entities
+            intent_task = asyncio.create_task(self._identify_intent(query, entities))
             
-            # Generate expansion hints
+            # Wait for remaining tasks with timeout handling
+            try:
+                domain_hints = await asyncio.wait_for(domain_hints_task, timeout=timeout/3)
+            except asyncio.TimeoutError:
+                logger.warning("Domain extraction timed out, using empty list")
+                domain_hints = []
+            
+            try:
+                temporal_context = await asyncio.wait_for(temporal_context_task, timeout=timeout/3)
+            except asyncio.TimeoutError:
+                logger.warning("Temporal extraction timed out, using None")
+                temporal_context = None
+            
+            try:
+                intent = await asyncio.wait_for(intent_task, timeout=timeout/3)
+            except asyncio.TimeoutError:
+                logger.warning("Intent identification timed out, using EXPLORATION")
+                intent = QueryIntent.EXPLORATION
+            
+            # Generate expansion hints (depends on previous results)
             expansion_hints = await self._generate_expansion_hints(
                 query, entities, intent, domain_hints
             )
@@ -133,21 +172,70 @@ class QueryAnalyzer:
             'query_analysis',
             'entity_extraction',
             # Fallback prompt if not in database
-            """Extract key entities from the following query. For each entity, identify:
-        1. The entity text
-        2. The entity type (Person, Organization, Location, Concept, Event, etc.)
-        3. Confidence score (0.0 to 1.0)
-        
-        Query: {query}
-        
-        Return as JSON array..."""
+            """Query: {query}
+
+Extract entities as JSON array:
+[{{"text": "React", "type": "Technology", "confidence": 0.9}}]"""
         )
         
         prompt = prompt_template.format(query=query)
         
         try:
-            response = await self.llm_client.invoke(prompt)
-            entities = json.loads(response)
+            # Add JSON instruction to prompt
+            json_prompt = prompt + "\n\nREMEMBER: Respond with ONLY the JSON, no other text."
+            response = await self.llm_client.invoke(json_prompt)
+            
+            # Handle empty or invalid response
+            if not response or response.strip() == "" or response.strip() == "[]":
+                logger.warning("[QueryAnalyzer] Empty response from LLM for entity extraction")
+                return []
+            
+            try:
+                entities = json.loads(response)
+                
+                # Handle different response formats
+                if isinstance(entities, dict):
+                    if 'entities' in entities:
+                        entities = entities['entities']
+                    else:
+                        # Try to collect all lists from the dict
+                        all_entities = []
+                        for key, value in entities.items():
+                            if isinstance(value, list) and value:  # Check if list is not empty
+                                for item in value:
+                                    if isinstance(item, str):
+                                        # Convert string to entity dict
+                                        all_entities.append({
+                                            'text': item,
+                                            'type': key.replace('_', ' ').title(),
+                                            'confidence': 0.7
+                                        })
+                                    elif isinstance(item, dict):
+                                        all_entities.append(item)
+                        if all_entities:
+                            entities = all_entities
+                        else:
+                            # If we got an empty dict structure, return empty list without error
+                            logger.debug(f"[QueryAnalyzer] No entities found in response")
+                            return []
+                
+                if not isinstance(entities, list):
+                    logger.error(f"[QueryAnalyzer] Expected list but got {type(entities)}")
+                    return []
+                    
+                # Normalize field names
+                normalized = []
+                for e in entities:
+                    normalized.append({
+                        'text': e.get('text') or e.get('name', ''),
+                        'type': e.get('type', 'Unknown'),
+                        'confidence': e.get('confidence', 0.7)
+                    })
+                entities = normalized
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"[QueryAnalyzer] Invalid JSON response: {response[:200]}")
+                return []
             
             # Filter by confidence threshold
             min_confidence = self.config.get('confidence_threshold', 0.6)
@@ -191,7 +279,9 @@ class QueryAnalyzer:
         )
         
         try:
-            response = await self.llm_client.invoke(prompt)
+            # Add JSON instruction to prompt
+            json_prompt = prompt + "\n\nREMEMBER: Respond with ONLY the JSON, no other text."
+            response = await self.llm_client.invoke(json_prompt)
             intent_str = response.strip().upper()
             
             # Map to enum
@@ -216,19 +306,47 @@ class QueryAnalyzer:
             'query_analysis',
             'domain_extraction',
             # Fallback prompt if not in database
-            """Identify the knowledge domains relevant to this query.
-        Examples: Technology, Business, Science, Medicine, Finance, Education, etc.
-        
-        Query: {query}
-        
-        Return as JSON array of domain names (max 5)..."""
+            """Query: {query}
+
+List relevant domains as JSON array:
+["Technology", "Programming"]"""
         )
         
         prompt = prompt_template.format(query=query)
         
         try:
-            response = await self.llm_client.invoke(prompt)
-            domains = json.loads(response)
+            # Add JSON instruction to prompt
+            json_prompt = prompt + "\n\nREMEMBER: Respond with ONLY the JSON, no other text."
+            response = await self.llm_client.invoke(json_prompt)
+            
+            # Handle empty or invalid response
+            if not response or response.strip() == "" or response.strip() == "[]":
+                logger.warning("[QueryAnalyzer] Empty response from LLM for domain extraction")
+                return []
+            
+            try:
+                domains = json.loads(response)
+                
+                # Handle different response formats
+                if isinstance(domains, dict):
+                    if 'domains' in domains:
+                        domains = domains['domains']
+                    else:
+                        # Try to extract list from any key
+                        for key, value in domains.items():
+                            if isinstance(value, list):
+                                domains = value
+                                break
+                        else:
+                            logger.error(f"[QueryAnalyzer] Dict response without list: {domains}")
+                            return []
+                
+                if not isinstance(domains, list):
+                    logger.error(f"[QueryAnalyzer] Expected list but got {type(domains)}")
+                    return []
+            except json.JSONDecodeError as e:
+                logger.error(f"[QueryAnalyzer] Invalid JSON response: {response[:200]}")
+                return []
             return domains[:5]
             
         except Exception as e:
@@ -256,7 +374,9 @@ class QueryAnalyzer:
         prompt = prompt_template.format(query=query)
         
         try:
-            response = await self.llm_client.invoke(prompt)
+            # Add JSON instruction to prompt
+            json_prompt = prompt + "\n\nREMEMBER: Respond with ONLY the JSON, no other text."
+            response = await self.llm_client.invoke(json_prompt)
             temporal = json.loads(response)
             return temporal if temporal else None
             

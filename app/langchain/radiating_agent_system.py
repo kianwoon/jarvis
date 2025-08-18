@@ -15,6 +15,8 @@ import uuid
 from app.core.llm_settings_cache import get_llm_settings
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
+from app.services.radiating.circuit_breaker import LLMCircuitBreakerMixin, protected_llm_call
+from app.core.timeout_settings_cache import get_radiating_timeout, get_radiating_max_retries, get_radiating_retry_delay
 from app.services.radiating.engine.radiating_traverser import RadiatingTraverser
 from app.services.radiating.models.radiating_context import RadiatingContext, TraversalStrategy
 from app.services.radiating.models.radiating_entity import RadiatingEntity
@@ -49,10 +51,11 @@ def normalize_strategy_string(strategy: str) -> str:
     return strategy.replace('-', '_').lower()
 
 
-class RadiatingAgent:
+class RadiatingAgent(LLMCircuitBreakerMixin):
     """
     Agent that specializes in radiating coverage exploration.
     Integrates with the existing dynamic agent system infrastructure.
+    Includes circuit breaker protection and timeout handling.
     """
     
     def __init__(self, trace: Optional[str] = None, radiating_config: Optional[Dict[str, Any]] = None):
@@ -62,6 +65,9 @@ class RadiatingAgent:
             trace: Optional trace ID for tracking
             radiating_config: Optional configuration including expansion_strategy selection
         """
+        # Initialize circuit breaker mixin first
+        super().__init__()
+        
         self.trace = trace or str(uuid.uuid4())
         self.llm = None
         self.traverser = RadiatingTraverser()
@@ -131,7 +137,7 @@ class RadiatingAgent:
             self.expansion_strategy = AdaptiveExpansionStrategy()
     
     def _initialize_llm(self):
-        """Initialize the LLM with current settings"""
+        """Initialize the LLM with current settings and proper timeout configuration"""
         try:
             llm_settings = get_llm_settings()
             main_llm_config = llm_settings.get('main_llm', {})
@@ -139,25 +145,63 @@ class RadiatingAgent:
             # Store system prompt separately as it's not part of LLMConfig
             self.system_prompt = main_llm_config.get('system_prompt', '')
             
+            # Get timeout settings for LLM calls
+            llm_timeout = get_radiating_timeout('llm_call_timeout', 30)
+            
             config = LLMConfig(
                 model_name=main_llm_config.get('model', 'qwen2.5:32b'),
                 temperature=main_llm_config.get('temperature', 0.7),
-                max_tokens=main_llm_config.get('max_tokens', 4096)
+                max_tokens=main_llm_config.get('max_tokens', 4096),
+                timeout=llm_timeout  # Add timeout configuration
             )
             
-            self.llm = OllamaLLM(config=config)
-            logger.info(f"Initialized RadiatingAgent LLM with model: {config.model_name}")
+            # Get model server URL from settings (no hardcoded localhost)
+            ollama_url = main_llm_config.get("model_server", "")
+            
+            # Fallback to environment variable if not in settings
+            if not ollama_url:
+                import os
+                ollama_url = os.environ.get("OLLAMA_BASE_URL", "")
+            
+            # Final fallback to get_settings() if still empty
+            if not ollama_url:
+                from app.core.config import get_settings
+                settings = get_settings()
+                ollama_url = settings.OLLAMA_BASE_URL if hasattr(settings, 'OLLAMA_BASE_URL') else ""
+            
+            if not ollama_url:
+                logger.error("No model server URL configured in settings or environment")
+                raise ValueError("Model server must be configured in LLM settings")
+            
+            # Handle Docker environment conversion
+            import os
+            if "localhost" in ollama_url and (os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')):
+                ollama_url = ollama_url.replace("localhost", "host.docker.internal")
+                logger.info(f"Docker environment detected, converted URL to: {ollama_url}")
+            
+            # Initialize OllamaLLM with proper base_url
+            self.llm = OllamaLLM(config=config, base_url=ollama_url)
+            
+            logger.info(f"Initialized RadiatingAgent LLM with model: {config.model_name}, timeout: {llm_timeout}s, base_url: {ollama_url}")
             
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")
-            # Fallback to default configuration
+            # Fallback to default configuration with timeout
             self.system_prompt = ''
             config = LLMConfig(
                 model_name='qwen2.5:32b',
                 temperature=0.7,
-                max_tokens=4096
+                max_tokens=4096,
+                timeout=get_radiating_timeout('llm_call_timeout', 30)
             )
-            self.llm = OllamaLLM(config=config)
+            
+            # Even in fallback, try to get proper URL
+            import os
+            ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+            if "localhost" in ollama_url and (os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')):
+                ollama_url = ollama_url.replace("localhost", "host.docker.internal")
+            
+            self.llm = OllamaLLM(config=config, base_url=ollama_url)
     
     async def process_with_radiation(
         self,
@@ -190,8 +234,72 @@ class RadiatingAgent:
             
             expanded_queries = await self.expand_query(query, context)
             
-            # Step 2: Extract entities from query
-            entities = await self.entity_extractor.extract_entities(query)
+            # Step 2: Extract entities from query with timeout
+            entity_timeout = get_radiating_timeout('entity_extraction_timeout', 60)
+            entities = []
+            try:
+                # Create extraction task for better timeout handling
+                extraction_task = asyncio.create_task(
+                    self.entity_extractor.extract_entities(query)
+                )
+                
+                # Wait for completion or timeout
+                entities = await asyncio.wait_for(extraction_task, timeout=entity_timeout)
+                logger.info(f"Successfully extracted {len(entities)} entities")
+                
+            except asyncio.TimeoutError:
+                logger.warning(f"Entity extraction timed out after {entity_timeout}s, using fallback strategy")
+                
+                # Cancel the hanging task
+                if not extraction_task.done():
+                    extraction_task.cancel()
+                
+                # Create basic fallback entities from query keywords
+                # This ensures we have something to work with even on timeout
+                try:
+                    query_words = query.split()
+                    # Extract potential entities: capitalized words, tech terms, acronyms
+                    potential_entities = []
+                    
+                    for word in query_words:
+                        # Skip common words
+                        if len(word) <= 2 or word.lower() in ['the', 'and', 'for', 'with', 'what', 'how', 'when', 'where']:
+                            continue
+                        
+                        # Add capitalized words, acronyms, or tech-looking terms
+                        if word[0].isupper() or word.isupper() or '-' in word or '.' in word:
+                            potential_entities.append(word)
+                    
+                    if potential_entities:
+                        from app.services.radiating.extraction.universal_entity_extractor import ExtractedEntity
+                        entities = [
+                            ExtractedEntity(
+                                text=word,
+                                entity_type='Technology' if word.isupper() or '-' in word else 'Concept',
+                                confidence=0.6,
+                                context=query[:100],
+                                metadata={'source': 'timeout_fallback', 'extraction_method': 'keyword_extraction'}
+                            )
+                            for word in potential_entities[:8]  # Limit to 8 fallback entities
+                        ]
+                        logger.info(f"Created {len(entities)} fallback entities from query keywords")
+                    else:
+                        # Last resort: use the whole query as a single entity
+                        from app.services.radiating.extraction.universal_entity_extractor import ExtractedEntity
+                        entities = [
+                            ExtractedEntity(
+                                text=query[:50],
+                                entity_type='Query',
+                                confidence=0.4,
+                                context=query,
+                                metadata={'source': 'timeout_fallback', 'extraction_method': 'query_as_entity'}
+                            )
+                        ]
+                        logger.warning("Using query itself as fallback entity")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to create fallback entities: {e}")
+                    entities = []
             starting_entities = [
                 RadiatingEntity(
                     text=entity.text if hasattr(entity, 'text') else '',
@@ -219,17 +327,26 @@ class RadiatingAgent:
                 traversal_strategy=TraversalStrategy(strategy_normalized)
             )
             
-            # Step 4: Execute radiating traversal
+            # Step 4: Execute radiating traversal with timeout
             yield {
                 'type': 'status',
                 'message': f'Starting radiating traversal with {len(starting_entities)} seed entities...',
                 'timestamp': datetime.now().isoformat()
             }
             
-            radiating_graph = await self.traverse_knowledge(
-                radiating_context,
-                starting_entities
-            )
+            traversal_timeout = get_radiating_timeout('traversal_timeout', 180)
+            try:
+                radiating_graph = await asyncio.wait_for(
+                    self.traverse_knowledge(radiating_context, starting_entities),
+                    timeout=traversal_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Radiating traversal timed out after {traversal_timeout}s, using partial results")
+                # Create an empty graph as fallback
+                radiating_graph = RadiatingGraph()
+                # Add starting entities to empty graph
+                for entity in starting_entities:
+                    radiating_graph.add_node(entity)
             
             self.metrics['entities_discovered'] += len(radiating_graph.entities)
             self.metrics['relationships_found'] += len(radiating_graph.relationships)
@@ -298,7 +415,7 @@ class RadiatingAgent:
         context: Optional[Dict[str, Any]] = None
     ) -> List[str]:
         """
-        Expand the query using the query expansion system.
+        Expand the query using the query expansion system with timeout handling.
         
         Args:
             query: Original query
@@ -308,12 +425,35 @@ class RadiatingAgent:
             List of expanded queries
         """
         try:
-            # Analyze query intent
-            query_analysis = await self.query_analyzer.analyze_query(query)
+            # Get timeouts for query expansion operations
+            query_analysis_timeout = get_radiating_timeout('query_analysis_timeout', 45)
+            concept_expansion_timeout = get_radiating_timeout('concept_expansion_timeout', 120)
             
-            # Generate expanded queries based on analysis
-            # The expand() method expects only the analyzed_query argument
-            expanded_result = await self.expansion_strategy.expand(query_analysis)
+            # Analyze query intent with timeout
+            try:
+                query_analysis = await asyncio.wait_for(
+                    self.query_analyzer.analyze_query(query),
+                    timeout=query_analysis_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Query analysis timed out after {query_analysis_timeout}s, using simple analysis")
+                # Fallback to simple analysis
+                query_analysis = type('SimpleAnalysis', (), {
+                    'query': query,
+                    'intent': 'general',
+                    'entities': [],
+                    'keywords': query.split()
+                })()
+            
+            # Generate expanded queries based on analysis with timeout
+            try:
+                expanded_result = await asyncio.wait_for(
+                    self.expansion_strategy.expand(query_analysis),
+                    timeout=concept_expansion_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Query expansion timed out after {concept_expansion_timeout}s, using original query")
+                return [query]
             
             # Extract the expanded terms from the result
             expanded_queries = [query]  # Start with original query
@@ -449,7 +589,7 @@ class RadiatingAgent:
         synthesized_results: Dict[str, Any],
         graph: RadiatingGraph
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Generate streaming response using LLM"""
+        """Generate streaming response using LLM with circuit breaker protection"""
         try:
             # Prepare context for LLM
             llm_context = self._prepare_llm_context(query, synthesized_results, graph)
@@ -457,15 +597,53 @@ class RadiatingAgent:
             # Track if we generated any content
             content_generated = False
             
-            # Stream response from LLM with system prompt
-            async for chunk in self.llm.generate_stream(llm_context, system_prompt=self.system_prompt):
-                if chunk and hasattr(chunk, 'text') and chunk.text:
-                    content_generated = True
-                    yield {
-                        'type': 'content',
-                        'content': chunk.text,
-                        'timestamp': datetime.now().isoformat()
-                    }
+            # Use protected LLM call with circuit breaker and retry logic
+            max_retries = get_radiating_max_retries()
+            retry_delay = get_radiating_retry_delay()
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    # Stream response from LLM with system prompt using circuit breaker protection
+                    async def _llm_stream_call():
+                        return self.llm.generate_stream(llm_context, system_prompt=self.system_prompt)
+                    
+                    # Use circuit breaker protection
+                    stream_result = await self.protected_llm_call(_llm_stream_call)
+                    
+                    if stream_result is None:
+                        # Circuit breaker is open, use fallback
+                        fallback_message = synthesized_results.get('summary', 
+                            f'Radiating exploration completed. Found {len(graph.entities)} entities and {len(graph.relationships)} relationships. LLM service temporarily unavailable.')
+                        
+                        logger.warning("LLM circuit breaker open, using fallback response")
+                        yield {
+                            'type': 'content',
+                            'content': fallback_message,
+                            'timestamp': datetime.now().isoformat()
+                        }
+                        return
+                    
+                    # Process the stream
+                    async for chunk in stream_result:
+                        if chunk and hasattr(chunk, 'text') and chunk.text:
+                            content_generated = True
+                            yield {
+                                'type': 'content',
+                                'content': chunk.text,
+                                'timestamp': datetime.now().isoformat()
+                            }
+                    
+                    # If we got here, streaming was successful
+                    break
+                    
+                except Exception as e:
+                    if attempt < max_retries:
+                        logger.warning(f"LLM streaming attempt {attempt + 1} failed: {e}, retrying in {retry_delay}s")
+                        await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                        continue
+                    else:
+                        logger.error(f"LLM streaming failed after {max_retries + 1} attempts: {e}")
+                        raise
             
             # If no content was generated, yield the summary as fallback
             if not content_generated:
@@ -496,22 +674,49 @@ class RadiatingAgent:
         synthesized_results: Dict[str, Any],
         graph: RadiatingGraph
     ) -> str:
-        """Generate complete response using LLM"""
+        """Generate complete response using LLM with circuit breaker protection"""
         try:
             # Prepare context for LLM
             llm_context = self._prepare_llm_context(query, synthesized_results, graph)
             
-            # Generate complete response with system prompt
-            response = await self.llm.generate(llm_context, system_prompt=self.system_prompt)
-            response_text = response.text if hasattr(response, 'text') else str(response)
+            # Use protected LLM call with circuit breaker and retry logic
+            max_retries = get_radiating_max_retries()
+            retry_delay = get_radiating_retry_delay()
             
-            # Fallback to synthesized summary if response is empty
-            if not response_text or response_text.strip() == "":
-                response_text = synthesized_results.get('summary', 
-                    f'Radiating exploration completed. Found {len(graph.entities)} entities and {len(graph.relationships)} relationships.')
-                logger.warning(f"Empty response from LLM, using fallback summary")
-            
-            return response_text
+            for attempt in range(max_retries + 1):
+                try:
+                    # Generate complete response with system prompt using circuit breaker protection
+                    async def _llm_generate_call():
+                        return await self.llm.generate(llm_context, system_prompt=self.system_prompt)
+                    
+                    # Use circuit breaker protection
+                    response = await self.protected_llm_call(_llm_generate_call)
+                    
+                    if response is None:
+                        # Circuit breaker is open, use fallback
+                        fallback_message = synthesized_results.get('summary', 
+                            f'Radiating exploration completed. Found {len(graph.entities)} entities and {len(graph.relationships)} relationships. LLM service temporarily unavailable.')
+                        logger.warning("LLM circuit breaker open, using fallback response")
+                        return fallback_message
+                    
+                    response_text = response.text if hasattr(response, 'text') else str(response)
+                    
+                    # Fallback to synthesized summary if response is empty
+                    if not response_text or response_text.strip() == "":
+                        response_text = synthesized_results.get('summary', 
+                            f'Radiating exploration completed. Found {len(graph.entities)} entities and {len(graph.relationships)} relationships.')
+                        logger.warning(f"Empty response from LLM, using fallback summary")
+                    
+                    return response_text
+                    
+                except Exception as e:
+                    if attempt < max_retries:
+                        logger.warning(f"LLM generation attempt {attempt + 1} failed: {e}, retrying in {retry_delay}s")
+                        await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                        continue
+                    else:
+                        logger.error(f"LLM generation failed after {max_retries + 1} attempts: {e}")
+                        raise
             
         except Exception as e:
             logger.error(f"Error generating complete response: {e}")

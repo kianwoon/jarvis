@@ -713,7 +713,7 @@ function LegacyChatInterface({ endpoint, title }: { endpoint: string, title: str
               <Paper
                 sx={{
                   p: 2,
-                  maxWidth: '90%',
+                  maxWidth: message.role === 'user' ? '80%' : '95%',
                   backgroundColor: message.role === 'user' ? 'primary.main' : 'background.paper',
                   color: message.role === 'user' ? 'white' : 'text.primary'
                 }}

@@ -7,11 +7,14 @@ No hardcoded entity types - discovers entities dynamically based on content.
 
 import logging
 import json
+import re
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 import hashlib
+import asyncio
 
-from app.core.radiating_settings_cache import get_extraction_config, get_radiating_settings, get_prompt
+from app.core.radiating_settings_cache import get_extraction_config, get_radiating_settings, get_prompt, get_model_config
+from app.core.timeout_settings_cache import get_entity_extraction_timeout
 from .web_search_integration import WebSearchIntegration
 
 logger = logging.getLogger(__name__)
@@ -63,12 +66,24 @@ class UniversalEntityExtractor:
         if not self.llm_client:
             try:
                 from app.llm.ollama import JarvisLLM
-                settings = get_radiating_settings()
-                model_config = settings.get('model_config', {})
                 
-                # Initialize JarvisLLM with max_tokens from config
-                max_tokens = model_config.get('max_tokens', 4096)
-                self.llm_client = JarvisLLM(mode='non-thinking', max_tokens=max_tokens)
+                # Get model configuration from settings
+                model_config = get_model_config()
+                
+                # Initialize JarvisLLM with configuration from settings
+                # Override max_tokens to 4096 for entity extraction to prevent timeouts
+                # Entity extraction doesn't need huge token limits
+                self.llm_client = JarvisLLM(
+                    model=model_config.get('model', 'llama3.1:8b'),
+                    mode=model_config.get('llm_mode', 'non-thinking'),  # Use mode from config
+                    max_tokens=4096,  # Fixed at 4096 for entity extraction regardless of config
+                    temperature=model_config.get('temperature', 0.7),
+                    model_server=model_config['model_server']  # Required, no fallback
+                )
+                
+                # Set a JSON-only system prompt for radiating
+                self.llm_client.system_prompt = "You are a JSON-only API that extracts information from text. You must ALWAYS respond with valid JSON and nothing else. Never include explanations, markdown, or any text outside the JSON structure."
+                    
             except Exception as e:
                 logger.error(f"Failed to initialize LLM client: {e}")
                 self.llm_client = None
@@ -208,7 +223,16 @@ class UniversalEntityExtractor:
                 'entity_extraction', 
                 'discovery_comprehensive',
                 # Fallback prompt if not in database
-                "You are analyzing a query about MODERN LLM-ERA technologies...\n{domain_context}\nQuery/Text: {text}"
+                """TEXT: {text}
+
+List entity types found in text.
+
+JSON format:
+{{
+  "entity_types": [
+    {{"type": "Technology", "description": "tools/frameworks", "examples": ["Python"], "confidence": 0.9}}
+  ]
+}}"""
             )
             prompt = prompt_template.format(
                 domain_context=domain_context,
@@ -220,7 +244,16 @@ class UniversalEntityExtractor:
                 'entity_extraction',
                 'discovery_regular',
                 # Fallback prompt if not in database
-                "Analyze this text and identify the types of entities present {domain_context}.\nText: {text}"
+                """TEXT: {text}
+
+List entity types found.
+
+JSON format:
+{{
+  "entity_types": [
+    {{"type": "Person", "description": "people", "examples": ["John"], "confidence": 0.8}}
+  ]
+}}"""
             )
             prompt = prompt_template.format(
                 domain_context=domain_context,
@@ -228,8 +261,25 @@ class UniversalEntityExtractor:
             )
         
         try:
-            response = await self.llm_client.invoke(prompt)
-            result = json.loads(response)
+            # Add JSON instruction to prompt
+            json_prompt = prompt + "\n\nREMEMBER: Respond with ONLY the JSON, no other text."
+            response = await self.llm_client.invoke(json_prompt)
+            
+            # Handle empty or invalid response
+            if not response or response.strip() == "" or response.strip() == "[]":
+                logger.warning("[UniversalEntityExtractor] Empty response from LLM for type discovery")
+                return {}
+            
+            # Try multiple extraction methods
+            result = self._extract_json_from_response(response, 'dict')
+            
+            if result is None:
+                # Try regex extraction as fallback
+                result = self._extract_json_with_regex(response, 'dict')
+            
+            if result is None:
+                logger.error(f"[UniversalEntityExtractor] Could not extract JSON from response: {response[:200]}")
+                return {}
             
             entity_types = {}
             for type_info in result.get('entity_types', []):
@@ -277,7 +327,14 @@ class UniversalEntityExtractor:
                 'entity_extraction',
                 'extraction_comprehensive',
                 # Fallback prompt if not in database
-                "You are an expert on MODERN LLM-ERA technologies...\n{domain_context}\n{additional_context}\nQuery/Text: {text}"
+                """TEXT: {text}
+
+Extract all entities (technologies, languages, frameworks, products, concepts).
+
+JSON format:
+[
+  {{"text": "Python", "type": "Language", "confidence": 0.9, "context": "main language", "reason": "core tech"}}
+]"""
             )
             prompt = prompt_template.format(
                 domain_context=domain_context,
@@ -290,7 +347,14 @@ class UniversalEntityExtractor:
                 'entity_extraction',
                 'extraction_regular',
                 # Fallback prompt if not in database
-                "Extract all important entities from this text.\n{domain_context}\n{additional_context}\n{type_guidance}\nText: {text}"
+                """TEXT: {text}
+
+Extract entities.
+
+JSON format:
+[
+  {{"text": "Entity", "type": "Type", "confidence": 0.8, "context": "context", "reason": "why"}}
+]"""
             )
             prompt = prompt_template.format(
                 domain_context=domain_context,
@@ -300,8 +364,45 @@ class UniversalEntityExtractor:
             )
         
         try:
-            response = await self.llm_client.invoke(prompt)
-            entities_data = json.loads(response)
+            # Add JSON instruction to prompt
+            json_prompt = prompt + "\n\nREMEMBER: Respond with ONLY the JSON, no other text."
+            
+            # Add timeout protection
+            timeout = get_entity_extraction_timeout()
+            response = await asyncio.wait_for(
+                self.llm_client.invoke(json_prompt),
+                timeout=timeout
+            )
+            
+            # Handle empty or invalid response
+            if not response or response.strip() == "" or response.strip() == "[]":
+                logger.warning("[UniversalEntityExtractor] Empty response from LLM for entity extraction")
+                return []
+            
+            # Try multiple extraction methods
+            entities_data = self._extract_json_from_response(response, 'list')
+            
+            if entities_data is None:
+                # Try regex extraction as fallback
+                entities_data = self._extract_json_with_regex(response, 'list')
+            
+            if entities_data is None:
+                logger.error(f"[UniversalEntityExtractor] Could not extract JSON from response: {response[:200]}")
+                return []
+            
+            # Handle different response formats
+            if isinstance(entities_data, dict):
+                # If it's a dict with 'entities' key, use that
+                if 'entities' in entities_data:
+                    entities_data = entities_data['entities']
+                else:
+                    logger.error(f"[UniversalEntityExtractor] Dict response without 'entities' key: {entities_data}")
+                    return []
+            
+            # Ensure entities_data is a list
+            if not isinstance(entities_data, list):
+                logger.error(f"[UniversalEntityExtractor] Expected list but got {type(entities_data)}: {entities_data}")
+                return []
             
             # Log the number of entities extracted
             if is_comprehensive:
@@ -309,23 +410,65 @@ class UniversalEntityExtractor:
             
             entities = []
             for entity_data in entities_data:
+                # Ensure entity_data is a dict
+                if not isinstance(entity_data, dict):
+                    logger.warning(f"[UniversalEntityExtractor] Skipping non-dict entity: {entity_data}")
+                    continue
+                    
+                # Handle different field names with comprehensive mapping
+                # LLM might return: text/name/entity for the entity text
+                entity_text = (entity_data.get('text') or 
+                              entity_data.get('name') or 
+                              entity_data.get('entity'))
+                
+                # LLM might return: type/category/entity_type for the type
+                entity_type = (entity_data.get('type') or 
+                              entity_data.get('category') or 
+                              entity_data.get('entity_type'))
+                
+                # Check required fields
+                if not entity_text or not entity_type:
+                    logger.warning(f"[UniversalEntityExtractor] Missing required fields in entity: {entity_data}")
+                    logger.debug(f"[UniversalEntityExtractor] Entity data: {entity_data}")
+                    continue
+                
+                # Get confidence with multiple fallbacks
+                confidence = (entity_data.get('confidence') or 
+                             entity_data.get('score') or 
+                             entity_data.get('relevance') or 
+                             0.7)
+                
+                # Ensure confidence is a float between 0 and 1
+                try:
+                    confidence = float(confidence)
+                    confidence = max(0.0, min(1.0, confidence))
+                except (TypeError, ValueError):
+                    confidence = 0.7
+                    
                 entity = ExtractedEntity(
-                    text=entity_data['text'],
-                    entity_type=entity_data['type'],
-                    confidence=entity_data.get('confidence', 0.7),
+                    text=entity_text,
+                    entity_type=entity_type,
+                    confidence=confidence,
                     context=entity_data.get('context', ''),
                     metadata={
                         'reason': entity_data.get('reason', ''),
                         'extraction_method': 'llm_comprehensive' if is_comprehensive else 'llm_universal',
-                        'is_comprehensive': is_comprehensive
+                        'is_comprehensive': is_comprehensive,
+                        'original_fields': list(entity_data.keys())  # Track what fields the LLM actually returned
                     }
                 )
                 entities.append(entity)
+                
+            # Log extraction success
+            if entities:
+                logger.info(f"[UniversalEntityExtractor] Successfully extracted {len(entities)} entities")
+                if is_comprehensive:
+                    logger.debug(f"[UniversalEntityExtractor] Comprehensive extraction - first entity: {entities[0].__dict__ if entities else 'None'}")
             
             return entities
             
         except Exception as e:
-            logger.error(f"LLM entity extraction failed: {e}")
+            logger.error(f"LLM entity extraction failed: {e}", exc_info=True)
             return []
     
     def _score_entity_confidence(
@@ -707,3 +850,148 @@ class UniversalEntityExtractor:
                     return True
         
         return False
+    
+    def _extract_json_from_response(self, response: str, expected_type: str = 'any') -> Optional[Any]:
+        """Extract JSON from response with robust handling"""
+        if not response:
+            return None
+        
+        response = response.strip()
+        
+        # Try direct parsing first
+        try:
+            result = json.loads(response)
+            if self._validate_json_type(result, expected_type):
+                return result
+        except json.JSONDecodeError:
+            pass
+        
+        # Remove markdown code blocks
+        cleaned = self._clean_markdown(response)
+        if cleaned != response:
+            try:
+                result = json.loads(cleaned)
+                if self._validate_json_type(result, expected_type):
+                    return result
+            except json.JSONDecodeError:
+                pass
+        
+        # Try to find JSON in the text
+        json_candidates = self._find_json_candidates(response)
+        for candidate in json_candidates:
+            try:
+                result = json.loads(candidate)
+                if self._validate_json_type(result, expected_type):
+                    return result
+            except json.JSONDecodeError:
+                continue
+        
+        # Handle wrapped responses
+        try:
+            result = json.loads(response)
+            if isinstance(result, dict):
+                # Look for common wrapper keys
+                for key in ['results', 'items', 'data', 'entities', 'entity_types', 'concepts']:
+                    if key in result:
+                        if self._validate_json_type(result[key], expected_type):
+                            return result[key]
+        except json.JSONDecodeError:
+            pass
+        
+        return None
+    
+    def _clean_markdown(self, text: str) -> str:
+        """Remove markdown code blocks from text"""
+        # Remove ```json blocks
+        if '```json' in text:
+            pattern = r'```json\s*([\s\S]*?)```'
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1).strip()
+        
+        # Remove generic ``` blocks
+        if '```' in text:
+            pattern = r'```\s*([\s\S]*?)```'
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1).strip()
+        
+        return text
+    
+    def _find_json_candidates(self, text: str) -> List[str]:
+        """Find potential JSON structures in text"""
+        candidates = []
+        
+        # Find array structures
+        array_pattern = r'\[[\s\S]*?\]'
+        arrays = re.findall(array_pattern, text)
+        candidates.extend(arrays)
+        
+        # Find object structures
+        object_pattern = r'\{[\s\S]*?\}'
+        objects = re.findall(object_pattern, text)
+        candidates.extend(objects)
+        
+        # Find nested structures (more complex)
+        # This handles cases where we have nested arrays/objects
+        stack_pattern = r'[\[\{][\s\S]*?[\]\}]'
+        nested = re.findall(stack_pattern, text)
+        for item in nested:
+            if item not in candidates:
+                candidates.append(item)
+        
+        return candidates
+    
+    def _validate_json_type(self, data: Any, expected_type: str) -> bool:
+        """Validate if data matches expected type"""
+        if expected_type == 'any':
+            return True
+        elif expected_type == 'list':
+            return isinstance(data, list)
+        elif expected_type == 'dict':
+            return isinstance(data, dict)
+        return False
+    
+    def _extract_json_with_regex(self, response: str, json_type: str = 'any') -> Optional[Any]:
+        """Extract JSON using regex as final fallback"""
+        
+        # Clean the response first
+        response = self._clean_markdown(response)
+        
+        if json_type == 'list' or json_type == 'any':
+            # Look for array pattern with better handling
+            patterns = [
+                r'\[[^\[\]]*\]',  # Simple array
+                r'\[[\s\S]*?\](?![\]\}])',  # Array with possible nesting
+                r'\[\s*\{[\s\S]*?\}\s*(?:,\s*\{[\s\S]*?\}\s*)*\]'  # Array of objects
+            ]
+            
+            for pattern in patterns:
+                matches = re.findall(pattern, response)
+                for match in matches:
+                    try:
+                        result = json.loads(match)
+                        if isinstance(result, list):
+                            return result
+                    except json.JSONDecodeError:
+                        continue
+        
+        if json_type == 'dict' or json_type == 'any':
+            # Look for object pattern with better handling
+            patterns = [
+                r'\{[^\{\}]*\}',  # Simple object
+                r'\{[\s\S]*?\}(?![\]\}])',  # Object with possible nesting
+                r'\{\s*"[^"]+"\s*:\s*[\s\S]*?\}'  # Object with quoted keys
+            ]
+            
+            for pattern in patterns:
+                matches = re.findall(pattern, response)
+                for match in matches:
+                    try:
+                        result = json.loads(match)
+                        if isinstance(result, dict):
+                            return result
+                    except json.JSONDecodeError:
+                        continue
+        
+        return None

@@ -155,12 +155,19 @@
       "Bash(bash:*)",
       "Bash(for key in rag_settings_cache mcp_tools_cache embedding_settings_cache)",
       "Bash(done)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(REDIS_HOST=localhost python:*)",
+      "Bash(REDIS_HOST=localhost redis-cli flushall)",
+      "Bash(./run_and_test_bridge.sh:*)",
+      "Bash(./monitor_api_logs.sh:*)",
+      "Bash(./check_mcp_status.sh:*)",
+      "Bash(./start_mcp_server.sh:*)"
     ],
     "deny": [],
     "defaultMode": "acceptEdits"
   },
   "enableAllProjectMcpServers": false,
+  "outputStyle": "Explanatory",
   "tools": {
     "permissions": {
       "deny": [
@@ -198,6 +205,5 @@
         "sudo:*"
       ]
     }
-  },
-  "outputStyle": "Explanatory"
+  }
 }

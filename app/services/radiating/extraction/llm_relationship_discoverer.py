@@ -17,7 +17,8 @@ from app.services.radiating.models.radiating_entity import RadiatingEntity
 from app.services.radiating.models.radiating_relationship import RadiatingRelationship
 from app.core.llm_settings_cache import get_llm_settings
 from app.core.config import get_settings
-from app.core.radiating_settings_cache import get_prompt
+from app.core.radiating_settings_cache import get_prompt, get_model_config
+from app.services.radiating.circuit_breaker import protected_llm_call
 
 logger = logging.getLogger(__name__)
 
@@ -101,33 +102,9 @@ class LLMRelationshipDiscoverer:
         """Initialize the LLM Relationship Discoverer"""
         self.settings = get_settings()
         self.llm_settings = get_llm_settings()
-        self.model_config = self._get_model_config()
+        # Use radiating model config instead of knowledge graph config
+        self.model_config = get_model_config()
         self.discovered_cache = {}  # Cache to avoid redundant LLM calls
-        
-    def _get_model_config(self) -> Dict[str, Any]:
-        """Get LLM model configuration"""
-        # Try to get knowledge graph specific config first
-        kg_config = self.llm_settings.get('knowledge_graph', {})
-        
-        # Get the Ollama base URL, defaulting to common local setup
-        ollama_base_url = self.settings.OLLAMA_BASE_URL or "http://localhost:11434"
-        
-        if kg_config:
-            return {
-                'model': kg_config.get('model', 'llama3.2:latest'),
-                'model_server': kg_config.get('model_server', ollama_base_url),
-                'temperature': kg_config.get('temperature', 0.3),
-                'max_tokens': kg_config.get('max_tokens', 4000)
-            }
-        
-        # Fallback to main LLM config
-        main_config = self.llm_settings.get('main_llm', {})
-        return {
-            'model': main_config.get('model', 'llama3.2:latest'),
-            'model_server': ollama_base_url,
-            'temperature': 0.3,  # Lower temperature for factual relationships
-            'max_tokens': 4000
-        }
     
     async def discover_relationships(self, 
                                     entities: List[RadiatingEntity],
@@ -216,9 +193,12 @@ class LLMRelationshipDiscoverer:
         # Build the prompt for relationship discovery
         prompt = self._build_discovery_prompt(entity_info)
         
-        # Call LLM with retry logic
-        max_retries = 3
-        timeout_seconds = 30
+        # Call LLM with retry logic using improved timeout and retry settings
+        from app.core.timeout_settings_cache import get_radiating_timeout, get_radiating_max_retries, get_radiating_retry_delay
+        
+        max_retries = get_radiating_max_retries()
+        retry_delay = get_radiating_retry_delay()
+        timeout_seconds = get_radiating_timeout('llm_call_timeout', 30)
         
         for attempt in range(max_retries):
             try:
@@ -232,35 +212,48 @@ class LLMRelationshipDiscoverer:
                     "stream": False
                 }
                 
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        f"{self.model_config['model_server']}/api/generate",
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=timeout_seconds)
-                    ) as response:
-                        if response.status == 200:
-                            result = await response.json()
-                            response_text = result.get('response', '')
-                            
-                            if not response_text.strip():
-                                raise Exception("Empty response from LLM")
-                            
-                            logger.debug(f"LLM discovery successful on attempt {attempt + 1}")
-                            return response_text
-                        else:
-                            raise Exception(f"LLM API error {response.status}")
+                # Use circuit breaker protection for LLM calls
+                async def _protected_llm_call():
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            f"{self.model_config['model_server']}/api/generate",
+                            json=payload,
+                            timeout=aiohttp.ClientTimeout(total=timeout_seconds)
+                        ) as response:
+                            if response.status == 200:
+                                result = await response.json()
+                                response_text = result.get('response', '')
+                                
+                                if not response_text.strip():
+                                    raise Exception("Empty response from LLM")
+                                
+                                return response_text
+                            else:
+                                raise Exception(f"LLM API error {response.status}")
+                
+                # Use circuit breaker protection
+                response_text = await protected_llm_call(_protected_llm_call)
+                
+                if response_text is None:
+                    # Circuit breaker is open, use fallback
+                    logger.warning("LLM circuit breaker open for relationship discovery")
+                    return "{'relationships': []}"  # Return empty JSON as fallback
+                
+                logger.debug(f"LLM discovery successful on attempt {attempt + 1}")
+                logger.debug(f"LLM response (first 500 chars): {response_text[:500]}")
+                return response_text
                             
             except asyncio.TimeoutError:
                 logger.warning(f"LLM discovery timeout on attempt {attempt + 1}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
                     continue
                 raise
                 
             except Exception as e:
                 logger.warning(f"LLM discovery error on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
                     continue
                 raise
         
@@ -275,34 +268,48 @@ class LLMRelationshipDiscoverer:
             for e in entity_info
         ])
         
-        # Format relationship types with descriptions
+        # Format relationship types with descriptions (limit to most relevant)
+        # Prioritize common relationships to keep prompt concise
+        priority_relationships = [
+            'INTEGRATES_WITH', 'DEPENDS_ON', 'USES', 'REQUIRES', 'BUILT_ON',
+            'COMPETES_WITH', 'ALTERNATIVE_TO', 'EXTENDS', 'SUPPORTS', 'IMPLEMENTS',
+            'PROVIDES', 'ENABLES', 'CONNECTS_TO', 'DEVELOPED_BY', 'COMPATIBLE_WITH'
+        ]
+        
         relationship_types = "\n".join([
-            f"- {rel_type}: {description}"
-            for rel_type, description in self.TECHNOLOGY_RELATIONSHIPS.items()
+            f"- {rel_type}: {self.TECHNOLOGY_RELATIONSHIPS[rel_type]}"
+            for rel_type in priority_relationships
         ])
         
-        # Get prompt template from settings
-        prompt_template = get_prompt(
-            'relationship_discovery',
-            'llm_discovery',
-            # Fallback prompt if not in database
-            """You are an expert in technology, AI, ML, software systems, cloud computing, databases, and business relationships.
-        
-Analyze these entities and discover ALL meaningful relationships between them based on your comprehensive knowledge:
+        # Create a very explicit prompt that demands JSON-only response
+        prompt = f"""You are an expert in technology, AI, ML, software systems, cloud computing, databases, and business relationships.
+
+Analyze these entities and discover meaningful relationships between them:
 
 ENTITIES:
 {entity_list}
 
-RELATIONSHIP TYPES TO USE (MUST use these specific types):
+RELATIONSHIP TYPES (use ONLY these):
 {relationship_types}
 
-Return a JSON object with comprehensive relationships..."""
-        )
-        
-        prompt = prompt_template.format(
-            entity_list=entity_list,
-            relationship_types=relationship_types
-        )
+IMPORTANT: Return ONLY a valid JSON object with NO additional text, explanations, or markdown formatting.
+The JSON MUST follow this exact structure:
+
+{{
+  "relationships": [
+    {{
+      "source": "entity_name_1",
+      "target": "entity_name_2",
+      "type": "RELATIONSHIP_TYPE",
+      "confidence": 0.8,
+      "context": "Brief explanation",
+      "bidirectional": false
+    }}
+  ]
+}}
+
+Discover up to 10 most important relationships. Start your response directly with {{ and end with }}.
+"""
         
         return prompt
     
@@ -315,13 +322,56 @@ Return a JSON object with comprehensive relationships..."""
         relationships = []
         
         try:
-            # Extract JSON from response
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if not json_match:
-                logger.error("No JSON found in LLM response")
-                return relationships
+            # Clean the response - remove any markdown formatting
+            response = response.strip()
             
-            data = json.loads(json_match.group())
+            # Remove markdown code blocks if present
+            if response.startswith('```'):
+                # Find the actual JSON content within code blocks
+                lines = response.split('\n')
+                json_lines = []
+                in_json = False
+                for line in lines:
+                    if line.startswith('```'):
+                        if not in_json:
+                            in_json = True
+                            continue
+                        else:
+                            break
+                    elif in_json:
+                        json_lines.append(line)
+                response = '\n'.join(json_lines)
+            
+            # Try to extract JSON - look for the outermost curly braces
+            # First try to parse the entire response as JSON
+            try:
+                data = json.loads(response)
+            except json.JSONDecodeError:
+                # If that fails, try to extract JSON using regex
+                # Look for JSON object pattern
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response, re.DOTALL)
+                if not json_match:
+                    # Try a more permissive pattern
+                    start_idx = response.find('{')
+                    end_idx = response.rfind('}')
+                    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                        json_str = response[start_idx:end_idx+1]
+                        try:
+                            data = json.loads(json_str)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse extracted JSON: {e}")
+                            logger.debug(f"Attempted to parse: {json_str[:200]}...")
+                            return relationships
+                    else:
+                        logger.error("No JSON structure found in LLM response")
+                        logger.debug(f"Response: {response[:500]}...")
+                        return relationships
+                else:
+                    try:
+                        data = json.loads(json_match.group())
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse matched JSON: {e}")
+                        return relationships
             
             # Create entity lookup maps
             entity_map = {

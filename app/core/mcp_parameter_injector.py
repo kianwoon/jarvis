@@ -27,25 +27,9 @@ class MCPParameterInjector:
     """
     
     def __init__(self):
-        # Common temporal keywords that indicate a query needs recent information
-        self.temporal_keywords = [
-            'latest', 'recent', 'current', 'newest', 'today', 'now',
-            'this week', 'this month', 'this year', 'update', 'news',
-            'breaking', 'trending', 'new', 'fresh', 'live'
-        ]
-        
-        # Mapping of common parameter names across different tools
-        # This helps us identify similar parameters even if named differently
-        self.parameter_mappings = {
-            # Date restriction parameters
-            'date_restrict': ['dateRestrict', 'date_restrict', 'dateRange', 'date_range', 'timeRange', 'time_range'],
-            # Sort parameters
-            'sort': ['sort', 'sortBy', 'sort_by', 'orderBy', 'order_by', 'sortOrder', 'sort_order'],
-            # Query parameters
-            'query': ['query', 'q', 'search', 'searchQuery', 'search_query', 'text'],
-            # Result count parameters
-            'count': ['num_results', 'numResults', 'count', 'limit', 'max_results', 'maxResults', 'size']
-        }
+        # MCP Parameter Injector is now purely schema-driven
+        # No hardcoded mappings - all capabilities come from tool's inputSchema
+        pass
     
     def inject_parameters(
         self, 
@@ -74,11 +58,11 @@ class MCPParameterInjector:
             # Create a copy to avoid modifying the original
             enhanced_params = parameters.copy() if parameters else {}
             
-            # Check if this query needs temporal enhancement
-            if self._needs_temporal_enhancement(enhanced_params):
-                enhanced_params = self._inject_temporal_parameters(
-                    tool_name, enhanced_params, input_schema
-                )
+            # ALWAYS inject temporal parameters for fresh results
+            # We want the latest, most recent information regardless of query keywords
+            enhanced_params = self._inject_temporal_parameters(
+                tool_name, enhanced_params, input_schema
+            )
             
             # Add other smart parameter injections based on schema
             enhanced_params = self._inject_smart_defaults(
@@ -113,26 +97,15 @@ class MCPParameterInjector:
         
         return None
     
-    def _needs_temporal_enhancement(self, parameters: Dict[str, Any]) -> bool:
-        """
-        Determine if the query needs temporal parameters based on the query text.
-        """
-        # Check if there's a query parameter
-        query = self._find_query_parameter(parameters)
-        if not query:
-            return False
-        
-        query_lower = query.lower()
-        
-        # Check for temporal keywords
-        return any(keyword in query_lower for keyword in self.temporal_keywords)
     
     def _find_query_parameter(self, parameters: Dict[str, Any]) -> Optional[str]:
         """
         Find the query parameter in the parameters dict.
-        Handles different naming conventions.
+        Uses common parameter names without hardcoded mappings.
         """
-        for param_name in self.parameter_mappings['query']:
+        # Common query parameter names to check
+        query_params = ['query', 'q', 'search', 'searchQuery', 'search_query', 'text']
+        for param_name in query_params:
             if param_name in parameters:
                 value = parameters[param_name]
                 return str(value) if value else None
@@ -145,81 +118,55 @@ class MCPParameterInjector:
         input_schema: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Inject temporal parameters if the tool's schema supports them.
+        ALWAYS inject temporal parameters to ensure fresh, recent results.
+        Uses ONLY the tool's inputSchema to determine what parameters are supported.
+        No hardcoded mappings or keyword checking - purely schema-driven.
         """
         # Get the schema properties
         properties = input_schema.get('properties', {})
         
-        # Check for date restriction parameter support
-        date_param = self._find_schema_parameter(properties, self.parameter_mappings['date_restrict'])
-        if date_param and date_param not in parameters:
-            # Analyze the query to determine appropriate date range
-            query = self._find_query_parameter(parameters)
-            date_value = self._determine_date_restriction(query)
-            if date_value:
-                parameters[date_param] = date_value
-                logger.info(f"[MCP Parameter Injector] Added {date_param}='{date_value}' to {tool_name} based on schema")
+        # ALWAYS add date restriction for fresh results if tool supports it
+        if 'date_restrict' in properties and 'date_restrict' not in parameters:
+            # Default to last 6 months for general freshness
+            parameters['date_restrict'] = 'm6'
+            logger.info(f"[MCP Parameter Injector] ALWAYS adding date_restrict='m6' to {tool_name} for fresh results")
+        elif 'dateRestrict' in properties and 'dateRestrict' not in parameters:
+            # Handle alternative naming
+            parameters['dateRestrict'] = 'm6'
+            logger.info(f"[MCP Parameter Injector] ALWAYS adding dateRestrict='m6' to {tool_name} for fresh results")
         
-        # Check for sort parameter support
-        sort_param = self._find_schema_parameter(properties, self.parameter_mappings['sort'])
-        if sort_param and sort_param not in parameters:
-            # For temporal queries, sort by date/relevance
-            sort_value = self._determine_sort_value(properties.get(sort_param, {}))
+        # ALWAYS enable sort_by_date for chronological ordering if tool supports it
+        if 'sort_by_date' in properties and 'sort_by_date' not in parameters:
+            # Check if the parameter type is boolean
+            param_schema = properties.get('sort_by_date', {})
+            if param_schema.get('type') == 'boolean':
+                # ALWAYS enable date sorting for fresh results first
+                parameters['sort_by_date'] = True
+                logger.info(f"[MCP Parameter Injector] ALWAYS adding sort_by_date=True to {tool_name} for chronological ordering")
+        
+        # ALWAYS set sort parameter to date if available
+        if 'sort' in properties and 'sort' not in parameters:
+            # Always prefer date sorting for fresh results
+            sort_value = self._determine_sort_value(properties.get('sort', {}))
             if sort_value:
-                parameters[sort_param] = sort_value
-                logger.info(f"[MCP Parameter Injector] Added {sort_param}='{sort_value}' to {tool_name} based on schema")
+                parameters['sort'] = sort_value
+                logger.info(f"[MCP Parameter Injector] ALWAYS adding sort='{sort_value}' to {tool_name} for fresh results")
         
         return parameters
     
-    def _find_schema_parameter(self, properties: Dict[str, Any], possible_names: list) -> Optional[str]:
+    def _find_schema_parameter(self, properties: Dict[str, Any], parameter_name: str) -> bool:
         """
-        Find if any of the possible parameter names exist in the schema properties.
-        Returns the actual parameter name used in the schema.
+        Check if a specific parameter exists in the schema properties.
         """
-        for name in possible_names:
-            if name in properties:
-                return name
-        return None
+        return parameter_name in properties
     
-    def _determine_date_restriction(self, query: Optional[str]) -> Optional[str]:
+    def _get_default_date_restriction(self) -> str:
         """
-        Determine the appropriate date restriction based on the query.
-        Returns values compatible with Google's dateRestrict format.
+        Get the default date restriction for fresh results.
+        Always returns a sensible default for getting recent information.
         """
-        if not query:
-            return None
-        
-        query_lower = query.lower()
-        
-        # Very recent (last day)
-        if any(term in query_lower for term in ['today', 'breaking', 'just', 'now']):
-            return 'd1'
-        
-        # Last week
-        if any(term in query_lower for term in ['this week', 'past week', 'recent']):
-            return 'w1'
-        
-        # Last month
-        if any(term in query_lower for term in ['this month', 'past month', 'latest']):
-            return 'm1'
-        
-        # Last 3 months
-        if any(term in query_lower for term in ['recent months', 'quarterly']):
-            return 'm3'
-        
-        # Last 6 months
-        if any(term in query_lower for term in ['past six months', 'half year']):
-            return 'm6'
-        
-        # Last year
-        if any(term in query_lower for term in ['this year', 'past year', 'current year']):
-            return 'y1'
-        
-        # Default for general temporal queries
-        if any(term in query_lower for term in self.temporal_keywords):
-            return 'w1'  # Default to last week for general "recent" queries
-        
-        return None
+        # Default to last 6 months for general freshness
+        return 'm6'
     
     def _determine_sort_value(self, sort_schema: Dict[str, Any]) -> Optional[str]:
         """
@@ -256,33 +203,22 @@ class MCPParameterInjector:
         """
         properties = input_schema.get('properties', {})
         
-        # Check for result count parameter
-        count_param = self._find_schema_parameter(properties, self.parameter_mappings['count'])
-        if count_param and count_param not in parameters:
-            # Determine if we need more results for comprehensive queries
-            query = self._find_query_parameter(parameters)
-            if query and self._is_comprehensive_query(query):
+        # Check for common result count parameters if they exist in schema
+        count_params = ['num_results', 'numResults', 'count', 'limit', 'max_results', 'maxResults', 'size']
+        for count_param in count_params:
+            if count_param in properties and count_param not in parameters:
                 # Get the maximum allowed value from schema
                 count_schema = properties.get(count_param, {})
                 max_value = count_schema.get('maximum', 10)
                 default_value = count_schema.get('default', 5)
                 
-                # Use a higher value for comprehensive queries
+                # Use a reasonable default for better results
                 parameters[count_param] = min(10, max_value)
-                logger.info(f"[MCP Parameter Injector] Set {count_param}={parameters[count_param]} for comprehensive query")
+                logger.info(f"[MCP Parameter Injector] Set {count_param}={parameters[count_param]} for comprehensive results")
+                break  # Only set one count parameter
         
         return parameters
     
-    def _is_comprehensive_query(self, query: str) -> bool:
-        """
-        Determine if a query requires comprehensive results.
-        """
-        comprehensive_keywords = [
-            'comprehensive', 'detailed', 'complete', 'full', 'all',
-            'everything', 'thorough', 'extensive', 'in-depth'
-        ]
-        query_lower = query.lower()
-        return any(keyword in query_lower for keyword in comprehensive_keywords)
     
     def get_tool_capabilities(self, tool_info: Dict[str, Any]) -> Dict[str, bool]:
         """
@@ -295,6 +231,7 @@ class MCPParameterInjector:
         capabilities = {
             'supports_date_filtering': False,
             'supports_sorting': False,
+            'supports_sort_by_date': False,  # Added specific capability for boolean date sorting
             'supports_pagination': False,
             'supports_filtering': False,
             'accepts_query': False
@@ -307,19 +244,23 @@ class MCPParameterInjector:
         properties = input_schema.get('properties', {})
         
         # Check for date filtering support
-        if self._find_schema_parameter(properties, self.parameter_mappings['date_restrict']):
+        if 'date_restrict' in properties or 'dateRestrict' in properties:
             capabilities['supports_date_filtering'] = True
         
         # Check for sorting support
-        if self._find_schema_parameter(properties, self.parameter_mappings['sort']):
+        if 'sort' in properties:
             capabilities['supports_sorting'] = True
         
+        # Check for sort_by_date boolean parameter support
+        if 'sort_by_date' in properties:
+            capabilities['supports_sort_by_date'] = True
+        
         # Check for query support
-        if self._find_schema_parameter(properties, self.parameter_mappings['query']):
+        if any(param in properties for param in ['query', 'q', 'search', 'searchQuery', 'search_query', 'text']):
             capabilities['accepts_query'] = True
         
         # Check for pagination support
-        if self._find_schema_parameter(properties, self.parameter_mappings['count']):
+        if any(param in properties for param in ['num_results', 'numResults', 'count', 'limit', 'max_results', 'maxResults', 'size']):
             capabilities['supports_pagination'] = True
         
         # Check for filtering support (generic)

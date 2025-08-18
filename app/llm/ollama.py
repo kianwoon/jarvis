@@ -217,9 +217,18 @@ class OllamaLLM(BaseLLM):
             raise
 
 class JarvisLLM:
-    def __init__(self, mode=None, max_tokens=None, base_url: str = None):
+    def __init__(self, mode=None, max_tokens=None, base_url: str = None, model: str = None, temperature: float = None, model_server: str = None):
         # Default to 'non-thinking' if mode is not specified
         self.mode = mode if mode in ("thinking", "non-thinking") else "non-thinking"
+        
+        # Store custom parameters for radiating system
+        self.custom_model = model
+        self.custom_temperature = temperature
+        self.system_prompt = None  # Can be set externally
+        
+        # Use model_server if provided, otherwise fall back to base_url
+        if model_server:
+            base_url = model_server
         
         # If no base_url provided, get from settings
         if not base_url:
@@ -239,6 +248,24 @@ class JarvisLLM:
         self.llm = self._build_llm(self.mode, self.max_tokens)
 
     def _build_llm(self, mode, max_tokens):
+        # If custom parameters are provided (for radiating system), use them directly
+        if self.custom_model or self.custom_temperature is not None:
+            # Build config directly from custom parameters
+            if max_tokens is not None:
+                max_tokens_value = int(max_tokens)
+            else:
+                max_tokens_value = 4096  # Default for radiating system
+            
+            config = LLMConfig(
+                model_name=self.custom_model or 'llama3.1:8b',
+                temperature=float(self.custom_temperature) if self.custom_temperature is not None else 0.7,
+                top_p=0.9,  # Default top_p for radiating
+                max_tokens=max_tokens_value
+            )
+            logger.info(f"[JarvisLLM] Using custom model config: model={config.model_name}, temp={config.temperature}, max_tokens={config.max_tokens}")
+            return OllamaLLM(config, base_url=self.base_url)
+        
+        # Otherwise use main LLM settings
         settings = get_llm_settings()
         
         # Use helper function to get full LLM configuration
@@ -273,5 +300,33 @@ class JarvisLLM:
         self.llm = self._build_llm(self.mode, self.max_tokens)
 
     async def invoke(self, prompt: str) -> str:
-        response = await self.llm.generate(prompt)
-        return response.text 
+        try:
+            # Log the model being used
+            logger.debug(f"[JarvisLLM] Invoking model: {self.llm.model_name}")
+            
+            # Add system prompt if set
+            if self.system_prompt:
+                full_prompt = f"{self.system_prompt}\n\n{prompt}"
+            else:
+                full_prompt = prompt
+            
+            # Log prompt for debugging
+            logger.debug(f"[JarvisLLM] Prompt (first 200 chars): {full_prompt[:200]}")
+            
+            response = await self.llm.generate(full_prompt)
+            
+            # Log response for debugging
+            logger.debug(f"[JarvisLLM] Response (first 200 chars): {response.text[:200] if response.text else 'None'}")
+            
+            # Check for empty response
+            if not response.text or response.text.strip() == "":
+                logger.warning(f"[JarvisLLM] Empty response from model {self.llm.model_name}")
+                # Return a valid JSON structure as fallback
+                return '[]'
+            
+            return response.text
+        except Exception as e:
+            logger.error(f"[JarvisLLM] Error invoking model: {e}")
+            logger.error(f"[JarvisLLM] Model: {self.llm.model_name}, Base URL: {self.llm.base_url}")
+            # Return valid JSON on error
+            return '[]' 

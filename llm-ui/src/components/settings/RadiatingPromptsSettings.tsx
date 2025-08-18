@@ -171,10 +171,20 @@ export const RadiatingPromptsSettings: React.FC<RadiatingPromptsSettingsProps> =
 
     setPrompts(updatedPrompts);
     
-    // Update the settings
+    // Update ONLY the prompts field in settings, preserving all other fields
+    // CRITICAL: Ensure model_config is ALWAYS present to prevent it from being lost
     const updatedSettings = {
       ...settings,
-      prompts: updatedPrompts
+      prompts: updatedPrompts,
+      // Explicitly preserve model_config if it exists
+      model_config: settings.model_config || {
+        model: 'llama3.1:8b',
+        max_tokens: 4096,
+        temperature: 0.7,
+        context_length: 128000,
+        model_server: 'http://localhost:11434',
+        system_prompt: ''
+      }
     };
     
     onUpdate(updatedSettings);

@@ -402,13 +402,15 @@ class ConflictPreventionEngine:
         critical_count = sum(1 for c in conflicts if c.get('severity') == 'critical')
         high_count = sum(1 for c in conflicts if c.get('severity') == 'high')
         
-        # Don't add if multiple critical conflicts
-        if critical_count > 1:
+        # Be less aggressive - only block if there are many critical conflicts
+        # Changed from > 1 to > 2 to allow more messages through
+        if critical_count > 2:
             logger.warning(f"[PREVENTION] Blocking message due to {critical_count} critical conflicts")
             return False
         
-        # Don't add if high prediction score and existing conflicts
-        if prediction.get('likelihood', 0) > 0.7 and (critical_count > 0 or high_count > 2):
+        # Increased threshold from 0.7 to 0.9 to be less aggressive
+        # Also increased critical_count threshold from > 0 to > 1
+        if prediction.get('likelihood', 0) > 0.9 and (critical_count > 1 or high_count > 3):
             logger.warning(f"[PREVENTION] Blocking message due to high conflict prediction ({prediction['likelihood']:.2f})")
             return False
         

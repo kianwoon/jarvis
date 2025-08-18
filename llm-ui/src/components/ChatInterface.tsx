@@ -792,12 +792,14 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               mb: 2,
               display: 'flex',
               flexDirection: 'column',
-              alignItems: message.role === 'user' ? 'flex-end' : 'flex-start'
+              alignItems: message.role === 'user' ? 'flex-end' : 'flex-start',
+              width: '100%'  // Ensure parent takes full width
             }}
           >
             <Box
               sx={{
-                maxWidth: message.role === 'user' ? '80%' : '95%',
+                width: message.role === 'user' ? '80%' : '95%',  // Use width instead of maxWidth for assistant
+                maxWidth: message.role === 'user' ? '80%' : '100%',  // Still set maxWidth for user messages
                 p: 2,
                 borderRadius: 2,
                 backgroundColor: message.role === 'user' ? 'primary.light' : 'background.paper',
@@ -863,7 +865,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             
             {/* Context documents */}
             {message.context && message.context.length > 0 && (
-              <Box sx={{ mt: 1, maxWidth: '95%', alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start' }}>
+              <Box sx={{ mt: 1, width: '100%', alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start' }}>
                 <Accordion sx={{ backgroundColor: 'background.default' }}>
                   <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
