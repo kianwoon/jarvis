@@ -90,6 +90,9 @@ class RadiatingSettings(BaseModel):
     cache_ttl_seconds: int = Field(3600, ge=0, description="Cache TTL in seconds")
     enable_parallel_processing: bool = Field(True, description="Enable parallel processing")
     max_parallel_workers: int = Field(4, ge=1, le=16, description="Maximum parallel workers")
+    # Web-first configuration fields
+    web_first_enabled: bool = Field(True, description="Use web search as PRIMARY source for ALL queries")
+    web_search_timeout: int = Field(30000, ge=1000, le=60000, description="Web search timeout in milliseconds")
     
     class Config:
         schema_extra = {
@@ -102,7 +105,9 @@ class RadiatingSettings(BaseModel):
                 "enable_caching": True,
                 "cache_ttl_seconds": 3600,
                 "enable_parallel_processing": True,
-                "max_parallel_workers": 4
+                "max_parallel_workers": 4,
+                "web_first_enabled": True,
+                "web_search_timeout": 30000
             }
         }
 
@@ -116,6 +121,7 @@ class RadiatingQueryRequest(BaseModel):
     filters: Dict[str, Any] = Field(default_factory=dict, description="Filters to apply")
     stream: bool = Field(True, description="Whether to stream the response")
     include_coverage_data: bool = Field(False, description="Include coverage metadata in response")
+    force_web_search: Optional[bool] = Field(None, description="Force web search as PRIMARY source (default: True via settings)")
     
     class Config:
         schema_extra = {
@@ -126,7 +132,8 @@ class RadiatingQueryRequest(BaseModel):
                 "strategy": "ADAPTIVE",
                 "filters": {"entity_types": ["Organization", "Technology"]},
                 "stream": True,
-                "include_coverage_data": True
+                "include_coverage_data": True,
+                "force_web_search": True
             }
         }
 

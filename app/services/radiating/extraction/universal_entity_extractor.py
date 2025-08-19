@@ -12,6 +12,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 import hashlib
 import asyncio
+from datetime import datetime
 
 from app.core.radiating_settings_cache import get_extraction_config, get_radiating_settings, get_prompt, get_model_config
 from app.core.timeout_settings_cache import get_entity_extraction_timeout
@@ -92,7 +93,8 @@ class UniversalEntityExtractor:
         self,
         text: str,
         domain_hints: Optional[List[str]] = None,
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        prefer_web_search: bool = True
     ) -> List[ExtractedEntity]:
         """
         Extract entities from text without predefined types.
@@ -101,11 +103,18 @@ class UniversalEntityExtractor:
             text: Text to extract entities from
             domain_hints: Optional domain hints to guide extraction
             context: Optional context about the text
+            prefer_web_search: When True, use web search as primary source (default: True)
             
         Returns:
             List of extracted entities with confidence scores
         """
         
+        # If prefer_web_search is True and it's a technology query, use web-first approach
+        if prefer_web_search and self._is_comprehensive_technology_query(text):
+            logger.info("Using web-first extraction for technology query")
+            return await self.extract_entities_web_first(text, domain_hints, context)
+        
+        # Otherwise, use the traditional LLM-first approach
         if not self.llm_client:
             logger.warning("LLM client not available for entity extraction")
             return []
@@ -134,7 +143,7 @@ class UniversalEntityExtractor:
             if is_comprehensive_query:
                 min_confidence = 0.3  # Much lower threshold for comprehensive queries
             else:
-                min_confidence = self.config.get('entity_confidence_threshold', 0.6)
+                min_confidence = self.config.get('entity_confidence_threshold', 0.4)
             
             filtered = [e for e in scored_entities if e.confidence >= min_confidence]
             
@@ -143,13 +152,165 @@ class UniversalEntityExtractor:
             if is_comprehensive_query:
                 max_entities = 100  # Allow up to 100 entities for comprehensive queries
             else:
-                max_entities = self.config.get('max_entities_per_query', 20)
+                max_entities = self.config.get('max_entities_per_query', 50)
             
             return filtered[:max_entities]
             
         except Exception as e:
             logger.error(f"Error extracting entities: {e}")
             return []
+    
+    async def extract_entities_web_first(
+        self,
+        text: str,
+        domain_hints: Optional[List[str]] = None,
+        context: Optional[str] = None
+    ) -> List[ExtractedEntity]:
+        """
+        Extract entities with web search as the primary source.
+        Only falls back to LLM if web search fails or returns insufficient results.
+        
+        Args:
+            text: Text to extract entities from
+            domain_hints: Optional domain hints to guide extraction
+            context: Optional context about the text
+            
+        Returns:
+            List of extracted entities with web sources prioritized
+        """
+        logger.info("Starting web-first entity extraction")
+        
+        # Always try web search first for technology queries
+        web_entities = []
+        llm_entities = []
+        
+        try:
+            # Extract focus areas for targeted searches
+            focus_areas = self._extract_focus_areas(text, domain_hints)
+            logger.info(f"Focus areas for web search: {focus_areas}")
+            
+            # Generate multiple query variations for comprehensive coverage
+            query_variations = self.web_search.generate_query_variations(text, max_variations=8)
+            logger.info(f"Generated {len(query_variations)} query variations for comprehensive search")
+            
+            # Perform web searches with variations
+            all_web_results = []
+            
+            # Search with the original query first
+            original_results = await self.web_search.search_for_technologies(text, focus_areas)
+            all_web_results.extend(original_results)
+            
+            # Then search with variations for more coverage
+            for variation in query_variations[:5]:  # Limit to top 5 variations
+                variation_results = await self.web_search._execute_web_search(variation)
+                extracted = await self.web_search._extract_entities_from_results(variation_results)
+                all_web_results.extend(extracted)
+            
+            # Convert web results to ExtractedEntity objects
+            for web_entity in all_web_results:
+                entity = ExtractedEntity(
+                    text=web_entity['text'],
+                    entity_type=web_entity['type'],
+                    confidence=web_entity.get('confidence', 0.7) + 0.1,  # Boost web confidence
+                    context=web_entity.get('context', ''),
+                    metadata={
+                        'source': 'web_search',
+                        'url': web_entity.get('url', ''),
+                        'extraction_method': 'web_first',
+                        'search_query': text
+                    }
+                )
+                web_entities.append(entity)
+            
+            logger.info(f"Web search found {len(web_entities)} entities")
+            
+            # Store entities in Neo4j with web-sourced label
+            if web_entities:
+                search_metadata = {
+                    'query': text,
+                    'focus_areas': focus_areas,
+                    'variations_used': len(query_variations),
+                    'timestamp': datetime.now().isoformat()
+                }
+                await self.web_search.store_entities_in_neo4j(
+                    [{'text': e.text, 'type': e.entity_type, 'confidence': e.confidence, 
+                      'url': e.metadata.get('url', ''), 'context': e.context} 
+                     for e in web_entities],
+                    search_metadata
+                )
+            
+            # Extract relationships from search snippets
+            if all_web_results:
+                relationships = self.web_search.extract_relationships_from_snippets(
+                    [{'snippet': e.get('context', ''), 'url': e.get('url', '')} 
+                     for e in all_web_results]
+                )
+                logger.info(f"Extracted {len(relationships)} relationships from web search")
+            
+        except Exception as e:
+            logger.error(f"Web search failed: {e}")
+            web_entities = []
+        
+        # Only use LLM as fallback if web search didn't find enough entities
+        if len(web_entities) < 5:
+            logger.info(f"Web search found only {len(web_entities)} entities, falling back to LLM")
+            
+            if self.llm_client:
+                try:
+                    # Use standard LLM extraction
+                    llm_entities = await self._extract_entities_with_llm(
+                        text, domain_hints, context, 
+                        is_comprehensive=self._is_comprehensive_technology_query(text)
+                    )
+                    llm_entities = self._score_entity_confidence(llm_entities, text)
+                    logger.info(f"LLM extraction found {len(llm_entities)} additional entities")
+                except Exception as e:
+                    logger.error(f"LLM extraction failed: {e}")
+                    llm_entities = []
+        
+        # Combine results with web entities having higher priority
+        combined_entities = []
+        seen_texts = set()
+        
+        # Add all web entities first (higher priority)
+        for entity in web_entities:
+            entity_lower = entity.text.lower()
+            if entity_lower not in seen_texts:
+                combined_entities.append(entity)
+                seen_texts.add(entity_lower)
+        
+        # Add LLM entities that aren't duplicates
+        for entity in llm_entities:
+            entity_lower = entity.text.lower()
+            if entity_lower not in seen_texts:
+                # Slightly reduce confidence for LLM entities when web search was primary
+                entity.confidence = entity.confidence * 0.9
+                entity.metadata['extraction_method'] = 'llm_fallback'
+                combined_entities.append(entity)
+                seen_texts.add(entity_lower)
+        
+        # Sort by confidence
+        combined_entities.sort(key=lambda x: x.confidence, reverse=True)
+        
+        # Apply appropriate limits
+        is_comprehensive = self._is_comprehensive_technology_query(text)
+        # Higher limits for web-first extraction
+        if is_comprehensive:
+            max_entities = 150
+        else:
+            max_entities = self.config.get('max_entities_per_query', 50)
+            # If we have many web entities, increase limit
+            web_count = sum(1 for e in combined_entities if hasattr(e, 'metadata') and e.metadata.get('source') == 'web_search')
+            if web_count > 20:
+                max_entities = min(max_entities * 2, 100)
+                logger.info(f"Web-first: Found {web_count} web entities, increased limit to {max_entities}")
+        
+        final_entities = combined_entities[:max_entities]
+        
+        logger.info(f"Web-first extraction complete: {len(final_entities)} total entities "
+                   f"(Web: {len(web_entities)}, LLM: {len(llm_entities)})")
+        
+        return final_entities
     
     def _is_comprehensive_technology_query(self, text: str) -> bool:
         """
@@ -666,7 +827,7 @@ JSON format:
         """
         Extract entities from text using both LLM and web search for comprehensive coverage.
         This method is designed to discover the latest AI/LLM technologies beyond the LLM's
-        knowledge cutoff.
+        knowledge cutoff. Enhanced to use advanced WebSearchIntegration features.
         
         Args:
             text: Text to extract entities from
@@ -677,44 +838,164 @@ JSON format:
         Returns:
             List of extracted entities combining LLM and web search results
         """
-        logger.info("Starting entity extraction with web search augmentation")
+        logger.info("Starting enhanced entity extraction with web search augmentation")
         
-        # First, perform standard LLM extraction
-        llm_entities = await self.extract_entities(text, domain_hints, context)
-        logger.info(f"LLM extraction found {len(llm_entities)} entities")
-        
-        # Check if web search should be used
+        # Check if web search should be used (now prioritized)
         should_search = force_web_search or self.web_search.should_use_web_search(text)
         
-        if not should_search:
-            logger.info("Web search not triggered for this query")
-            return llm_entities
+        if should_search:
+            logger.info("Web search triggered - using enhanced web-first approach")
+            
+            try:
+                # Extract focus areas from the query
+                focus_areas = self._extract_focus_areas(text, domain_hints)
+                logger.info(f"Focus areas identified: {focus_areas}")
+                
+                # Generate multiple query variations for comprehensive coverage
+                query_variations = self.web_search.generate_query_variations(text, max_variations=10)
+                logger.info(f"Generated {len(query_variations)} query variations for comprehensive search")
+                
+                # Perform web searches with all variations
+                all_web_results = []
+                all_web_entities = []
+                
+                # Search with the original query first
+                original_results = await self.web_search.search_for_technologies(text, focus_areas)
+                all_web_entities.extend(original_results)
+                
+                # Then search with variations for maximum coverage
+                for i, variation in enumerate(query_variations[:7], 1):  # Use top 7 variations
+                    logger.info(f"Searching variation {i}/{min(7, len(query_variations))}: {variation[:50]}...")
+                    variation_results = await self.web_search._execute_web_search(variation)
+                    extracted = await self.web_search._extract_entities_from_results(variation_results)
+                    all_web_entities.extend(extracted)
+                    all_web_results.extend(variation_results)
+                
+                logger.info(f"Web search discovered {len(all_web_entities)} total entities")
+                
+                # Convert web entities to ExtractedEntity objects
+                web_extracted_entities = []
+                for web_entity in all_web_entities:
+                    entity = ExtractedEntity(
+                        text=web_entity['text'],
+                        entity_type=web_entity['type'],
+                        confidence=web_entity.get('confidence', 0.7) + 0.15,  # Higher boost for web entities
+                        context=web_entity.get('context', ''),
+                        metadata={
+                            'source': 'web_search',
+                            'url': web_entity.get('url', ''),
+                            'extraction_method': 'web_search_enhanced',
+                            'search_query': text,
+                            'variation_source': True
+                        }
+                    )
+                    web_extracted_entities.append(entity)
+                
+                # Store entities in Neo4j with enhanced metadata
+                if web_extracted_entities:
+                    search_metadata = {
+                        'query': text,
+                        'focus_areas': focus_areas,
+                        'variations_used': len(query_variations),
+                        'total_results': len(all_web_results),
+                        'timestamp': datetime.now().isoformat(),
+                        'enhanced_search': True
+                    }
+                    await self.web_search.store_entities_in_neo4j(
+                        [{'text': e.text, 'type': e.entity_type, 'confidence': e.confidence, 
+                          'url': e.metadata.get('url', ''), 'context': e.context} 
+                         for e in web_extracted_entities],
+                        search_metadata
+                    )
+                    logger.info(f"Stored {len(web_extracted_entities)} entities in Neo4j")
+                
+                # Extract relationships from all search snippets
+                if all_web_results:
+                    relationships = self.web_search.extract_relationships_from_snippets(all_web_results)
+                    logger.info(f"Extracted {len(relationships)} relationships from web search results")
+                    
+                    # Store relationships in Neo4j if available
+                    if relationships:
+                        await self._store_relationships_in_neo4j(relationships)
+                
+                # Only perform LLM extraction if web search found < 10 entities
+                llm_entities = []
+                if len(web_extracted_entities) < 10:
+                    logger.info(f"Web search found only {len(web_extracted_entities)} entities, adding LLM extraction")
+                    llm_entities = await self.extract_entities(text, domain_hints, context, prefer_web_search=False)
+                    logger.info(f"LLM extraction found {len(llm_entities)} additional entities")
+                
+                # Merge entities with web entities having priority
+                merged_entities = await self.web_search.merge_entities(llm_entities, 
+                    [{'text': e.text, 'type': e.entity_type, 'confidence': e.confidence, 
+                      'context': e.context, 'url': e.metadata.get('url', '')} 
+                     for e in web_extracted_entities])
+                
+                # Apply final filtering and scoring
+                final_entities = self._finalize_entities(merged_entities, text)
+                
+                logger.info(f"Enhanced extraction complete: {len(final_entities)} total entities "
+                           f"(Web: {len(web_extracted_entities)}, LLM: {len(llm_entities)})")
+                
+                return final_entities
+                
+            except Exception as e:
+                logger.error(f"Enhanced web search failed: {e}", exc_info=True)
+                # Fall back to LLM-only extraction
+                logger.info("Falling back to LLM-only extraction")
+                return await self.extract_entities(text, domain_hints, context, prefer_web_search=False)
         
-        logger.info("Web search triggered - discovering latest technologies")
+        else:
+            # No web search needed, use standard LLM extraction
+            logger.info("Web search not triggered, using LLM extraction only")
+            return await self.extract_entities(text, domain_hints, context, prefer_web_search=False)
+    
+    async def _store_relationships_in_neo4j(self, relationships: List[Dict]):
+        """
+        Store extracted relationships in Neo4j.
         
+        Args:
+            relationships: List of relationship dictionaries to store
+        """
         try:
-            # Extract focus areas from the query
-            focus_areas = self._extract_focus_areas(text, domain_hints)
+            from app.services.radiating.storage.radiating_neo4j_service import RadiatingNeo4jService
             
-            # Perform web search for latest technologies
-            web_entities = await self.web_search.search_for_technologies(text, focus_areas)
-            logger.info(f"Web search discovered {len(web_entities)} additional entities")
+            neo4j_service = RadiatingNeo4jService()
+            if not neo4j_service.is_enabled():
+                logger.warning("Neo4j is not enabled, skipping relationship storage")
+                return
             
-            # Merge entities, prioritizing newer information
-            merged_entities = await self.web_search.merge_entities(llm_entities, web_entities)
+            timestamp = datetime.now().isoformat()
             
-            # Apply final filtering and scoring
-            final_entities = self._finalize_entities(merged_entities, text)
+            with neo4j_service.driver.session() as session:
+                for rel in relationships:
+                    # Create or merge the relationship in Neo4j
+                    session.run("""
+                        MERGE (source:Entity {name: $source})
+                        MERGE (target:Entity {name: $target})
+                        MERGE (source)-[r:RELATES_TO {type: $rel_type}]->(target)
+                        SET r.confidence = $confidence,
+                            r.context = $context,
+                            r.source_url = $source_url,
+                            r.extraction_method = $extraction_method,
+                            r.discovery_timestamp = $timestamp,
+                            r.last_updated = timestamp()
+                        RETURN r
+                    """, {
+                        'source': rel['source'],
+                        'target': rel['target'],
+                        'rel_type': rel['type'],
+                        'confidence': rel.get('confidence', 0.5),
+                        'context': rel.get('context', ''),
+                        'source_url': rel.get('source_url', ''),
+                        'extraction_method': rel.get('extraction_method', 'web_search'),
+                        'timestamp': timestamp
+                    })
             
-            logger.info(f"Final entity count after merging: {len(final_entities)} "
-                       f"(LLM: {len(llm_entities)}, Web: {len(web_entities)})")
-            
-            return final_entities
+            logger.info(f"Stored {len(relationships)} relationships in Neo4j")
             
         except Exception as e:
-            logger.error(f"Web search augmentation failed: {e}")
-            # Fall back to LLM entities if web search fails
-            return llm_entities
+            logger.error(f"Failed to store relationships in Neo4j: {e}")
     
     def _extract_focus_areas(self, text: str, domain_hints: Optional[List[str]]) -> List[str]:
         """
@@ -768,13 +1049,34 @@ JSON format:
         Returns:
             Finalized list of entities
         """
-        # Remove duplicates based on text similarity
+        logger.info(f"Finalizing {len(entities)} entities before deduplication")
+        
+        # Blacklist of error-related entity names that shouldn't be processed
+        error_entity_blacklist = {
+            'api', 'error', 'google search', 'google', 'search',
+            'api error', 'search error', 'failed', 'failure',
+            'invalid', 'unable', 'could not', 'bad request',
+            'not found', 'unauthorized', 'forbidden', 'rate limit',
+            'quota', 'authentication', 'service', 'unavailable',
+            'exception', 'timeout', 'connection', 'refused'
+        }
+        
+        # Remove duplicates and filter error entities
         unique_entities = []
         seen_texts = set()
         seen_similar = set()
+        filtered_count = 0
         
         for entity in entities:
             entity_lower = entity.text.lower()
+            
+            # Filter out error-related entities
+            if entity_lower in error_entity_blacklist:
+                # Only filter if confidence is low and it's likely an error entity
+                if entity.confidence < 0.7 or entity.entity_type in ['Entity', 'Unknown']:
+                    logger.debug(f"Filtering out error-related entity: '{entity.text}' (type: {entity.entity_type}, confidence: {entity.confidence})")
+                    filtered_count += 1
+                    continue
             
             # Skip if exact duplicate
             if entity_lower in seen_texts:
@@ -792,31 +1094,48 @@ JSON format:
                 seen_texts.add(entity_lower)
                 seen_similar.add(entity_lower)
         
+        if filtered_count > 0:
+            logger.info(f"Filtered out {filtered_count} error-related entities")
+        logger.info(f"After deduplication: {len(unique_entities)} unique entities")
+        
+        # Count web-sourced entities
+        web_entity_count = sum(1 for e in unique_entities 
+                               if hasattr(e, 'metadata') and e.metadata.get('source') == 'web_search')
+        logger.info(f"Web-sourced entities: {web_entity_count}")
+        
         # Re-score entities based on relevance to original query
         for entity in unique_entities:
             # Boost entities that appear in the original text
             if entity.text.lower() in original_text.lower():
                 entity.confidence = min(1.0, entity.confidence + 0.2)
             
-            # Boost entities from web search for technology queries
+            # Boost entities from web search for technology queries (higher boost)
             if hasattr(entity, 'metadata') and entity.metadata.get('source') == 'web_search':
-                # Web-sourced entities get a slight boost for freshness
-                entity.confidence = min(1.0, entity.confidence + 0.05)
+                # Web-sourced entities get a significant boost for freshness and relevance
+                entity.confidence = min(1.0, entity.confidence + 0.15)
         
-        # Sort by confidence
+        # Sort by confidence (web entities should be at the top due to boost)
         unique_entities.sort(key=lambda x: x.confidence, reverse=True)
         
         # Apply limits based on query type
         is_comprehensive = self._is_comprehensive_technology_query(original_text)
         
         if is_comprehensive:
-            # Allow more entities for comprehensive queries
-            max_entities = min(100, len(unique_entities))
+            # Allow many more entities for comprehensive queries
+            max_entities = min(150, len(unique_entities))
+            logger.info(f"Comprehensive query detected - allowing up to {max_entities} entities")
         else:
-            # Standard limit for regular queries
-            max_entities = self.config.get('max_entities_per_query', 30)
+            # Increased standard limit for regular queries
+            max_entities = self.config.get('max_entities_per_query', 50)
+            # If we have many web entities, increase the limit further
+            if web_entity_count > 20:
+                max_entities = min(max_entities * 2, 100)
+                logger.info(f"Many web entities found - increased limit to {max_entities}")
         
-        return unique_entities[:max_entities]
+        final_entities = unique_entities[:max_entities]
+        logger.info(f"Returning {len(final_entities)} entities (limit was {max_entities})")
+        
+        return final_entities
     
     def _are_similar_texts(self, text1: str, text2: str) -> bool:
         """

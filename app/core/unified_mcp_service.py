@@ -19,6 +19,7 @@ import weakref
 
 from .oauth_token_manager import oauth_token_manager
 from .mcp_client import MCPClient, MCPServerConfig
+from .mcp_endpoint_resolver import resolve_mcp_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -669,6 +670,9 @@ class UnifiedMCPService:
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             try:
+                # FIX: Ensure endpoint is the full URL with port
+                if endpoint and not endpoint.startswith("http"):
+                    endpoint = f"http://{endpoint}"
                 logger.info(f"[HTTP] Calling {tool_name} at {endpoint}")
                 
                 # Fix parameter format
@@ -918,6 +922,8 @@ async def call_mcp_tool_unified(tool_info: Dict[str, Any], tool_name: str,
     try:
         logger.debug(f"Starting unified tool call for {tool_name}")
         endpoint = tool_info.get("endpoint", "")
+        # Resolve endpoint based on environment
+        endpoint = resolve_mcp_endpoint(tool_info)
         server_id = tool_info.get("server_id")
         logger.debug(f"Tool {tool_name} - endpoint: {endpoint}, server_id: {server_id}")
         

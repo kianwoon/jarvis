@@ -234,21 +234,32 @@ class RadiatingAgent(LLMCircuitBreakerMixin):
             
             expanded_queries = await self.expand_query(query, context)
             
-            # Step 2: Extract entities from query with timeout
+            # Step 2: Extract entities from query with web search (web-first approach)
             entity_timeout = get_radiating_timeout('entity_extraction_timeout', 60)
             entities = []
             try:
+                logger.info(f"Starting web-first entity extraction for query: {query[:100]}...")
                 # Create extraction task for better timeout handling
+                # ALWAYS use web search for comprehensive entity discovery
                 extraction_task = asyncio.create_task(
-                    self.entity_extractor.extract_entities(query)
+                    self.entity_extractor.extract_entities_with_web_search(
+                        text=query,
+                        force_web_search=True  # Force web search to ensure latest information
+                    )
                 )
                 
                 # Wait for completion or timeout
                 entities = await asyncio.wait_for(extraction_task, timeout=entity_timeout)
-                logger.info(f"Successfully extracted {len(entities)} entities")
+                logger.info(f"Successfully extracted {len(entities)} entities using web-first approach")
+                
+                # Log entity sources to verify web search was used
+                web_sourced = sum(1 for e in entities if hasattr(e, 'metadata') and 
+                                  e.metadata.get('source') == 'web_search')
+                llm_sourced = len(entities) - web_sourced
+                logger.info(f"Entity sources: {web_sourced} from web search, {llm_sourced} from LLM")
                 
             except asyncio.TimeoutError:
-                logger.warning(f"Entity extraction timed out after {entity_timeout}s, using fallback strategy")
+                logger.warning(f"Web-first entity extraction timed out after {entity_timeout}s, using fallback strategy")
                 
                 # Cancel the hanging task
                 if not extraction_task.done():

@@ -60,12 +60,17 @@ async def execute_radiating_query(
             # For streaming, we'll use the agent system
             return await _handle_streaming_query(request)
         
+        # Add force_web_search to filters if specified in request
+        filters = request.filters.copy() if request.filters else {}
+        if request.force_web_search is not None:
+            filters['force_web_search'] = request.force_web_search
+        
         # Execute non-streaming query
         result = await service.execute_radiating_query(
             query=request.query,
             max_depth=request.max_depth,
             strategy=request.strategy,
-            filters=request.filters,
+            filters=filters,
             include_coverage=request.include_coverage_data
         )
         
@@ -98,10 +103,14 @@ async def _handle_streaming_query(request: RadiatingQueryRequest):
             agent_pool = get_radiating_agent_pool()
             
             # Build radiating config from request
+            filters = request.filters.copy() if request.filters else {}
+            if request.force_web_search is not None:
+                filters['force_web_search'] = request.force_web_search
+            
             radiating_config = {
                 'max_depth': request.max_depth,
                 'strategy': request.strategy,
-                'filters': request.filters
+                'filters': filters
             }
             
             # Get agent with config
@@ -111,7 +120,7 @@ async def _handle_streaming_query(request: RadiatingQueryRequest):
             context = {
                 'max_depth': request.max_depth,
                 'strategy': request.strategy,
-                'filters': request.filters
+                'filters': filters
             }
             
             async for chunk in agent.process_with_radiation(

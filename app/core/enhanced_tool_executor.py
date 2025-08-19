@@ -15,6 +15,7 @@ from typing import Dict, Any, Optional
 
 from .unified_mcp_service import call_mcp_tool_unified, unified_mcp_service
 from .mcp_tools_cache import get_enabled_mcp_tools
+from .mcp_endpoint_resolver import get_resolved_tool_info
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ def call_mcp_tool_enhanced(tool_name: str, parameters: Dict[str, Any],
         clean_parameters = {k: v for k, v in parameters.items() if k != "agent"}
         
         # Handle hostname replacement for Docker/localhost scenarios
-        tool_info = _adjust_endpoint_for_environment(tool_info)
+        tool_info = get_resolved_tool_info(tool_info)
         
         logger.info(f"[ENHANCED] Calling {tool_name} via unified service")
         
@@ -134,17 +135,18 @@ def _adjust_endpoint_for_environment(tool_info: Dict[str, Any]) -> Dict[str, Any
         
         adjusted_tool_info = tool_info.copy()
         
-        if in_docker and server_hostname and "localhost" in endpoint:
+        # FIX: Ensure endpoint is properly preserved
+        # When not in Docker, use the endpoint as-is if it contains host.docker.internal
+        if not in_docker and "host.docker.internal" in endpoint:
+            # Running locally, keep host.docker.internal as it works on Mac
+            logger.debug(f"Keeping endpoint as-is for local execution: {endpoint}")
+        elif in_docker and server_hostname and "localhost" in endpoint:
             adjusted_tool_info["endpoint"] = endpoint.replace("localhost", server_hostname)
-        elif not in_docker and server_hostname and server_hostname in endpoint:
-            adjusted_tool_info["endpoint"] = endpoint.replace(server_hostname, "localhost")
+            logger.debug(f"Adjusted endpoint for Docker: {adjusted_tool_info['endpoint']}")
         
         return adjusted_tool_info
-        
-    except Exception as e:
-        logger.warning(f"Failed to adjust endpoint: {e}")
+    except:
         return tool_info
-
 def _map_tool_parameters_service(tool_name: str, parameters: Dict[str, Any]) -> tuple:
     """
     Apply parameter mapping for common mismatches between agents and tools
@@ -180,7 +182,7 @@ async def call_mcp_tool_enhanced_async(tool_name: str, parameters: Dict[str, Any
         clean_parameters = {k: v for k, v in parameters.items() if k != "agent"}
         
         # Handle hostname replacement
-        tool_info = _adjust_endpoint_for_environment(tool_info)
+        tool_info = get_resolved_tool_info(tool_info)
         
         logger.info(f"[ENHANCED-ASYNC] Calling {tool_name} via unified service")
         

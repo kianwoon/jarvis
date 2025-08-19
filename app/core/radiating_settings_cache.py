@@ -55,10 +55,10 @@ def get_radiating_config() -> Dict[str, Any]:
                 'expansion_method': settings.get('query_expansion', {}).get('expansion_method', 'semantic')
             },
             'extraction': {
-                'entity_confidence_threshold': settings.get('extraction', {}).get('entity_confidence_threshold', 0.6),
+                'entity_confidence_threshold': settings.get('extraction', {}).get('entity_confidence_threshold', 0.4),
                 'relationship_confidence_threshold': settings.get('extraction', {}).get('relationship_confidence_threshold', 0.65),
                 'enable_universal_discovery': settings.get('extraction', {}).get('enable_universal_discovery', True),
-                'max_entities_per_query': settings.get('extraction', {}).get('max_entities_per_query', 20),
+                'max_entities_per_query': settings.get('extraction', {}).get('max_entities_per_query', 50),
                 'max_relationships_per_query': settings.get('extraction', {}).get('max_relationships_per_query', 30)
             },
             'performance': {
@@ -93,10 +93,10 @@ def get_default_radiating_config() -> Dict[str, Any]:
             'expansion_method': 'semantic'
         },
         'extraction': {
-            'entity_confidence_threshold': 0.6,
+            'entity_confidence_threshold': 0.4,
             'relationship_confidence_threshold': 0.65,
             'enable_universal_discovery': True,
-            'max_entities_per_query': 20,
+            'max_entities_per_query': 50,
             'max_relationships_per_query': 30
         },
         'performance': {
@@ -141,10 +141,10 @@ def get_default_radiating_settings() -> Dict[str, Any]:
         
         # Universal extraction settings
         'extraction': {
-            'entity_confidence_threshold': 0.6,
+            'entity_confidence_threshold': 0.4,
             'relationship_confidence_threshold': 0.65,
             'enable_universal_discovery': True,
-            'max_entities_per_query': 20,
+            'max_entities_per_query': 50,
             'max_relationships_per_query': 30,
             'enable_pattern_detection': True,
             'enable_semantic_inference': True,
@@ -412,10 +412,10 @@ def get_extraction_config() -> Dict[str, Any]:
     """Get extraction specific configuration"""
     settings = get_radiating_settings()
     return settings.get('extraction', {
-        'entity_confidence_threshold': 0.6,
+        'entity_confidence_threshold': 0.4,
         'relationship_confidence_threshold': 0.65,
         'enable_universal_discovery': True,
-        'max_entities_per_query': 20,
+        'max_entities_per_query': 50,
         'max_relationships_per_query': 30
     })
 

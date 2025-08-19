@@ -617,7 +617,7 @@ class RadiatingNeo4jService(Neo4jService):
                 query = """
                     MATCH (n)
                     WHERE n.domain = $domain OR $domain = 'general'
-                    WITH n, size((n)--()) as rel_count
+                    WITH n, COUNT{(n)--()} as rel_count
                     WHERE rel_count > 0
                     RETURN n, labels(n) as labels, rel_count
                     ORDER BY rel_count DESC

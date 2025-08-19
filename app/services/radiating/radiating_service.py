@@ -64,7 +64,9 @@ class RadiatingService:
         enable_caching=True,
         cache_ttl_seconds=3600,
         enable_parallel_processing=True,
-        max_parallel_workers=4
+        max_parallel_workers=4,
+        web_first_enabled=True,  # WEB-FIRST: Default to web search for ALL queries
+        web_search_timeout=30000  # 30 second timeout for web searches
     )
     
     SETTINGS_KEY = "radiating:settings"
@@ -90,11 +92,22 @@ class RadiatingService:
             'cache_hits': 0,
             'cache_misses': 0,
             'entities_discovered': 0,
-            'relationships_found': 0
+            'relationships_found': 0,
+            'web_searches_performed': 0,
+            'web_entities_discovered': 0
         }
         
         # Initialize settings
         self._initialize_settings()
+        
+        # Log web-first configuration on startup
+        web_first = getattr(self.settings, 'web_first_enabled', True)
+        logger.info("="*80)
+        logger.info("🌐 RadiatingService initialized with WEB-FIRST approach")
+        logger.info(f"Web-first enabled: {web_first}")
+        logger.info(f"Web search timeout: {getattr(self.settings, 'web_search_timeout', 30000)}ms")
+        logger.info("Web search is the PRIMARY information source for maximum freshness")
+        logger.info("="*80)
         
         # Start background tasks
         self._start_background_tasks()
@@ -226,27 +239,97 @@ class RadiatingService:
             # Update metrics
             self.metrics['total_queries'] += 1
             
-            # Determine if web search should be used
-            use_web_search = filters.get('use_web_search', False) if filters else False
+            # WEB-FIRST APPROACH: Determine if web search should be used (defaults to True)
+            use_web_search = filters.get('use_web_search', self._should_use_web_search(query)) if filters else self._should_use_web_search(query)
             
-            # Extract entities from query (with optional web search)
-            if use_web_search or self._should_use_web_search(query):
-                logger.info("Using web search augmented entity extraction")
+            # Force web search for all queries unless explicitly disabled
+            if filters and 'force_web_search' in filters:
+                use_web_search = filters['force_web_search']
+                if use_web_search:
+                    logger.info("🚀 FORCED WEB-FIRST MODE: Web search override enabled")
+            
+            # Extract entities from query - WEB-FIRST APPROACH IS PRIMARY
+            if use_web_search:
+                logger.info("="*60)
+                logger.info("🌐 WEB-FIRST APPROACH ACTIVATED")
+                logger.info(f"Query: {query[:100]}...")
+                logger.info("Using web search as PRIMARY information source")
+                logger.info("Reason: Maximum freshness and real-world accuracy")
+                logger.info("="*60)
+                
+                # Track web search metrics
+                self.metrics['web_searches_performed'] += 1
+                
+                # Use the enhanced web search method with force flag
                 entities = await self.entity_extractor.extract_entities_with_web_search(
                     query,
-                    force_web_search=use_web_search
+                    force_web_search=True  # ALWAYS force web search when determined necessary
                 )
+                
+                # Track web-sourced entities
+                web_entity_count = sum(1 for e in entities if hasattr(e, 'source') and e.source == 'web')
+                self.metrics['web_entities_discovered'] += web_entity_count
+                
+                logger.info(f"📊 Web Search Results:")
+                logger.info(f"   Total entities discovered: {len(entities)}")
+                logger.info(f"   Web-sourced entities: {web_entity_count}")
+                logger.info(f"   LLM-augmented entities: {len(entities) - web_entity_count}")
+                
             else:
-                entities = await self.entity_extractor.extract_entities(query)
+                # Fallback to standard extraction but STILL prefer web search
+                logger.info(f"📝 Using LLM extraction with web search preference for: {query[:100]}...")
+                logger.info("Note: Web search is still preferred even in standard mode")
+                entities = await self.entity_extractor.extract_entities(
+                    query,
+                    prefer_web_search=True  # ALWAYS prefer web search for freshness
+                )
+            
+            # Store web-discovered entities in Neo4j immediately for persistence
+            if use_web_search and entities:
+                logger.info("💾 Storing web-discovered entities in Neo4j knowledge graph...")
+                try:
+                    neo4j_service = Neo4jService()
+                    stored_count = 0
+                    
+                    for entity in entities:
+                        # Only store entities with web source or high confidence
+                        if (hasattr(entity, 'source') and entity.source == 'web') or \
+                           (hasattr(entity, 'confidence') and entity.confidence > 0.8):
+                            
+                            entity_properties = {
+                                'name': entity.text if hasattr(entity, 'text') else '',
+                                'confidence': entity.confidence if hasattr(entity, 'confidence') else 0.7,
+                                'source': entity.source if hasattr(entity, 'source') else 'extraction',
+                                'query_context': query[:200],  # Store query context
+                                'discovered_at': datetime.now().isoformat(),
+                                'metadata': json.dumps(entity.metadata) if hasattr(entity, 'metadata') else '{}'
+                            }
+                            
+                            # Create entity in Neo4j
+                            entity_type = entity.entity_type if hasattr(entity, 'entity_type') else 'Technology'
+                            entity_id = neo4j_service.create_entity(entity_type, entity_properties)
+                            
+                            if entity_id:
+                                stored_count += 1
+                                # Store the Neo4j ID back in the entity for later use
+                                if hasattr(entity, 'metadata'):
+                                    entity.metadata['neo4j_id'] = entity_id
+                    
+                    logger.info(f"✅ Stored {stored_count} web-discovered entities in Neo4j")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to store entities in Neo4j: {e}")
+                    # Continue processing even if storage fails
             
             starting_entities = [
                 RadiatingEntity(
-                    id=f"entity_{i}",
+                    id=entity.metadata.get('neo4j_id', f"entity_{i}") if hasattr(entity, 'metadata') else f"entity_{i}",
                     type=entity.entity_type if hasattr(entity, 'entity_type') else 'unknown',
                     name=entity.text if hasattr(entity, 'text') else '',
                     properties={'confidence': entity.confidence if hasattr(entity, 'confidence') else 0.7,
                                 'context': entity.context if hasattr(entity, 'context') else '',
-                                'metadata': entity.metadata if hasattr(entity, 'metadata') else {}}
+                                'metadata': entity.metadata if hasattr(entity, 'metadata') else {},
+                                'source': entity.source if hasattr(entity, 'source') else 'extraction'}
                 )
                 for i, entity in enumerate(entities)
             ]
@@ -273,11 +356,20 @@ class RadiatingService:
             self.metrics['total_processing_time'] += processing_time
             self.metrics['successful_queries'] += 1
             
+            # Track entity sources in response
+            entity_sources = {
+                'web': sum(1 for e in graph.entities if e.properties.get('source') == 'web'),
+                'llm': sum(1 for e in graph.entities if e.properties.get('source') != 'web'),
+                'total': len(graph.entities)
+            }
+            
             response = {
                 'query_id': query_id,
                 'status': 'completed',
                 'processing_time_ms': processing_time,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'web_search_used': use_web_search,
+                'entity_sources': entity_sources
             }
             
             # Add coverage data if requested
@@ -343,32 +435,83 @@ class RadiatingService:
         """
         Determine if web search should be used for entity extraction.
         
+        WEB-FIRST PRINCIPLE: Web search is the PRIMARY source for ALL queries by default.
+        Only skip web search for explicitly local/personal queries.
+        
         Args:
             query: The user query
             
         Returns:
-            True if web search should be used
+            True if web search should be used (default: True for maximum freshness)
         """
+        # Check if web-first is disabled in settings (but default is True)
+        if hasattr(self.settings, 'web_first_enabled') and not self.settings.web_first_enabled:
+            logger.warning("Web-first mode is disabled in settings - using legacy behavior")
+            return self._should_use_web_search_legacy(query)
+        
         query_lower = query.lower()
         
-        # Keywords that indicate need for current information
+        # Only skip web search for very specific local/personal queries
+        skip_web_patterns = [
+            # Personal/local file queries
+            'my file', 'my document', 'my code', 'my project',
+            'local file', 'local database', 'localhost',
+            '/home/', '/users/', 'c:\\', 'd:\\',  # File paths
+            # Code analysis queries
+            'analyze this code', 'review this function', 'debug this',
+            'explain this code', 'what does this code do',
+            # Abstract/philosophical queries
+            'meaning of life', 'philosophical', 'hypothetical',
+            # Basic math/logic
+            'calculate', 'compute', 'solve equation',
+            '2+2', '1+1',  # Simple math
+            # Internal system queries
+            'system status', 'internal metrics', 'cache status'
+        ]
+        
+        # Check if query is purely local/personal
+        is_local_query = any(pattern in query_lower for pattern in skip_web_patterns)
+        
+        if is_local_query:
+            logger.info(f"📍 Detected local/personal query - skipping web search: {query[:50]}...")
+            return False
+        
+        # DEFAULT: Always use web search for maximum information freshness
+        logger.info(f"🌐 WEB-FIRST: Using web search as PRIMARY source for: {query[:50]}...")
+        logger.info("Web search ensures maximum freshness and accuracy for real-world information")
+        return True
+    
+    def _should_use_web_search_legacy(self, query: str) -> bool:
+        """Legacy web search detection for backward compatibility."""
+        query_lower = query.lower()
+        
+        # Technology-related keywords
+        is_tech_query = any(term in query_lower for term in [
+            'technology', 'technologies', 'tool', 'tools',
+            'framework', 'frameworks', 'library', 'libraries',
+            'platform', 'platforms', 'system', 'systems',
+            'llm', 'ai', 'ml', 'rag', 'vector', 'agent',
+            'model', 'models', 'inference', 'embedding',
+            'database', 'db', 'api', 'sdk', 'cloud',
+            'open source', 'opensource', 'development',
+            'software', 'application', 'service', 'engine'
+        ])
+        
+        # Temporal keywords
         temporal_keywords = [
             'latest', 'current', 'recent', 'new', 'newest',
             '2024', '2025', 'this year', 'today', 'modern',
-            'emerging', 'cutting edge', 'state of the art'
+            'emerging', 'cutting edge', 'state of the art', 'now'
         ]
+        has_temporal = any(keyword in query_lower for keyword in temporal_keywords)
         
-        # Check for temporal indicators
-        for keyword in temporal_keywords:
-            if keyword in query_lower:
-                return True
+        # Discovery patterns
+        has_discovery_pattern = any(pattern in query_lower for pattern in [
+            'what are', 'list', 'show', 'find', 'discover',
+            'recommend', 'suggest', 'which', 'best', 'top'
+        ])
         
-        # Check for technology discovery intent
-        if ('what are' in query_lower or 'list' in query_lower or 'show' in query_lower) and \
-           any(tech in query_lower for tech in ['technology', 'tool', 'framework', 'library', 'platform']):
-            return True
-        
-        return False
+        return is_tech_query or has_temporal or has_discovery_pattern
     
     async def execute_radiating_query_with_web_search(
         self,
@@ -392,34 +535,52 @@ class RadiatingService:
         Returns:
             Query results with entities from both LLM and web search
         """
+        logger.info(f"🌐 FORCED WEB-FIRST MODE for query: {query[:100]}...")
+        logger.info("Ensuring maximum discovery of latest technologies through web search")
+        
         # Force web search in filters
         if filters is None:
             filters = {}
         filters['use_web_search'] = True
         
         # Execute the standard query with web search enabled
-        return await self.execute_radiating_query(
+        result = await self.execute_radiating_query(
             query=query,
             max_depth=max_depth,
             strategy=strategy,
             filters=filters,
             include_coverage=include_coverage
         )
+        
+        # Add metadata about web-first mode
+        result['web_first_mode'] = True
+        result['discovery_method'] = 'web_search_primary'
+        
+        return result
     
     async def get_radiating_coverage(
         self,
-        entity_ids: List[str]
+        entity_ids: List[str],
+        force_web_search: bool = None
     ) -> RadiatingCoverage:
         """
         Get coverage information for specific entities.
         
         Args:
             entity_ids: List of entity IDs to get coverage for
+            force_web_search: Force web search even if settings say otherwise
             
         Returns:
             Coverage information
         """
         try:
+            # Check if we should use web search for coverage expansion
+            use_web_search = force_web_search if force_web_search is not None else getattr(self.settings, 'web_first_enabled', True)
+            
+            if use_web_search:
+                logger.info("🌐 WEB-FIRST: Using web search for coverage expansion")
+                logger.info(f"Expanding coverage for {len(entity_ids)} entities with web augmentation")
+            
             # Create minimal context for coverage check
             context = RadiatingContext(
                 original_query="coverage_check",
@@ -608,8 +769,25 @@ class RadiatingService:
             # Analyze query
             query_analysis = await self.query_analyzer.analyze_query(query)
             
-            # Extract potential entities
-            entities = await self.entity_extractor.extract_entities(query)
+            # WEB-FIRST: Extract potential entities with web search as primary
+            if self._should_use_web_search(query):
+                logger.info("="*60)
+                logger.info("🌐 PREVIEW: WEB-FIRST EXPANSION")
+                logger.info(f"Query: {query[:100]}...")
+                logger.info("Using web search for maximum discovery potential")
+                logger.info("="*60)
+                
+                entities = await self.entity_extractor.extract_entities_with_web_search(
+                    query,
+                    force_web_search=True  # Always force for preview to show full potential
+                )
+            else:
+                # Even in fallback, prefer web search
+                logger.info(f"📝 Preview using LLM with web preference for: {query[:100]}...")
+                entities = await self.entity_extractor.extract_entities(
+                    query,
+                    prefer_web_search=True  # Always prefer web for freshness
+                )
             
             # Create limited context for preview
             context = RadiatingContext(
@@ -670,11 +848,19 @@ class RadiatingService:
                 )
                 potential_entities = []
             
+            # Add web-first metadata to preview
+            web_entity_count = sum(1 for e in potential_entities 
+                                 if e.get('properties', {}).get('source') == 'web' or 
+                                    e.get('properties', {}).get('metadata', {}).get('source') == 'web_search')
+            
             return {
                 'query': query,
                 'expanded_queries': query_analysis.get('variations', [query]),
                 'potential_entities': potential_entities,
-                'estimated_coverage': estimated_coverage.dict()
+                'estimated_coverage': estimated_coverage.dict(),
+                'web_first_enabled': getattr(self.settings, 'web_first_enabled', True),
+                'web_entities_discovered': web_entity_count,
+                'discovery_method': 'web_search_primary' if self._should_use_web_search(query) else 'llm_with_web_preference'
             }
             
         except Exception as e:
