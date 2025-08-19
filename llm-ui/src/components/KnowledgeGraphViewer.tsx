@@ -1860,12 +1860,15 @@ const KnowledgeGraphViewer: React.FC = () => {
         window.location.href = '/workflow.html';
         break;
       case 3:
-        window.location.href = '/settings.html';
+        window.location.href = '/meta-task.html';
         break;
       case 4:
-        // Already on knowledge graph page
+        window.location.href = '/settings.html';
         break;
       case 5:
+        // Already on knowledge graph page
+        break;
+      case 6:
         window.location.href = '/idc.html';
         break;
     }
@@ -1891,7 +1894,7 @@ const KnowledgeGraphViewer: React.FC = () => {
         {/* Navigation Tabs */}
         <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
           <Tabs 
-            value={4}
+            value={5}
             onChange={handleTabChange} 
             aria-label="jarvis modes"
             centered
@@ -1925,18 +1928,23 @@ const KnowledgeGraphViewer: React.FC = () => {
               aria-controls="tabpanel-2"
             />
             <Tab 
-              label="Settings" 
+              label="Meta-Tasks" 
               id="tab-3"
               aria-controls="tabpanel-3"
             />
             <Tab 
-              label="Knowledge Graph" 
+              label="Settings" 
               id="tab-4"
+              aria-controls="tabpanel-3"
+            />
+            <Tab 
+              label="Knowledge Graph" 
+              id="tab-5"
               aria-controls="tabpanel-4"
             />
             <Tab 
               label="IDC" 
-              id="tab-5"
+              id="tab-6"
               aria-controls="tabpanel-5"
             />
           </Tabs>

@@ -143,6 +143,12 @@ const settingsCategories: SettingsCategory[] = [
     icon: <AccessTimeIcon />,
     description: 'Configure timeout settings for APIs, LLMs, tools, and system operations'
   },
+  {
+    id: 'meta_task',
+    name: 'Meta-Task System',
+    icon: <WorkflowIcon />,
+    description: 'Configure meta-task templates, execution settings, and quality controls for complex multi-phase document generation'
+  },
 ];
 
 function SettingsApp() {
@@ -194,12 +200,15 @@ function SettingsApp() {
         window.location.href = '/workflow.html';
         break;
       case 3:
-        // Already on settings page
+        window.location.href = '/meta-task.html';
         break;
       case 4:
-        window.location.href = '/knowledge-graph.html';
+        // Already on settings page
         break;
       case 5:
+        window.location.href = '/knowledge-graph.html';
+        break;
+      case 6:
         window.location.href = '/idc.html';
         break;
     }
@@ -752,7 +761,7 @@ function SettingsApp() {
           {/* Navigation Tabs */}
           <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
             <Tabs 
-              value={3}
+              value={4}
               onChange={handleTabChange} 
               aria-label="jarvis modes"
               centered
@@ -786,19 +795,24 @@ function SettingsApp() {
                 aria-controls="tabpanel-2"
               />
               <Tab 
-                label="Settings" 
+                label="Meta-Tasks" 
                 id="tab-3"
                 aria-controls="tabpanel-3"
               />
               <Tab 
-                label="Knowledge Graph" 
+                label="Settings" 
                 id="tab-4"
                 aria-controls="tabpanel-4"
               />
               <Tab 
-                label="IDC" 
+                label="Knowledge Graph" 
                 id="tab-5"
                 aria-controls="tabpanel-5"
+              />
+              <Tab 
+                label="IDC" 
+                id="tab-6"
+                aria-controls="tabpanel-6"
               />
             </Tabs>
           </Box>

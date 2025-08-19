@@ -201,12 +201,15 @@ function MultiAgentApp() {
         goToWorkflow();
         break;
       case 3:
+        window.location.href = "/meta-task.html";
+        break;
+      case 6:
         goToSettings();
         break;
-      case 4:
+      case 6:
         goToKnowledgeGraph();
         break;
-      case 5:
+      case 6:
         window.location.href = '/idc.html';
         break;
     }
@@ -272,6 +275,11 @@ function MultiAgentApp() {
               label="Workflow" 
               id="tab-2"
               aria-controls="tabpanel-2"
+            />
+            <Tab 
+              label="Meta-Tasks" 
+              id="tab-3"
+              aria-controls="tabpanel-3"
             />
             <Tab 
               label="Settings" 

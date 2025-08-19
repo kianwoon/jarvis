@@ -1147,23 +1147,18 @@ function App() {
               aria-controls="tabpanel-2"
             />
             <Tab 
-              label="Meta-Tasks" 
+              label="Settings" 
               id="tab-3"
               aria-controls="tabpanel-3"
             />
             <Tab 
-              label="Settings" 
-              id="tab-4"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
               label="Knowledge Graph" 
-              id="tab-5"
+              id="tab-4"
               aria-controls="tabpanel-4"
             />
             <Tab 
               label="IDC" 
-              id="tab-6"
+              id="tab-5"
               aria-controls="tabpanel-5"
             />
           </Tabs>

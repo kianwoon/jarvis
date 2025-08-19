@@ -566,6 +566,125 @@ class IDCTemplate(Base):
     # Relationships
     reference_document = relationship("IDCReferenceDocument", back_populates="templates")
 
+# Meta-Task System Models
+class MetaTaskTemplate(Base):
+    """Template definitions for different document types"""
+    __tablename__ = "meta_task_templates"
+    
+    id = Column(String(36), primary_key=True, server_default=text("gen_random_uuid()::text"))
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    description = Column(String, nullable=True)
+    template_type = Column(String(100), nullable=False)
+    template_config = Column(JSON, nullable=False)
+    input_schema = Column(JSON, nullable=True)
+    output_schema = Column(JSON, nullable=True)
+    default_settings = Column(JSON, nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Relationships
+    workflows = relationship("MetaTaskWorkflow", back_populates="template", cascade="all, delete-orphan")
+
+class MetaTaskWorkflow(Base):
+    """Active workflow instances"""
+    __tablename__ = "meta_task_workflows"
+    
+    id = Column(String(36), primary_key=True, server_default=text("gen_random_uuid()::text"))
+    template_id = Column(String(36), ForeignKey('meta_task_templates.id'), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(String, nullable=True)
+    workflow_config = Column(JSON, nullable=False)
+    status = Column(String(20), nullable=False, server_default=text("'pending'"), index=True)
+    input_data = Column(JSON, nullable=True)
+    output_data = Column(JSON, nullable=True)
+    progress = Column(JSON, nullable=True)
+    error_message = Column(String, nullable=True)
+    started_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Relationships
+    template = relationship("MetaTaskTemplate", back_populates="workflows")
+    nodes = relationship("MetaTaskNode", back_populates="workflow", cascade="all, delete-orphan")
+    edges = relationship("MetaTaskEdge", back_populates="workflow", cascade="all, delete-orphan")
+
+class MetaTaskNode(Base):
+    """Individual workflow nodes/phases"""
+    __tablename__ = "meta_task_nodes"
+    
+    id = Column(String(36), primary_key=True, server_default=text("gen_random_uuid()::text"))
+    workflow_id = Column(String(36), ForeignKey('meta_task_workflows.id'), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    node_type = Column(String(100), nullable=False)
+    node_config = Column(JSON, nullable=False)
+    position_x = Column(Integer, server_default=text("0"))
+    position_y = Column(Integer, server_default=text("0"))
+    status = Column(String(20), nullable=False, server_default=text("'pending'"), index=True)
+    input_data = Column(JSON, nullable=True)
+    output_data = Column(JSON, nullable=True)
+    execution_order = Column(Integer, nullable=True)
+    error_message = Column(String, nullable=True)
+    retry_count = Column(Integer, server_default=text("0"))
+    max_retries = Column(Integer, server_default=text("3"))
+    started_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Relationships
+    workflow = relationship("MetaTaskWorkflow", back_populates="nodes")
+    source_edges = relationship("MetaTaskEdge", foreign_keys="MetaTaskEdge.source_node_id", back_populates="source_node")
+    target_edges = relationship("MetaTaskEdge", foreign_keys="MetaTaskEdge.target_node_id", back_populates="target_node")
+    executions = relationship("MetaTaskExecution", back_populates="node", cascade="all, delete-orphan")
+
+class MetaTaskEdge(Base):
+    """Dependencies between nodes"""
+    __tablename__ = "meta_task_edges"
+    
+    id = Column(String(36), primary_key=True, server_default=text("gen_random_uuid()::text"))
+    workflow_id = Column(String(36), ForeignKey('meta_task_workflows.id'), nullable=False, index=True)
+    source_node_id = Column(String(36), ForeignKey('meta_task_nodes.id'), nullable=False, index=True)
+    target_node_id = Column(String(36), ForeignKey('meta_task_nodes.id'), nullable=False, index=True)
+    edge_type = Column(String(50), server_default=text("'dependency'"))
+    edge_config = Column(JSON, nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Relationships
+    workflow = relationship("MetaTaskWorkflow", back_populates="edges")
+    source_node = relationship("MetaTaskNode", foreign_keys=[source_node_id], back_populates="source_edges")
+    target_node = relationship("MetaTaskNode", foreign_keys=[target_node_id], back_populates="target_edges")
+
+class MetaTaskExecution(Base):
+    """Detailed execution tracking and results"""
+    __tablename__ = "meta_task_executions"
+    
+    id = Column(String(36), primary_key=True, server_default=text("gen_random_uuid()::text"))
+    node_id = Column(String(36), ForeignKey('meta_task_nodes.id'), nullable=False, index=True)
+    execution_order = Column(Integer, nullable=False)
+    status = Column(String(20), nullable=False, server_default=text("'pending'"), index=True)
+    input_data = Column(JSON, nullable=True)
+    output_data = Column(JSON, nullable=True)
+    execution_metadata = Column(JSON, nullable=True)
+    error_message = Column(String, nullable=True)
+    error_stack_trace = Column(String, nullable=True)
+    execution_time_ms = Column(Integer, nullable=True)
+    tokens_used = Column(Integer, nullable=True)
+    cost_estimate = Column(Float, nullable=True)
+    retry_count = Column(Integer, server_default=text("0"))
+    parent_execution_id = Column(String(36), ForeignKey('meta_task_executions.id'), nullable=True)
+    started_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=server_default_now, onupdate=server_default_now)
+    
+    # Relationships
+    node = relationship("MetaTaskNode", back_populates="executions")
+    parent_execution = relationship("MetaTaskExecution", remote_side=[id], backref="child_executions")
+
 @contextmanager
 def get_db_session():
     """Context manager for database sessions with automatic cleanup"""

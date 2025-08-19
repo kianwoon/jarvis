@@ -174,12 +174,15 @@ function IDCApp() {
         window.location.href = '/workflow.html';
         break;
       case 3:
-        window.location.href = '/settings.html';
+        window.location.href = '/meta-task.html';
         break;
       case 4:
-        window.location.href = '/knowledge-graph.html';
+        window.location.href = '/settings.html';
         break;
       case 5:
+        window.location.href = '/knowledge-graph.html';
+        break;
+      case 6:
         // Already on IDC page, do nothing
         break;
     }
@@ -293,6 +296,8 @@ function IDCApp() {
       case 2:
         return renderResults();
       case 3:
+      case 4:
+        window.location.href = '/settings.html';
         return renderConfiguration();
       default:
         return renderReferenceManagement();
@@ -421,7 +426,7 @@ function IDCApp() {
         {/* Navigation Tabs */}
         <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
           <Tabs 
-            value={5}
+            value={6}
             onChange={handleTabChange} 
             aria-label="jarvis modes"
             centered
@@ -455,18 +460,23 @@ function IDCApp() {
               aria-controls="tabpanel-2"
             />
             <Tab 
-              label="Settings" 
+              label="Meta-Tasks" 
               id="tab-3"
               aria-controls="tabpanel-3"
             />
             <Tab 
-              label="Knowledge Graph" 
+              label="Settings" 
               id="tab-4"
+              aria-controls="tabpanel-3"
+            />
+            <Tab 
+              label="Knowledge Graph" 
+              id="tab-5"
               aria-controls="tabpanel-4"
             />
             <Tab 
               label="IDC" 
-              id="tab-5"
+              id="tab-6"
               aria-controls="tabpanel-5"
             />
           </Tabs>

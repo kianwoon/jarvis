@@ -83,12 +83,14 @@ function WorkflowApp() {
         // Already on workflow page
         break;
       case 3:
-        window.location.href = '/settings.html';
+        window.location.href = '/meta-task.html';
         break;
       case 4:
+        window.location.href = '/settings.html';
+      case 5:
         window.location.href = '/knowledge-graph.html';
         break;
-      case 5:
+      case 6:
         window.location.href = '/idc.html';
         break;
     }
@@ -212,18 +214,23 @@ function WorkflowApp() {
               aria-controls="tabpanel-2"
             />
             <Tab 
-              label="Settings" 
+              label="Meta-Tasks" 
               id="tab-3"
               aria-controls="tabpanel-3"
             />
             <Tab 
-              label="Knowledge Graph" 
+              label="Settings" 
               id="tab-4"
+              aria-controls="tabpanel-3"
+            />
+            <Tab 
+              label="Knowledge Graph" 
+              id="tab-5"
               aria-controls="tabpanel-4"
             />
             <Tab 
               label="IDC" 
-              id="tab-5"
+              id="tab-6"
               aria-controls="tabpanel-5"
             />
           </Tabs>
