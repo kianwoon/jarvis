@@ -442,19 +442,36 @@ Please answer the user's question using the information from the uploaded docume
                             doc.get('metadata', {}).get('file') or
                             'Unknown source'
                         )
-                        document_contexts.append(f"**📄 {file_info}:**\n{content}")
+                        # Get formatting template from database
+                        from app.core.prompt_settings_cache import get_formatting_templates
+                        formatting_templates = get_formatting_templates()
+                        doc_template = formatting_templates.get(
+                            'document_context',
+                            "**📄 {file_info}:**\n{content}"  # Fallback
+                        )
+                        document_contexts.append(doc_template.format(
+                            file_info=file_info,
+                            content=content
+                        ))
                     
                     documents_text = "\n\n".join(document_contexts)
                     
-                    # Include conversation history in synthesis prompt
-                    synthesis_prompt = f"""Based on the search results below, provide a comprehensive answer to the user's question.
-
-{enhanced_question}
-
-📚 Internal Knowledge Base Results:
-{documents_text}
-
-Please provide a detailed, helpful response based on the information found in the knowledge base."""
+                    # Get synthesis prompt template from database settings
+                    from app.core.prompt_settings_cache import get_synthesis_prompts
+                    synthesis_templates = get_synthesis_prompts()
+                    
+                    # Use the knowledge_base_synthesis template from database
+                    synthesis_prompt_template = synthesis_templates.get(
+                        'knowledge_base_synthesis',
+                        # Fallback template if not in database
+                        "Answer based on:\n{enhanced_question}\n\nContext:\n{documents_text}"
+                    )
+                    
+                    # Apply the template with actual values
+                    synthesis_prompt = synthesis_prompt_template.format(
+                        enhanced_question=enhanced_question,
+                        documents_text=documents_text
+                    )
 
                     # Generate response using LLM synthesis (skip RAG search)
                     from app.langchain.service import rag_answer
@@ -1530,14 +1547,40 @@ Important: Respond directly to the user's question. Do not include any meta-comm
                                     "success": False
                                 })
                         
-                        # Format tool results for inclusion in prompt
+                        # Format tool results for inclusion in prompt with enhanced source attribution
                         if tool_results:
                             successful_results = [r for r in tool_results if r.get("success")]
                             if successful_results:
-                                tool_results_context = "\n\n📊 Tool Results:\n"
-                                for result in successful_results:
-                                    tool_results_context += f"\n[{result['tool']}]:\n{json.dumps(result['result'], indent=2)}\n"
-                                tool_results_context += "\nPlease use the above tool results to provide an informed response.\n"
+                                tool_results_context = "\n\n📊 TOOL EXECUTION RESULTS\n"
+                                tool_results_context += "="*60 + "\n"
+                                tool_results_context += "⚠️ IMPORTANT: Each result below comes from a different tool/source.\n"
+                                tool_results_context += "Do NOT mix information between different sources.\n"
+                                tool_results_context += "="*60 + "\n\n"
+                                
+                                for idx, result in enumerate(successful_results, 1):
+                                    tool_name = result['tool']
+                                    tool_result = result['result']
+                                    
+                                    # Enhanced formatting for search tools
+                                    if 'search' in tool_name.lower():
+                                        tool_results_context += f"\n🔍 SOURCE #{idx}: {tool_name.upper()}\n"
+                                        tool_results_context += "-"*40 + "\n"
+                                        tool_results_context += f"ATTRIBUTION: Information below is ONLY from {tool_name}\n"
+                                        tool_results_context += "-"*40 + "\n"
+                                        tool_results_context += json.dumps(tool_result, indent=2) + "\n"
+                                        tool_results_context += "-"*40 + "\n"
+                                        tool_results_context += f"END OF {tool_name.upper()} RESULTS\n"
+                                        tool_results_context += "="*60 + "\n"
+                                    else:
+                                        # Standard tool formatting
+                                        tool_results_context += f"\n📊 TOOL #{idx}: {tool_name.upper()}\n"
+                                        tool_results_context += "-"*40 + "\n"
+                                        tool_results_context += json.dumps(tool_result, indent=2) + "\n"
+                                        tool_results_context += "-"*40 + "\n"
+                                
+                                tool_results_context += "\n⚠️ REMINDER: Each tool result above is from a DIFFERENT source.\n"
+                                tool_results_context += "Attribute information correctly to its specific source.\n"
+                                tool_results_context += "NEVER mix facts from different tools/sources.\n"
             
             # Prepare the full prompt with tool results
             # Add additional reminder to not expose instructions
@@ -1933,6 +1976,60 @@ def handle_tool_query(request: RAGRequest, routing: Dict):
     
     return StreamingResponse(stream_with_tracing(), media_type="application/json")
 
+def extract_primary_subject(query: str) -> str:
+    """
+    Extract the primary subject/entity from a user query for relevance filtering.
+    This helps prevent mixing information from different entities in search results.
+    """
+    import re
+    
+    # Remove common question words and phrases
+    query_lower = query.lower()
+    question_patterns = [
+        r'^(what|when|where|who|why|how|is|are|does|do|can|could|would|will|should)\s+',
+        r'^(tell me about|explain|describe|find|search for|look up|get me|show me)\s+',
+        r'^(information about|info about|details about|data about)\s+',
+    ]
+    
+    cleaned_query = query
+    for pattern in question_patterns:
+        cleaned_query = re.sub(pattern, '', query_lower, flags=re.IGNORECASE)
+    
+    # Extract product names, entities, or main topics
+    # Look for quoted terms first (highest priority)
+    quoted_match = re.search(r'"([^"]+)"', query)
+    if quoted_match:
+        return quoted_match.group(1)
+    
+    # Look for proper nouns (capitalized words)
+    proper_nouns = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
+    if proper_nouns:
+        # Return the longest proper noun phrase
+        return max(proper_nouns, key=len)
+    
+    # Look for product tiers or specific identifiers
+    tier_patterns = [
+        r'\b(pro|plus|premium|enterprise|team|free|basic|standard|advanced)\b',
+        r'\b([a-zA-Z]+\s+(?:pro|plus|premium|enterprise|team))\b',
+    ]
+    for pattern in tier_patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            return match.group(0)
+    
+    # Fallback: Return the cleaned query focusing on key nouns
+    # Remove articles and common words
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as'}
+    words = cleaned_query.split()
+    key_words = [w for w in words if w not in stop_words and len(w) > 2]
+    
+    if key_words:
+        # Return first 3 key words as the primary subject
+        return ' '.join(key_words[:3])
+    
+    # Last resort: return original query
+    return query
+
 def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
     """Handle confident tool classifications with direct execution"""
     # logger.info(f"[DIRECT HANDLER DEBUG] Function called! routing: {routing}")  # Commented out to avoid logging entire routing object
@@ -2138,19 +2235,82 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                             tool_name = tr['tool']
                             raw_result = tr['result']
                             
-                            # Format tool result in a readable way
-                            if isinstance(raw_result, dict) and 'content' in raw_result:
-                                # Extract text from content array
-                                content_parts = []
-                                for item in raw_result['content']:
-                                    if isinstance(item, dict) and item.get('type') == 'text':
-                                        content_parts.append(item.get('text', ''))
-                                readable_result = ' '.join(content_parts) if content_parts else str(raw_result)
+                            # Format tool result with enhanced source attribution
+                            if tool_name == 'google_search' or 'search' in tool_name.lower():
+                                # Extract primary subject for better focus
+                                primary_subject = extract_primary_subject(request.question)
+                                
+                                # Special handling for search results with source attribution
+                                tool_context += f"\n{'='*60}\n"
+                                tool_context += f"🔍 SEARCH RESULTS FROM: {tool_name.upper()}\n"
+                                tool_context += f"Query: {request.question}\n"
+                                tool_context += f"PRIMARY SUBJECT: {primary_subject}\n"
+                                tool_context += f"{'='*60}\n"
+                                tool_context += f"⚠️ CRITICAL RELEVANCE FILTERING REQUIREMENTS:\n"
+                                tool_context += f"• PRIMARY FOCUS: Extract ONLY information about '{primary_subject}'\n"
+                                tool_context += f"• Each result below may discuss MULTIPLE entities/topics\n"
+                                tool_context += f"• DO NOT assume all information in a result relates to '{primary_subject}'\n"
+                                tool_context += f"• If a result mentions multiple products/entities, carefully distinguish between them\n"
+                                tool_context += f"• Before using any fact, verify: 'Is this specifically about {primary_subject}?'\n"
+                                tool_context += f"• When in doubt, OMIT information rather than risk mixing entities\n"
+                                tool_context += f"{'='*60}\n\n"
+                                
+                                if isinstance(raw_result, dict) and 'content' in raw_result:
+                                    # Parse search results with source attribution
+                                    search_items = []
+                                    for item in raw_result['content']:
+                                        if isinstance(item, dict) and item.get('type') == 'text':
+                                            text = item.get('text', '')
+                                            # Try to extract URL/source from the text if available
+                                            lines = text.split('\n')
+                                            result_num = len(search_items) + 1
+                                            
+                                            # Format each search result with clear numbering and separation
+                                            formatted_result = f"📌 RESULT #{result_num}:\n"
+                                            formatted_result += f"⚠️ RELEVANCE FILTER: Only use information about '{primary_subject}'\n"
+                                            formatted_result += f"{'-'*40}\n"
+                                            formatted_result += text
+                                            formatted_result += f"\n{'-'*40}\n"
+                                            formatted_result += f"✓ VERIFICATION: Does the above specifically relate to '{primary_subject}'?\n"
+                                            formatted_result += f"✓ ACTION: Extract ONLY '{primary_subject}' information, ignore other entities\n"
+                                            formatted_result += f"{'-'*40}\n"
+                                            search_items.append(formatted_result)
+                                    
+                                    if search_items:
+                                        tool_context += "\n".join(search_items)
+                                        tool_context += f"\n{'='*60}\n"
+                                        tool_context += f"⚠️ END OF {tool_name.upper()} RESULTS\n"
+                                        tool_context += f"FINAL REMINDER: Focus ONLY on '{primary_subject}'\n"
+                                        tool_context += f"DO NOT mix information about different entities/products\n"
+                                        tool_context += f"{'='*60}\n\n"
+                                    else:
+                                        tool_context += f"No readable results found from {tool_name}\n\n"
+                                else:
+                                    # Fallback for other formats
+                                    readable_result = str(raw_result)
+                                    tool_context += f"Raw search results:\n{readable_result}\n"
+                                    tool_context += f"\n{'='*60}\n\n"
+                                
                             else:
-                                readable_result = str(raw_result)
+                                # Standard formatting for non-search tools
+                                if isinstance(raw_result, dict) and 'content' in raw_result:
+                                    # Extract text from content array
+                                    content_parts = []
+                                    for item in raw_result['content']:
+                                        if isinstance(item, dict) and item.get('type') == 'text':
+                                            content_parts.append(item.get('text', ''))
+                                    readable_result = ' '.join(content_parts) if content_parts else str(raw_result)
+                                else:
+                                    readable_result = str(raw_result)
+                                
+                                # Format with clear tool attribution
+                                tool_context += f"\n{'='*60}\n"
+                                tool_context += f"📊 TOOL: {tool_name.upper()}\n"
+                                tool_context += f"{'='*60}\n"
+                                tool_context += f"{readable_result}\n"
+                                tool_context += f"{'='*60}\n\n"
                             
-                            tool_context += f"\n{tool_name}: {readable_result}\n"
-                            logger.info(f"[DIRECT HANDLER] Formatted {tool_name} result: {readable_result}")
+                            logger.info(f"[DIRECT HANDLER] Formatted {tool_name} result with enhanced attribution")
                             
                             # Extract documents from RAG search results
                             # Import is_rag_tool function for flexible tool name matching
@@ -2761,29 +2921,49 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
 
 def build_hybrid_prompt(question: str, results: Dict, components: List[str]) -> str:
     """Build an enhanced prompt that combines results from all components"""
-    prompt_parts = [f"User Question: {question}\n"]
+    # Get prompt templates from database
+    from app.core.prompt_settings_cache import get_synthesis_prompts, get_system_behaviors
+    synthesis_templates = get_synthesis_prompts()
+    behaviors = get_system_behaviors()
+    
+    # Use template for hybrid prompt building
+    hybrid_template = synthesis_templates.get('hybrid_synthesis', 
+        "User Question: {question}\n{context}\n\nProvide a comprehensive answer.")
+    
+    # Build context sections
+    context_parts = []
     
     if "tool" in components and "tool" in results:
         tool_data = results["tool"]
-        prompt_parts.append("\n## Real-time Information:")
+        context_parts.append("\n## Real-time Information:")
         if tool_data.get("suggested_tools"):
-            prompt_parts.append(f"Suggested tools: {', '.join(tool_data['suggested_tools'])}")
-        prompt_parts.append("(Tool execution results would appear here)")
+            context_parts.append(f"Suggested tools: {', '.join(tool_data['suggested_tools'])}")
+        context_parts.append("(Tool execution results would appear here)")
     
     if "rag" in components and "rag" in results:
         rag_data = results["rag"]
         if rag_data:
-            prompt_parts.append("\n## Knowledge Base Context:")
-            prompt_parts.append(str(rag_data))
+            context_parts.append("\n## Knowledge Base Context:")
+            context_parts.append(str(rag_data))
     
-    prompt_parts.append("\n## Task:")
-    prompt_parts.append("Based on the above information, provide a comprehensive answer that:")
-    prompt_parts.append("1. Incorporates relevant real-time data (if available)")
-    prompt_parts.append("2. Uses knowledge from the knowledge base (if available)")
-    prompt_parts.append("3. Synthesizes all information into a coherent response")
-    prompt_parts.append("4. Clearly indicates which information comes from which source")
+    # Add synthesis instructions if configured
+    if behaviors.get('include_synthesis_instructions', True):
+        context_parts.append("\n## Task:")
+        context_parts.append("Based on the above information, provide a comprehensive answer that:")
+        context_parts.append("1. Incorporates relevant real-time data (if available)")
+        context_parts.append("2. Uses knowledge from the knowledge base (if available)")
+        context_parts.append("3. Synthesizes all information into a coherent response")
+        if behaviors.get('include_sources', True):
+            context_parts.append("4. Clearly indicates which information comes from which source")
     
-    return "\n".join(prompt_parts)
+    context = "\n".join(context_parts)
+    
+    # Apply template
+    if "{question}" in hybrid_template and "{context}" in hybrid_template:
+        return hybrid_template.format(question=question, context=context)
+    else:
+        # Fallback for simple concatenation
+        return f"User Question: {question}\n{context}"
 
 # ===== TEMPORARY DOCUMENT ENDPOINTS =====
 

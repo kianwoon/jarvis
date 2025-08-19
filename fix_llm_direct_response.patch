@@ -1,0 +1,37 @@
+--- a/app/langchain/service.py
++++ b/app/langchain/service.py
+@@ -3837,7 +3837,19 @@ def get_llm_response_direct(question: str, thinking: bool = False, stream: bool
+     # Build prompt without RAG context
+     prompt = build_prompt(question, thinking)
++    
++    # CRITICAL FIX: Get and apply the main LLM system prompt
++    main_llm_config = get_main_llm_full_config(llm_cfg)
++    system_prompt = main_llm_config.get("system_prompt", "")
++    
++    # Prepend system prompt to the question for proper context
++    if system_prompt:
++        prompt = f"{system_prompt}\n\n{prompt}"
++        print(f"[DEBUG] Applied system prompt to direct LLM response")
++    else:
++        print(f"[DEBUG] Warning: No system prompt found for direct LLM response")
++    
+     if conversation_history:
+         prompt = f"Previous conversation:\n{conversation_history}\n\nCurrent question: {prompt}"
+     
+     # Make LLM call
+@@ -3671,14 +3671,25 @@ def make_llm_call(prompt: str, thinking: bool, context: str, llm_cfg: dict) ->
+         mode_config = llm_cfg
+     
+-    # Get system_prompt if available and prepend to prompt
+-    system_prompt = mode_config.get("system_prompt", "")
+-    if system_prompt:
+-        prompt = f"{system_prompt}\n\n{prompt}"
+-        print(f"[DEBUG make_llm_call] System prompt found and prepended: {system_prompt[:100]}...")
+-    else:
+-        print(f"[DEBUG make_llm_call] No system prompt found in config")
++    # CRITICAL FIX: Don't prepend system prompt here - it should already be in the prompt
++    # The prompt should already contain the system prompt from the caller
++    # This prevents double-prepending and ensures proper formatting
++    print(f"[DEBUG make_llm_call] Using prompt as provided (system prompt should already be included)")
+     
+     # Get max_tokens from config

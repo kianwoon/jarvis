@@ -5,6 +5,7 @@ Implements the Model Context Protocol over stdio transport
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import threading
 import queue
@@ -41,7 +42,6 @@ class MCPStdioBridge:
             logger.debug(f"Starting MCP server: {' '.join(full_command)}")
             
             # Set up environment with common Node.js paths and MCP server env vars
-            import os
             env = os.environ.copy()
             
             # Add MCP server environment variables first

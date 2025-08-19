@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 UserPromptSubmit hook script to automatically append Claude Code agent enforcement reminder
-to every message the user sends in Claude Code.
+AND quality instructions to every message the user sends in Claude Code.
 
 CRITICAL SYSTEM SEPARATION:
 - Claude Code agents: .claude/agents/*.md files - FOR CLAUDE'S INTERNAL USE
 - Jarvis agents: PostgreSQL database - FOR END USER @agent FEATURE
 
 This script enforces Claude Code agent usage ONLY, not Jarvis agent usage.
+Additionally appends quality development instructions for better code quality.
 
 This script reads JSON input from stdin and outputs the reminder as additionalContext.
 """
@@ -31,6 +32,43 @@ def log_event(message, level="INFO"):
             f.write(log_entry)
     except Exception as e:
         print(f"Failed to write to log: {e}", file=sys.stderr)
+
+
+def should_add_quality_instructions(user_prompt):
+    """Check if quality instructions should be added based on prompt content."""
+    if not user_prompt:
+        return False
+    
+    # Check if quality instructions are already present
+    quality_indicators = [
+        "no hardcode",
+        "no superficial", 
+        "no assumption",
+        "perform web search",
+        "latest implementation",
+        "latest design",
+        "web search when unsure"
+    ]
+    
+    prompt_lower = user_prompt.lower()
+    already_has_quality = any(indicator in prompt_lower for indicator in quality_indicators)
+    
+    if already_has_quality:
+        return False
+    
+    # Check if this is a development/coding related prompt
+    dev_keywords = [
+        "code", "implement", "build", "create", "develop", "fix", "bug", 
+        "function", "class", "method", "api", "database", "query", "script",
+        "debug", "error", "exception", "test", "deploy", "config", "setup",
+        "install", "package", "library", "framework", "architecture", "design",
+        "algorithm", "data structure", "optimization", "performance", "security",
+        "authentication", "authorization", "oauth", "jwt", "ssl", "tls",
+        "docker", "kubernetes", "ci/cd", "pipeline", "automation", "workflow",
+        "file", "edit", "write", "task", "agent", "coder", "programming"
+    ]
+    
+    return any(keyword in prompt_lower for keyword in dev_keywords)
 
 
 def main():
@@ -65,21 +103,28 @@ def main():
         
         log_event(f"Processing UserPromptSubmit for session {session_id}")
         
-        # Check if the reminder is already present to avoid duplication
+        # Check if the Claude Code agent reminder is already present to avoid duplication
         reminder_text = "Task tool"
         claude_agents_text = ".claude/agents"
         
-        # Skip if Claude Code agent enforcement is already mentioned
-        if claude_agents_text in user_prompt.lower() or reminder_text in user_prompt.lower():
-            log_event(f"Claude Code agent enforcement already mentioned, skipping additional reminder", "INFO")
-            # Still output hook response when reminder already present
+        # Check if Claude Code agent enforcement is already mentioned
+        needs_agent_reminder = not (claude_agents_text in user_prompt.lower() or reminder_text in user_prompt.lower())
+        
+        # Check if quality instructions should be added
+        needs_quality_instructions = should_add_quality_instructions(user_prompt)
+        
+        # If neither reminder is needed, skip
+        if not needs_agent_reminder and not needs_quality_instructions:
+            log_event(f"Both Claude Code agent enforcement and quality instructions already present or not needed, skipping", "INFO")
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}))
             sys.exit(0)
         
-        # Create the STRONGEST possible reminder message
-        reminder_context = f"""
-
-🚨 CRITICAL CLAUDE CODE AGENT ENFORCEMENT 🚨
+        # Build the combined reminder context
+        reminder_sections = []
+        
+        # Add Claude Code agent enforcement reminder if needed
+        if needs_agent_reminder:
+            agent_reminder = f"""🚨 CRITICAL CLAUDE CODE AGENT ENFORCEMENT 🚨
 
 YOU MUST USE TASK TOOL WITH CLAUDE CODE AGENTS!
 
@@ -108,6 +153,38 @@ Task(task="Add error handling", subagent_type="coder")
 
 Claude Code agent location: /Users/kianwoonwong/Downloads/jarvis/.claude/agents/
 Monitoring: python /Users/kianwoonwong/Downloads/jarvis/enforcement_monitor.py --report"""
+            
+            reminder_sections.append(agent_reminder)
+        
+        # Add quality instructions if needed
+        if needs_quality_instructions:
+            quality_reminder = f"""🎯 DEVELOPMENT QUALITY STANDARDS 🎯
+
+CRITICAL DEVELOPMENT INSTRUCTIONS:
+• no hardcode - use configuration, environment variables, or parameters
+• no superficial - provide deep, thorough implementation details
+• no assumption - verify requirements and validate all inputs/outputs
+• perform web search when unsure - always get latest information
+• confirm the implementation design is the latest - check current best practices
+
+🔍 RESEARCH REQUIREMENTS:
+• Search for latest documentation and examples
+• Verify current API versions and syntax
+• Check for deprecated methods or security issues
+• Validate against current industry standards
+• Ensure compatibility with latest framework versions
+
+✅ QUALITY CHECKLIST:
+• Configuration-driven implementation
+• Comprehensive error handling
+• Proper validation and sanitization
+• Current best practices and patterns
+• Security considerations included"""
+            
+            reminder_sections.append(quality_reminder)
+        
+        # Combine all reminder sections
+        reminder_context = "\n\n" + "\n\n".join(reminder_sections)
         
         # Output JSON with hookSpecificOutput.additionalContext for Claude Code
         hook_output = {
@@ -120,7 +197,14 @@ Monitoring: python /Users/kianwoonwong/Downloads/jarvis/enforcement_monitor.py -
         # Print JSON output that Claude Code expects
         print(json.dumps(hook_output))
         
-        log_event(f"Successfully appended STRONG Claude Code agent enforcement reminder with system separation", "SUCCESS")
+        # Log what was added
+        added_components = []
+        if needs_agent_reminder:
+            added_components.append("Claude Code agent enforcement")
+        if needs_quality_instructions:
+            added_components.append("quality instructions")
+        
+        log_event(f"Successfully appended: {', '.join(added_components)}", "SUCCESS")
         
     except Exception as e:
         log_event(f"Unexpected error: {str(e)}", "ERROR")

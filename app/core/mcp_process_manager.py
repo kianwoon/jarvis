@@ -53,13 +53,48 @@ class MCPProcessManager:
                 if self._is_process_alive(server.process_id):
                     return True, f"Server {server_id} already running (PID: {server.process_id})"
             
+            # Parse args field if it's a JSON string
+            args_list = []
+            if server.args:
+                if isinstance(server.args, str):
+                    try:
+                        # Try to parse as JSON if it's a string
+                        args_list = json.loads(server.args)
+                        if not isinstance(args_list, list):
+                            args_list = [args_list]  # Convert single value to list
+                    except (json.JSONDecodeError, ValueError):
+                        # If not valid JSON, treat as a single argument
+                        args_list = [server.args]
+                elif isinstance(server.args, list):
+                    args_list = server.args
+                else:
+                    # Handle other types by converting to string
+                    args_list = [str(server.args)]
+            
             # Validate command and security using the security validator
-            is_valid, error_msg = mcp_security.validate_command(server.command, server.args or [])
+            is_valid, error_msg = mcp_security.validate_command(server.command, args_list)
             if not is_valid:
                 return False, f"Security validation failed: {error_msg}"
             
+            # Parse env field if it's a JSON string
+            env_dict = {}
+            if server.env:
+                if isinstance(server.env, str):
+                    try:
+                        # Try to parse as JSON if it's a string
+                        env_dict = json.loads(server.env)
+                        if not isinstance(env_dict, dict):
+                            env_dict = {}
+                    except (json.JSONDecodeError, ValueError):
+                        # If not valid JSON, treat as empty
+                        env_dict = {}
+                elif isinstance(server.env, dict):
+                    env_dict = server.env
+                else:
+                    env_dict = {}
+            
             # Validate environment
-            is_env_valid, env_error = mcp_security.validate_environment(server.env or {})
+            is_env_valid, env_error = mcp_security.validate_environment(env_dict)
             if not is_env_valid:
                 return False, f"Environment validation failed: {env_error}"
             
@@ -69,18 +104,44 @@ class MCPProcessManager:
                 return False, f"Working directory validation failed: {dir_error}"
             
             # Prepare secure environment
-            env = mcp_security.create_secure_environment(server.env)
+            env = mcp_security.create_secure_environment(env_dict)
             
             # Get secure working directory
             working_dir = mcp_security.get_secure_working_directory(server.working_directory)
+            
+            # Ensure working_dir is a string, not a list or other type
+            if isinstance(working_dir, list):
+                logger.error(f"Working directory is a list: {working_dir}")
+                working_dir = working_dir[0] if working_dir else "/tmp/mcp_workspace"
+            elif not isinstance(working_dir, str):
+                logger.error(f"Working directory is not a string: {type(working_dir)} - {working_dir}")
+                working_dir = str(working_dir) if working_dir else "/tmp/mcp_workspace"
             
             # Ensure working directory exists
             os.makedirs(working_dir, exist_ok=True)
             
             # Start the process
-            cmd_args = [server.command] + (server.args or [])
+            # Ensure server.command is a string
+            if not isinstance(server.command, str):
+                logger.error(f"Command is not a string: {type(server.command)} - {server.command}")
+                return False, f"Invalid command type: {type(server.command)}"
+            
+            # Ensure args_list is a list of strings
+            if not isinstance(args_list, list):
+                logger.error(f"Args is not a list: {type(args_list)} - {args_list}")
+                args_list = []
+            
+            # Convert all args to strings
+            args_list = [str(arg) for arg in args_list]
+            
+            cmd_args = [server.command] + args_list
             
             logger.info(f"Starting MCP server {server_id}: {' '.join(cmd_args)}")
+            logger.debug(f"Command: {server.command}, Args: {args_list}, Working Dir: {working_dir}")
+            logger.debug(f"Environment: {env_dict}")
+            
+            # Additional debugging for subprocess.Popen parameters
+            logger.debug(f"Popen params - cmd_args type: {type(cmd_args)}, cwd type: {type(working_dir)}, env type: {type(env)}")
             
             process = subprocess.Popen(
                 cmd_args,
@@ -95,8 +156,8 @@ class MCPProcessManager:
             process_info = ProcessInfo(
                 pid=process.pid,
                 command=server.command,
-                args=server.args or [],
-                env=server.env or {},
+                args=args_list,
+                env=env_dict,
                 working_dir=working_dir,
                 start_time=time.time(),
                 restart_count=server.restart_count
@@ -268,6 +329,11 @@ class MCPProcessManager:
     async def _monitor_single_process(self, server: MCPServer, db: Session):
         """Monitor a single process and handle restarts if needed"""
         try:
+            # Skip monitoring if no process_id (e.g., stdio-based servers)
+            if server.process_id is None:
+                # Silently skip - no need to log every 30 seconds
+                return
+                
             if not self._is_process_alive(server.process_id):
                 logger.warning(f"Process {server.process_id} for server {server.id} is dead")
                 
@@ -286,8 +352,8 @@ class MCPProcessManager:
                     self._cleanup_dead_process(server.id, db)
             
             # Check if process is too old (for periodic restarts)
-            elif server_id in self.processes:
-                process_info = self.processes[server_id]
+            elif server.id in self.processes:
+                process_info = self.processes[server.id]
                 if time.time() - process_info.start_time > self.max_process_age:
                     logger.info(f"Restarting server {server.id} due to age limit")
                     await self.restart_server(server.id, db)

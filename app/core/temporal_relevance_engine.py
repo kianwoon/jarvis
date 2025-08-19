@@ -62,9 +62,10 @@ class TemporalRelevanceEngine:
     
     def __init__(self):
         """Initialize the temporal relevance engine"""
+        from datetime import timezone
         self.query_classifier = get_temporal_classifier()
         self.source_scorer = get_source_scorer()
-        self.current_date = datetime.now()
+        self.current_date = datetime.now(timezone.utc)
         
         # Thresholds for filtering
         self.min_temporal_score = 0.1  # Minimum temporal score to include
@@ -293,7 +294,7 @@ class TemporalRelevanceEngine:
         return None
     
     def _extract_date_from_document(self, document: Dict[str, Any]) -> Optional[datetime]:
-        """Extract date from document metadata or content"""
+        """Extract date from document metadata or content, including rich Google Search metadata"""
         # Check for explicit date field
         if "date" in document:
             return self._parse_date_string(document["date"])
@@ -301,8 +302,50 @@ class TemporalRelevanceEngine:
         if "published_date" in document:
             return self._parse_date_string(document["published_date"])
         
+        # Check for parsed_date from search result formatter
+        if "parsed_date" in document:
+            try:
+                from datetime import datetime
+                return datetime.fromisoformat(document["parsed_date"])
+            except:
+                pass
+        
+        # Check for age_days from search result formatter
+        if "age_days" in document and document["age_days"] is not None:
+            return self.current_date - timedelta(days=document["age_days"])
+        
         if "days_old" in document and document["days_old"] is not None:
             return self.current_date - timedelta(days=document["days_old"])
+        
+        # Check Google Search pagemap metadata
+        pagemap = document.get("pagemap", {})
+        if pagemap:
+            # Check metatags for dates
+            metatags = pagemap.get("metatags", [])
+            if metatags and isinstance(metatags, list):
+                meta = metatags[0] if metatags else {}
+                date_fields = [
+                    'article:published_time',
+                    'datePublished', 
+                    'og:updated_time',
+                    'article:modified_time',
+                    'publishedDate',
+                    'date'
+                ]
+                for field in date_fields:
+                    if field in meta:
+                        parsed = self._parse_date_string(meta[field])
+                        if parsed:
+                            return parsed
+            
+            # Check newsarticle metadata
+            newsarticle = pagemap.get("newsarticle", [])
+            if newsarticle and isinstance(newsarticle, list):
+                article = newsarticle[0] if newsarticle else {}
+                if 'datePublished' in article:
+                    parsed = self._parse_date_string(article['datePublished'])
+                    if parsed:
+                        return parsed
         
         # Try to extract from snippet
         snippet = document.get("snippet", "")
@@ -325,26 +368,33 @@ class TemporalRelevanceEngine:
         return None
     
     def _parse_date_string(self, date_str: str) -> Optional[datetime]:
-        """Parse various date string formats"""
+        """Parse various date string formats including ISO 8601"""
         if not date_str:
             return None
         
-        # Common date formats
+        # Common date formats (including ISO 8601 variants)
         formats = [
+            "%Y-%m-%dT%H:%M:%S%z",  # ISO format with timezone
+            "%Y-%m-%dT%H:%M:%SZ",    # ISO format UTC
+            "%Y-%m-%dT%H:%M:%S",     # ISO format without timezone
             "%Y-%m-%d",
             "%Y/%m/%d",
             "%d/%m/%Y",
+            "%m/%d/%Y",              # US format
             "%B %d, %Y",
             "%b %d, %Y",
             "%d %B %Y",
-            "%d %b %Y",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%dT%H:%M:%SZ"
+            "%d %b %Y"
         ]
         
+        from datetime import timezone
         for fmt in formats:
             try:
-                return datetime.strptime(str(date_str), fmt)
+                parsed = datetime.strptime(str(date_str), fmt)
+                # Make timezone-aware if not already
+                if not parsed.tzinfo:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed
             except:
                 continue
         
@@ -366,7 +416,8 @@ class TemporalRelevanceEngine:
             month = months.get(month_str.lower())
             if month:
                 try:
-                    return datetime(int(year), month, int(day))
+                    from datetime import timezone
+                    return datetime(int(year), month, int(day), tzinfo=timezone.utc)
                 except:
                     pass
         

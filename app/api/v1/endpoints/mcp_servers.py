@@ -14,10 +14,22 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 import requests
 import logging
+import subprocess
+import os
+import asyncio
+import aiohttp
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+# Warning if psutil is not available
+if psutil is None:
+    logger.warning("psutil not installed - some features will be limited")
 
 router = APIRouter()
 
@@ -33,6 +45,7 @@ def get_db():
 class MCPServerBase(BaseModel):
     name: str
     config_type: str  # 'manifest', 'command', 'remote_http', or 'http'
+    communication_protocol: Optional[str] = 'stdio'  # 'stdio', 'http', 'sse', 'websocket'
     
     # Manifest-based configuration
     manifest_url: Optional[str] = None
@@ -63,6 +76,7 @@ class MCPServerCreate(MCPServerBase):
 class MCPServerUpdate(BaseModel):
     name: Optional[str] = None
     config_type: Optional[str] = None
+    communication_protocol: Optional[str] = None
     
     # Manifest-based configuration
     manifest_url: Optional[str] = None
@@ -91,6 +105,7 @@ class MCPServerResponse(BaseModel):
     id: int
     name: str
     config_type: str
+    communication_protocol: Optional[str] = 'stdio'
     
     # Manifest-based configuration
     manifest_url: Optional[str] = None
@@ -153,8 +168,41 @@ class MCPToolsImport(BaseModel):
     tools: List[MCPToolCreate]
     replace_existing: bool = False
 
+
+
+
+
+
+def mask_sensitive_env_vars(env_dict: dict, show_sensitive: bool = False) -> dict:
+    """Mask sensitive environment variables unless explicitly requested."""
+    if not env_dict or show_sensitive:
+        return env_dict
+    
+    # List of sensitive keywords that should be masked
+    sensitive_keywords = [
+        'TOKEN', 'KEY', 'SECRET', 'PASSWORD', 'CREDENTIAL', 'AUTH',
+        'API_KEY', 'ACCESS_TOKEN', 'REFRESH_TOKEN', 'CLIENT_SECRET',
+        'PRIVATE', 'CERT', 'CERTIFICATE', 'JIRA_TOKEN', 'MS_GRAPH_TOKEN'
+    ]
+    
+    masked_env = {}
+    for key, value in env_dict.items():
+        # Check if the key contains any sensitive keyword
+        is_sensitive = any(keyword in key.upper() for keyword in sensitive_keywords)
+        
+        if is_sensitive and value:
+            # Show first 4 characters for debugging, rest as dots
+            if len(str(value)) > 8:
+                masked_env[key] = str(value)[:4] + "•" * 12
+            else:
+                masked_env[key] = "•" * 12
+        else:
+            masked_env[key] = value
+    
+    return masked_env
+
 @router.get("/", response_model=List[MCPServerResponse])
-def list_servers(db: Session = Depends(get_db)):
+def list_servers(show_sensitive: bool = False, db: Session = Depends(get_db)):
     """List all MCP servers."""
     try:
         servers = db.query(MCPServer).all()
@@ -167,25 +215,32 @@ def list_servers(db: Session = Depends(get_db)):
             # Mask OAuth credentials
             masked_oauth = None
             if server.oauth_credentials:
-                masked_oauth = {
-                    "configured": True,
-                    "client_id": server.oauth_credentials.get("client_id", "")[:10] + "..." 
-                        if server.oauth_credentials.get("client_id") else None,
-                    "has_tokens": bool(server.oauth_credentials.get("access_token") or 
-                                     server.oauth_credentials.get("refresh_token"))
-                }
+                if show_sensitive:
+                    masked_oauth = server.oauth_credentials
+                else:
+                    masked_oauth = {
+                        "configured": True,
+                        "client_id": server.oauth_credentials.get("client_id", "")[:10] + "..." 
+                            if server.oauth_credentials.get("client_id") else None,
+                        "has_tokens": bool(server.oauth_credentials.get("access_token") or 
+                                         server.oauth_credentials.get("refresh_token"))
+                    }
+            
+            # Mask environment variables
+            masked_env = mask_sensitive_env_vars(server.env, show_sensitive)
             
             response_server = MCPServerResponse(
                 id=server.id,
                 name=server.name,
                 config_type=server.config_type,
+                communication_protocol=server.communication_protocol,
                 manifest_url=server.manifest_url,
                 hostname=server.hostname,
-                api_key="•••••••••••••••" if server.api_key else None,
+                api_key=server.api_key if show_sensitive else ("•••••••••••••••" if server.api_key else None),
                 oauth_credentials=masked_oauth,
                 command=server.command,
                 args=server.args,
-                env=server.env,
+                env=masked_env,
                 working_directory=server.working_directory,
                 restart_policy=server.restart_policy,
                 max_restarts=server.max_restarts,
@@ -255,10 +310,24 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
             "token_expiry_buffer_minutes": 5
         }
         
+        # Set default communication protocol based on config type if not provided
+        if not server.communication_protocol:
+            if server.config_type == "command":
+                server.communication_protocol = "stdio"  # Default for command servers
+            elif server.config_type in ["http", "manifest"]:
+                server.communication_protocol = "http"  # Default for HTTP servers
+            elif server.config_type == "remote_http":
+                # Check if SSE is specified in remote_config
+                if server.remote_config and server.remote_config.get("transport_type") == "sse":
+                    server.communication_protocol = "sse"
+                else:
+                    server.communication_protocol = "http"
+        
         # Create new server
         new_server = MCPServer(
             name=server.name,
             config_type=server.config_type,
+            communication_protocol=server.communication_protocol,
             manifest_url=server.manifest_url,
             hostname=server.hostname,
             api_key=server.api_key,
@@ -413,6 +482,7 @@ async def create_server(server: MCPServerCreate, db: Session = Depends(get_db)):
             id=new_server.id,
             name=new_server.name,
             config_type=new_server.config_type,
+            communication_protocol=new_server.communication_protocol,
             manifest_url=new_server.manifest_url,
             hostname=new_server.hostname,
             api_key="•••••••••••••••" if new_server.api_key else None,
@@ -466,17 +536,21 @@ def get_server(server_id: int, show_sensitive: bool = False, db: Session = Depen
                                  server.oauth_credentials.get("refresh_token"))
             }
     
+    # Mask environment variables
+    masked_env = mask_sensitive_env_vars(server.env, show_sensitive)
+    
     return MCPServerResponse(
         id=server.id,
         name=server.name,
         config_type=server.config_type,
+        communication_protocol=server.communication_protocol,
         manifest_url=server.manifest_url,
         hostname=server.hostname,
         api_key=server.api_key if show_sensitive else ("•••••••••••••••" if server.api_key else None),
         oauth_credentials=oauth_creds,
         command=server.command,
         args=server.args,
-        env=server.env,
+        env=masked_env,
         working_directory=server.working_directory,
         restart_policy=server.restart_policy,
         max_restarts=server.max_restarts,
@@ -504,6 +578,8 @@ def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = 
         # Update basic fields
         if server_update.name is not None:
             db_server.name = server_update.name
+        if server_update.communication_protocol is not None:
+            db_server.communication_protocol = server_update.communication_protocol
         if server_update.hostname is not None:
             db_server.hostname = server_update.hostname
         if server_update.api_key is not None and server_update.api_key != "•••••••••••••••":
@@ -552,7 +628,9 @@ def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = 
             
         elif db_server.config_type == "http":
             # HTTP servers use hostname and api_key, which are handled above
-            pass
+            # Also handle env for local HTTP servers (like the Local MCP on port 3001)
+            if server_update.env is not None:
+                db_server.env = server_update.env
         
         db.commit()
         db.refresh(db_server)
@@ -575,6 +653,7 @@ def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = 
             id=db_server.id,
             name=db_server.name,
             config_type=db_server.config_type,
+            communication_protocol=db_server.communication_protocol,
             manifest_url=db_server.manifest_url,
             hostname=db_server.hostname,
             api_key="•••••••••••••••" if db_server.api_key else None,
@@ -1156,6 +1235,18 @@ def get_server_oauth(server_id: int, db: Session = Depends(get_db)):
         "oauth_credentials": server.oauth_credentials or {}
     }
 
+@router.get("/{server_id}/env")
+def get_server_env(server_id: int, db: Session = Depends(get_db)):
+    """Get environment variables for a server (unmasked for editing)."""
+    server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    return {
+        "env": server.env or {},
+        "warning": "These environment variables contain sensitive information. Handle with care."
+    }
+
 @router.post("/{server_id}/discover-tools")
 async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
     """Discover tools from an MCP server (command-based or remote HTTP)."""
@@ -1167,10 +1258,11 @@ async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Tool discovery is only for command-based, remote HTTP, or HTTP servers")
     
     try:
-        if server.config_type == "command":
-            # Use the stdio bridge to discover tools
-            import asyncio
-            import os
+        # Use communication_protocol to determine how to discover tools
+        comm_protocol = getattr(server, 'communication_protocol', 'stdio')
+        
+        if comm_protocol == "stdio" and server.config_type == "command":
+            # Use the stdio bridge for stdio communication
             from app.core.mcp_stdio_bridge import MCPDockerBridge, MCPStdioBridge
             
             # Check if we're running inside Docker
@@ -1204,8 +1296,167 @@ async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
             finally:
                 await bridge.stop()
                 
+        elif comm_protocol in ["http", "sse"] and server.config_type == "command":
+            # Command that starts an HTTP/SSE server (like Local MCP)
+            # The command should start the server, then we connect via HTTP
+            
+            # First, ensure the server is running
+            if mcp_process_manager:
+                if not server.is_running:
+                    # Start the server process
+                    logger.info(f"Starting HTTP command server: {server.name} with command: {server.command} {server.args}")
+                    success, message = await mcp_process_manager.start_server(server.id, db)
+                    if not success:
+                        raise HTTPException(status_code=500, detail=f"Failed to start server: {message}")
+                    
+                    # Wait for HTTP server to be ready with non-blocking polling
+                    logger.info(f"Waiting for HTTP server {server.name} to be ready...")
+                    max_attempts = 20  # 10 seconds total (20 * 0.5s)
+                    server_ready = False
+                    
+                    for attempt in range(max_attempts):
+                        try:
+                            # Try to connect to the server
+                            test_url = f"http://{server.hostname}/health" if server.hostname else f"http://localhost:{server.env.get('MCP_PORT', 3001)}/health"
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(test_url, timeout=aiohttp.ClientTimeout(total=1)) as resp:
+                                    if resp.status in [200, 404]:  # 404 is ok - means server is up but no health endpoint
+                                        server_ready = True
+                                        logger.info(f"HTTP server {server.name} is ready after {(attempt + 1) * 0.5}s")
+                                        break
+                        except:
+                            pass  # Server not ready yet
+                        
+                        if attempt < max_attempts - 1:
+                            await asyncio.sleep(0.5)  # Short non-blocking sleep
+                    
+                    if not server_ready:
+                        logger.warning(f"HTTP server {server.name} did not become ready after 10s, proceeding anyway")
+                    
+                    # Refresh server state from database
+                    db.refresh(server)
+                else:
+                    logger.info(f"Server {server.name} is already running")
+            else:
+                logger.warning("MCP process manager not available, assuming server is externally managed")
+            
+            # Now try to discover tools via HTTP
+            tools = []
+            
+            # Use the hostname field which should be properly configured
+            # For Local MCP, this should be "host.docker.internal:3001" or "localhost:3001"
+            hostname = server.hostname
+            
+            # Fallback to defaults if hostname not set
+            if not hostname:
+                # Check environment for port
+                if server.env and 'MCP_PORT' in server.env:
+                    hostname = f"localhost:{server.env['MCP_PORT']}"
+                elif server.name == "Local MCP":
+                    # Special case for Local MCP which runs on port 3001
+                    hostname = "localhost:3001"
+                else:
+                    # Generic default
+                    hostname = "localhost:3000"
+                logger.warning(f"No hostname configured for server {server.name}, using: {hostname}")
+            
+            # Replace host.docker.internal with localhost if running outside Docker
+            in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+            if not in_docker and 'host.docker.internal' in hostname:
+                hostname = hostname.replace('host.docker.internal', 'localhost')
+                logger.info(f"Replaced host.docker.internal with localhost: {hostname}")
+            
+            # Set endpoint prefix using the properly determined hostname
+            endpoint_prefix = f"http://{hostname}"
+            
+            try:
+                # Build discovery URL
+                if not hostname.startswith(('http://', 'https://')):
+                    discover_url = f"http://{hostname}/tools"
+                else:
+                    discover_url = hostname.rstrip('/') + '/tools'
+                
+                # Add authentication if configured
+                headers = {}
+                if server.api_key:
+                    headers["Authorization"] = f"Bearer {server.api_key}"
+                
+                # First check if server is healthy
+                health_url = discover_url.replace('/tools', '/health')
+                logger.info(f"Checking server health at: {health_url}")
+                
+                # Wait for server to be ready with health checks
+                max_health_checks = 10
+                for health_attempt in range(max_health_checks):
+                    try:
+                        health_resp = requests.get(health_url, timeout=5)
+                        if health_resp.status_code == 200:
+                            logger.info(f"Server is healthy, proceeding to discover tools")
+                            break
+                    except:
+                        pass
+                    
+                    if health_attempt < max_health_checks - 1:
+                        logger.info(f"Health check {health_attempt + 1}/{max_health_checks} failed, waiting 2 seconds...")
+                        await asyncio.sleep(2)
+                    else:
+                        logger.warning("Server health check failed after all attempts, trying tool discovery anyway")
+                
+                logger.info(f"Discovering tools from HTTP server: {discover_url}")
+                
+                # Try to discover tools with retries
+                max_retries = 5
+                for attempt in range(max_retries):
+                    try:
+                        logger.info(f"Tool discovery attempt {attempt + 1}/{max_retries}")
+                        resp = requests.get(discover_url, headers=headers, timeout=10)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            if isinstance(data, list):
+                                tools = data
+                            elif isinstance(data, dict) and 'tools' in data:
+                                tools = data['tools']
+                            logger.info(f"Successfully discovered {len(tools)} tools from HTTP server")
+                            break
+                        else:
+                            logger.warning(f"Got status code {resp.status_code} from {discover_url}")
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(2)
+                    except (requests.ConnectionError, requests.Timeout) as e:
+                        if attempt < max_retries - 1:
+                            logger.info(f"Connection attempt {attempt + 1} failed ({str(e)}), retrying in 3 seconds...")
+                            await asyncio.sleep(3)
+                        else:
+                            raise e
+            except Exception as e:
+                logger.error(f"Failed to discover tools from HTTP server at {discover_url}: {e}")
+                # Try to provide more helpful error message
+                if "Connection refused" in str(e):
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Could not connect to HTTP server at {hostname}. Please ensure the server is running and accessible."
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to discover tools: {str(e)}"
+                    )
+                
+        elif comm_protocol == "sse" and server.config_type == "remote_http":
+            # SSE protocol for remote servers
+            from app.core.remote_mcp_client import remote_mcp_manager
+            
+            server_config = {
+                "id": server.id,
+                "name": server.name,
+                "remote_config": server.remote_config
+            }
+            
+            tools = await remote_mcp_manager.discover_tools(server_config)
+            endpoint_prefix = f"sse://{server.name}"
+            
         elif server.config_type == "remote_http":
-            # Use remote MCP client to discover tools
+            # Standard remote HTTP
             from app.core.remote_mcp_client import remote_mcp_manager
             
             server_config = {
@@ -1217,7 +1468,7 @@ async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
             tools = await remote_mcp_manager.discover_tools(server_config)
             endpoint_prefix = f"remote://{server.name}"
             
-        elif server.config_type == "http":
+        elif server.config_type == "http" or comm_protocol == "http":
             # For HTTP servers, we need to implement tool discovery
             # This would typically involve calling a /tools or /discover endpoint
             # For now, return empty tools list or attempt discovery
@@ -1278,7 +1529,7 @@ async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
                 # Update existing tool
                 existing_tool.description = tool_def.get("description", "")
                 existing_tool.parameters = tool_def.get("inputSchema", {})
-                existing_tool.endpoint = f"{endpoint_prefix}/{tool_name}"
+                existing_tool.endpoint = f"{endpoint_prefix}/tools/{tool_name}"
                 existing_tool.updated_at = datetime.utcnow()
                 tools_updated += 1
             else:
@@ -1286,7 +1537,7 @@ async def discover_server_tools(server_id: int, db: Session = Depends(get_db)):
                 new_tool = MCPTool(
                     name=tool_name,
                     description=tool_def.get("description", ""),
-                    endpoint=f"{endpoint_prefix}/{tool_name}",
+                    endpoint=f"{endpoint_prefix}/tools/{tool_name}",
                     method="POST",
                     parameters=tool_def.get("inputSchema", {}),
                     server_id=server_id,
@@ -1560,6 +1811,59 @@ async def import_tools(server_id: int, import_data: MCPToolsImport, db: Session 
         logger.error(f"Error importing tools: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to import tools: {str(e)}")
 
+@router.get("/{server_id}/logs")
+async def get_server_logs(server_id: int, lines: int = 50, db: Session = Depends(get_db)):
+    """Get logs for a specific MCP server."""
+    server = db.query(MCPServer).filter(MCPServer.id == server_id).first()
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    # For command-based servers, check if there's a log file
+    if server.config_type == "command" and server.working_directory:
+        log_file = os.path.join(server.working_directory, "mcp_server.log")
+        
+        if os.path.exists(log_file):
+            try:
+                # Read last N lines using tail
+                import subprocess
+                result = subprocess.run(
+                    ["tail", "-n", str(lines), log_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                
+                return {
+                    "logs": result.stdout,
+                    "server_name": server.name,
+                    "log_file": log_file,
+                    "lines": lines
+                }
+            except Exception as e:
+                logger.error(f"Error reading logs for server {server_id}: {e}")
+                return {
+                    "logs": f"Error reading log file: {str(e)}",
+                    "server_name": server.name,
+                    "lines": lines
+                }
+        else:
+            # Try to get logs from process manager if available
+            if mcp_process_manager:
+                logs = await mcp_process_manager.get_server_logs(server_id, lines)
+                if logs:
+                    return {
+                        "logs": logs,
+                        "server_name": server.name,
+                        "lines": lines
+                    }
+    
+    # Default message for servers without log support
+    return {
+        "logs": f"No logs available for {server.name} ({server.config_type} type).\nCheck if the server is running and has a log file.",
+        "server_name": server.name,
+        "lines": lines
+    }
+
 @router.get("/{server_id}/tools/export")
 async def export_tools(server_id: int, db: Session = Depends(get_db)):
     """Export all tools for an MCP server in a format suitable for import."""
@@ -1588,3 +1892,396 @@ async def export_tools(server_id: int, db: Session = Depends(get_db)):
     }
     
     return export_data
+
+@router.post("/batch/start-all")
+async def start_all_servers(db: Session = Depends(get_db)):
+    """Start all active command-based MCP servers."""
+    servers = db.query(MCPServer).filter(
+        MCPServer.config_type == "command",
+        MCPServer.is_active == True
+    ).all()
+    
+    results = []
+    for server in servers:
+        try:
+            if mcp_process_manager:
+                success, message = await mcp_process_manager.start_server(server.id, db)
+                results.append({
+                    "server_id": server.id,
+                    "server_name": server.name,
+                    "success": success,
+                    "message": message
+                })
+            else:
+                results.append({
+                    "server_id": server.id,
+                    "server_name": server.name,
+                    "success": False,
+                    "message": "Process manager not available"
+                })
+        except Exception as e:
+            results.append({
+                "server_id": server.id,
+                "server_name": server.name,
+                "success": False,
+                "message": str(e)
+            })
+    
+    # Also try to start external MCP server
+    try:
+        external_result = await start_external_mcp_server()
+        results.append({
+            "server_id": "external",
+            "server_name": "External MCP Server (port 3001)",
+            "success": external_result.get("status") in ["success", "already_running"],
+            "message": external_result.get("message", "")
+        })
+    except Exception as e:
+        results.append({
+            "server_id": "external",
+            "server_name": "External MCP Server (port 3001)",
+            "success": False,
+            "message": str(e)
+        })
+    
+    successful = sum(1 for r in results if r["success"])
+    failed = len(results) - successful
+    
+    return {
+        "total": len(results),
+        "successful": successful,
+        "failed": failed,
+        "results": results
+    }
+
+@router.post("/batch/stop-all")
+async def stop_all_servers(db: Session = Depends(get_db)):
+    """Stop all running MCP servers."""
+    servers = db.query(MCPServer).filter(
+        MCPServer.config_type == "command",
+        MCPServer.is_running == True
+    ).all()
+    
+    results = []
+    for server in servers:
+        try:
+            if mcp_process_manager:
+                success, message = await mcp_process_manager.stop_server(server.id, db)
+                results.append({
+                    "server_id": server.id,
+                    "server_name": server.name,
+                    "success": success,
+                    "message": message
+                })
+            else:
+                results.append({
+                    "server_id": server.id,
+                    "server_name": server.name,
+                    "success": False,
+                    "message": "Process manager not available"
+                })
+        except Exception as e:
+            results.append({
+                "server_id": server.id,
+                "server_name": server.name,
+                "success": False,
+                "message": str(e)
+            })
+    
+    # Also try to stop external MCP server
+    try:
+        external_result = await stop_external_mcp_server()
+        results.append({
+            "server_id": "external",
+            "server_name": "External MCP Server (port 3001)",
+            "success": external_result.get("status") == "success",
+            "message": external_result.get("message", "")
+        })
+    except Exception as e:
+        results.append({
+            "server_id": "external",
+            "server_name": "External MCP Server (port 3001)",
+            "success": False,
+            "message": str(e)
+        })
+    
+    successful = sum(1 for r in results if r["success"])
+    failed = len(results) - successful
+    
+    return {
+        "total": len(results),
+        "successful": successful,
+        "failed": failed,
+        "results": results
+    }
+
+async def check_server_health_concurrent(server_id: int):
+    """Helper for concurrent health checks with independent DB session."""
+    from app.core.db import SessionLocal
+    db = SessionLocal()
+    try:
+        return await check_server_health(server_id, db)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+@router.post("/batch/refresh-health")
+async def refresh_health_all_servers(db: Session = Depends(get_db)):
+    """Check health status of all configured MCP servers concurrently."""
+    servers = db.query(MCPServer).filter(MCPServer.is_active == True).all()
+    
+    # Create concurrent tasks
+    tasks = [check_server_health_concurrent(server.id) for server in servers]
+    
+    # Execute concurrently
+    results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Process results
+    results = []
+    for server, result in zip(servers, results_raw):
+        if isinstance(result, Exception):
+            results.append({
+                "server_id": server.id,
+                "server_name": server.name,
+                "server_type": server.config_type,
+                "success": False,
+                "status": "error",
+                "message": str(result)
+            })
+        else:
+            results.append({
+                "server_id": server.id,
+                "server_name": server.name,
+                "server_type": server.config_type,
+                "success": True,
+                "status": result.get("status", "unknown"),
+                "message": result.get("message", "Health check completed")
+            })
+    
+    successful = sum(1 for r in results if r["success"])
+    failed = len(results) - successful
+    
+    return {
+        "total": len(results),
+        "successful": successful,
+        "failed": failed,
+        "results": results
+    }
+
+@router.post("/batch/discover-tools")
+async def discover_tools_all_servers(db: Session = Depends(get_db)):
+    """Discover or refresh tools from all active MCP servers."""
+    servers = db.query(MCPServer).filter(MCPServer.is_active == True).all()
+    
+    results = []
+    total_tools_discovered = 0
+    
+    for server in servers:
+        try:
+            if server.config_type == "manifest":
+                # For manifest servers, refresh from manifest
+                refresh_response = refresh_server_tools(server.id, db)
+                results.append({
+                    "server_id": server.id,
+                    "server_name": server.name,
+                    "server_type": server.config_type,
+                    "success": True,
+                    "tools_discovered": refresh_response.get("total_tools", 0),
+                    "message": refresh_response.get("message", "Tools refreshed")
+                })
+                total_tools_discovered += refresh_response.get("total_tools", 0)
+            elif server.config_type in ["command", "remote_http", "http"]:
+                # For other server types, count existing tools or attempt rediscovery
+                tool_count = db.query(MCPTool).filter(MCPTool.server_id == server.id).count()
+                
+                if server.config_type == "command" and mcp_process_manager:
+                    # For command servers, we can potentially restart to rediscover tools
+                    try:
+                        # Just count existing tools for now
+                        success = tool_count > 0
+                        message = f"Found {tool_count} existing tools" if success else "No tools discovered yet"
+                    except Exception as e:
+                        success = False
+                        message = str(e)
+                else:
+                    # For HTTP/remote servers, tools are discovered at connection time
+                    success = tool_count > 0
+                    message = f"Found {tool_count} tools" if success else "No tools available"
+                
+                results.append({
+                    "server_id": server.id,
+                    "server_name": server.name,
+                    "server_type": server.config_type,
+                    "success": success,
+                    "tools_discovered": tool_count,
+                    "message": message
+                })
+                if success:
+                    total_tools_discovered += tool_count
+            else:
+                results.append({
+                    "server_id": server.id,
+                    "server_name": server.name,
+                    "server_type": server.config_type,
+                    "success": False,
+                    "tools_discovered": 0,
+                    "message": f"Tool discovery not supported for {server.config_type} servers"
+                })
+        except Exception as e:
+            results.append({
+                "server_id": server.id,
+                "server_name": server.name,
+                "server_type": server.config_type,
+                "success": False,
+                "tools_discovered": 0,
+                "message": str(e)
+            })
+    
+    successful = sum(1 for r in results if r["success"])
+    failed = len(results) - successful
+    
+    return {
+        "total": len(results),
+        "successful": successful,
+        "failed": failed,
+        "total_tools": total_tools_discovered,
+        "results": results
+    }
+
+@router.post("/batch/test-connections")
+async def test_connections_all_servers(db: Session = Depends(get_db)):
+    """Test connectivity to all configured MCP servers."""
+    servers = db.query(MCPServer).filter(MCPServer.is_active == True).all()
+    
+    results = []
+    for server in servers:
+        try:
+            # Helper function to check if a server is local
+            def is_local_server(server) -> bool:
+                """Check if a server is running locally based on its configuration."""
+                if server.config_type == "command":
+                    return True  # Command servers are always local
+                elif server.config_type == "http":
+                    # Check if hostname is localhost or Docker internal
+                    hostname = server.hostname or ""
+                    if any(local in hostname.lower() for local in ["localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"]):
+                        return True
+                    # Check if it's a Docker service name (no dots in hostname)
+                    if "." not in hostname and not hostname.startswith("http"):
+                        return True
+                elif server.config_type == "manifest":
+                    # Check manifest URL for local addresses
+                    url = server.manifest_url or ""
+                    if any(local in url.lower() for local in ["localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"]):
+                        return True
+                    # Check configured hostname
+                    hostname = server.hostname or ""
+                    if any(local in hostname.lower() for local in ["localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"]):
+                        return True
+                    # Docker service names
+                    if hostname and "." not in hostname and not hostname.startswith("http"):
+                        return True
+                return False  # remote_http is always remote, others default to remote
+            
+            is_local = is_local_server(server)
+            
+            connection_test = {
+                "server_id": server.id,
+                "server_name": server.name,
+                "server_type": server.config_type,
+                "can_control": server.config_type == "command" or (is_local and server.config_type in ["http", "manifest"]),  # Local servers can potentially be controlled
+                "is_cloud_managed": server.config_type == "remote_http" or (not is_local and server.config_type in ["http", "manifest"]),
+                "is_local": is_local,  # Add explicit local flag
+                "success": False,
+                "latency_ms": None,
+                "message": ""
+            }
+            
+            import time
+            start_time = time.time()
+            
+            if server.config_type == "manifest":
+                # Test manifest URL accessibility
+                manifest = db.query(MCPManifest).filter(MCPManifest.server_id == server.id).first()
+                if manifest:
+                    try:
+                        headers = {}
+                        if manifest.api_key:
+                            headers["Authorization"] = f"Bearer {manifest.api_key}"
+                        resp = requests.get(manifest.url, headers=headers, timeout=5)
+                        resp.raise_for_status()
+                        connection_test["success"] = True
+                        connection_test["message"] = "Manifest accessible"
+                    except Exception as e:
+                        connection_test["message"] = f"Manifest unreachable: {str(e)}"
+                else:
+                    connection_test["message"] = "No manifest configured"
+                    
+            elif server.config_type == "remote_http":
+                # Test remote HTTP server connectivity
+                if server.remote_config and server.remote_config.get("server_url"):
+                    try:
+                        resp = requests.get(
+                            server.remote_config["server_url"], 
+                            headers=server.remote_config.get("auth_headers", {}),
+                            timeout=5
+                        )
+                        connection_test["success"] = resp.status_code < 500
+                        connection_test["message"] = f"Remote server responded with {resp.status_code}"
+                    except Exception as e:
+                        connection_test["message"] = f"Connection failed: {str(e)}"
+                else:
+                    connection_test["message"] = "No remote URL configured"
+                    
+            elif server.config_type == "http":
+                # Test HTTP server connectivity
+                if server.hostname:
+                    try:
+                        url = server.hostname if server.hostname.startswith("http") else f"http://{server.hostname}"
+                        resp = requests.get(url, timeout=5)
+                        connection_test["success"] = resp.status_code < 500
+                        connection_test["message"] = f"HTTP server responded with {resp.status_code}"
+                    except Exception as e:
+                        connection_test["message"] = f"Connection failed: {str(e)}"
+                else:
+                    connection_test["message"] = "No hostname configured"
+                    
+            elif server.config_type == "command":
+                # For command servers, check if process is running
+                if server.is_running:
+                    connection_test["success"] = True
+                    connection_test["message"] = f"Process running (PID: {server.process_id})"
+                else:
+                    connection_test["message"] = "Process not running"
+            
+            # Calculate latency
+            end_time = time.time()
+            connection_test["latency_ms"] = round((end_time - start_time) * 1000, 2)
+            
+            results.append(connection_test)
+            
+        except Exception as e:
+            # Use the same helper function for consistency
+            is_local = is_local_server(server) if 'is_local_server' in locals() else False
+            results.append({
+                "server_id": server.id,
+                "server_name": server.name,
+                "server_type": server.config_type,
+                "can_control": server.config_type == "command" or (is_local and server.config_type in ["http", "manifest"]),
+                "is_cloud_managed": server.config_type == "remote_http" or (not is_local and server.config_type in ["http", "manifest"]),
+                "is_local": is_local,
+                "success": False,
+                "latency_ms": None,
+                "message": str(e)
+            })
+    
+    successful = sum(1 for r in results if r["success"])
+    failed = len(results) - successful
+    
+    return {
+        "total": len(results),
+        "successful": successful,
+        "failed": failed,
+        "results": results
+    }

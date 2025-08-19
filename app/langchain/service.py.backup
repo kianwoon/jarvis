@@ -3836,18 +3836,6 @@ def get_llm_response_direct(question: str, thinking: bool = False, stream: bool 
     
     # Build prompt without RAG context
     prompt = build_prompt(question, thinking)
-    
-    # CRITICAL FIX: Get and apply the main LLM system prompt
-    main_llm_config = get_main_llm_full_config(llm_cfg)
-    system_prompt = main_llm_config.get("system_prompt", "")
-    
-    # Prepend system prompt to the question for proper context
-    if system_prompt:
-        prompt = f"{system_prompt}\n\n{prompt}"
-        print(f"[DEBUG] Applied system prompt to direct LLM response")
-    else:
-        print(f"[DEBUG] Warning: No system prompt found for direct LLM response")
-    
     if conversation_history:
         prompt = f"Previous conversation:\n{conversation_history}\n\nCurrent question: {prompt}"
     

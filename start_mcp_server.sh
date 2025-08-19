@@ -166,7 +166,48 @@ main() {
     print_status "Starting MCP server on port $MCP_PORT..."
     print_status "Logging to: $MCP_DIR/$MCP_LOG_FILE"
     
-    # Export environment variables and start server
+    # Load environment variables from .env.mcp if it exists
+    ENV_FILE="$HOME/Downloads/jarvis/.env.mcp"
+    if [ -f "$ENV_FILE" ]; then
+        print_status "Loading environment variables from $ENV_FILE"
+        # Source the file, exporting all variables
+        set -a
+        source "$ENV_FILE"
+        set +a
+    else
+        print_warning ".env.mcp file not found at $ENV_FILE"
+    fi
+    
+    # Try to load environment variables from database via API
+    # This assumes the API is running on localhost:8000
+    API_URL="http://localhost:8000/api/v1/mcp-servers"
+    if command -v curl &> /dev/null; then
+        print_status "Checking for Local MCP server configuration in database..."
+        # Try to get the Local MCP server (ID 9)
+        RESPONSE=$(curl -s "$API_URL/9/env" 2>/dev/null)
+        if [ $? -eq 0 ] && [ ! -z "$RESPONSE" ]; then
+            # Parse JSON and export environment variables
+            # Using Python if available for safe JSON parsing
+            if command -v python3 &> /dev/null; then
+                eval $(echo "$RESPONSE" | python3 -c "
+import json
+import sys
+try:
+    data = json.load(sys.stdin)
+    if 'env' in data and isinstance(data['env'], dict):
+        for key, value in data['env'].items():
+            # Skip placeholder values
+            if 'REPLACE_WITH' not in str(value):
+                print(f'export {key}=\"{value}\"')
+except:
+    pass
+" 2>/dev/null)
+                print_status "Loaded environment variables from database"
+            fi
+        fi
+    fi
+    
+    # Export MCP-specific environment variables (these override any loaded values)
     export MCP_MODE=http
     export MCP_PORT=$MCP_PORT
     

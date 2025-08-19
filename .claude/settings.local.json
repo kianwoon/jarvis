@@ -161,7 +161,8 @@
       "Bash(./run_and_test_bridge.sh:*)",
       "Bash(./monitor_api_logs.sh:*)",
       "Bash(./check_mcp_status.sh:*)",
-      "Bash(./start_mcp_server.sh:*)"
+      "Bash(./start_mcp_server.sh:*)",
+      "WebFetch(domain:developers.google.com)"
     ],
     "deny": [],
     "defaultMode": "acceptEdits"

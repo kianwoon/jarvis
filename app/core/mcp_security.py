@@ -4,6 +4,7 @@ Security validation and sandboxing for MCP command execution
 import os
 import re
 import shlex
+import json
 from typing import List, Dict, Optional, Set
 from pathlib import Path
 
@@ -161,7 +162,16 @@ class MCPSecurityValidator:
         if base_env:
             is_valid, error = self.validate_environment(base_env)
             if is_valid:
-                secure_env.update(base_env)
+                # Convert all values to strings (lists to JSON strings)
+                for key, value in base_env.items():
+                    if isinstance(value, list):
+                        secure_env[key] = json.dumps(value)
+                    elif isinstance(value, dict):
+                        secure_env[key] = json.dumps(value)
+                    elif value is not None:
+                        secure_env[key] = str(value)
+                    else:
+                        secure_env[key] = ""
         
         return secure_env
     

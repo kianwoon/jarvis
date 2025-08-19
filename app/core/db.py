@@ -93,6 +93,9 @@ class MCPServer(Base):
     # Remote HTTP/SSE MCP Server Configuration
     remote_config = Column(JSON, nullable=True)  # Remote server configuration
     
+    # Communication protocol (independent of config_type)
+    communication_protocol = Column(String(20), nullable=False, server_default='stdio')  # 'stdio', 'http', 'sse', 'websocket'
+    
     # Process management
     process_id = Column(Integer, nullable=True)  # PID when running
     is_running = Column(Boolean, default=False)
