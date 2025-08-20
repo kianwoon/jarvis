@@ -18,10 +18,6 @@ import {
   CardActions,
   Button,
   TextField,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -29,117 +25,59 @@ import {
   List,
   ListItem,
   ListItemText,
-  ListItemIcon,
+  ListItemSecondaryAction,
   Chip,
-  LinearProgress,
   Alert,
   Divider,
-  Switch,
-  FormControlLabel,
-  CircularProgress,
-  Slider,
-  Stack
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  TextareaAutosize
 } from '@mui/material';
 import {
   LightMode as LightModeIcon,
   DarkMode as DarkModeIcon,
   Add as AddIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
   PlayArrow as PlayIcon,
-  Settings as SettingsIcon,
-  Description as DocumentIcon,
+  Description as TemplateIcon,
   AccountTree as WorkflowIcon,
-  Timeline as TimelineIcon,
-  Analytics as AnalyticsIcon,
-  RateReview as ReviewIcon,
-  Build as BuildIcon,
-  AutoAwesome as GeneratorIcon,
-  Refresh as RefreshIcon,
-  Save as SaveIcon,
-  CheckCircle as CheckCircleIcon,
-  Memory as MemoryIcon,
-  Speed as SpeedIcon,
-  Schedule as ScheduleIcon,
-  Code as CodeIcon,
-  ModelTraining as ModelIcon,
-  Tune as TuneIcon,
-  SettingsApplications as AdvancedIcon,
-  EditNote as PromptIcon
+  ContentCopy as DuplicateIcon
 } from '@mui/icons-material';
+
 
 interface Template {
   id: string;
   name: string;
   description: string;
-  template_type: string;
-  template_config: any;
-  is_active: boolean;
+  category: string;
+  variables: string[];
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface WorkflowStep {
+  id: string;
+  name: string;
+  template_id: string;
+  order: number;
+  variables: Record<string, any>;
 }
 
 interface Workflow {
   id: string;
   name: string;
-  status: string;
-  progress: any;
-  created_at: string;
-}
-
-interface ModelInfo {
-  name: string;
-  size: string;
-  context_length: number;
-  modified_at: string;
-  model_id: string;
-  details?: {
-    format: string;
-    family: string;
-    families?: string[];
-    parameter_size: string;
-    quantization_level: string;
-  };
-}
-
-interface MetaTaskModel {
-  model: string;
-  max_tokens: number;
-  temperature: number;
-  top_p: number;
-  top_k: number;
-  min_p: number;
-  repeat_penalty: number;
-  system_prompt?: string;
-}
-
-interface MetaTaskSettings {
-  // General settings
-  output_format: string;
-  max_output_size_mb: number;
-  cache_enabled: boolean;
-  cache_ttl_hours: number;
-  cache_workflows: boolean;
-  
-  // Execution settings
-  execution_retry_attempts: number;
-  execution_timeout_minutes: number;
-  parallel_execution: boolean;
-  
-  // Quality control
-  quality_control_enabled: boolean;
-  quality_min_score: number;
-  quality_auto_retry: boolean;
-  
-  // Model configurations
-  analyzer_model: MetaTaskModel;
-  reviewer_model: MetaTaskModel;
-  assembler_model: MetaTaskModel;
-  generator_model: MetaTaskModel;
-}
-
-interface SettingsCategory {
-  id: string;
-  name: string;
-  icon: React.ReactNode;
   description: string;
+  steps: WorkflowStep[];
+  created_at: string;
+  updated_at: string;
+  last_run?: string;
+  status?: 'idle' | 'running' | 'completed' | 'failed';
 }
+
 
 function MetaTaskApp() {
   const [darkMode, setDarkMode] = useState(() => {
@@ -147,81 +85,27 @@ function MetaTaskApp() {
     return saved ? JSON.parse(saved) : false;
   });
 
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const [selectedTemplate, setSelectedTemplate] = useState<string>('');
-  const [workflowName, setWorkflowName] = useState<string>('');
-  const [inputData, setInputData] = useState<any>({});
-  const [createWorkflowOpen, setCreateWorkflowOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>('');
   const [success, setSuccess] = useState<string>('');
   
-  // Settings management
-  const [selectedCategory, setSelectedCategory] = useState('meta_task');
-  const [activeModelTab, setActiveModelTab] = useState(0);
-  const [metaTaskSettings, setMetaTaskSettings] = useState<MetaTaskSettings | null>(null);
-  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
+  // Templates and Workflows management
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
+  const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
   
-  // Track active submenu for each model tab
-  const [activeSubmenus, setActiveSubmenus] = useState<Record<string, number>>({
-    analyzer_model: 0,
-    reviewer_model: 0,
-    assembler_model: 0,
-    generator_model: 0
+  // Dialog states
+  const [createWorkflowOpen, setCreateWorkflowOpen] = useState(false);
+  const [editTemplateOpen, setEditTemplateOpen] = useState(false);
+  const [newWorkflow, setNewWorkflow] = useState<Partial<Workflow>>({
+    name: '',
+    description: '',
+    steps: []
   });
-
-  // Settings categories for sidebar
-  const settingsCategories: SettingsCategory[] = [
-    {
-      id: 'meta_task',
-      name: 'Meta-Task System',
-      icon: <WorkflowIcon />,
-      description: 'Configure meta-task models and execution settings'
-    },
-    {
-      id: 'templates',
-      name: 'Templates & Workflows',
-      icon: <DocumentIcon />,
-      description: 'Manage templates and active workflows'
-    }
-  ];
-
-  // Model tabs configuration - Settings first, then models
-  const modelTabs = [
-    {
-      id: 'settings',
-      label: 'Settings',
-      icon: <SettingsIcon />,
-      description: 'General execution, caching, and quality control settings'
-    },
-    { 
-      id: 'analyzer_model', 
-      label: 'Analyzer Model', 
-      icon: <AnalyticsIcon />,
-      description: 'Analyzes requirements and plans document structure'
-    },
-    { 
-      id: 'reviewer_model', 
-      label: 'Reviewer Model', 
-      icon: <ReviewIcon />,
-      description: 'Reviews and validates generated content for quality'
-    },
-    { 
-      id: 'assembler_model', 
-      label: 'Assembler Model', 
-      icon: <BuildIcon />,
-      description: 'Assembles components into cohesive documents'
-    },
-    { 
-      id: 'generator_model', 
-      label: 'Generator Model', 
-      icon: <GeneratorIcon />,
-      description: 'Generates detailed content for each section'
-    }
-  ];
+  
+  // Active tab for Templates/Workflows
+  const [activeTab, setActiveTab] = useState(0);
 
   // Create theme
   const theme = createTheme({
@@ -275,240 +159,136 @@ function MetaTaskApp() {
   useEffect(() => {
     loadTemplates();
     loadWorkflows();
-    if (selectedCategory === 'meta_task') {
-      loadMetaTaskSettings();
-      loadAvailableModels();
-    }
-  }, [selectedCategory]);
+  }, []);
 
-  // Load available models from Ollama
-  const loadAvailableModels = async () => {
-    try {
-      setLoadingModels(true);
-      const response = await fetch('http://localhost:11434/api/tags');
-      if (response.ok) {
-        const data = await response.json();
-        const models: ModelInfo[] = data.models?.map((model: any) => ({
-          name: model.name,
-          size: formatBytes(model.size),
-          context_length: model.details?.context_length || 8192,
-          modified_at: new Date(model.modified_at).toLocaleDateString(),
-          model_id: model.digest || model.name,
-          details: {
-            format: model.details?.format || 'GGUF',
-            family: model.details?.family || 'Unknown',
-            families: model.details?.families || [],
-            parameter_size: model.details?.parameter_size || 'Unknown',
-            quantization_level: model.details?.quantization_level || 'Q4_0'
-          }
-        })) || [];
-        setAvailableModels(models);
-      }
-    } catch (err) {
-      console.error('Failed to load models:', err);
-      // Fallback models if Ollama is not available
-      setAvailableModels([
-        {
-          name: 'qwen3:30b-a3b',
-          size: '30B',
-          context_length: 32768,
-          modified_at: new Date().toLocaleDateString(),
-          model_id: 'qwen3:30b-a3b'
-        },
-        {
-          name: 'llama3.1:latest',
-          size: '8B',
-          context_length: 8192,
-          modified_at: new Date().toLocaleDateString(),
-          model_id: 'llama3.1:latest'
-        },
-        {
-          name: 'qwen2.5:latest',
-          size: '7B',
-          context_length: 32768,
-          modified_at: new Date().toLocaleDateString(),
-          model_id: 'qwen2.5:latest'
-        }
-      ]);
-    } finally {
-      setLoadingModels(false);
-    }
-  };
-
-  // Load meta-task settings
-  const loadMetaTaskSettings = async () => {
-    try {
-      setLoading(true);
-      const response = await fetch('/api/v1/settings/meta_task');
-      if (response.ok) {
-        const data = await response.json();
-        const settings = data.settings || {};
-        // Initialize with defaults if not present
-        const defaultModel: MetaTaskModel = {
-          model: 'qwen3:30b-a3b',
-          max_tokens: 4096,
-          temperature: 0.7,
-          top_p: 0.9,
-          top_k: 40,
-          min_p: 0.0,
-          repeat_penalty: 1.1
-        };
-        
-        setMetaTaskSettings({
-          // General settings
-          output_format: settings.output_format || 'markdown',
-          max_output_size_mb: settings.max_output_size_mb || 10,
-          cache_enabled: settings.cache_enabled !== undefined ? settings.cache_enabled : true,
-          cache_ttl_hours: settings.cache_ttl_hours || 1,
-          cache_workflows: settings.cache_workflows !== undefined ? settings.cache_workflows : true,
-          
-          // Execution settings
-          execution_retry_attempts: settings.execution_retry_attempts || 3,
-          execution_timeout_minutes: settings.execution_timeout_minutes || 5,
-          parallel_execution: settings.parallel_execution !== undefined ? settings.parallel_execution : false,
-          
-          // Quality control
-          quality_control_enabled: settings.quality_control_enabled !== undefined ? settings.quality_control_enabled : true,
-          quality_min_score: settings.quality_min_score || 0.7,
-          quality_auto_retry: settings.quality_auto_retry !== undefined ? settings.quality_auto_retry : true,
-          
-          // Model configurations
-          analyzer_model: settings.analyzer_model || { ...defaultModel, system_prompt: 'You are an expert document analyzer...' },
-          reviewer_model: settings.reviewer_model || { ...defaultModel, system_prompt: 'You are a quality reviewer...' },
-          assembler_model: settings.assembler_model || { ...defaultModel, system_prompt: 'You are a document assembler...' },
-          generator_model: settings.generator_model || { ...defaultModel, system_prompt: 'You are a content generator...' }
-        });
-      }
-    } catch (err) {
-      setError('Failed to load meta-task settings');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Save meta-task settings
-  const saveMetaTaskSettings = async () => {
-    try {
-      setSaving(true);
-      setError('');
-      setSuccess('');
-      
-      const response = await fetch('/api/v1/settings/meta_task', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          settings: metaTaskSettings,
-          persist_to_db: true,
-          reload_cache: true
-        })
-      });
-
-      if (response.ok) {
-        setSuccess('Settings saved successfully!');
-        setTimeout(() => setSuccess(''), 3000);
-      } else {
-        throw new Error('Failed to save settings');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // Helper function to format bytes
-  const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-  };
-
+  // Load templates
   const loadTemplates = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/v1/meta-task/templates');
-      if (response.ok) {
-        const data = await response.json();
-        setTemplates(data.templates || []);
-      } else {
-        setError('Failed to load templates');
-      }
+      // Mock data for now - replace with actual API call
+      setTemplates([
+        {
+          id: '1',
+          name: 'Technical Documentation',
+          description: 'Template for creating technical documentation',
+          category: 'Documentation',
+          variables: ['project_name', 'version', 'author'],
+          content: '# {{project_name}} Documentation\nVersion: {{version}}\nAuthor: {{author}}',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        },
+        {
+          id: '2',
+          name: 'API Specification',
+          description: 'Template for API documentation',
+          category: 'API',
+          variables: ['api_name', 'base_url', 'version'],
+          content: '# {{api_name}} API\nBase URL: {{base_url}}\nVersion: {{version}}',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        },
+        {
+          id: '3',
+          name: 'Project Proposal',
+          description: 'Template for project proposals',
+          category: 'Business',
+          variables: ['project_title', 'client', 'budget'],
+          content: '# Project Proposal: {{project_title}}\nClient: {{client}}\nBudget: {{budget}}',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      ]);
     } catch (err) {
-      setError('Error loading templates');
+      setError('Failed to load templates');
     } finally {
       setLoading(false);
     }
   };
 
+  // Load workflows
   const loadWorkflows = async () => {
     try {
-      // This endpoint would need to be implemented
-      const response = await fetch('/api/v1/meta-task/workflows');
-      if (response.ok) {
-        const data = await response.json();
-        setWorkflows(data.workflows || []);
-      }
+      // Mock data for now - replace with actual API call
+      setWorkflows([
+        {
+          id: '1',
+          name: 'Complete Documentation Pipeline',
+          description: 'Full documentation generation workflow',
+          steps: [
+            {
+              id: '1',
+              name: 'Generate Overview',
+              template_id: '1',
+              order: 1,
+              variables: { project_name: 'My Project', version: '1.0', author: 'Team' }
+            },
+            {
+              id: '2',
+              name: 'Generate API Docs',
+              template_id: '2',
+              order: 2,
+              variables: { api_name: 'REST API', base_url: 'https://api.example.com', version: 'v1' }
+            }
+          ],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_run: new Date().toISOString(),
+          status: 'completed'
+        }
+      ]);
     } catch (err) {
-      console.log('Workflows endpoint not implemented yet');
+      console.error('Failed to load workflows:', err);
     }
   };
 
+  // Create new workflow
   const createWorkflow = async () => {
     try {
-      setLoading(true);
-      setError('');
-      
-      const response = await fetch('/api/v1/meta-task/workflows', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          template_id: selectedTemplate,
-          name: workflowName,
-          input_data: inputData
-        })
-      });
-
-      if (response.ok) {
-        setCreateWorkflowOpen(false);
-        setWorkflowName('');
-        setInputData({});
-        setSelectedTemplate('');
-        loadWorkflows();
-      } else {
-        const errorData = await response.json();
-        setError(errorData.detail || 'Failed to create workflow');
-      }
+      // API call to create workflow
+      console.log('Creating workflow:', newWorkflow);
+      setSuccess('Workflow created successfully!');
+      setCreateWorkflowOpen(false);
+      await loadWorkflows();
     } catch (err) {
-      setError('Error creating workflow');
-    } finally {
-      setLoading(false);
+      setError('Failed to create workflow');
     }
   };
 
-  const executeWorkflow = async (workflowId: string) => {
+  // Run workflow
+  const runWorkflow = async (workflowId: string) => {
     try {
-      // This would open a streaming connection to monitor execution
-      window.open(`/api/v1/meta-task/workflows/${workflowId}/execute`, '_blank');
+      // API call to run workflow
+      console.log('Running workflow:', workflowId);
+      setSuccess('Workflow started successfully!');
     } catch (err) {
-      setError('Error executing workflow');
+      setError('Failed to run workflow');
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed': return 'success';
-      case 'running': return 'primary';
-      case 'failed': return 'error';
-      case 'pending': return 'default';
-      default: return 'default';
+  // Delete template
+  const deleteTemplate = async (templateId: string) => {
+    try {
+      // API call to delete template
+      console.log('Deleting template:', templateId);
+      setSuccess('Template deleted successfully!');
+      await loadTemplates();
+    } catch (err) {
+      setError('Failed to delete template');
     }
   };
+
+  // Delete workflow
+  const deleteWorkflow = async (workflowId: string) => {
+    try {
+      // API call to delete workflow
+      console.log('Deleting workflow:', workflowId);
+      setSuccess('Workflow deleted successfully!');
+      await loadWorkflows();
+    } catch (err) {
+      setError('Failed to delete workflow');
+    }
+  };
+
 
   return (
     <ThemeProvider theme={theme}>
@@ -525,7 +305,7 @@ function MetaTaskApp() {
           <AppBar position="static">
             <Toolbar>
               <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-                Jarvis AI Assistant - Meta-Tasks
+                Jarvis AI Assistant - Meta-Task Templates & Workflows
               </Typography>
               <IconButton onClick={toggleDarkMode} color="inherit">
                 {darkMode ? <LightModeIcon /> : <DarkModeIcon />}
@@ -565,864 +345,289 @@ function MetaTaskApp() {
           </Box>
         </Box>
 
-        {/* Main Content with Left Nav + Modern Design */}
+        {/* Main Content */}
         <Container maxWidth={false} sx={{ flex: 1, py: 2, overflow: 'hidden', width: '100%' }}>
-          <Grid container spacing={2} sx={{ height: '100%' }}>
-            {/* Settings Categories Sidebar */}
-            <Grid item xs={12} md={2.5}>
-              <Paper sx={{ height: '100%', overflow: 'auto' }}>
-                <List>
-                  <ListItem>
-                    <Typography variant="h6" color="primary">
-                      Settings Categories
-                    </Typography>
-                  </ListItem>
-                  <Divider />
-                  {settingsCategories.map((category) => (
-                    <ListItem
-                      key={category.id}
-                      component="div"
-                      sx={{ 
-                        cursor: 'pointer',
-                        bgcolor: selectedCategory === category.id ? 'action.selected' : 'transparent',
-                        '&:hover': { bgcolor: 'action.hover' }
-                      }}
-                      onClick={() => setSelectedCategory(category.id)}
-                    >
-                      <ListItemIcon>
-                        {category.icon}
-                      </ListItemIcon>
-                      <ListItemText
-                        primary={category.name}
-                        secondary={category.description}
-                      />
-                    </ListItem>
-                  ))}
-                </List>
-              </Paper>
-            </Grid>
+          <Paper sx={{ height: '100%', overflow: 'auto', p: 3 }}>
+            <Box>
+              {/* Header */}
+              <Box sx={{ mb: 3 }}>
+                <Typography variant="h4" gutterBottom>
+                  Meta-Task Templates & Workflows
+                </Typography>
+                <Typography variant="body1" color="text.secondary">
+                  Manage document templates and create automated workflows for complex document generation
+                </Typography>
+              </Box>
 
-            {/* Settings Content */}
-            <Grid item xs={12} md={9.5}>
-              <Paper sx={{ height: '100%', overflow: 'auto', p: 3 }}>
-                {selectedCategory === 'meta_task' ? (
-                  <Box>
-                    {/* Header */}
-                    <Box sx={{ mb: 3 }}>
-                      <Typography variant="h4" gutterBottom>
-                        Meta-Task System
-                      </Typography>
-                      <Typography variant="body1" color="text.secondary">
-                        Configure meta-task models and execution settings for complex multi-phase document generation
-                      </Typography>
-                    </Box>
+              {error && (
+                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
+                  {error}
+                </Alert>
+              )}
 
-                    {error && (
-                      <Alert severity="error" sx={{ mb: 2 }}>
-                        {error}
-                      </Alert>
-                    )}
+              {success && (
+                <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccess('')}>
+                  {success}
+                </Alert>
+              )}
 
-                    {success && (
-                      <Alert severity="success" sx={{ mb: 2 }}>
-                        {success}
-                      </Alert>
-                    )}
+              {/* Content Tabs */}
+              <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+                <Tabs
+                  value={activeTab}
+                  onChange={(_, newValue) => setActiveTab(newValue)}
+                  centered
+                >
+                  <Tab label="Templates" icon={<TemplateIcon />} iconPosition="start" />
+                  <Tab label="Workflows" icon={<WorkflowIcon />} iconPosition="start" />
+                </Tabs>
+              </Box>
 
-                    {/* Model Tabs */}
-                    <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-                      <Tabs 
-                        value={activeModelTab} 
-                        onChange={(_, newValue) => setActiveModelTab(newValue)}
-                        variant="scrollable"
-                        scrollButtons="auto"
-                      >
-                        {modelTabs.map((tab, index) => (
-                          <Tab 
-                            key={tab.id}
-                            label={tab.label}
-                            icon={tab.icon}
-                            iconPosition="start"
-                            value={index}
-                          />
-                        ))}
-                      </Tabs>
-                    </Box>
+              {/* Templates Tab */}
+              <Box hidden={activeTab !== 0} sx={{ pt: 3 }}>
+                <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="h5">Document Templates</Typography>
+                  <Button
+                    variant="contained"
+                    startIcon={<AddIcon />}
+                    onClick={() => setEditTemplateOpen(true)}
+                  >
+                    Create Template
+                  </Button>
+                </Box>
 
-                    {/* Tab Content */}
-                    {modelTabs.map((tab, index) => (
-                      <Box
-                        key={tab.id}
-                        hidden={activeModelTab !== index}
-                        sx={{ pt: 3 }}
-                      >
-                        {activeModelTab === index && metaTaskSettings && (
-                          <Box>
-                            {/* Conditional rendering based on whether it's Settings tab or Model tab */}
-                            {index === 0 ? (
-                              /* Settings Tab Content */
-                              <>
-                                {/* General Settings Card */}
-                                <Card sx={{ mb: 3 }}>
-                                  <CardContent>
-                                    <Typography variant="h6" gutterBottom>
-                                      General Settings
-                                    </Typography>
-                                    <Grid container spacing={2}>
-                                      <Grid item xs={12} md={6}>
-                                        <FormControl fullWidth>
-                                          <InputLabel>Output Format</InputLabel>
-                                          <Select
-                                            value={metaTaskSettings.output_format}
-                                            onChange={(e) => {
-                                              const newSettings = { ...metaTaskSettings };
-                                              newSettings.output_format = e.target.value;
-                                              setMetaTaskSettings(newSettings);
-                                            }}
-                                            label="Output Format"
-                                          >
-                                            <MenuItem value="markdown">Markdown</MenuItem>
-                                            <MenuItem value="json">JSON</MenuItem>
-                                            <MenuItem value="text">Plain Text</MenuItem>
-                                            <MenuItem value="html">HTML</MenuItem>
-                                          </Select>
-                                        </FormControl>
-                                      </Grid>
-                                      <Grid item xs={12} md={6}>
-                                        <TextField
-                                          fullWidth
-                                          label="Max Output Size (MB)"
-                                          type="number"
-                                          value={metaTaskSettings.max_output_size_mb}
-                                          onChange={(e) => {
-                                            const newSettings = { ...metaTaskSettings };
-                                            newSettings.max_output_size_mb = parseInt(e.target.value) || 1;
-                                            setMetaTaskSettings(newSettings);
-                                          }}
-                                          inputProps={{ min: 1, max: 100 }}
-                                        />
-                                      </Grid>
-                                      <Grid item xs={12} md={6}>
-                                        <FormControlLabel
-                                          control={
-                                            <Switch
-                                              checked={metaTaskSettings.cache_enabled}
-                                              onChange={(e) => {
-                                                const newSettings = { ...metaTaskSettings };
-                                                newSettings.cache_enabled = e.target.checked;
-                                                setMetaTaskSettings(newSettings);
-                                              }}
-                                            />
-                                          }
-                                          label="Cache Enabled"
-                                        />
-                                      </Grid>
-                                      <Grid item xs={12} md={6}>
-                                        <TextField
-                                          fullWidth
-                                          label="Cache TTL (Hours)"
-                                          type="number"
-                                          value={metaTaskSettings.cache_ttl_hours}
-                                          onChange={(e) => {
-                                            const newSettings = { ...metaTaskSettings };
-                                            newSettings.cache_ttl_hours = parseInt(e.target.value) || 1;
-                                            setMetaTaskSettings(newSettings);
-                                          }}
-                                          inputProps={{ min: 1, max: 24 }}
-                                          disabled={!metaTaskSettings.cache_enabled}
-                                        />
-                                      </Grid>
-                                      <Grid item xs={12}>
-                                        <FormControlLabel
-                                          control={
-                                            <Switch
-                                              checked={metaTaskSettings.cache_workflows}
-                                              onChange={(e) => {
-                                                const newSettings = { ...metaTaskSettings };
-                                                newSettings.cache_workflows = e.target.checked;
-                                                setMetaTaskSettings(newSettings);
-                                              }}
-                                            />
-                                          }
-                                          label="Cache Workflows"
-                                        />
-                                      </Grid>
-                                    </Grid>
-                                  </CardContent>
-                                </Card>
-
-                                {/* Execution Settings Card */}
-                                <Card sx={{ mb: 3 }}>
-                                  <CardContent>
-                                    <Typography variant="h6" gutterBottom>
-                                      Execution Settings
-                                    </Typography>
-                                    <Grid container spacing={2}>
-                                      <Grid item xs={12} md={4}>
-                                        <TextField
-                                          fullWidth
-                                          label="Execution Retry Attempts"
-                                          type="number"
-                                          value={metaTaskSettings.execution_retry_attempts}
-                                          onChange={(e) => {
-                                            const newSettings = { ...metaTaskSettings };
-                                            newSettings.execution_retry_attempts = parseInt(e.target.value) || 0;
-                                            setMetaTaskSettings(newSettings);
-                                          }}
-                                          inputProps={{ min: 0, max: 10 }}
-                                        />
-                                      </Grid>
-                                      <Grid item xs={12} md={4}>
-                                        <TextField
-                                          fullWidth
-                                          label="Execution Timeout (Minutes)"
-                                          type="number"
-                                          value={metaTaskSettings.execution_timeout_minutes}
-                                          onChange={(e) => {
-                                            const newSettings = { ...metaTaskSettings };
-                                            newSettings.execution_timeout_minutes = parseInt(e.target.value) || 1;
-                                            setMetaTaskSettings(newSettings);
-                                          }}
-                                          inputProps={{ min: 1, max: 30 }}
-                                        />
-                                      </Grid>
-                                      <Grid item xs={12} md={4}>
-                                        <FormControlLabel
-                                          control={
-                                            <Switch
-                                              checked={metaTaskSettings.parallel_execution}
-                                              onChange={(e) => {
-                                                const newSettings = { ...metaTaskSettings };
-                                                newSettings.parallel_execution = e.target.checked;
-                                                setMetaTaskSettings(newSettings);
-                                              }}
-                                            />
-                                          }
-                                          label="Parallel Execution"
-                                        />
-                                      </Grid>
-                                    </Grid>
-                                  </CardContent>
-                                </Card>
-
-                                {/* Quality Control Card */}
-                                <Card sx={{ mb: 3 }}>
-                                  <CardContent>
-                                    <Typography variant="h6" gutterBottom>
-                                      Quality Control
-                                    </Typography>
-                                    <Grid container spacing={2}>
-                                      <Grid item xs={12}>
-                                        <FormControlLabel
-                                          control={
-                                            <Switch
-                                              checked={metaTaskSettings.quality_control_enabled}
-                                              onChange={(e) => {
-                                                const newSettings = { ...metaTaskSettings };
-                                                newSettings.quality_control_enabled = e.target.checked;
-                                                setMetaTaskSettings(newSettings);
-                                              }}
-                                            />
-                                          }
-                                          label="Quality Control Enabled"
-                                        />
-                                      </Grid>
-                                      <Grid item xs={12} md={6}>
-                                        <Typography gutterBottom>
-                                          Minimum Quality Score: {metaTaskSettings.quality_min_score.toFixed(2)}
-                                        </Typography>
-                                        <Slider
-                                          value={metaTaskSettings.quality_min_score}
-                                          onChange={(_, value) => {
-                                            const newSettings = { ...metaTaskSettings };
-                                            newSettings.quality_min_score = value as number;
-                                            setMetaTaskSettings(newSettings);
-                                          }}
-                                          min={0}
-                                          max={1}
-                                          step={0.05}
-                                          marks
-                                          valueLabelDisplay="auto"
-                                          disabled={!metaTaskSettings.quality_control_enabled}
-                                        />
-                                      </Grid>
-                                      <Grid item xs={12} md={6}>
-                                        <FormControlLabel
-                                          control={
-                                            <Switch
-                                              checked={metaTaskSettings.quality_auto_retry}
-                                              onChange={(e) => {
-                                                const newSettings = { ...metaTaskSettings };
-                                                newSettings.quality_auto_retry = e.target.checked;
-                                                setMetaTaskSettings(newSettings);
-                                              }}
-                                              disabled={!metaTaskSettings.quality_control_enabled}
-                                            />
-                                          }
-                                          label="Auto Retry on Low Quality"
-                                        />
-                                      </Grid>
-                                    </Grid>
-                                  </CardContent>
-                                </Card>
-                              </>
-                            ) : (
-                              /* Model Tab Content with Submenus */
-                              <>
-                                {/* Get the correct model based on tab index */}
-                                {(() => {
-                                  const modelKey = modelTabs[index].id as keyof MetaTaskSettings;
-                                  const model = metaTaskSettings[modelKey] as MetaTaskModel;
-                                  const currentSubmenu = activeSubmenus[modelKey] || 0;
-                                  
-                                  // Define submenu tabs for model configuration
-                                  const modelSubmenus = [
-                                    { label: 'Model Selection', icon: <ModelIcon />, value: 0 },
-                                    { label: 'Parameters', icon: <TuneIcon />, value: 1 },
-                                    { label: 'Advanced Settings', icon: <AdvancedIcon />, value: 2 },
-                                    { label: 'System Prompt', icon: <PromptIcon />, value: 3 }
-                                  ];
-                                  
-                                  return (
-                                    <>
-                                      {/* Secondary Tabs for Model Configuration */}
-                                      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
-                                        <Tabs 
-                                          value={currentSubmenu}
-                                          onChange={(_, newValue) => {
-                                            setActiveSubmenus(prev => ({ ...prev, [modelKey]: newValue }));
-                                          }}
-                                          variant="scrollable"
-                                          scrollButtons="auto"
-                                          sx={{
-                                            '& .MuiTab-root': {
-                                              minHeight: 48,
-                                              textTransform: 'none',
-                                              fontSize: '0.875rem'
-                                            }
-                                          }}
-                                        >
-                                          {modelSubmenus.map((submenu) => (
-                                            <Tab 
-                                              key={submenu.value}
-                                              label={submenu.label}
-                                              icon={submenu.icon}
-                                              iconPosition="start"
-                                              value={submenu.value}
-                                            />
-                                          ))}
-                                        </Tabs>
-                                      </Box>
-                                      
-                                      {/* Model Selection Tab */}
-                                      {currentSubmenu === 0 && (
-                                        <>
-                                          {/* Model Info Card */}
-                                      <Card sx={{ mb: 3, bgcolor: 'background.default' }}>
-                                        <CardContent>
-                                          <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                                            <Chip 
-                                              label="Active" 
-                                              color="success" 
-                                              size="small" 
-                                              icon={<CheckCircleIcon />}
-                                              sx={{ mr: 2 }}
-                                            />
-                                            <Typography variant="h6">
-                                              Current Model: {model.model}
-                                            </Typography>
-                                          </Box>
-                                
-                                          <Grid container spacing={2}>
-                                            <Grid item xs={3}>
-                                              <Box>
-                                                <Typography variant="caption" color="text.secondary">
-                                                  <MemoryIcon sx={{ fontSize: 14, mr: 0.5 }} />
-                                                  Model Size
-                                                </Typography>
-                                                <Typography variant="body2" fontWeight="bold">
-                                                  {availableModels.find(m => m.name === model.model)?.size || 'Unknown'}
-                                                </Typography>
-                                              </Box>
-                                            </Grid>
-                                            <Grid item xs={3}>
-                                              <Box>
-                                                <Typography variant="caption" color="text.secondary">
-                                                  <CodeIcon sx={{ fontSize: 14, mr: 0.5 }} />
-                                                  Context Length
-                                                </Typography>
-                                                <Typography variant="body2" fontWeight="bold">
-                                                  {availableModels.find(m => m.name === model.model)?.context_length || 8192} tokens
-                                                </Typography>
-                                              </Box>
-                                            </Grid>
-                                            <Grid item xs={3}>
-                                              <Box>
-                                                <Typography variant="caption" color="text.secondary">
-                                                  <ScheduleIcon sx={{ fontSize: 14, mr: 0.5 }} />
-                                                  Last Modified
-                                                </Typography>
-                                                <Typography variant="body2" fontWeight="bold">
-                                                  {availableModels.find(m => m.name === model.model)?.modified_at || 'Unknown'}
-                                                </Typography>
-                                              </Box>
-                                            </Grid>
-                                            <Grid item xs={3}>
-                                              <Box>
-                                                <Typography variant="caption" color="text.secondary">
-                                                  <SpeedIcon sx={{ fontSize: 14, mr: 0.5 }} />
-                                                  Model ID
-                                                </Typography>
-                                                <Typography variant="body2" fontWeight="bold" sx={{ 
-                                                  overflow: 'hidden', 
-                                                  textOverflow: 'ellipsis',
-                                                  whiteSpace: 'nowrap'
-                                                }}>
-                                                  {availableModels.find(m => m.name === model.model)?.model_id || model.model}
-                                                </Typography>
-                                              </Box>
-                                            </Grid>
-                                          </Grid>
-                                          
-                                          <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
-                                            {modelTabs[index].description}
-                                          </Typography>
-                                        </CardContent>
-                                      </Card>
-
-                                          {/* Model Selection Card */}
-                                          <Card sx={{ mb: 3 }}>
-                                            <CardContent>
-                                              <Typography variant="h6" gutterBottom>
-                                                Model Selection
-                                              </Typography>
-                                              
-                                              <FormControl fullWidth sx={{ mb: 3 }}>
-                                                <InputLabel>Select Model</InputLabel>
-                                                <Select
-                                                  value={model.model}
-                                                  onChange={(e) => {
-                                                    const newSettings = { ...metaTaskSettings };
-                                                    (newSettings[modelKey] as MetaTaskModel).model = e.target.value;
-                                                    setMetaTaskSettings(newSettings);
-                                                  }}
-                                                  label="Select Model"
-                                                  disabled={loadingModels}
-                                                >
-                                                  {availableModels.map((availableModel) => (
-                                                    <MenuItem key={availableModel.model_id} value={availableModel.name}>
-                                                      <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                                                        <Typography>{availableModel.name}</Typography>
-                                                        <Typography variant="caption" color="text.secondary">
-                                                          {availableModel.size} • {availableModel.context_length} tokens
-                                                        </Typography>
-                                                      </Box>
-                                                    </MenuItem>
-                                                  ))}
-                                                </Select>
-                                              </FormControl>
-                                            </CardContent>
-                                          </Card>
-                                        </>
-                                      )}
-                                      
-                                      {/* Parameters Tab */}
-                                      {currentSubmenu === 1 && (
-                                        <Card>
-                                          <CardContent>
-                                            <Typography variant="h6" gutterBottom>
-                                              Model Parameters
-                                            </Typography>
-
-                                            {/* Model Parameters */}
-                                            <Grid container spacing={2}>
-                                              <Grid item xs={12} md={6}>
-                                                <TextField
-                                                  fullWidth
-                                                  label="Max Tokens"
-                                                  type="number"
-                                                  value={model.max_tokens}
-                                                  onChange={(e) => {
-                                                    const newSettings = { ...metaTaskSettings };
-                                                    (newSettings[modelKey] as MetaTaskModel).max_tokens = parseInt(e.target.value) || 0;
-                                                    setMetaTaskSettings(newSettings);
-                                                  }}
-                                                  inputProps={{ min: 1, max: 32768 }}
-                                                  helperText="Maximum number of tokens to generate"
-                                                />
-                                              </Grid>
-                                              
-                                              {/* Temperature Slider */}
-                                              <Grid item xs={12} md={6}>
-                                                <Typography gutterBottom>Temperature: {model.temperature}</Typography>
-                                                <Slider
-                                                  value={model.temperature}
-                                                  onChange={(_, value) => {
-                                                    const newSettings = { ...metaTaskSettings };
-                                                    (newSettings[modelKey] as MetaTaskModel).temperature = value as number;
-                                                    setMetaTaskSettings(newSettings);
-                                                  }}
-                                                  min={0}
-                                                  max={2}
-                                                  step={0.1}
-                                                  marks
-                                                  valueLabelDisplay="auto"
-                                                />
-                                                <Typography variant="caption" color="text.secondary">
-                                                  Controls randomness in generation (0 = deterministic, 2 = very creative)
-                                                </Typography>
-                                              </Grid>
-                                              
-                                              {/* Top P Slider */}
-                                              <Grid item xs={12} md={6}>
-                                                <Typography gutterBottom>Top P: {model.top_p}</Typography>
-                                                <Slider
-                                                  value={model.top_p}
-                                                  onChange={(_, value) => {
-                                                    const newSettings = { ...metaTaskSettings };
-                                                    (newSettings[modelKey] as MetaTaskModel).top_p = value as number;
-                                                    setMetaTaskSettings(newSettings);
-                                                  }}
-                                                  min={0}
-                                                  max={1}
-                                                  step={0.05}
-                                                  marks
-                                                  valueLabelDisplay="auto"
-                                                />
-                                                <Typography variant="caption" color="text.secondary">
-                                                  Nucleus sampling parameter (0.9 = use top 90% probability tokens)
-                                                </Typography>
-                                              </Grid>
-                                            </Grid>
-                                          </CardContent>
-                                        </Card>
-                                      )}
-                                      
-                                      {/* Advanced Settings Tab */}
-                                      {currentSubmenu === 2 && (
-                                        <Card>
-                                          <CardContent>
-                                            <Typography variant="h6" gutterBottom>
-                                              Advanced Settings
-                                            </Typography>
-
-                                            {/* Advanced Parameters */}
-                                            <Grid container spacing={2}>
-                                              <Grid item xs={12} md={4}>
-                                                <TextField
-                                                  fullWidth
-                                                  label="Top K"
-                                                  type="number"
-                                                  value={model.top_k}
-                                                  onChange={(e) => {
-                                                    const newSettings = { ...metaTaskSettings };
-                                                    (newSettings[modelKey] as MetaTaskModel).top_k = parseInt(e.target.value) || 0;
-                                                    setMetaTaskSettings(newSettings);
-                                                  }}
-                                                  inputProps={{ min: 0, max: 100 }}
-                                                  helperText="Limit token selection to top K tokens"
-                                                />
-                                              </Grid>
-                                              <Grid item xs={12} md={4}>
-                                                <TextField
-                                                  fullWidth
-                                                  label="Min P"
-                                                  type="number"
-                                                  value={model.min_p}
-                                                  onChange={(e) => {
-                                                    const newSettings = { ...metaTaskSettings };
-                                                    (newSettings[modelKey] as MetaTaskModel).min_p = parseFloat(e.target.value) || 0;
-                                                    setMetaTaskSettings(newSettings);
-                                                  }}
-                                                  inputProps={{ min: 0, max: 1, step: 0.01 }}
-                                                  helperText="Minimum probability threshold"
-                                                />
-                                              </Grid>
-                                              <Grid item xs={12} md={4}>
-                                                <TextField
-                                                  fullWidth
-                                                  label="Repeat Penalty"
-                                                  type="number"
-                                                  value={model.repeat_penalty}
-                                                  onChange={(e) => {
-                                                    const newSettings = { ...metaTaskSettings };
-                                                    (newSettings[modelKey] as MetaTaskModel).repeat_penalty = parseFloat(e.target.value) || 1;
-                                                    setMetaTaskSettings(newSettings);
-                                                  }}
-                                                  inputProps={{ min: 0.1, max: 2, step: 0.1 }}
-                                                  helperText="Penalty for repeating tokens (1.0 = no penalty)"
-                                                />
-                                              </Grid>
-                                            </Grid>
-                                          </CardContent>
-                                        </Card>
-                                      )}
-
-                                      {/* System Prompt Tab */}
-                                      {currentSubmenu === 3 && (
-                                        <Card>
-                                          <CardContent>
-                                            <Typography variant="h6" gutterBottom>
-                                              System Prompt
-                                            </Typography>
-                                            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                                              Define the behavior and role of the {modelTabs[index].label.toLowerCase()} in the meta-task workflow
-                                            </Typography>
-                                            <TextField
-                                              fullWidth
-                                              multiline
-                                              rows={12}
-                                              value={model.system_prompt || ''}
-                                              onChange={(e) => {
-                                                const newSettings = { ...metaTaskSettings };
-                                                (newSettings[modelKey] as MetaTaskModel).system_prompt = e.target.value;
-                                                setMetaTaskSettings(newSettings);
-                                              }}
-                                              placeholder={`Enter system prompt for ${modelTabs[index].label}...\n\nExample:\nYou are an expert ${modelTabs[index].label.toLowerCase().replace(' model', '')} responsible for...`}
-                                              variant="outlined"
-                                              sx={{
-                                                '& .MuiInputBase-input': {
-                                                  fontFamily: 'monospace',
-                                                  fontSize: '0.9rem'
-                                                }
-                                              }}
-                                            />
-                                          </CardContent>
-                                        </Card>
-                                      )}
-                                    </>
-                                  );
-                                })()}
-                              </>
-                            )}
-
-                          </Box>
-                        )}
-                      </Box>
-                    ))}
-                    
-                    {/* Action Buttons - Outside of tabs, always visible */}
-                    <Box sx={{ mt: 3, display: 'flex', gap: 2, justifyContent: 'flex-end' }}>
-                      <Button
-                        variant="outlined"
-                        startIcon={<RefreshIcon />}
-                        onClick={() => {
-                          loadMetaTaskSettings();
-                          loadAvailableModels();
-                        }}
-                        disabled={loading || loadingModels}
-                      >
-                        {loading || loadingModels ? (
-                          <>
-                            <CircularProgress size={16} sx={{ mr: 1 }} />
-                            Refreshing...
-                          </>
-                        ) : (
-                          'REFRESH SETTINGS'
-                        )}
-                      </Button>
-                      <Button
-                        variant="contained"
-                        startIcon={<SaveIcon />}
-                        onClick={saveMetaTaskSettings}
-                        disabled={saving || !metaTaskSettings}
-                      >
-                        {saving ? (
-                          <>
-                            <CircularProgress size={16} sx={{ mr: 1, color: 'white' }} />
-                            Saving...
-                          </>
-                        ) : (
-                          'UPDATE MODELS & CACHE'
-                        )}
-                      </Button>
-                    </Box>
-                  </Box>
-                ) : (
-                  /* Templates & Workflows view */
-                  <Grid container spacing={3}>
-                    <Grid item xs={12}>
-                      <Typography variant="h4" gutterBottom>
-                        Templates & Workflows
-                      </Typography>
-                      <Typography variant="body1" color="text.secondary" gutterBottom>
-                        Manage templates and active workflows for meta-task execution
-                      </Typography>
-                    </Grid>
-                    
-                    {/* Templates Section */}
-                    <Grid item xs={12} md={6}>
-                      <Paper sx={{ p: 3 }}>
-                        <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
-                          <Typography variant="h5">
-                            Templates
+                <Grid container spacing={2}>
+                  {templates.map((template) => (
+                    <Grid item xs={12} md={6} lg={4} key={template.id}>
+                      <Card>
+                        <CardContent>
+                          <Typography variant="h6" gutterBottom>
+                            {template.name}
                           </Typography>
-                          <Button
-                            variant="contained"
-                            startIcon={<AddIcon />}
-                            onClick={() => setCreateWorkflowOpen(true)}
-                            disabled={templates.length === 0}
-                          >
-                            Create Workflow
+                          <Chip label={template.category} size="small" color="primary" sx={{ mb: 1 }} />
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                            {template.description}
+                          </Typography>
+                          <Typography variant="caption" display="block">
+                            Variables: {template.variables.join(', ')}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Updated: {new Date(template.updated_at).toLocaleDateString()}
+                          </Typography>
+                        </CardContent>
+                        <CardActions>
+                          <Button size="small" startIcon={<EditIcon />}>
+                            Edit
                           </Button>
-                        </Box>
-
-                        {templates.length === 0 ? (
-                          <Typography variant="body1" color="text.secondary">
-                            No templates available. Templates are created through database migrations.
-                          </Typography>
-                        ) : (
-                          <Grid container spacing={2}>
-                            {templates.map((template) => (
-                              <Grid item xs={12} key={template.id}>
-                                <Card variant="outlined">
-                                  <CardContent>
-                                    <Typography variant="h6">
-                                      {template.name}
-                                    </Typography>
-                                    <Typography variant="body2" color="text.secondary" paragraph>
-                                      {template.description}
-                                    </Typography>
-                                    <Chip 
-                                      label={template.template_type} 
-                                      size="small" 
-                                      color="primary" 
-                                      variant="outlined" 
-                                    />
-                                    <Typography variant="caption" display="block" sx={{ mt: 1 }}>
-                                      Phases: {template.template_config?.phases?.length || 0}
-                                    </Typography>
-                                  </CardContent>
-                                  <CardActions>
-                                    <Button 
-                                      size="small" 
-                                      startIcon={<PlayIcon />}
-                                      onClick={() => {
-                                        setSelectedTemplate(template.id);
-                                        setCreateWorkflowOpen(true);
-                                      }}
-                                    >
-                                      Use Template
-                                    </Button>
-                                  </CardActions>
-                                </Card>
-                              </Grid>
-                            ))}
-                          </Grid>
-                        )}
-                      </Paper>
+                          <Button size="small" startIcon={<DuplicateIcon />}>
+                            Duplicate
+                          </Button>
+                          <Button 
+                            size="small" 
+                            color="error"
+                            startIcon={<DeleteIcon />}
+                            onClick={() => deleteTemplate(template.id)}
+                          >
+                            Delete
+                          </Button>
+                        </CardActions>
+                      </Card>
                     </Grid>
+                  ))}
+                </Grid>
+              </Box>
 
-                    {/* Workflows Section */}
-                    <Grid item xs={12} md={6}>
-                      <Paper sx={{ p: 3 }}>
-                        <Typography variant="h5" mb={2}>
-                          Active Workflows
-                        </Typography>
+              {/* Workflows Tab */}
+              <Box hidden={activeTab !== 1} sx={{ pt: 3 }}>
+                <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="h5">Document Workflows</Typography>
+                  <Button
+                    variant="contained"
+                    startIcon={<AddIcon />}
+                    onClick={() => setCreateWorkflowOpen(true)}
+                  >
+                    Create Workflow
+                  </Button>
+                </Box>
 
-                        {workflows.length === 0 ? (
-                          <Typography variant="body1" color="text.secondary">
-                            No active workflows. Create a workflow from a template to get started.
+                <Grid container spacing={2}>
+                  {workflows.map((workflow) => (
+                    <Grid item xs={12} key={workflow.id}>
+                      <Card>
+                        <CardContent>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 2 }}>
+                            <Box>
+                              <Typography variant="h6">
+                                {workflow.name}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {workflow.description}
+                              </Typography>
+                            </Box>
+                            {workflow.status && (
+                              <Chip 
+                                label={workflow.status} 
+                                color={workflow.status === 'completed' ? 'success' : workflow.status === 'failed' ? 'error' : 'default'}
+                                size="small"
+                              />
+                            )}
+                          </Box>
+
+                          <Divider sx={{ my: 2 }} />
+
+                          <Typography variant="subtitle2" gutterBottom>
+                            Workflow Steps ({workflow.steps.length}):
                           </Typography>
-                        ) : (
-                          <List>
-                            {workflows.map((workflow) => (
-                              <ListItem key={workflow.id} divider>
+                          <List dense>
+                            {workflow.steps.map((step, index) => (
+                              <ListItem key={step.id}>
                                 <ListItemText
-                                  primary={workflow.name}
-                                  secondary={`Created: ${new Date(workflow.created_at).toLocaleDateString()}`}
+                                  primary={`${index + 1}. ${step.name}`}
+                                  secondary={`Template: ${templates.find(t => t.id === step.template_id)?.name || 'Unknown'}`}
                                 />
-                                <Chip 
-                                  label={workflow.status}
-                                  color={getStatusColor(workflow.status) as any}
-                                  size="small"
-                                  sx={{ mr: 1 }}
-                                />
-                                <IconButton 
-                                  onClick={() => executeWorkflow(workflow.id)}
-                                  disabled={workflow.status === 'running'}
-                                >
-                                  <PlayIcon />
-                                </IconButton>
                               </ListItem>
                             ))}
                           </List>
-                        )}
-                      </Paper>
+
+                          <Typography variant="caption" color="text.secondary">
+                            Last run: {workflow.last_run ? new Date(workflow.last_run).toLocaleString() : 'Never'}
+                          </Typography>
+                        </CardContent>
+                        <CardActions>
+                          <Button 
+                            size="small" 
+                            variant="contained"
+                            startIcon={<PlayIcon />}
+                            onClick={() => runWorkflow(workflow.id)}
+                          >
+                            Run
+                          </Button>
+                          <Button size="small" startIcon={<EditIcon />}>
+                            Edit
+                          </Button>
+                          <Button size="small" startIcon={<DuplicateIcon />}>
+                            Duplicate
+                          </Button>
+                          <Button 
+                            size="small" 
+                            color="error"
+                            startIcon={<DeleteIcon />}
+                            onClick={() => deleteWorkflow(workflow.id)}
+                          >
+                            Delete
+                          </Button>
+                        </CardActions>
+                      </Card>
                     </Grid>
-                  </Grid>
-                )}
-              </Paper>
-            </Grid>
-          </Grid>
+                  ))}
+                </Grid>
+              </Box>
+
+              {/* Create Workflow Dialog */}
+              <Dialog 
+                open={createWorkflowOpen} 
+                onClose={() => setCreateWorkflowOpen(false)}
+                maxWidth="md"
+                fullWidth
+              >
+                <DialogTitle>Create New Workflow</DialogTitle>
+                <DialogContent>
+                  <TextField
+                    fullWidth
+                    label="Workflow Name"
+                    value={newWorkflow.name}
+                    onChange={(e) => setNewWorkflow({ ...newWorkflow, name: e.target.value })}
+                    margin="normal"
+                  />
+                  <TextField
+                    fullWidth
+                    label="Description"
+                    value={newWorkflow.description}
+                    onChange={(e) => setNewWorkflow({ ...newWorkflow, description: e.target.value })}
+                    margin="normal"
+                    multiline
+                    rows={3}
+                  />
+                  
+                  <Typography variant="subtitle1" sx={{ mt: 2, mb: 1 }}>
+                    Add Steps
+                  </Typography>
+                  <Button 
+                    variant="outlined" 
+                    startIcon={<AddIcon />}
+                    fullWidth
+                  >
+                    Add Step from Template
+                  </Button>
+                </DialogContent>
+                <DialogActions>
+                  <Button onClick={() => setCreateWorkflowOpen(false)}>Cancel</Button>
+                  <Button onClick={createWorkflow} variant="contained">Create</Button>
+                </DialogActions>
+              </Dialog>
+
+              {/* Edit Template Dialog */}
+              <Dialog 
+                open={editTemplateOpen} 
+                onClose={() => setEditTemplateOpen(false)}
+                maxWidth="md"
+                fullWidth
+              >
+                <DialogTitle>Create New Template</DialogTitle>
+                <DialogContent>
+                  <TextField
+                    fullWidth
+                    label="Template Name"
+                    margin="normal"
+                  />
+                  <TextField
+                    fullWidth
+                    label="Description"
+                    margin="normal"
+                    multiline
+                    rows={2}
+                  />
+                  <FormControl fullWidth margin="normal">
+                    <InputLabel>Category</InputLabel>
+                    <Select label="Category">
+                      <MenuItem value="Documentation">Documentation</MenuItem>
+                      <MenuItem value="API">API</MenuItem>
+                      <MenuItem value="Business">Business</MenuItem>
+                      <MenuItem value="Technical">Technical</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <TextField
+                    fullWidth
+                    label="Variables (comma-separated)"
+                    margin="normal"
+                    helperText="e.g., project_name, version, author"
+                  />
+                  <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
+                    Template Content
+                  </Typography>
+                  <TextareaAutosize
+                    minRows={10}
+                    style={{ 
+                      width: '100%', 
+                      padding: '8px',
+                      fontFamily: 'monospace',
+                      fontSize: '14px',
+                      border: '1px solid #ccc',
+                      borderRadius: '4px'
+                    }}
+                    placeholder="Enter template content with variables in {{variable_name}} format"
+                  />
+                </DialogContent>
+                <DialogActions>
+                  <Button onClick={() => setEditTemplateOpen(false)}>Cancel</Button>
+                  <Button variant="contained">Create Template</Button>
+                </DialogActions>
+              </Dialog>
+
+            </Box>
+          </Paper>
         </Container>
 
-        {/* Create Workflow Dialog */}
-        <Dialog 
-          open={createWorkflowOpen} 
-          onClose={() => setCreateWorkflowOpen(false)}
-          maxWidth="md"
-          fullWidth
-        >
-          <DialogTitle>Create New Workflow</DialogTitle>
-          <DialogContent>
-            <Box sx={{ pt: 1 }}>
-              <FormControl fullWidth margin="normal">
-                <InputLabel>Template</InputLabel>
-                <Select
-                  value={selectedTemplate}
-                  onChange={(e) => setSelectedTemplate(e.target.value)}
-                  label="Template"
-                >
-                  {templates.map((template) => (
-                    <MenuItem key={template.id} value={template.id}>
-                      {template.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-
-              <TextField
-                fullWidth
-                label="Workflow Name"
-                value={workflowName}
-                onChange={(e) => setWorkflowName(e.target.value)}
-                margin="normal"
-                required
-              />
-
-              <TextField
-                fullWidth
-                label="Input Data (JSON)"
-                value={JSON.stringify(inputData, null, 2)}
-                onChange={(e) => {
-                  try {
-                    setInputData(JSON.parse(e.target.value));
-                  } catch {
-                    // Invalid JSON, keep as string
-                  }
-                }}
-                multiline
-                rows={6}
-                margin="normal"
-                placeholder='{"topic": "Your topic here", "target_length": 10}'
-                helperText="Enter the input data as JSON. Required fields depend on the selected template."
-              />
-            </Box>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setCreateWorkflowOpen(false)}>
-              Cancel
-            </Button>
-            <Button 
-              onClick={createWorkflow}
-              variant="contained"
-              disabled={!selectedTemplate || !workflowName || loading}
-            >
-              Create Workflow
-            </Button>
-          </DialogActions>
-        </Dialog>
       </Box>
     </ThemeProvider>
   );

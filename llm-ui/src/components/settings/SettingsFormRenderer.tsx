@@ -28,7 +28,8 @@ import {
   CircularProgress,
   Tooltip,
   Radio,
-  RadioGroup
+  RadioGroup,
+  SelectChangeEvent
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -77,6 +78,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
     if (category === 'rag') return 'retrieval';
     if (category === 'storage') return 'vector';
     if (category === 'overflow') return 'thresholds';
+    if (category === 'meta_task') return 'settings';
     return 'settings';
   });
   const [passwordVisibility, setPasswordVisibility] = React.useState<Record<string, boolean>>({});
@@ -85,13 +87,102 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   const [testingConnection, setTestingConnection] = React.useState(false);
   const [connectionTestResult, setConnectionTestResult] = React.useState<{success: boolean, message?: string, error?: string} | null>(null);
   
+  // Secondary tab state for meta_task model tabs
+  const [metaTaskSubTabs, setMetaTaskSubTabs] = React.useState<Record<string, string>>({
+    analyzer: 'model_selection',
+    reviewer: 'model_selection',
+    assembler: 'model_selection',
+    generator: 'model_selection'
+  });
+  
+  // State for meta_task models fetched from Ollama
+  const [metaTaskModels, setMetaTaskModels] = React.useState<Array<{name: string, id: string, size: string, modified: string, context_length: string}>>([]); 
+  const [metaTaskModelsLoading, setMetaTaskModelsLoading] = React.useState(false);
+  const [metaTaskModelsFetched, setMetaTaskModelsFetched] = React.useState(false);
+  
   // Update activeTab when category changes
   React.useEffect(() => {
     if (category === 'rag') setActiveTab('retrieval');
     else if (category === 'storage') setActiveTab('vector');
     else if (category === 'overflow') setActiveTab('thresholds');
+    else if (category === 'meta_task') {
+      setActiveTab('settings');
+      // Fetch models when entering meta_task category
+      if (!metaTaskModelsFetched) {
+        fetchMetaTaskModels();
+      }
+    }
     else setActiveTab('settings');
   }, [category]);
+  
+  // Function to fetch available models for meta_task
+  const fetchMetaTaskModels = async () => {
+    setMetaTaskModelsLoading(true);
+    try {
+      const response = await fetch('/api/v1/ollama/models');
+      if (response.ok) {
+        const responseData = await response.json();
+        
+        if (responseData.success) {
+          // Ollama is available - use actual models
+          setMetaTaskModels(responseData.models || []);
+        } else {
+          // Ollama not available - use fallback models from API if provided
+          if (responseData.fallback_models && responseData.fallback_models.length > 0) {
+            setMetaTaskModels(responseData.fallback_models);
+          } else {
+            // Last resort fallback
+            setMetaTaskModels([
+              { name: 'qwen3:30b-a3b', id: 'fallback-01', size: '18 GB', modified: 'N/A', context_length: '32,768' },
+              { name: 'llama3.1:8b', id: 'fallback-02', size: '4.7 GB', modified: 'N/A', context_length: '128,000' },
+              { name: 'deepseek-r1:8b', id: 'fallback-03', size: '4.9 GB', modified: 'N/A', context_length: '65,536' },
+              { name: 'gpt-4o', id: 'fallback-04', size: 'Cloud', modified: 'N/A', context_length: '128,000' },
+              { name: 'gpt-4o-mini', id: 'fallback-05', size: 'Cloud', modified: 'N/A', context_length: '128,000' },
+              { name: 'claude-3-5-sonnet', id: 'fallback-06', size: 'Cloud', modified: 'N/A', context_length: '200,000' },
+              { name: 'claude-3-5-haiku', id: 'fallback-07', size: 'Cloud', modified: 'N/A', context_length: '200,000' }
+            ]);
+          }
+        }
+      } else {
+        // HTTP error - try to parse response for fallback models
+        try {
+          const responseData = await response.json();
+          if (responseData.fallback_models && responseData.fallback_models.length > 0) {
+            setMetaTaskModels(responseData.fallback_models);
+          } else {
+            throw new Error('No fallback models in error response');
+          }
+        } catch {
+          // Last resort fallback
+          setMetaTaskModels([
+            { name: 'qwen3:30b-a3b', id: 'fallback-01', size: '18 GB', modified: 'N/A', context_length: '32,768' },
+            { name: 'llama3.1:8b', id: 'fallback-02', size: '4.7 GB', modified: 'N/A', context_length: '128,000' },
+            { name: 'deepseek-r1:8b', id: 'fallback-03', size: '4.9 GB', modified: 'N/A', context_length: '65,536' },
+            { name: 'gpt-4o', id: 'fallback-04', size: 'Cloud', modified: 'N/A', context_length: '128,000' },
+            { name: 'gpt-4o-mini', id: 'fallback-05', size: 'Cloud', modified: 'N/A', context_length: '128,000' },
+            { name: 'claude-3-5-sonnet', id: 'fallback-06', size: 'Cloud', modified: 'N/A', context_length: '200,000' },
+            { name: 'claude-3-5-haiku', id: 'fallback-07', size: 'Cloud', modified: 'N/A', context_length: '200,000' }
+          ]);
+        }
+      }
+      setMetaTaskModelsFetched(true);
+    } catch (error) {
+      console.error('Failed to fetch meta_task models:', error);
+      // Last resort fallback
+      setMetaTaskModels([
+        { name: 'qwen3:30b-a3b', id: 'fallback-01', size: '18 GB', modified: 'N/A', context_length: '32,768' },
+        { name: 'llama3.1:8b', id: 'fallback-02', size: '4.7 GB', modified: 'N/A', context_length: '128,000' },
+        { name: 'deepseek-r1:8b', id: 'fallback-03', size: '4.9 GB', modified: 'N/A', context_length: '65,536' },
+        { name: 'gpt-4o', id: 'fallback-04', size: 'Cloud', modified: 'N/A', context_length: '128,000' },
+        { name: 'gpt-4o-mini', id: 'fallback-05', size: 'Cloud', modified: 'N/A', context_length: '128,000' },
+        { name: 'claude-3-5-sonnet', id: 'fallback-06', size: 'Cloud', modified: 'N/A', context_length: '200,000' },
+        { name: 'claude-3-5-haiku', id: 'fallback-07', size: 'Cloud', modified: 'N/A', context_length: '200,000' }
+      ]);
+      setMetaTaskModelsFetched(true);
+    } finally {
+      setMetaTaskModelsLoading(false);
+    }
+  };
 
   // Test Neo4j connection
   const testNeo4jConnection = async () => {
@@ -247,7 +338,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   // Knowledge graph settings are now consolidated under LLM category
 
   // Default form rendering for regular settings
-  return renderStandardForm(data, onChange, category, activeTab, setActiveTab, passwordVisibility, setPasswordVisibility, icebergPasswordVisibility, setIcebergPasswordVisibility, onShowSuccess, testNeo4jConnection, testingConnection, connectionTestResult);
+  return renderStandardForm(data, onChange, category, activeTab, setActiveTab, passwordVisibility, setPasswordVisibility, icebergPasswordVisibility, setIcebergPasswordVisibility, onShowSuccess, testNeo4jConnection, testingConnection, connectionTestResult, metaTaskSubTabs, setMetaTaskSubTabs, fetchMetaTaskModels, metaTaskModels, metaTaskModelsLoading);
 };
 
 const renderEnvironmentEditor = (data: any, onChange: (field: string, value: any) => void) => {
@@ -1433,7 +1524,12 @@ const renderStandardForm = (
   onShowSuccess?: (message?: string) => void,
   testNeo4jConnection?: () => Promise<void>,
   testingConnection?: boolean,
-  connectionTestResult?: {success: boolean, message?: string, error?: string} | null
+  connectionTestResult?: {success: boolean, message?: string, error?: string} | null,
+  metaTaskSubTabs?: Record<string, string>,
+  setMetaTaskSubTabs?: React.Dispatch<React.SetStateAction<Record<string, string>>>,
+  fetchMetaTaskModels?: () => Promise<void>,
+  metaTaskModels?: Array<{name: string, id: string, size: string, modified: string, context_length: string}>,
+  metaTaskModelsLoading?: boolean
 ) => {
 
   // Flatten nested objects and categorize fields into domain-intelligent tabs
@@ -1490,6 +1586,15 @@ const renderStandardForm = (
         classifier: { title: 'Query Classifier', fields: {} },
         search_optimization: { title: 'Search Optimization', fields: {} },
         thinking: { title: 'Thinking Mode', fields: {} }
+      };
+    } else if (category === 'meta_task') {
+      // Meta-Task category structure with tabs for each model
+      categories = {
+        settings: { title: 'Settings', fields: {} },
+        analyzer: { title: 'Analyzer Model', fields: {} },
+        reviewer: { title: 'Reviewer Model', fields: {} },
+        assembler: { title: 'Assembler Model', fields: {} },
+        generator: { title: 'Generator Model', fields: {} }
       };
     } else {
       // Default single-tab structure for other categories (monitoring, mcp, etc.)
@@ -1751,6 +1856,28 @@ const renderStandardForm = (
           categories.thinking.fields[key] = value;
         }
         // Settings Tab - Core model configuration and context-related fields (everything else)
+        else {
+          categories.settings.fields[key] = value;
+        }
+      } else if (category === 'meta_task') {
+        // Meta-Task specific field categorization
+        // Analyzer Model Tab
+        if (lowerKey.includes('analyzer') && !lowerKey.includes('enable') && !lowerKey.includes('output') && !lowerKey.includes('cache')) {
+          categories.analyzer.fields[key] = value;
+        }
+        // Reviewer Model Tab
+        else if (lowerKey.includes('reviewer')) {
+          categories.reviewer.fields[key] = value;
+        }
+        // Assembler Model Tab
+        else if (lowerKey.includes('assembler')) {
+          categories.assembler.fields[key] = value;
+        }
+        // Generator Model Tab
+        else if (lowerKey.includes('generator')) {
+          categories.generator.fields[key] = value;
+        }
+        // Settings Tab - General settings like output format, caching, execution, quality control
         else {
           categories.settings.fields[key] = value;
         }
@@ -3205,7 +3332,538 @@ const renderStandardForm = (
                   </Card>
                 )}
 
+                {/* Enhanced Meta-Task Model Configuration with Secondary Tabs */}
+                {category === 'meta_task' && (categoryKey === 'analyzer' || categoryKey === 'reviewer' || categoryKey === 'assembler' || categoryKey === 'generator') && (
+                  <Box sx={{ width: '100%' }}>
+                    {/* Secondary Tab Navigation */}
+                    <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+                      <Tabs 
+                        value={metaTaskSubTabs[categoryKey] || 'model_selection'}
+                        onChange={(e, newValue) => {
+                          setMetaTaskSubTabs(prev => ({ ...prev, [categoryKey]: newValue }));
+                        }}
+                        variant="scrollable"
+                        scrollButtons="auto"
+                      >
+                        <Tab label="Model Selection" value="model_selection" />
+                        <Tab label="Parameters" value="parameters" />
+                        <Tab label="Advanced Settings" value="advanced" />
+                        <Tab label="System Prompt" value="system_prompt" />
+                      </Tabs>
+                    </Box>
+
+                    {/* Model Selection Tab */}
+                    {metaTaskSubTabs[categoryKey] === 'model_selection' && (
+                      <Box>
+                        {/* Mode Selection Card */}
+                        <Card variant="outlined" sx={{ mb: 3 }}>
+                          <CardHeader 
+                            title="Model Mode"
+                            subheader={
+                              categoryKey === 'analyzer' ? "Select reasoning mode for task analysis" : 
+                              categoryKey === 'reviewer' ? "Select reasoning mode for output review" : 
+                              categoryKey === 'assembler' ? "Select reasoning mode for result assembly" :
+                              "Select reasoning mode for content generation"
+                            }
+                          />
+                          <CardContent>
+                            <FormControl component="fieldset">
+                              <RadioGroup
+                                value={
+                                  data[`${categoryKey}_model`]?.mode || 'thinking'
+                                }
+                                onChange={(e) => {
+                                  const modelKey = `${categoryKey}_model`;
+                                  const updatedModel = { ...data[modelKey], mode: e.target.value };
+                                  onChange(modelKey, updatedModel);
+                                }}
+                              >
+                                <FormControlLabel 
+                                  value="thinking" 
+                                  control={<Radio />} 
+                                  label={
+                                    <Box>
+                                      <Typography variant="body2" fontWeight={600}>
+                                        Thinking Mode
+                                      </Typography>
+                                      <Typography variant="caption" color="text.secondary">
+                                        {categoryKey === 'analyzer' 
+                                          ? "Enable step-by-step reasoning for task analysis"
+                                          : categoryKey === 'reviewer'
+                                          ? "Enable step-by-step reasoning for output review"
+                                          : categoryKey === 'assembler'
+                                          ? "Enable step-by-step reasoning for result assembly"
+                                          : "Enable step-by-step reasoning for content generation"
+                                        }
+                                      </Typography>
+                                    </Box>
+                                  }
+                                />
+                                <FormControlLabel 
+                                  value="non-thinking" 
+                                  control={<Radio />} 
+                                  label={
+                                    <Box>
+                                      <Typography variant="body2" fontWeight={600}>
+                                        Non-Thinking Mode
+                                      </Typography>
+                                      <Typography variant="caption" color="text.secondary">
+                                        {categoryKey === 'analyzer'
+                                          ? "Direct analysis without explicit reasoning steps"
+                                          : categoryKey === 'reviewer'
+                                          ? "Direct review without explicit reasoning steps"
+                                          : categoryKey === 'assembler'
+                                          ? "Direct assembly without explicit reasoning steps"
+                                          : "Direct generation without explicit reasoning steps"
+                                        }
+                                      </Typography>
+                                    </Box>
+                                  }
+                                />
+                              </RadioGroup>
+                            </FormControl>
+                          </CardContent>
+                        </Card>
+
+                        {/* Model Selection Dropdown */}
+                        <Card variant="outlined" sx={{ mb: 3 }}>
+                          <CardHeader 
+                            title="Model Selection"
+                            subheader="Choose the AI model"
+                            action={
+                              <Tooltip title="Refresh available models">
+                                <IconButton 
+                                  onClick={fetchMetaTaskModels}
+                                  disabled={metaTaskModelsLoading}
+                                  size="small"
+                                >
+                                  {metaTaskModelsLoading ? <CircularProgress size={20} /> : <RefreshIcon />}
+                                </IconButton>
+                              </Tooltip>
+                            }
+                          />
+                          <CardContent>
+                            <FormControl fullWidth>
+                              <InputLabel id={`${categoryKey}-model-label`}>Select Model</InputLabel>
+                              <Select
+                                labelId={`${categoryKey}-model-label`}
+                                value={data[`${categoryKey}_model`]?.model || ''}
+                                label="Select Model"
+                                onChange={(e: SelectChangeEvent) => {
+                                  const newModelName = e.target.value;
+                                  
+                                  // Handle custom model input
+                                  if (newModelName === 'custom') {
+                                    const customModel = prompt('Enter custom model name (e.g., mistral:7b, gemma2:9b):');
+                                    if (customModel) {
+                                      const modelKey = `${categoryKey}_model`;
+                                      const updatedModel = { ...data[modelKey], model: customModel };
+                                      onChange(modelKey, updatedModel);
+                                    }
+                                    return;
+                                  }
+                                  
+                                  const modelKey = `${categoryKey}_model`;
+                                  const updatedModel = { ...data[modelKey], model: newModelName };
+                                  onChange(modelKey, updatedModel);
+                                  
+                                  // Auto-update context length if available
+                                  const selectedModel = metaTaskModels.find(m => m.name === newModelName);
+                                  if (selectedModel && selectedModel.context_length !== 'Unknown') {
+                                    const contextLength = parseInt(selectedModel.context_length.replace(/,/g, ''));
+                                    if (!isNaN(contextLength)) {
+                                      const updatedModelWithContext = { 
+                                        ...updatedModel, 
+                                        context_length: contextLength,
+                                        max_tokens: Math.floor(contextLength * 0.75)
+                                      };
+                                      onChange(modelKey, updatedModelWithContext);
+                                    }
+                                  }
+                                }}
+                                disabled={metaTaskModelsLoading}
+                                endAdornment={metaTaskModelsLoading && <CircularProgress size={20} />}
+                              >
+                                {metaTaskModels.length > 0 ? (
+                                  metaTaskModels.map((model) => (
+                                    <MenuItem key={model.id} value={model.name}>
+                                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                          <Typography>{model.name}</Typography>
+                                          {data[`${categoryKey}_model`]?.model === model.name && (
+                                            <Chip 
+                                              label="Active" 
+                                              size="small" 
+                                              color="success" 
+                                              icon={<CheckCircleIcon />}
+                                            />
+                                          )}
+                                        </Box>
+                                        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                                          <Typography variant="caption" color="text.secondary">
+                                            {model.size}
+                                          </Typography>
+                                          <Typography variant="caption" color="text.secondary">
+                                            Context: {model.context_length}
+                                          </Typography>
+                                        </Box>
+                                      </Box>
+                                    </MenuItem>
+                                  ))
+                                ) : (
+                                  // Fallback options if no models fetched yet
+                                  [
+                                    <MenuItem key="default-1" value="qwen3:30b-a3b">qwen3:30b-a3b (Default)</MenuItem>,
+                                    <MenuItem key="default-2" value="llama3.1:8b">Llama 3.1 8B</MenuItem>,
+                                    <MenuItem key="default-3" value="deepseek-r1:8b">DeepSeek R1 8B</MenuItem>,
+                                    <MenuItem key="default-4" value="gpt-4o">GPT-4o</MenuItem>,
+                                    <MenuItem key="default-5" value="gpt-4o-mini">GPT-4o Mini</MenuItem>,
+                                    <MenuItem key="default-6" value="claude-3-5-sonnet">Claude 3.5 Sonnet</MenuItem>,
+                                    <MenuItem key="default-7" value="claude-3-5-haiku">Claude 3.5 Haiku</MenuItem>
+                                  ]
+                                )}
+                                <Divider />
+                                <MenuItem value="custom">
+                                  <Typography color="primary">Enter custom model name...</Typography>
+                                </MenuItem>
+                              </Select>
+                            </FormControl>
+                            
+                            {/* Show loading message if fetching */}
+                            {metaTaskModelsLoading && (
+                              <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <CircularProgress size={16} />
+                                <Typography variant="caption" color="text.secondary">
+                                  Fetching available models from Ollama...
+                                </Typography>
+                              </Box>
+                            )}
+                            
+                            {/* Show model count when loaded */}
+                            {!metaTaskModelsLoading && metaTaskModels.length > 0 && (
+                              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                                {metaTaskModels.length} models available
+                              </Typography>
+                            )}
+                          </CardContent>
+                        </Card>
+
+                        {/* Current Model Info Card */}
+                        <Card variant="outlined" sx={{ mb: 3 }}>
+                          <CardHeader 
+                            title="Current Model Info"
+                            subheader="Details about the selected model"
+                          />
+                          <CardContent>
+                            {(() => {
+                              const currentModelName = data[`${categoryKey}_model`]?.model;
+                              const selectedModelInfo = metaTaskModels.find(m => m.name === currentModelName);
+                              
+                              return (
+                                <>
+                                  <Typography variant="body2" color="text.secondary" gutterBottom>
+                                    <strong>Model:</strong> {currentModelName || 'Not selected'}
+                                  </Typography>
+                                  {selectedModelInfo && (
+                                    <>
+                                      <Typography variant="body2" color="text.secondary" gutterBottom>
+                                        <strong>Size:</strong> {selectedModelInfo.size}
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary" gutterBottom>
+                                        <strong>Context Length:</strong> {selectedModelInfo.context_length}
+                                      </Typography>
+                                    </>
+                                  )}
+                                  <Typography variant="body2" color="text.secondary" gutterBottom>
+                                    <strong>Mode:</strong> {data[`${categoryKey}_model`]?.mode || 'thinking'}
+                                  </Typography>
+                                  <Typography variant="body2" color="text.secondary" gutterBottom>
+                                    <strong>Max Tokens:</strong> {data[`${categoryKey}_model`]?.max_tokens || 4096}
+                                  </Typography>
+                                  <Typography variant="body2" color="text.secondary">
+                                    <strong>Temperature:</strong> {data[`${categoryKey}_model`]?.temperature || 0.7}
+                                  </Typography>
+                                </>
+                              );
+                            })()}
+                          </CardContent>
+                        </Card>
+                      </Box>
+                    )}
+
+                    {/* Parameters Tab */}
+                    {metaTaskSubTabs[categoryKey] === 'parameters' && (
+                      <Box>
+                        <Card variant="outlined">
+                          <CardHeader 
+                            title="Model Parameters"
+                            subheader="Configure basic model parameters"
+                          />
+                          <CardContent>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                              {/* Temperature */}
+                              {(() => {
+                                const tempFields = Object.entries(categories[categoryKey].fields).filter(([k]) => 
+                                  k.toLowerCase().includes('temperature')
+                                );
+                                
+                                if (tempFields.length > 0) {
+                                  const [fieldKey, fieldValue] = tempFields[0];
+                                  return (
+                                    <Box>
+                                      <Typography gutterBottom>Temperature</Typography>
+                                      {renderField(fieldKey, fieldValue, 0, (field, val) => {
+                                        const modelKey = `${categoryKey}_model`;
+                                        const updatedModel = { ...data[modelKey], temperature: val };
+                                        onChange(modelKey, updatedModel);
+                                      }, categoryKey)}
+                                      <Typography variant="caption" color="text.secondary">
+                                        Controls randomness. Lower values make output more focused and deterministic.
+                                      </Typography>
+                                    </Box>
+                                  );
+                                }
+                                
+                                // Fallback if no field found
+                                return (
+                                  <Box>
+                                    <Typography gutterBottom>Temperature</Typography>
+                                    <TextField
+                                      fullWidth
+                                      type="number"
+                                      value={data[`${categoryKey}_model`]?.temperature || 0.7}
+                                      onChange={(e) => {
+                                        const modelKey = `${categoryKey}_model`;
+                                        const updatedModel = { ...data[modelKey], temperature: parseFloat(e.target.value) };
+                                        onChange(modelKey, updatedModel);
+                                      }}
+                                      inputProps={{ min: 0, max: 2, step: 0.1 }}
+                                    />
+                                    <Typography variant="caption" color="text.secondary">
+                                      Controls randomness. Lower values make output more focused and deterministic.
+                                    </Typography>
+                                  </Box>
+                                );
+                              })()}
+
+                              {/* Max Tokens */}
+                              {(() => {
+                                const maxTokenFields = Object.entries(categories[categoryKey].fields).filter(([k]) => 
+                                  k.toLowerCase().includes('max_token') || k.toLowerCase().includes('maxtoken')
+                                );
+                                
+                                if (maxTokenFields.length > 0) {
+                                  const [fieldKey, fieldValue] = maxTokenFields[0];
+                                  return (
+                                    <Box>
+                                      <Typography gutterBottom>Max Tokens</Typography>
+                                      {renderField(fieldKey, fieldValue, 0, (field, val) => {
+                                        const modelKey = `${categoryKey}_model`;
+                                        const updatedModel = { ...data[modelKey], max_tokens: val };
+                                        onChange(modelKey, updatedModel);
+                                      }, categoryKey)}
+                                      <Typography variant="caption" color="text.secondary">
+                                        Maximum number of tokens to generate.
+                                      </Typography>
+                                    </Box>
+                                  );
+                                }
+                                
+                                // Fallback if no field found
+                                return (
+                                  <Box>
+                                    <Typography gutterBottom>Max Tokens</Typography>
+                                    <TextField
+                                      fullWidth
+                                      type="number"
+                                      value={data[`${categoryKey}_model`]?.max_tokens || 4096}
+                                      onChange={(e) => {
+                                        const modelKey = `${categoryKey}_model`;
+                                        const updatedModel = { ...data[modelKey], max_tokens: parseInt(e.target.value) };
+                                        onChange(modelKey, updatedModel);
+                                      }}
+                                      inputProps={{ min: 1, max: 128000 }}
+                                    />
+                                    <Typography variant="caption" color="text.secondary">
+                                      Maximum number of tokens to generate.
+                                    </Typography>
+                                  </Box>
+                                );
+                              })()}
+
+                              {/* Top P */}
+                              {(() => {
+                                const topPFields = Object.entries(categories[categoryKey].fields).filter(([k]) => 
+                                  k.toLowerCase().includes('top_p')
+                                );
+                                
+                                if (topPFields.length > 0) {
+                                  const [fieldKey, fieldValue] = topPFields[0];
+                                  return (
+                                    <Box>
+                                      <Typography gutterBottom>Top P</Typography>
+                                      {renderField(fieldKey, fieldValue, 0, (field, val) => {
+                                        const modelKey = `${categoryKey}_model`;
+                                        const updatedModel = { ...data[modelKey], top_p: val };
+                                        onChange(modelKey, updatedModel);
+                                      }, categoryKey)}
+                                      <Typography variant="caption" color="text.secondary">
+                                        Nucleus sampling threshold. Consider tokens with cumulative probability.
+                                      </Typography>
+                                    </Box>
+                                  );
+                                }
+                                
+                                // Fallback if no field found
+                                return (
+                                  <Box>
+                                    <Typography gutterBottom>Top P</Typography>
+                                    <TextField
+                                      fullWidth
+                                      type="number"
+                                      value={data[`${categoryKey}_model`]?.top_p || 0.9}
+                                      onChange={(e) => {
+                                        const modelKey = `${categoryKey}_model`;
+                                        const updatedModel = { ...data[modelKey], top_p: parseFloat(e.target.value) };
+                                        onChange(modelKey, updatedModel);
+                                      }}
+                                      inputProps={{ min: 0, max: 1, step: 0.05 }}
+                                    />
+                                    <Typography variant="caption" color="text.secondary">
+                                      Nucleus sampling threshold. Consider tokens with cumulative probability.
+                                    </Typography>
+                                  </Box>
+                                );
+                              })()}
+                            </Box>
+                          </CardContent>
+                        </Card>
+                      </Box>
+                    )}
+
+                    {/* Advanced Settings Tab */}
+                    {metaTaskSubTabs[categoryKey] === 'advanced' && (
+                      <Box>
+                        <Card variant="outlined">
+                          <CardHeader 
+                            title="Advanced Settings"
+                            subheader="Fine-tune model behavior"
+                          />
+                          <CardContent>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                              {/* Top K */}
+                              <Box>
+                                <Typography gutterBottom>Top K</Typography>
+                                <TextField
+                                  fullWidth
+                                  type="number"
+                                  value={data[`${categoryKey}_model`]?.top_k || 40}
+                                  onChange={(e) => {
+                                    const modelKey = `${categoryKey}_model`;
+                                    const updatedModel = { ...data[modelKey], top_k: parseInt(e.target.value) };
+                                    onChange(modelKey, updatedModel);
+                                  }}
+                                  inputProps={{ min: 0, max: 100 }}
+                                />
+                                <Typography variant="caption" color="text.secondary">
+                                  Consider only the top K most likely tokens.
+                                </Typography>
+                              </Box>
+
+                              {/* Min P */}
+                              <Box>
+                                <Typography gutterBottom>Min P</Typography>
+                                <TextField
+                                  fullWidth
+                                  type="number"
+                                  value={data[`${categoryKey}_model`]?.min_p || 0}
+                                  onChange={(e) => {
+                                    const modelKey = `${categoryKey}_model`;
+                                    const updatedModel = { ...data[modelKey], min_p: parseFloat(e.target.value) };
+                                    onChange(modelKey, updatedModel);
+                                  }}
+                                  inputProps={{ min: 0, max: 1, step: 0.01 }}
+                                />
+                                <Typography variant="caption" color="text.secondary">
+                                  Minimum probability threshold for token selection.
+                                </Typography>
+                              </Box>
+
+                              {/* Repeat Penalty */}
+                              <Box>
+                                <Typography gutterBottom>Repeat Penalty</Typography>
+                                <TextField
+                                  fullWidth
+                                  type="number"
+                                  value={data[`${categoryKey}_model`]?.repeat_penalty || 1.0}
+                                  onChange={(e) => {
+                                    const modelKey = `${categoryKey}_model`;
+                                    const updatedModel = { ...data[modelKey], repeat_penalty: parseFloat(e.target.value) };
+                                    onChange(modelKey, updatedModel);
+                                  }}
+                                  inputProps={{ min: 0.1, max: 2, step: 0.1 }}
+                                />
+                                <Typography variant="caption" color="text.secondary">
+                                  Penalize repeated tokens to reduce repetition.
+                                </Typography>
+                              </Box>
+
+                              {/* Context Length */}
+                              <Box>
+                                <Typography gutterBottom>Context Length</Typography>
+                                <TextField
+                                  fullWidth
+                                  type="number"
+                                  value={data[`${categoryKey}_model`]?.context_length || 128000}
+                                  onChange={(e) => {
+                                    const modelKey = `${categoryKey}_model`;
+                                    const updatedModel = { ...data[modelKey], context_length: parseInt(e.target.value) };
+                                    onChange(modelKey, updatedModel);
+                                  }}
+                                  inputProps={{ min: 1000, max: 200000 }}
+                                />
+                                <Typography variant="caption" color="text.secondary">
+                                  Maximum context window size for the model.
+                                </Typography>
+                              </Box>
+                            </Box>
+                          </CardContent>
+                        </Card>
+                      </Box>
+                    )}
+
+                    {/* System Prompt Tab */}
+                    {metaTaskSubTabs[categoryKey] === 'system_prompt' && (
+                      <Box>
+                        <Card variant="outlined">
+                          <CardHeader 
+                            title="System Prompt"
+                            subheader="Define the model's behavior and instructions"
+                          />
+                          <CardContent>
+                            <TextField
+                              fullWidth
+                              multiline
+                              rows={12}
+                              variant="outlined"
+                              label="System Prompt"
+                              value={data[`${categoryKey}_model`]?.system_prompt || ''}
+                              onChange={(e) => {
+                                const modelKey = `${categoryKey}_model`;
+                                const updatedModel = { ...data[modelKey], system_prompt: e.target.value };
+                                onChange(modelKey, updatedModel);
+                              }}
+                              placeholder={`Enter the system prompt for the ${categoryKey} model...`}
+                            />
+                          </CardContent>
+                        </Card>
+                      </Box>
+                    )}
+                  </Box>
+                )}
                 
+                {/* Skip regular field rendering for meta_task model tabs - they use secondary tabs */}
+                {!(category === 'meta_task' && (categoryKey === 'analyzer' || categoryKey === 'reviewer' || categoryKey === 'assembler' || categoryKey === 'generator')) && (
                 <div className={category === 'rag' || category === 'large_generation' || category === 'langfuse' || category === 'environment' ? '' : `jarvis-form-grid ${(categoryKey === 'classifier' || categoryKey === 'second_llm' || categoryKey === 'knowledge_graph' || categoryKey === 'settings') ? 'single-column' : ''}`}>
                 {(() => {
                   // Deduplicate fields before rendering
@@ -3500,6 +4158,7 @@ const renderStandardForm = (
                   );
                 })()}
                 </div>
+                )}
               </div>
             )}
           </div>
