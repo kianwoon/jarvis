@@ -203,10 +203,10 @@ function MultiAgentApp() {
       case 3:
         window.location.href = "/meta-task.html";
         break;
-      case 6:
+      case 4:
         goToSettings();
         break;
-      case 6:
+      case 5:
         goToKnowledgeGraph();
         break;
       case 6:
@@ -283,18 +283,18 @@ function MultiAgentApp() {
             />
             <Tab 
               label="Settings" 
-              id="tab-3"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Knowledge Graph" 
               id="tab-4"
               aria-controls="tabpanel-4"
             />
             <Tab 
-              label="IDC" 
+              label="Knowledge Graph" 
               id="tab-5"
               aria-controls="tabpanel-5"
+            />
+            <Tab 
+              label="IDC" 
+              id="tab-6"
+              aria-controls="tabpanel-6"
             />
           </Tabs>
         </Box>
