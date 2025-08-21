@@ -578,6 +578,8 @@ def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = 
         # Update basic fields
         if server_update.name is not None:
             db_server.name = server_update.name
+        if server_update.config_type is not None:
+            db_server.config_type = server_update.config_type
         if server_update.communication_protocol is not None:
             db_server.communication_protocol = server_update.communication_protocol
         if server_update.hostname is not None:
@@ -634,6 +636,10 @@ def update_server(server_id: int, server_update: MCPServerUpdate, db: Session = 
         
         db.commit()
         db.refresh(db_server)
+        
+        # Reload caches to ensure UI shows updated data
+        reload_mcp_manifests()
+        reload_enabled_mcp_tools()
         
         # Prepare response
         tool_count = db.query(MCPTool).filter(MCPTool.server_id == server_id).count()
@@ -710,6 +716,11 @@ def delete_server(server_id: int, db: Session = Depends(get_db)):
         # Delete the server
         db.delete(server)
         db.commit()
+        
+        # Reload caches to ensure UI reflects deletion
+        reload_mcp_manifests()
+        reload_enabled_mcp_tools()
+        
         return {"detail": "Server and associated data deleted successfully"}
     except Exception as e:
         db.rollback()

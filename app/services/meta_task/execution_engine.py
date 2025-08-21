@@ -21,6 +21,26 @@ class MetaTaskExecutionEngine:
     def __init__(self):
         self.logger = logger
         self.llm_settings = get_llm_settings()
+        self.meta_task_settings = self._load_meta_task_settings()
+    
+    def _load_meta_task_settings(self) -> Dict[str, Any]:
+        """Load meta_task settings directly from database"""
+        try:
+            from app.core.db import SessionLocal, Settings as SettingsModel
+            
+            db = SessionLocal()
+            try:
+                row = db.query(SettingsModel).filter(SettingsModel.category == 'meta_task').first()
+                if row:
+                    return row.settings
+                else:
+                    self.logger.warning("No meta_task settings found in database")
+                    return {}
+            finally:
+                db.close()
+        except Exception as e:
+            self.logger.error(f"Failed to load meta_task settings: {e}")
+            return {}
     
     async def execute_phase(
         self,
@@ -34,6 +54,10 @@ class MetaTaskExecutionEngine:
             phase_name = phase_config.get('name', 'Unknown Phase')
             
             self.logger.info(f"Executing phase: {phase_name} ({phase_type})")
+            
+            # Refresh settings to get latest configuration
+            self.llm_settings = get_llm_settings()
+            self.meta_task_settings = self._load_meta_task_settings()
             
             # Build prompt based on phase type
             prompt = self._build_phase_prompt(phase_config, input_data, context)
@@ -68,8 +92,83 @@ class MetaTaskExecutionEngine:
         phase_name = phase_config.get('name', 'Phase')
         description = phase_config.get('description', 'Execute this phase')
         
-        # Base prompt structure
-        base_prompt = f"""You are an expert assistant executing a meta-task phase.
+        # Get system prompt based on phase type from nested model configurations
+        system_prompt = ""
+        
+        # Map phase types to their corresponding model configurations
+        phase_to_model_map = {
+            "analyzer": "analyzer_model",
+            "reviewer": "reviewer_model",
+            "generator": "generator_model",
+            "assembler": "assembler_model"
+        }
+        
+        # Try to get system prompt from nested model configuration
+        model_key = phase_to_model_map.get(phase_type)
+        if model_key:
+            model_config = self.meta_task_settings.get(model_key, {})
+            if isinstance(model_config, dict):
+                system_prompt = model_config.get("system_prompt", "")
+        
+        # Fallback to root level for backward compatibility (for analyzer only)
+        if not system_prompt and phase_type == "analyzer":
+            system_prompt = self.meta_task_settings.get("analyzer_system_prompt", "")
+        
+        # Use phase-specific system prompt if available
+        if system_prompt:
+            base_prompt = f"""{system_prompt}
+
+PHASE: {phase_name}
+DESCRIPTION: {description}
+
+INPUT DATA:
+{json.dumps(input_data, indent=2)}
+"""
+        else:
+            # Fallback to default prompts based on phase type
+            if phase_type == "analyzer":
+                base_prompt = f"""You are an expert Meta-Task Analyzer executing a meta-task phase.
+
+PHASE: {phase_name}
+TYPE: {phase_type}
+DESCRIPTION: {description}
+
+INPUT DATA:
+{json.dumps(input_data, indent=2)}
+"""
+            elif phase_type == "reviewer":
+                base_prompt = f"""You are an expert Meta-Task Reviewer executing a review phase.
+
+PHASE: {phase_name}
+TYPE: {phase_type}
+DESCRIPTION: {description}
+
+INPUT DATA:
+{json.dumps(input_data, indent=2)}
+"""
+            elif phase_type == "generator":
+                base_prompt = f"""You are an expert Meta-Task Generator executing a generation phase.
+
+PHASE: {phase_name}
+TYPE: {phase_type}
+DESCRIPTION: {description}
+
+INPUT DATA:
+{json.dumps(input_data, indent=2)}
+"""
+            elif phase_type == "assembler":
+                base_prompt = f"""You are an expert Meta-Task Assembler executing an assembly phase.
+
+PHASE: {phase_name}
+TYPE: {phase_type}
+DESCRIPTION: {description}
+
+INPUT DATA:
+{json.dumps(input_data, indent=2)}
+"""
+            else:
+                # Use standard prompt structure for unknown phase types
+                base_prompt = f"""You are an expert assistant executing a meta-task phase.
 
 PHASE: {phase_name}
 TYPE: {phase_type}
@@ -86,16 +185,10 @@ PREVIOUS CONTEXT:
 {json.dumps(context, indent=2)}
 """
         
-        # Add phase-specific instructions
+        # Add phase-specific instructions (skip for analyzer as it already has comprehensive instructions)
         if phase_type == "analyzer":
-            base_prompt += """
-INSTRUCTIONS:
-- Analyze the input data and requirements
-- Create a structured outline or analysis
-- Identify key components and dependencies
-- Provide recommendations for next steps
-- Return your analysis in JSON format with clear structure
-"""
+            # System prompt already contains comprehensive instructions
+            pass
         
         elif phase_type == "generator":
             base_prompt += """

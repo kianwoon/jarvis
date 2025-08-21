@@ -1,0 +1,88 @@
+{
+  "timestamp": "2025-08-21T11:20:54.627967",
+  "bridge_url": "http://localhost:3001",
+  "test_results": [
+    {
+      "test": "health_endpoint",
+      "success": true,
+      "status_code": 200,
+      "response": "OK"
+    },
+    {
+      "test": "tools_list",
+      "success": true,
+      "total_tools": 0,
+      "google_search_available": true,
+      "sample_tools": [
+        "jira_list_issues",
+        "jira_create_issue",
+        "outlook_list_events",
+        "outlook_create_event",
+        "outlook_list_messages"
+      ]
+    },
+    {
+      "test": "google_search_snake_case",
+      "success": true,
+      "status_code": 200,
+      "parameters_sent": {
+        "query": "test",
+        "num_results": 5,
+        "date_restrict": "d"
+      },
+      "response_success": false,
+      "has_results": false,
+      "execution_time": 0
+    },
+    {
+      "test": "google_search_camel_case",
+      "success": true,
+      "status_code": 200,
+      "parameters_sent": {
+        "query": "test",
+        "num": 5,
+        "dateRestrict": "d"
+      },
+      "response_success": false,
+      "has_results": false,
+      "execution_time": 0
+    },
+    {
+      "test": "google_search_minimal",
+      "success": true,
+      "status_code": 200,
+      "parameters_sent": {
+        "query": "test"
+      },
+      "response_success": false,
+      "has_results": false,
+      "execution_time": 0
+    },
+    {
+      "test": "google_search_invalid",
+      "status_code": 200,
+      "parameters_sent": {
+        "num_results": 5
+      },
+      "expected_failure": true,
+      "success": false,
+      "unexpected_status": 200,
+      "response": "{\"content\":[{\"type\":\"text\",\"text\":\"Error: Google Search API error: 400\"}],\"isError\":true}"
+    }
+  ],
+  "analysis": {
+    "total_tests": 6,
+    "successful_tests": 5,
+    "status_codes": {
+      "200": [
+        "health_endpoint",
+        "google_search_snake_case",
+        "google_search_camel_case",
+        "google_search_minimal",
+        "google_search_invalid"
+      ]
+    },
+    "health_accessible": true,
+    "tools_list_working": true
+  }
+}

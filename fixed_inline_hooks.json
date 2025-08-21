@@ -1,0 +1,74 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(say 'Claude needs your input' & osascript -e 'display notification \"Claude needs your attention\" with title \"Claude Code\" sound name \"Ping\"' &) || exit 0"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(say 'Task complete' & osascript -e 'display notification \"Task completed successfully\" with title \"Claude Code\" sound name \"Pop\"' &) || exit 0"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(say 'Sub task done' & osascript -e 'display notification \"Subagent task completed\" with title \"Claude Code\" sound name \"Blow\"' &) || exit 0"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json, sys; data = json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}; cmd = data.get('tool_input', {}).get('command', 'command'); print(f'🔧 Running: {cmd[:50]}...' if len(cmd) > 50 else f'🔧 Running: {cmd}')\" 2>/dev/null || echo '🔧 Running Bash command' || exit 0"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json, sys; data = json.loads(sys.stdin.read()) if not sys.stdin.isatty() else {}; task = data.get('tool_input', {}).get('description', 'task'); agent = data.get('tool_input', {}).get('subagent_type', 'agent'); print(f'🤖 [{agent}]: {task[:60]}...' if len(task) > 60 else f'🤖 [{agent}]: {task}')\" 2>/dev/null || echo '🤖 Starting subagent' || exit 0"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '✅ Command completed' || exit 0"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '✅ Subagent completed' || exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

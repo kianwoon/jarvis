@@ -1,0 +1,54 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ say 'Claude needs input' 2>/dev/null & osascript -e 'display notification \"Claude needs your attention\" with title \"Claude Code\"' 2>/dev/null & } > /dev/null 2>&1; true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ say 'Task complete' 2>/dev/null & osascript -e 'display notification \"Task completed\" with title \"Claude Code\"' 2>/dev/null & } > /dev/null 2>&1; true"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ say 'Sub task done' 2>/dev/null & } > /dev/null 2>&1; true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "true"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ say 'Subagent working' 2>/dev/null & } > /dev/null 2>&1; true"
+          }
+        ]
+      }
+    ]
+  }
+}

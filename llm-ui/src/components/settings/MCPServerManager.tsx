@@ -488,7 +488,7 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
     if (!confirm('Are you sure you want to delete this MCP server?')) return;
     
     try {
-      const response = await fetch(`/api/v1/mcp/servers/${id}/`, { method: 'DELETE' });
+      const response = await fetch(`/api/v1/mcp/servers/${id}`, { method: 'DELETE' });
       if (response.ok) {
         showNotification('Server deleted successfully', 'success');
         onRefresh();
@@ -506,7 +506,7 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
     try {
       const endpoint = '/api/v1/mcp/servers/';
       const method = editingServer.id ? 'PUT' : 'POST';
-      const url = editingServer.id ? `${endpoint}${editingServer.id}/` : endpoint;
+      const url = editingServer.id ? `${endpoint}${editingServer.id}` : endpoint;
       
       const response = await fetch(url, {
         method,
@@ -594,7 +594,7 @@ const MCPServerManager: React.FC<MCPServerManagerProps> = ({
 
   const handleServerAction = async (id: number, action: 'start' | 'stop' | 'restart' | 'health' | 'refresh' | 'discover-tools') => {
     try {
-      const response = await fetch(`/api/v1/mcp/servers/${id}/${action}/`, {
+      const response = await fetch(`/api/v1/mcp/servers/${id}/${action}`, {
         method: 'POST'
       });
       

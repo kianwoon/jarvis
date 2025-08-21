@@ -325,6 +325,38 @@ class MCPProcessManager:
         # Remove from cache
         self.redis_cache.delete(f"process_{server_id}")
     
+    async def get_server_logs(self, server_id: int, lines: int = 100) -> Optional[str]:
+        """Get logs for an MCP server process"""
+        try:
+            # Check if server exists in processes dictionary
+            if server_id not in self.processes:
+                return None
+            
+            process_info = self.processes[server_id]
+            
+            # Check if process is still alive
+            if not self._is_process_alive(process_info.pid):
+                return f"Server {server_id} process (PID: {process_info.pid}) is not running"
+            
+            # For now, return basic process status information
+            # TODO: Implement actual log file reading when log files are available
+            uptime = time.time() - process_info.start_time
+            status_msg = (
+                f"Server {server_id} Status:\n"
+                f"- PID: {process_info.pid}\n"
+                f"- Command: {process_info.command}\n"
+                f"- Args: {' '.join(process_info.args)}\n"
+                f"- Working Dir: {process_info.working_dir}\n"
+                f"- Uptime: {uptime:.1f} seconds\n"
+                f"- Restart Count: {process_info.restart_count}\n"
+                f"- Status: Running"
+            )
+            
+            return status_msg
+            
+        except Exception as e:
+            logger.error(f"Error getting logs for server {server_id}: {e}")
+            return f"Error retrieving logs for server {server_id}: {str(e)}"
     
     async def _monitor_single_process(self, server: MCPServer, db: Session):
         """Monitor a single process and handle restarts if needed"""

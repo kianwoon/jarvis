@@ -126,23 +126,17 @@ class MCPParameterInjector:
         properties = input_schema.get('properties', {})
         
         # ALWAYS add date restriction for fresh results if tool supports it
-        if 'date_restrict' in properties and 'date_restrict' not in parameters:
-            # Default to last 6 months for general freshness
+        # Prioritize Google's camelCase format first, then fall back to snake_case for compatibility
+        if 'dateRestrict' in properties and 'dateRestrict' not in parameters:
+            # Google uses camelCase - prioritize this format
+            parameters['dateRestrict'] = 'd'
+            logger.info(f"[MCP Parameter Injector] ALWAYS adding dateRestrict='d' to {tool_name} for fresh results")
+        elif 'date_restrict' in properties and 'date_restrict' not in parameters:
+            # Fall back to snake_case for other tools
             parameters['date_restrict'] = 'm6'
             logger.info(f"[MCP Parameter Injector] ALWAYS adding date_restrict='m6' to {tool_name} for fresh results")
-        elif 'dateRestrict' in properties and 'dateRestrict' not in parameters:
-            # Handle alternative naming
-            parameters['dateRestrict'] = 'm6'
-            logger.info(f"[MCP Parameter Injector] ALWAYS adding dateRestrict='m6' to {tool_name} for fresh results")
         
-        # ALWAYS enable sort_by_date for chronological ordering if tool supports it
-        if 'sort_by_date' in properties and 'sort_by_date' not in parameters:
-            # Check if the parameter type is boolean
-            param_schema = properties.get('sort_by_date', {})
-            if param_schema.get('type') == 'boolean':
-                # ALWAYS enable date sorting for fresh results first
-                parameters['sort_by_date'] = True
-                logger.info(f"[MCP Parameter Injector] ALWAYS adding sort_by_date=True to {tool_name} for chronological ordering")
+        # Note: Removed sort_by_date logic as Google Search API does not support this parameter
         
         # ALWAYS set sort parameter to date if available
         if 'sort' in properties and 'sort' not in parameters:
@@ -204,7 +198,8 @@ class MCPParameterInjector:
         properties = input_schema.get('properties', {})
         
         # Check for common result count parameters if they exist in schema
-        count_params = ['num_results', 'numResults', 'count', 'limit', 'max_results', 'maxResults', 'size']
+        # Added 'num' which Google Search API actually uses
+        count_params = ['num', 'num_results', 'numResults', 'count', 'limit', 'max_results', 'maxResults', 'size']
         for count_param in count_params:
             if count_param in properties and count_param not in parameters:
                 # Get the maximum allowed value from schema
@@ -251,16 +246,14 @@ class MCPParameterInjector:
         if 'sort' in properties:
             capabilities['supports_sorting'] = True
         
-        # Check for sort_by_date boolean parameter support
-        if 'sort_by_date' in properties:
-            capabilities['supports_sort_by_date'] = True
+        # Note: Removed sort_by_date capability check as Google Search API does not support this parameter
         
         # Check for query support
         if any(param in properties for param in ['query', 'q', 'search', 'searchQuery', 'search_query', 'text']):
             capabilities['accepts_query'] = True
         
         # Check for pagination support
-        if any(param in properties for param in ['num_results', 'numResults', 'count', 'limit', 'max_results', 'maxResults', 'size']):
+        if any(param in properties for param in ['num', 'num_results', 'numResults', 'count', 'limit', 'max_results', 'maxResults', 'size']):
             capabilities['supports_pagination'] = True
         
         # Check for filtering support (generic)

@@ -1,0 +1,74 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "say 'Claude needs your input' && osascript -e 'display notification \"Claude needs your attention\" with title \"Claude Code\" sound name \"Ping\"' || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "say 'Task complete' && osascript -e 'display notification \"Task completed successfully\" with title \"Claude Code\" sound name \"Pop\"' || true"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "say 'Sub task done' && osascript -e 'display notification \"Subagent task completed\" with title \"Claude Code\" sound name \"Blow\"' || true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '🔧 Running Bash command' && say 'Running command' || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '🤖 Subagent starting task' && say 'Subagent working' || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '✅ Bash command completed' || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '✅ Subagent task completed' || true"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -68,6 +68,16 @@ class MetaTaskWorkflowOrchestrator:
             self.logger.error(f"Error creating workflow: {e}")
             return None
     
+    async def get_workflows(self) -> List[Dict[str, Any]]:
+        """Get all workflows"""
+        try:
+            with get_db_session() as db:
+                workflows = db.query(MetaTaskWorkflow).order_by(MetaTaskWorkflow.created_at.desc()).all()
+                return [self._workflow_to_dict(workflow) for workflow in workflows]
+        except Exception as e:
+            self.logger.error(f"Error getting workflows: {e}")
+            return []
+    
     async def execute_workflow(
         self, 
         workflow_id: str

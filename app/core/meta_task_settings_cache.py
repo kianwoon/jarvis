@@ -276,3 +276,23 @@ def get_default_meta_task_settings() -> Dict[str, Any]:
 async def invalidate_meta_task_cache() -> bool:
     """Invalidate all meta-task caches"""
     return await meta_task_cache.invalidate_all()
+
+def reload_meta_task_settings() -> Dict[str, Any]:
+    """Reload meta-task settings from database (synchronous version for cache reload)"""
+    try:
+        from app.core.db import SessionLocal, Settings as SettingsModel
+        
+        db = SessionLocal()
+        try:
+            settings_row = db.query(SettingsModel).filter(SettingsModel.category == 'meta_task').first()
+            if settings_row and settings_row.settings:
+                logger.info("Reloaded meta_task settings from database")
+                return settings_row.settings
+            else:
+                logger.warning("No meta_task settings found in database, using defaults")
+                return get_default_meta_task_settings()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Error reloading meta_task settings: {e}")
+        return get_default_meta_task_settings()

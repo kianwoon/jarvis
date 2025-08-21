@@ -34,6 +34,7 @@ class CreateTemplateRequest(BaseModel):
 class UpdateTemplateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    template_type: Optional[str] = None
     template_config: Optional[Dict[str, Any]] = None
     input_schema: Optional[Dict[str, Any]] = None
     output_schema: Optional[Dict[str, Any]] = None
@@ -153,6 +154,19 @@ async def delete_template(template_id: str):
         raise HTTPException(status_code=500, detail="Failed to delete template")
 
 # Workflow Endpoints
+@router.get("/workflows")
+async def get_workflows():
+    """Get all workflows"""
+    try:
+        workflows = await workflow_orchestrator.get_workflows()
+        return {
+            "workflows": workflows,
+            "count": len(workflows)
+        }
+    except Exception as e:
+        logger.error(f"Error getting workflows: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get workflows")
+
 @router.post("/workflows")
 async def create_workflow(request: CreateWorkflowRequest):
     """Create a new workflow from a template"""

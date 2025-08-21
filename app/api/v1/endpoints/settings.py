@@ -12,6 +12,7 @@ from app.core.query_classifier_settings_cache import reload_query_classifier_set
 from app.core.timeout_settings_cache import reload_timeout_settings
 from app.core.knowledge_graph_settings_cache import reload_knowledge_graph_settings
 from app.core.radiating_settings_cache import reload_radiating_settings
+from app.core.meta_task_settings_cache import reload_meta_task_settings
 from app.services.neo4j_service import test_neo4j_connection
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
@@ -137,6 +138,21 @@ def reload_overflow_cache():
     except Exception as e:
         logger.error(f"Failed to reload overflow cache: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload overflow cache: {str(e)}")
+
+@router.post("/meta-task/cache/reload")
+def reload_meta_task_cache():
+    """Force reload meta-task settings cache from database"""
+    try:
+        settings = reload_meta_task_settings()
+        return {
+            "success": True,
+            "message": "Meta-task cache reloaded successfully",
+            "settings": settings,
+            "cache_size": len(str(settings))
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload meta-task cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload meta-task cache: {str(e)}")
 
 # Dependency to get DB session
 def get_db():
@@ -387,6 +403,10 @@ def get_settings(category: str, db: Session = Depends(get_db)):
             # Return default radiating settings
             from app.core.radiating_settings_cache import get_default_radiating_config
             return {"category": category, "settings": get_default_radiating_config()}
+        elif category == 'meta_task':
+            # Return default meta_task settings
+            from app.core.meta_task_settings_cache import get_default_meta_task_settings
+            return {"category": category, "settings": get_default_meta_task_settings()}
         raise HTTPException(status_code=404, detail="Settings not found")
     
     # Special handling for large_generation to flatten nested structure for UI
@@ -870,6 +890,46 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         # Reload the cache
         reload_knowledge_graph_settings()
         logger.info("Knowledge graph settings saved and cache reloaded")
+    
+    # If updating meta_task settings, use deep merge and reload cache
+    if category == 'meta_task':
+        logger.info("Processing meta_task settings with deep merge")
+        
+        # Get existing settings for deep merge
+        existing_settings = settings_row.settings if settings_row else {}
+        logger.info(f"Existing meta_task settings keys: {list(existing_settings.keys()) if existing_settings else 'None'}")
+        logger.info(f"New meta_task settings keys: {list(settings_for_db.keys())}")
+        
+        # Deep merge to preserve existing nested model configurations
+        merged_settings = deep_merge_settings(existing_settings, settings_for_db)
+        logger.info(f"Merged meta_task settings keys: {list(merged_settings.keys())}")
+        
+        # Validate that critical fields are preserved
+        critical_fields = ['analyzer_model', 'reviewer_model', 'assembler_model', 'generator_model', 
+                          'execution', 'quality_control', 'output', 'caching']
+        preserved_fields = [field for field in critical_fields if field in existing_settings and field in merged_settings]
+        if preserved_fields:
+            logger.info(f"Preserved critical meta_task fields: {preserved_fields}")
+        
+        # Log the nested model configurations to verify system_prompts are preserved
+        for model_key in ['analyzer_model', 'reviewer_model', 'assembler_model', 'generator_model']:
+            if model_key in merged_settings and isinstance(merged_settings[model_key], dict):
+                if 'system_prompt' in merged_settings[model_key]:
+                    prompt_length = len(merged_settings[model_key]['system_prompt'])
+                    logger.info(f"{model_key} has system_prompt with length: {prompt_length}")
+        
+        # Update the database with merged settings
+        settings_row.settings = merged_settings
+        db.commit()
+        db.refresh(settings_row)
+        logger.info("Meta_task settings saved with deep merge")
+        
+        # Use merged settings for return value
+        settings_for_db = merged_settings
+        
+        # Reload the cache
+        reload_meta_task_settings()
+        logger.info("Meta_task settings validated and cache reloaded")
     
     # Return merged settings if available (for LLM with deep merge), otherwise use database settings
     final_settings = merged_settings if merged_settings is not None else settings_row.settings

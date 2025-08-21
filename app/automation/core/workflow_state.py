@@ -50,6 +50,8 @@ class WorkflowState:
             self.state[key] = value
             self._record_change('set', key, value, checkpoint_name)
             logger.debug(f"[WORKFLOW STATE] Set {key}: {value}")
+
+            
             return True
         except Exception as e:
             logger.error(f"[WORKFLOW STATE] Error setting state {key}: {e}")

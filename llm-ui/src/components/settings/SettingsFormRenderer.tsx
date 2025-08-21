@@ -50,6 +50,7 @@ import VectorDatabaseManager from './VectorDatabaseManager';
 import KnowledgeGraphSettings from './KnowledgeGraphSettings';
 import RadiatingSettings from './RadiatingSettings';
 import PromptManagement from './PromptManagement';
+import MetaTaskSettings from './MetaTaskSettings';
 
 interface SettingsFormRendererProps {
   category: string;
@@ -333,6 +334,11 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   // Special handling for radiating configuration
   if (category === 'radiating') {
     return <RadiatingSettings onSettingsChange={(settings) => onChange('settings', settings)} />;
+  }
+  
+  // Special handling for meta_task configuration
+  if (category === 'meta_task') {
+    return <MetaTaskSettings settings={data} onChange={onChange} category={category} />;
   }
 
   // Knowledge graph settings are now consolidated under LLM category

@@ -1,0 +1,54 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/kianwoonwong/Downloads/jarvis/hook_handler.py notification"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/kianwoonwong/Downloads/jarvis/hook_handler.py stop"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/kianwoonwong/Downloads/jarvis/hook_handler.py subagent_stop"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/kianwoonwong/Downloads/jarvis/hook_handler.py bash"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/kianwoonwong/Downloads/jarvis/hook_handler.py task"
+          }
+        ]
+      }
+    ]
+  }
+}
