@@ -984,16 +984,21 @@ function App() {
       return;
     }
     if (newValue === 3) {
+      // Redirect to meta-task page
+      window.location.href = '/meta-task.html';
+      return;
+    }
+    if (newValue === 4) {
       // Redirect to settings page
       window.location.href = '/settings.html';
       return;
     }
-    if (newValue === 4) {
+    if (newValue === 5) {
       // Redirect to knowledge graph page
       window.location.href = '/knowledge-graph.html';
       return;
     }
-    if (newValue === 5) {
+    if (newValue === 6) {
       // Redirect to IDC page
       window.location.href = '/idc.html';
       return;

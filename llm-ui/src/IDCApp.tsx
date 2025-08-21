@@ -296,8 +296,6 @@ function IDCApp() {
       case 2:
         return renderResults();
       case 3:
-      case 4:
-        window.location.href = '/settings.html';
         return renderConfiguration();
       default:
         return renderReferenceManagement();

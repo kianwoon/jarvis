@@ -87,6 +87,7 @@ function WorkflowApp() {
         break;
       case 4:
         window.location.href = '/settings.html';
+        break;
       case 5:
         window.location.href = '/knowledge-graph.html';
         break;

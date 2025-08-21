@@ -69,16 +69,18 @@
       "Bash(cp:*)",
       "Bash(mv:*)",
       "Bash(chmod:*)",
-      "Bash(rm:*)",
+      "Bash(rm ./src/*)",
+      "Bash(rm ./*)",
+      "Bash(rm ../*)",
+      "Bash(rm ~/Downloads/*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(git checkout:*)",
       "Bash(git restore:*)",
-      "Bash(npm install:*)",
+      "Bash(npm ci)",
       "Bash(npm run build:*)",
       "Bash(npm run:*)",
-      "Bash(pip install:*)",
       "Bash(node:*)",
       "Bash(python:*)",
       "Bash(timeout:*)",
@@ -106,7 +108,7 @@
       "Bash(open test_frontend_markdown.html)",
       "Bash(say:*)",
       "Bash(afplay:*)",
-      "Bash(osascript:*)"
+      "Bash(osascript -e 'display notification:*')"
     ],
     "deny": [
       "Bash(chown:*)",
@@ -130,6 +132,8 @@
       "Bash(docker restart:*)",
       "Bash(docker cp:*)",
       "Bash(docker volume:*)",
+      "Bash(npm install:*)",
+      "Bash(pip install:*)",
       "Bash(yarn install:*)",
       "Bash(bash:*)",
       "Bash(sh:*)",
@@ -138,6 +142,10 @@
       "Bash(killall:*)",
       "Bash(claude config set:*)",
       "Bash(sudo:*)",
+      "Bash(osascript -e:*)",
+      "Bash(osascript -f:*)",
+      "Bash(rm /*)",
+      "Bash(rm -rf /*)",
       "Bash(curl -X POST:*)",
       "Bash(curl -X PUT:*)",
       "Bash(curl -X DELETE:*)",
@@ -151,7 +159,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "say 'Claude needs your input' && osascript -e 'display notification \"Claude is waiting for a response\" with title \"Claude Code\" sound name \"Ping\"'"
+            "command": "say 'Claude needs your input' && osascript -e 'display notification \"Claude waiting for response\" with title \"Claude Code\"'"
           }
         ]
       }
@@ -161,7 +169,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "say 'Task completed' && osascript -e 'display notification \"Task completed successfully\" with title \"Claude Code\" sound name \"Submarine\"'"
+            "command": "say 'Task completed' && osascript -e 'display notification \"Task completed\" with title \"Claude Code\" sound name \"Submarine\"'"
           }
         ]
       }
@@ -171,7 +179,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "agent_name=$(echo \"${SUBAGENT_NAME:-Unknown}\"); say \"${agent_name} complete\" && osascript -e 'display notification \"Subtask completed\" with title \"Claude Code\" sound name \"Glass\"'"
+            "command": "say 'Subtask complete' "
           }
         ]
       }
@@ -182,7 +190,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '\n⚠️  DATABASE INSERT DETECTED ⚠️'; read -p 'Type yes to continue: ' confirm; [ \"$confirm\" != \"yes\" ] && exit 1"
+            "command": "echo 'DATABASE INSERT - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
           }
         ]
       },
@@ -191,7 +199,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '\n⚠️  DATABASE UPDATE DETECTED ⚠️'; read -p 'Type yes to continue: ' confirm; [ \"$confirm\" != \"yes\" ] && exit 1"
+            "command": "echo 'DATABASE UPDATE - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
           }
         ]
       },
@@ -200,90 +208,63 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '\n⚠️  DATABASE DELETE DETECTED ⚠️'; read -p 'Type yes to continue: ' confirm; [ \"$confirm\" != \"yes\" ] && exit 1"
+            "command": "echo 'DATABASE DELETE - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
           }
         ]
       },
       {
-        "matcher": "Bash(rm:*)",
+        "matcher": "Bash(psql:*DROP*)",
         "hooks": [
           {
             "type": "command",
-            "command": "echo '\n🗑️  FILE DELETION DETECTED 🗑️'; read -p 'Type yes to continue: ' confirm; [ \"$confirm\" != \"yes\" ] && exit 1"
+            "command": "echo 'DATABASE DROP - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(psql:*TRUNCATE*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'DATABASE TRUNCATE - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(psql:*ALTER*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'DATABASE ALTER - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(rm *)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'FILE DELETION - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "say 'Agent starting task'"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "senior-coder",
+        "matcher": "Task",
         "hooks": [
           {
             "type": "command",
-            "command": "echo '\n✅ Senior Coder completed' && say 'Senior Coder complete'"
-          }
-        ]
-      },
-      {
-        "matcher": "coder",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo '\n✅ Coder completed' && say 'Coder complete'"
-          }
-        ]
-      },
-      {
-        "matcher": "general-purpose", 
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo '\n✅ General Purpose completed' && say 'General Purpose complete'"
-          }
-        ]
-      },
-      {
-        "matcher": "database-administrator",
-        "hooks": [
-          {
-            "type": "command", 
-            "command": "echo '\n✅ Database Administrator completed' && say 'Database Administrator complete'"
-          }
-        ]
-      },
-      {
-        "matcher": "ui-theme-designer",
-        "hooks": [
-          {
-            "type": "command", 
-            "command": "echo '\n✅ UI Theme Designer completed' && say 'UI Designer complete'"
-          }
-        ]
-      },
-      {
-        "matcher": "codebase-error-analyzer",
-        "hooks": [
-          {
-            "type": "command", 
-            "command": "echo '\n✅ Error Analyzer completed' && say 'Error Analyzer complete'"
-          }
-        ]
-      },
-      {
-        "matcher": "llm-ai-architect",
-        "hooks": [
-          {
-            "type": "command", 
-            "command": "echo '\n✅ AI Architect completed' && say 'AI Architect complete'"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "[ \"$?\" -eq 0 ] && echo 'Command succeeded' || echo 'Command failed'"
+            "command": "say 'Agent task complete'"
           }
         ]
       }
@@ -293,14 +274,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'Claude Code session started. Ready to assist.' && say 'Claude is ready'"
+            "command": "echo 'Claude Code ready' && say 'Claude ready'"
           }
         ]
       }
     ]
   },
   "env": {
-    "NODE_OPTIONS": "--max-old-space-size=4096 --expose-gc"
+    "NODE_OPTIONS": "--max-old-space-size=8192 --expose-gc",
+    "CLAUDE_AUDIO_NOTIFICATIONS": "true"
   },
   "enableAllProjectMcpServers": false,
   "outputStyle": "Explanatory"
