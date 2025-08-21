@@ -10,8 +10,6 @@ import {
   ThemeProvider,
   createTheme,
   CssBaseline,
-  Tabs,
-  Tab,
   Grid,
   Card,
   Button,
@@ -32,6 +30,7 @@ import IDCConfigurationPanel from './components/idc/IDCConfigurationPanel';
 import IDCValidationPanel from './components/idc/IDCValidationPanel';
 import IDCReferenceManager from './components/idc/IDCReferenceManager';
 import IDCResultsViewer from './components/idc/IDCResultsViewer';
+import NavigationBar from './components/shared/NavigationBar';
 
 interface ReferenceDocument {
   id: string;
@@ -162,31 +161,6 @@ function IDCApp() {
     localStorage.setItem('idc-card-navigation', JSON.stringify(useCards));
   };
 
-  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
-    switch (newValue) {
-      case 0:
-        window.location.href = '/';
-        break;
-      case 1:
-        window.location.href = '/multi-agent.html';
-        break;
-      case 2:
-        window.location.href = '/workflow.html';
-        break;
-      case 3:
-        window.location.href = '/meta-task.html';
-        break;
-      case 4:
-        window.location.href = '/settings.html';
-        break;
-      case 5:
-        window.location.href = '/knowledge-graph.html';
-        break;
-      case 6:
-        // Already on IDC page, do nothing
-        break;
-    }
-  };
 
   const loadReferenceDocuments = async () => {
     try {
@@ -422,63 +396,7 @@ function IDCApp() {
         </AppBar>
 
         {/* Navigation Tabs */}
-        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Tabs 
-            value={6}
-            onChange={handleTabChange} 
-            aria-label="jarvis modes"
-            centered
-            sx={{
-              '& .MuiTab-root': {
-                fontSize: '1rem',
-                fontWeight: 600,
-                textTransform: 'none',
-                minWidth: 120,
-                padding: '12px 24px',
-                '&.Mui-selected': {
-                  color: 'primary.main',
-                  fontWeight: 700
-                }
-              }
-            }}
-          >
-            <Tab 
-              label="Standard Chat" 
-              id="tab-0"
-              aria-controls="tabpanel-0"
-            />
-            <Tab 
-              label="Multi-Agent" 
-              id="tab-1"
-              aria-controls="tabpanel-1"
-            />
-            <Tab 
-              label="Workflow" 
-              id="tab-2"
-              aria-controls="tabpanel-2"
-            />
-            <Tab 
-              label="Meta-Tasks" 
-              id="tab-3"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Settings" 
-              id="tab-4"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Knowledge Graph" 
-              id="tab-5"
-              aria-controls="tabpanel-4"
-            />
-            <Tab 
-              label="IDC" 
-              id="tab-6"
-              aria-controls="tabpanel-5"
-            />
-          </Tabs>
-        </Box>
+        <NavigationBar currentTab={6} />
 
 
         {/* IDC Module Header Section */}

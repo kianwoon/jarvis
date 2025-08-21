@@ -9,8 +9,6 @@ import {
   ThemeProvider,
   createTheme,
   CssBaseline,
-  Tabs,
-  Tab,
   CircularProgress,
   Alert
 } from '@mui/material';
@@ -24,6 +22,7 @@ import {
 } from '@mui/icons-material';
 import WorkflowLanding from './components/workflow/WorkflowLanding';
 import CustomWorkflowEditor from './components/CustomWorkflowEditor';
+import NavigationBar from './components/shared/NavigationBar';
 
 interface WorkflowData {
   id?: string;
@@ -69,32 +68,6 @@ function WorkflowApp() {
     const newDarkMode = !darkMode;
     setDarkMode(newDarkMode);
     localStorage.setItem('jarvis-dark-mode', JSON.stringify(newDarkMode));
-  };
-
-  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
-    switch (newValue) {
-      case 0:
-        window.location.href = '/';
-        break;
-      case 1:
-        window.location.href = '/multi-agent.html';
-        break;
-      case 2:
-        // Already on workflow page
-        break;
-      case 3:
-        window.location.href = '/meta-task.html';
-        break;
-      case 4:
-        window.location.href = '/settings.html';
-        break;
-      case 5:
-        window.location.href = '/knowledge-graph.html';
-        break;
-      case 6:
-        window.location.href = '/idc.html';
-        break;
-    }
   };
 
   const handleCreateNewWorkflow = () => {
@@ -179,63 +152,7 @@ function WorkflowApp() {
         </AppBar>
 
         {/* Navigation Tabs */}
-        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Tabs 
-            value={2}
-            onChange={handleTabChange} 
-            aria-label="jarvis modes"
-            centered
-            sx={{
-              '& .MuiTab-root': {
-                fontSize: '1rem',
-                fontWeight: 600,
-                textTransform: 'none',
-                minWidth: 120,
-                padding: '12px 24px',
-                '&.Mui-selected': {
-                  color: 'primary.main',
-                  fontWeight: 700
-                }
-              }
-            }}
-          >
-            <Tab 
-              label="Standard Chat" 
-              id="tab-0"
-              aria-controls="tabpanel-0"
-            />
-            <Tab 
-              label="Multi-Agent" 
-              id="tab-1"
-              aria-controls="tabpanel-1"
-            />
-            <Tab 
-              label="Workflow" 
-              id="tab-2"
-              aria-controls="tabpanel-2"
-            />
-            <Tab 
-              label="Meta-Tasks" 
-              id="tab-3"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Settings" 
-              id="tab-4"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Knowledge Graph" 
-              id="tab-5"
-              aria-controls="tabpanel-4"
-            />
-            <Tab 
-              label="IDC" 
-              id="tab-6"
-              aria-controls="tabpanel-5"
-            />
-          </Tabs>
-        </Box>
+        <NavigationBar currentTab={2} />
 
         {/* Main Content */}
         <Box sx={{ flex: 1, overflow: 'hidden', position: 'relative' }}>

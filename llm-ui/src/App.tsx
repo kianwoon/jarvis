@@ -30,6 +30,7 @@ import DatabaseTableManager from './components/settings/DatabaseTableManager';
 import FileUploadComponent from './components/shared/FileUploadComponent';
 import ChatInterface from './components/ChatInterface';
 import { MessageContent } from './components/shared/MessageContent';
+import NavigationBar from './components/shared/NavigationBar';
 import {
   Send as SendIcon,
   Clear as ClearIcon,
@@ -951,12 +952,6 @@ function App() {
     const saved = localStorage.getItem('jarvis-dark-mode');
     return saved ? JSON.parse(saved) : false;
   });
-  const [tabValue, setTabValue] = useState(() => {
-    // Check URL parameters for initial tab
-    const urlParams = new URLSearchParams(window.location.search);
-    const tab = urlParams.get('tab');
-    return tab ? parseInt(tab, 10) : 0;
-  });
 
   // Create theme based on dark mode state
   const theme = createTheme({
@@ -971,48 +966,6 @@ function App() {
       },
     },
   });
-
-  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
-    if (newValue === 1) {
-      // Redirect to multi-agent page
-      window.location.href = '/multi-agent.html';
-      return;
-    }
-    if (newValue === 2) {
-      // Redirect to workflow page
-      window.location.href = '/workflow.html';
-      return;
-    }
-    if (newValue === 3) {
-      // Redirect to meta-task page
-      window.location.href = '/meta-task.html';
-      return;
-    }
-    if (newValue === 4) {
-      // Redirect to settings page
-      window.location.href = '/settings.html';
-      return;
-    }
-    if (newValue === 5) {
-      // Redirect to knowledge graph page
-      window.location.href = '/knowledge-graph.html';
-      return;
-    }
-    if (newValue === 6) {
-      // Redirect to IDC page
-      window.location.href = '/idc.html';
-      return;
-    }
-    setTabValue(newValue);
-    // Update URL parameter
-    const url = new URL(window.location.href);
-    if (newValue === 0) {
-      url.searchParams.delete('tab');
-    } else {
-      url.searchParams.set('tab', newValue.toString());
-    }
-    window.history.pushState({}, '', url.pathname + url.search);
-  };
 
   const toggleDarkMode = () => {
     const newDarkMode = !darkMode;
@@ -1037,8 +990,7 @@ function App() {
             </Typography>
             
             {/* New Session Button - only for Standard Chat */}
-            {tabValue === 0 && (
-              <Button
+            <Button
                 variant="outlined"
                 onClick={async () => {
                   try {
@@ -1106,7 +1058,6 @@ function App() {
               >
                 New Session
               </Button>
-            )}
 
             {/* Dark Mode Toggle */}
             <IconButton onClick={toggleDarkMode} color="inherit">
@@ -1116,83 +1067,15 @@ function App() {
         </AppBar>
 
         {/* Navigation Tabs */}
-        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Tabs 
-            value={tabValue} 
-            onChange={handleTabChange} 
-            aria-label="jarvis modes"
-            centered
-            sx={{
-              '& .MuiTab-root': {
-                fontSize: '1rem',
-                fontWeight: 600,
-                textTransform: 'none',
-                minWidth: 120,
-                padding: '12px 24px',
-                '&.Mui-selected': {
-                  color: 'primary.main',
-                  fontWeight: 700
-                }
-              }
-            }}
-          >
-            <Tab 
-              label="Standard Chat" 
-              id="tab-0"
-              aria-controls="tabpanel-0"
-            />
-            <Tab 
-              label="Multi-Agent" 
-              id="tab-1"
-              aria-controls="tabpanel-1"
-            />
-            <Tab 
-              label="Workflow" 
-              id="tab-2"
-              aria-controls="tabpanel-2"
-            />
-            <Tab 
-              label="Meta-Tasks" 
-              id="tab-3"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Settings" 
-              id="tab-4"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Knowledge Graph" 
-              id="tab-5"
-              aria-controls="tabpanel-4"
-            />
-            <Tab 
-              label="IDC" 
-              id="tab-6"
-              aria-controls="tabpanel-5"
-            />
-          </Tabs>
-        </Box>
+        <NavigationBar currentTab={0} />
 
         {/* Tab Content */}
         <Box sx={{ flex: 1, overflow: 'hidden' }}>
-          <TabPanel value={tabValue} index={0}>
-            <ChatInterface 
-              endpoint="/api/v1/langchain/rag" 
-              title="Standard Chat"
-              enableTemporaryDocuments={true}
-            />
-          </TabPanel>
-          <TabPanel value={tabValue} index={1}>
-            <ChatInterface 
-              endpoint="/api/v1/langchain/multi-agent" 
-              title="Multi-Agent"
-              enableTemporaryDocuments={false}
-            />
-          </TabPanel>
-          <TabPanel value={tabValue} index={2}>
-            <WorkflowInterface />
-          </TabPanel>
+          <ChatInterface 
+            endpoint="/api/v1/langchain/rag" 
+            title="Standard Chat"
+            enableTemporaryDocuments={true}
+          />
         </Box>
       </Box>
     </ThemeProvider>

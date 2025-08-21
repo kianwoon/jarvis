@@ -74,8 +74,6 @@ import {
   ThemeProvider,
   createTheme,
   CssBaseline,
-  Tabs,
-  Tab,
   TextField,
   Chip,
   Button,
@@ -91,6 +89,7 @@ import {
   Visibility as VisibilityIcon,
   VisibilityOff as VisibilityOffIcon
 } from '@mui/icons-material';
+import NavigationBar from './shared/NavigationBar';
 
 // Error boundary for D3 visualization
 class VisualizationErrorBoundary extends Component<
@@ -1848,31 +1847,6 @@ const KnowledgeGraphViewer: React.FC = () => {
     },
   });
 
-  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
-    switch (newValue) {
-      case 0:
-        window.location.href = '/';
-        break;
-      case 1:
-        window.location.href = '/multi-agent.html';
-        break;
-      case 2:
-        window.location.href = '/workflow.html';
-        break;
-      case 3:
-        window.location.href = '/meta-task.html';
-        break;
-      case 4:
-        window.location.href = '/settings.html';
-        break;
-      case 5:
-        // Already on knowledge graph page
-        break;
-      case 6:
-        window.location.href = '/idc.html';
-        break;
-    }
-  };
 
   return (
     <ThemeProvider theme={theme}>
@@ -1892,63 +1866,7 @@ const KnowledgeGraphViewer: React.FC = () => {
         </AppBar>
 
         {/* Navigation Tabs */}
-        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Tabs 
-            value={5}
-            onChange={handleTabChange} 
-            aria-label="jarvis modes"
-            centered
-            sx={{
-              '& .MuiTab-root': {
-                fontSize: '1rem',
-                fontWeight: 600,
-                textTransform: 'none',
-                minWidth: 120,
-                padding: '12px 24px',
-                '&.Mui-selected': {
-                  color: 'primary.main',
-                  fontWeight: 700
-                }
-              }
-            }}
-          >
-            <Tab 
-              label="Standard Chat" 
-              id="tab-0"
-              aria-controls="tabpanel-0"
-            />
-            <Tab 
-              label="Multi-Agent" 
-              id="tab-1"
-              aria-controls="tabpanel-1"
-            />
-            <Tab 
-              label="Workflow" 
-              id="tab-2"
-              aria-controls="tabpanel-2"
-            />
-            <Tab 
-              label="Meta-Tasks" 
-              id="tab-3"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Settings" 
-              id="tab-4"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Knowledge Graph" 
-              id="tab-5"
-              aria-controls="tabpanel-4"
-            />
-            <Tab 
-              label="IDC" 
-              id="tab-6"
-              aria-controls="tabpanel-5"
-            />
-          </Tabs>
-        </Box>
+        <NavigationBar currentTab={5} />
 
         {/* Knowledge Graph controls */}
         <Box sx={{ 

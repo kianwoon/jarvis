@@ -57,6 +57,7 @@ import {
   Info as InfoIcon
 } from '@mui/icons-material';
 import { metaTaskAPI, MetaTaskTemplate, MetaTaskWorkflow, ExecutionEvent } from './services/metaTaskApi';
+import NavigationBar from './components/shared/NavigationBar';
 
 
 interface CreateTemplateData {
@@ -247,32 +248,6 @@ function MetaTaskApp() {
     const newDarkMode = !darkMode;
     setDarkMode(newDarkMode);
     localStorage.setItem('jarvis-dark-mode', JSON.stringify(newDarkMode));
-  };
-
-  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
-    switch (newValue) {
-      case 0:
-        window.location.href = '/';
-        break;
-      case 1:
-        window.location.href = '/multi-agent.html';
-        break;
-      case 2:
-        window.location.href = '/workflow.html';
-        break;
-      case 3:
-        // Already on meta-tasks page
-        break;
-      case 4:
-        window.location.href = '/settings.html';
-        break;
-      case 5:
-        window.location.href = '/knowledge-graph.html';
-        break;
-      case 6:
-        window.location.href = '/idc.html';
-        break;
-    }
   };
 
   useEffect(() => {
@@ -915,35 +890,7 @@ function MetaTaskApp() {
           </AppBar>
 
           {/* Navigation Tabs */}
-          <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
-            <Tabs 
-              value={3}
-              onChange={handleTabChange} 
-              aria-label="jarvis modes"
-              centered
-              sx={{
-                '& .MuiTab-root': {
-                  fontSize: '1rem',
-                  fontWeight: 600,
-                  textTransform: 'none',
-                  minWidth: 120,
-                  padding: '12px 24px',
-                  '&.Mui-selected': {
-                    color: 'primary.main',
-                    fontWeight: 700
-                  }
-                }
-              }}
-            >
-              <Tab label="Standard Chat" />
-              <Tab label="Multi-Agent" />
-              <Tab label="Workflow" />
-              <Tab label="Meta-Tasks" />
-              <Tab label="Settings" />
-              <Tab label="Knowledge Graph" />
-              <Tab label="IDC" />
-            </Tabs>
-          </Box>
+          <NavigationBar currentTab={3} />
         </Box>
 
         {/* Main Content */}

@@ -11,9 +11,7 @@ import {
   ThemeProvider,
   createTheme,
   CssBaseline,
-  Button,
-  Tabs,
-  Tab
+  Button
 } from '@mui/material';
 import {
   LightMode as LightModeIcon,
@@ -27,6 +25,7 @@ import { Agent, MultiAgentMessage, AgentStatus, CollaborationPhase } from './typ
 import CollaborationWorkspace from './components/multiagent/CollaborationWorkspace';
 import MultiAgentChat from './components/multiagent/MultiAgentChat';
 import AgentResponseWindow from './components/multiagent/AgentResponseWindow';
+import NavigationBar from './components/shared/NavigationBar';
 
 function MultiAgentApp() {
   // Theme management
@@ -170,51 +169,6 @@ function MultiAgentApp() {
     localStorage.removeItem(storageKey);
   };
 
-  const goToStandardChat = () => {
-    window.location.href = '/';
-  };
-
-  const goToWorkflow = () => {
-    // Navigate to workflow page
-    window.location.href = '/workflow.html';
-  };
-
-  const goToSettings = () => {
-    // Navigate to settings page
-    window.location.href = '/settings.html';
-  };
-
-  const goToKnowledgeGraph = () => {
-    // Navigate to knowledge graph page
-    window.location.href = '/knowledge-graph.html';
-  };
-
-  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
-    switch (newValue) {
-      case 0:
-        goToStandardChat();
-        break;
-      case 1:
-        // Already on multi-agent page, do nothing
-        break;
-      case 2:
-        goToWorkflow();
-        break;
-      case 3:
-        window.location.href = "/meta-task.html";
-        break;
-      case 4:
-        goToSettings();
-        break;
-      case 5:
-        goToKnowledgeGraph();
-        break;
-      case 6:
-        window.location.href = '/idc.html';
-        break;
-    }
-  };
-
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -241,63 +195,7 @@ function MultiAgentApp() {
         </AppBar>
 
         {/* Navigation Tabs */}
-        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Tabs 
-            value={1}
-            onChange={handleTabChange} 
-            aria-label="jarvis modes"
-            centered
-            sx={{
-              '& .MuiTab-root': {
-                fontSize: '1rem',
-                fontWeight: 600,
-                textTransform: 'none',
-                minWidth: 120,
-                padding: '12px 24px',
-                '&.Mui-selected': {
-                  color: 'primary.main',
-                  fontWeight: 700
-                }
-              }
-            }}
-          >
-            <Tab 
-              label="Standard Chat" 
-              id="tab-0"
-              aria-controls="tabpanel-0"
-            />
-            <Tab 
-              label="Multi-Agent" 
-              id="tab-1"
-              aria-controls="tabpanel-1"
-            />
-            <Tab 
-              label="Workflow" 
-              id="tab-2"
-              aria-controls="tabpanel-2"
-            />
-            <Tab 
-              label="Meta-Tasks" 
-              id="tab-3"
-              aria-controls="tabpanel-3"
-            />
-            <Tab 
-              label="Settings" 
-              id="tab-4"
-              aria-controls="tabpanel-4"
-            />
-            <Tab 
-              label="Knowledge Graph" 
-              id="tab-5"
-              aria-controls="tabpanel-5"
-            />
-            <Tab 
-              label="IDC" 
-              id="tab-6"
-              aria-controls="tabpanel-6"
-            />
-          </Tabs>
-        </Box>
+        <NavigationBar currentTab={1} />
 
         {/* Main Content */}
         <Container maxWidth={false} sx={{ flex: 1, py: 2, overflow: 'hidden' }}>

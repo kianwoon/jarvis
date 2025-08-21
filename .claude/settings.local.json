@@ -1,4 +1,8 @@
 {
+  "env": {
+    "NODE_OPTIONS": "--max-old-space-size=16384 --expose-gc",
+    "CLAUDE_AUDIO_NOTIFICATIONS": "true"
+  },
   "permissions": {
     "allow": [
       "Bash(grep:*)",
@@ -153,6 +157,7 @@
     ],
     "defaultMode": "acceptEdits"
   },
+  "enableAllProjectMcpServers": false,
   "hooks": {
     "Notification": [
       {
@@ -280,10 +285,5 @@
       }
     ]
   },
-  "env": {
-    "NODE_OPTIONS": "--max-old-space-size=8192 --expose-gc",
-    "CLAUDE_AUDIO_NOTIFICATIONS": "true"
-  },
-  "enableAllProjectMcpServers": false,
   "outputStyle": "Explanatory"
 }

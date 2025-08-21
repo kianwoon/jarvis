@@ -10,8 +10,6 @@ import {
   ThemeProvider,
   createTheme,
   CssBaseline,
-  Tabs,
-  Tab,
   List,
   ListItem,
   ListItemIcon,
@@ -39,6 +37,7 @@ import {
   Hub as HubIcon
 } from '@mui/icons-material';
 import SettingsFormRenderer from './components/settings/SettingsFormRenderer';
+import NavigationBar from './components/shared/NavigationBar';
 import './styles/settings-theme.css';
 
 interface SettingsCategory {
@@ -188,31 +187,6 @@ function SettingsApp() {
     localStorage.setItem('jarvis-dark-mode', JSON.stringify(newDarkMode));
   };
 
-  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
-    switch (newValue) {
-      case 0:
-        window.location.href = '/';
-        break;
-      case 1:
-        window.location.href = '/multi-agent.html';
-        break;
-      case 2:
-        window.location.href = '/workflow.html';
-        break;
-      case 3:
-        window.location.href = '/meta-task.html';
-        break;
-      case 4:
-        // Already on settings page
-        break;
-      case 5:
-        window.location.href = '/knowledge-graph.html';
-        break;
-      case 6:
-        window.location.href = '/idc.html';
-        break;
-    }
-  };
 
   const loadSettings = async (category: string, force: boolean = false) => {
     if (settingsData[category] && !force) return; // Already loaded
@@ -759,63 +733,7 @@ function SettingsApp() {
           </AppBar>
 
           {/* Navigation Tabs */}
-          <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
-            <Tabs 
-              value={4}
-              onChange={handleTabChange} 
-              aria-label="jarvis modes"
-              centered
-              sx={{
-                '& .MuiTab-root': {
-                  fontSize: '1rem',
-                  fontWeight: 600,
-                  textTransform: 'none',
-                  minWidth: 120,
-                  padding: '12px 24px',
-                  '&.Mui-selected': {
-                    color: 'primary.main',
-                    fontWeight: 700
-                  }
-                }
-              }}
-            >
-              <Tab 
-                label="Standard Chat" 
-                id="tab-0"
-                aria-controls="tabpanel-0"
-              />
-              <Tab 
-                label="Multi-Agent" 
-                id="tab-1"
-                aria-controls="tabpanel-1"
-              />
-              <Tab 
-                label="Workflow" 
-                id="tab-2"
-                aria-controls="tabpanel-2"
-              />
-              <Tab 
-                label="Meta-Tasks" 
-                id="tab-3"
-                aria-controls="tabpanel-3"
-              />
-              <Tab 
-                label="Settings" 
-                id="tab-4"
-                aria-controls="tabpanel-4"
-              />
-              <Tab 
-                label="Knowledge Graph" 
-                id="tab-5"
-                aria-controls="tabpanel-5"
-              />
-              <Tab 
-                label="IDC" 
-                id="tab-6"
-                aria-controls="tabpanel-6"
-              />
-            </Tabs>
-          </Box>
+          <NavigationBar currentTab={4} />
         </Box>
 
         {/* Main Content with Left Nav + Modern Design */}
