@@ -51,6 +51,7 @@ import KnowledgeGraphSettings from './KnowledgeGraphSettings';
 import RadiatingSettings from './RadiatingSettings';
 import PromptManagement from './PromptManagement';
 import MetaTaskSettings from './MetaTaskSettings';
+import SynthesisPromptsSettings from './SynthesisPromptsSettings';
 
 interface SettingsFormRendererProps {
   category: string;
@@ -339,6 +340,11 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   // Special handling for meta_task configuration
   if (category === 'meta_task') {
     return <MetaTaskSettings settings={data} onChange={onChange} category={category} />;
+  }
+
+  // Special handling for synthesis prompts configuration
+  if (category === 'synthesis_prompts') {
+    return <SynthesisPromptsSettings data={data} onChange={onChange} onRefresh={onRefresh} onShowSuccess={onShowSuccess} />;
   }
 
   // Knowledge graph settings are now consolidated under LLM category

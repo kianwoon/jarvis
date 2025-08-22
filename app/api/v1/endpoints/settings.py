@@ -13,8 +13,9 @@ from app.core.timeout_settings_cache import reload_timeout_settings
 from app.core.knowledge_graph_settings_cache import reload_knowledge_graph_settings
 from app.core.radiating_settings_cache import reload_radiating_settings
 from app.core.meta_task_settings_cache import reload_meta_task_settings
+from app.core.synthesis_prompts_cache import reload_synthesis_prompts
 from app.services.neo4j_service import test_neo4j_connection
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from pydantic import BaseModel
 import requests
 import json
@@ -153,6 +154,21 @@ def reload_meta_task_cache():
     except Exception as e:
         logger.error(f"Failed to reload meta-task cache: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload meta-task cache: {str(e)}")
+
+@router.post("/synthesis-prompts/cache/reload")
+def reload_synthesis_prompts_cache():
+    """Force reload synthesis prompts cache from database"""
+    try:
+        settings = reload_synthesis_prompts()
+        return {
+            "success": True,
+            "message": "Synthesis prompts cache reloaded successfully",
+            "settings": settings,
+            "cache_size": len(str(settings))
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload synthesis prompts cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload synthesis prompts cache: {str(e)}")
 
 # Dependency to get DB session
 def get_db():
@@ -407,6 +423,11 @@ def get_settings(category: str, db: Session = Depends(get_db)):
             # Return default meta_task settings
             from app.core.meta_task_settings_cache import get_default_meta_task_settings
             return {"category": category, "settings": get_default_meta_task_settings()}
+        elif category in ['synthesis_prompts', 'formatting_templates', 'system_behaviors']:
+            # Return default synthesis prompt settings for specific categories
+            from app.core.synthesis_prompts_cache import get_default_synthesis_prompts
+            defaults = get_default_synthesis_prompts()
+            return {"category": category, "settings": defaults.get(category, {})}
         raise HTTPException(status_code=404, detail="Settings not found")
     
     # Special handling for large_generation to flatten nested structure for UI
@@ -930,6 +951,55 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         # Reload the cache
         reload_meta_task_settings()
         logger.info("Meta_task settings validated and cache reloaded")
+    
+    # If updating synthesis prompt settings, validate and reload cache
+    if category in ['synthesis_prompts', 'formatting_templates', 'system_behaviors']:
+        logger.info(f"Processing {category} settings with validation")
+        
+        from app.core.synthesis_prompts_cache import validate_synthesis_prompts, reload_synthesis_prompts
+        
+        # For individual category updates, we need to validate in context of all categories
+        # Get existing settings for other categories
+        all_synthesis_settings = {}
+        synthesis_categories = ['synthesis_prompts', 'formatting_templates', 'system_behaviors']
+        
+        for cat in synthesis_categories:
+            if cat == category:
+                # Use new settings for current category
+                all_synthesis_settings[cat] = settings_for_db
+            else:
+                # Get existing settings for other categories
+                existing_row = db.query(SettingsModel).filter(SettingsModel.category == cat).first()
+                if existing_row and existing_row.settings:
+                    all_synthesis_settings[cat] = existing_row.settings
+                else:
+                    # Use defaults if not found
+                    from app.core.synthesis_prompts_cache import get_default_synthesis_prompts
+                    defaults = get_default_synthesis_prompts()
+                    all_synthesis_settings[cat] = defaults.get(cat, {})
+        
+        # Validate the complete synthesis settings
+        is_valid, error_message = validate_synthesis_prompts(all_synthesis_settings)
+        if not is_valid:
+            logger.error(f"Invalid synthesis prompt settings: {error_message}")
+            raise HTTPException(status_code=400, detail=f"Invalid synthesis prompt settings: {error_message}")
+        
+        # Deep merge with existing settings to preserve template metadata
+        existing_settings = settings_row.settings if settings_row else {}
+        merged_settings = deep_merge_settings(existing_settings, settings_for_db)
+        
+        # Update the database with merged settings
+        settings_row.settings = merged_settings
+        db.commit()
+        db.refresh(settings_row)
+        logger.info(f"{category} settings validated and saved")
+        
+        # Use merged settings for return value
+        settings_for_db = merged_settings
+        
+        # Reload synthesis prompts cache
+        reload_synthesis_prompts()
+        logger.info(f"{category} settings cache reloaded")
     
     # Return merged settings if available (for LLM with deep merge), otherwise use database settings
     final_settings = merged_settings if merged_settings is not None else settings_row.settings
@@ -1675,3 +1745,310 @@ def test_knowledge_graph_connection():
             "error": f"Connection test failed: {str(e)}",
             "config": {}
         }
+
+# Synthesis Prompt Management Endpoints
+class TemplateCreate(BaseModel):
+    content: str
+    description: str
+    variables: List[str]
+    active: Optional[bool] = True
+
+class TemplateUpdate(BaseModel):
+    content: Optional[str] = None
+    description: Optional[str] = None
+    variables: Optional[List[str]] = None
+    active: Optional[bool] = None
+
+class TemplatePreview(BaseModel):
+    sample_variables: Optional[Dict[str, Any]] = None
+
+@router.get("/synthesis-prompts/{category}/templates")
+def get_templates(category: str, db: Session = Depends(get_db)):
+    """Get all templates in a synthesis prompt category"""
+    if category not in ['synthesis_prompts', 'formatting_templates', 'system_behaviors']:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    
+    try:
+        from app.core.synthesis_prompts_cache import get_synthesis_prompts
+        settings = get_synthesis_prompts()
+        templates = settings.get(category, {})
+        
+        return {
+            "category": category,
+            "templates": templates,
+            "count": len(templates)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get templates for {category}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get templates: {str(e)}")
+
+@router.get("/synthesis-prompts/{category}/templates/{template_name}")
+def get_template(category: str, template_name: str, db: Session = Depends(get_db)):
+    """Get a specific template"""
+    if category not in ['synthesis_prompts', 'formatting_templates', 'system_behaviors']:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    
+    try:
+        from app.core.synthesis_prompts_cache import get_synthesis_setting
+        template = get_synthesis_setting(category, template_name)
+        
+        if not template:
+            raise HTTPException(status_code=404, detail=f"Template {template_name} not found")
+        
+        return {
+            "category": category,
+            "template_name": template_name,
+            "template": template
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get template {category}.{template_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get template: {str(e)}")
+
+@router.post("/synthesis-prompts/{category}/templates/{template_name}")
+def create_template(category: str, template_name: str, template: TemplateCreate, db: Session = Depends(get_db)):
+    """Create a new template"""
+    if category not in ['synthesis_prompts', 'formatting_templates', 'system_behaviors']:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    
+    try:
+        from app.core.synthesis_prompts_cache import create_template
+        
+        template_data = {
+            "content": template.content,
+            "description": template.description,
+            "variables": template.variables,
+            "active": template.active
+        }
+        
+        success, message = create_template(category, template_name, template_data)
+        
+        if not success:
+            raise HTTPException(status_code=400, detail=message)
+        
+        return {
+            "success": True,
+            "message": message,
+            "category": category,
+            "template_name": template_name
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create template {category}.{template_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create template: {str(e)}")
+
+@router.put("/synthesis-prompts/{category}/templates/{template_name}")
+def update_template(category: str, template_name: str, template: TemplateUpdate, db: Session = Depends(get_db)):
+    """Update an existing template"""
+    if category not in ['synthesis_prompts', 'formatting_templates', 'system_behaviors']:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    
+    try:
+        from app.core.synthesis_prompts_cache import get_synthesis_setting, update_synthesis_setting
+        
+        # Check if template exists
+        existing_template = get_synthesis_setting(category, template_name)
+        if not existing_template:
+            raise HTTPException(status_code=404, detail=f"Template {template_name} not found")
+        
+        # Update fields that were provided
+        updates = []
+        if template.content is not None:
+            success = update_synthesis_setting(category, template_name, "content", template.content)
+            if not success:
+                raise HTTPException(status_code=400, detail="Failed to update content")
+            updates.append("content")
+        
+        if template.description is not None:
+            success = update_synthesis_setting(category, template_name, "description", template.description)
+            if not success:
+                raise HTTPException(status_code=400, detail="Failed to update description")
+            updates.append("description")
+        
+        if template.variables is not None:
+            success = update_synthesis_setting(category, template_name, "variables", template.variables)
+            if not success:
+                raise HTTPException(status_code=400, detail="Failed to update variables")
+            updates.append("variables")
+        
+        if template.active is not None:
+            success = update_synthesis_setting(category, template_name, "active", template.active)
+            if not success:
+                raise HTTPException(status_code=400, detail="Failed to update active status")
+            updates.append("active")
+        
+        return {
+            "success": True,
+            "message": f"Template updated successfully",
+            "category": category,
+            "template_name": template_name,
+            "updated_fields": updates
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update template {category}.{template_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update template: {str(e)}")
+
+@router.delete("/synthesis-prompts/{category}/templates/{template_name}")
+def delete_template(category: str, template_name: str, db: Session = Depends(get_db)):
+    """Delete a template"""
+    if category not in ['synthesis_prompts', 'formatting_templates', 'system_behaviors']:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    
+    try:
+        from app.core.synthesis_prompts_cache import delete_template
+        
+        success, message = delete_template(category, template_name)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail=message)
+        
+        return {
+            "success": True,
+            "message": message,
+            "category": category,
+            "template_name": template_name
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete template {category}.{template_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete template: {str(e)}")
+
+@router.post("/synthesis-prompts/{category}/templates/{template_name}/preview")
+def preview_template(category: str, template_name: str, preview_data: TemplatePreview, db: Session = Depends(get_db)):
+    """Preview a template with sample variables"""
+    if category not in ['synthesis_prompts', 'formatting_templates', 'system_behaviors']:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    
+    try:
+        from app.core.synthesis_prompts_cache import get_template_preview
+        
+        preview_result, error = get_template_preview(
+            category, 
+            template_name, 
+            preview_data.sample_variables
+        )
+        
+        if error:
+            raise HTTPException(status_code=404, detail=error)
+        
+        return {
+            "success": True,
+            "category": category,
+            "template_name": template_name,
+            "preview": preview_result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to preview template {category}.{template_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to preview template: {str(e)}")
+
+@router.post("/synthesis-prompts/{category}/reset-defaults")
+def reset_category_defaults(category: str, db: Session = Depends(get_db)):
+    """Reset a category to default templates"""
+    if category not in ['synthesis_prompts', 'formatting_templates', 'system_behaviors']:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    
+    try:
+        from app.core.synthesis_prompts_cache import reset_to_defaults
+        
+        success, message = reset_to_defaults(category)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail=message)
+        
+        return {
+            "success": True,
+            "message": message,
+            "category": category
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to reset {category} to defaults: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reset category: {str(e)}")
+
+@router.post("/synthesis-prompts/reset-all-defaults")
+def reset_all_defaults(db: Session = Depends(get_db)):
+    """Reset all synthesis prompt categories to defaults"""
+    try:
+        from app.core.synthesis_prompts_cache import reset_to_defaults
+        
+        success, message = reset_to_defaults()
+        
+        if not success:
+            raise HTTPException(status_code=500, detail=message)
+        
+        return {
+            "success": True,
+            "message": message
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to reset all synthesis prompts to defaults: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reset all categories: {str(e)}")
+
+@router.post("/synthesis-prompts/validate")
+def validate_synthesis_prompts_endpoint(db: Session = Depends(get_db)):
+    """Validate all synthesis prompt settings"""
+    try:
+        from app.core.synthesis_prompts_cache import get_synthesis_prompts, validate_synthesis_prompts
+        
+        settings = get_synthesis_prompts()
+        is_valid, message = validate_synthesis_prompts(settings)
+        
+        return {
+            "valid": is_valid,
+            "message": message,
+            "categories_count": len(settings),
+            "total_templates": sum(len(cat_settings) for cat_settings in settings.values())
+        }
+    except Exception as e:
+        logger.error(f"Failed to validate synthesis prompts: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to validate: {str(e)}")
+
+@router.get("/synthesis-prompts/status")
+def get_synthesis_prompts_status(db: Session = Depends(get_db)):
+    """Get status and statistics of synthesis prompt system"""
+    try:
+        from app.core.synthesis_prompts_cache import get_synthesis_prompts, validate_synthesis_prompts
+        
+        settings = get_synthesis_prompts()
+        is_valid, validation_message = validate_synthesis_prompts(settings)
+        
+        # Count templates by category
+        template_counts = {}
+        total_templates = 0
+        active_templates = 0
+        
+        for category, templates in settings.items():
+            template_counts[category] = len(templates)
+            total_templates += len(templates)
+            
+            for template in templates.values():
+                if template.get('active', True):
+                    active_templates += 1
+        
+        return {
+            "status": "healthy" if is_valid else "validation_errors",
+            "validation": {
+                "valid": is_valid,
+                "message": validation_message
+            },
+            "statistics": {
+                "total_categories": len(settings),
+                "total_templates": total_templates,
+                "active_templates": active_templates,
+                "template_counts_by_category": template_counts
+            },
+            "categories": list(settings.keys())
+        }
+    except Exception as e:
+        logger.error(f"Failed to get synthesis prompts status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")

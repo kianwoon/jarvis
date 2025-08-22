@@ -34,7 +34,8 @@ import {
   Refresh as RefreshIcon,
   AccessTime as AccessTimeIcon,
   Memory as MemoryIcon,
-  Hub as HubIcon
+  Hub as HubIcon,
+  Description as TemplateIcon
 } from '@mui/icons-material';
 import SettingsFormRenderer from './components/settings/SettingsFormRenderer';
 import NavigationBar from './components/shared/NavigationBar';
@@ -147,6 +148,12 @@ const settingsCategories: SettingsCategory[] = [
     name: 'Meta-Task System',
     icon: <WorkflowIcon />,
     description: 'Configure meta-task templates, execution settings, and quality controls for complex multi-phase document generation'
+  },
+  {
+    id: 'synthesis_prompts',
+    name: 'Template Management',
+    icon: <TemplateIcon />,
+    description: 'Create and manage synthesis prompt templates, formatting templates, and system behavior templates'
   },
 ];
 

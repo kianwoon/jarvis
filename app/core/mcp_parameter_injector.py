@@ -129,8 +129,8 @@ class MCPParameterInjector:
         # Prioritize Google's camelCase format first, then fall back to snake_case for compatibility
         if 'dateRestrict' in properties and 'dateRestrict' not in parameters:
             # Google uses camelCase - prioritize this format
-            parameters['dateRestrict'] = 'd'
-            logger.info(f"[MCP Parameter Injector] ALWAYS adding dateRestrict='d' to {tool_name} for fresh results")
+            parameters['dateRestrict'] = 'd30'
+            logger.info(f"[MCP Parameter Injector] ALWAYS adding dateRestrict='d30' to {tool_name} for fresh results")
         elif 'date_restrict' in properties and 'date_restrict' not in parameters:
             # Fall back to snake_case for other tools
             parameters['date_restrict'] = 'm6'

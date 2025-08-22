@@ -1358,16 +1358,40 @@ RESOLVED CONFLICTS:
     if info_sources:
         # Information hierarchy mode - use ranked sources
         for source in info_sources:
-            user_content_parts.append(f"""{source['label']}:
-{source['content']}""")
+            content_with_label = f"""{source['label']}:
+{source['content']}"""
+            
+            # Add preservation instructions for tool results (especially search results)
+            if source['source_type'] == 'tool_results':
+                content_with_label += """
+
+CRITICAL PRESERVATION INSTRUCTIONS FOR SEARCH RESULTS:
+You MUST preserve ALL specific details from the search results above, including:
+- Exact version numbers and model names (e.g., "Claude Opus 4.1" NOT "Claude Opus 4" or "latest version")
+- Precise dates, timestamps, and timeline information
+- Specific technical specifications and feature details
+- Accurate numerical data, measurements, and statistics
+- Proper names of people, companies, products, and technologies
+- Direct quotes and exact terminology from sources
+- Version designations like "4.1", "3.5", "2.0" etc. - NEVER round or simplify these
+
+DO NOT generalize, simplify, or approximate any specific information from the search results."""
+            
+            user_content_parts.append(content_with_label)
     else:
         # Fallback modes when no enhanced sources available
         if rag_context:
             # RAG-only fallback mode
-            user_content_parts.append(f"""📚 CURRENT FACTUAL DATA (Knowledge Base - PRIMARY SOURCE):
-{rag_context}
-
-SYNTHESIS INSTRUCTIONS: Use the above information as your primary source. Answer based on this factual data.""")
+            # Use configurable template for knowledge base synthesis
+            from app.core.synthesis_prompts_cache import get_formatted_synthesis_template
+            kb_synthesis_content = get_formatted_synthesis_template(
+                "synthesis_prompts", 
+                "knowledge_base_synthesis",
+                {
+                    "rag_context": rag_context
+                }
+            )
+            user_content_parts.append(kb_synthesis_content)
             
             # Add conversation history for context (existing behavior)
             if conversation_history:
@@ -5066,12 +5090,16 @@ Please generate the requested items incorporating relevant information from the 
                         else:
                             tool_context += f"\n{tr['tool']}: No result available\n"
                     
-                    # Create a follow-up prompt to synthesize with tool results using the actual user question
-                    synthesis_prompt = f"""You need to provide a final answer based on the tool results below.
-
-{tool_context}
-
-Based on these search results, provide a comprehensive answer to the user's question: "{question}". Format the information clearly and include the most relevant findings."""
+                    # Create a follow-up prompt to synthesize with tool results using configurable template
+                    from app.core.synthesis_prompts_cache import get_formatted_synthesis_template
+                    synthesis_prompt = get_formatted_synthesis_template(
+                        "synthesis_prompts", 
+                        "tool_synthesis",
+                        {
+                            "tool_context": tool_context,
+                            "question": question
+                        }
+                    )
                     
                     # Convert to messages format for proper system/user separation
                     synthesis_messages = [
@@ -5274,12 +5302,16 @@ Based on these search results, provide a comprehensive answer to the user's ques
             for tr in successful_tool_results:
                 tool_context += f"\n{tr['tool']}: {json.dumps(tr['result'], indent=2)}\n"
             
-            # Create a follow-up prompt to synthesize with tool results
-            synthesis_prompt = f"""{response_text}
-
-{tool_context}
-
-Please provide a complete answer using the tool results above."""
+            # Create a follow-up prompt to synthesize with tool results using configurable template
+            from app.core.synthesis_prompts_cache import get_formatted_synthesis_template
+            synthesis_prompt = get_formatted_synthesis_template(
+                "synthesis_prompts", 
+                "enhanced_tool_synthesis",
+                {
+                    "response_text": response_text,
+                    "tool_context": tool_context
+                }
+            )
             
             # Convert to messages format for proper system/user separation
             synthesis_messages = [

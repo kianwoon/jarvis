@@ -49,13 +49,7 @@
       "Bash(node test_table_fix.js)",
       "Bash(node --check:*)",
       "Bash(python -m py_compile:*)",
-      "Bash(psql:*INSERT*)",
-      "Bash(psql:*UPDATE*)",
-      "Bash(psql:*DELETE*)",
-      "Bash(psql:*ALTER*)",
       "Bash(psql:*CREATE*)",
-      "Bash(psql:*DROP*)",
-      "Bash(psql:*TRUNCATE*)",
       "Bash(curl -s:*)",
       "Bash(time curl:*)",
       "Bash(redis-cli GET:*)",
@@ -73,13 +67,8 @@
       "Bash(cp:*)",
       "Bash(mv:*)",
       "Bash(chmod:*)",
-      "Bash(rm ./src/*)",
-      "Bash(rm ./*)",
-      "Bash(rm ../*)",
       "Bash(rm ~/Downloads/*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(git push:*)",
       "Bash(git checkout:*)",
       "Bash(git restore:*)",
       "Bash(npm ci)",
@@ -155,6 +144,20 @@
       "Bash(curl -X DELETE:*)",
       "Bash(wget:*)"
     ],
+    "ask": [
+      "Bash(chmod:*)",
+      "Bash(psql:*INSERT*)",
+      "Bash(psql:*UPDATE*)",
+      "Bash(psql:*DELETE*)",
+      "Bash(psql:*DROP*)",
+      "Bash(psql:*TRUNCATE*)",
+      "Bash(psql:*ALTER*)",
+      "Bash(rm ./src/*)",
+      "Bash(rm ./*)",
+      "Bash(rm ../*)",
+      "Bash(git push:*)",
+      "Bash(git commit:*)"
+    ],
     "defaultMode": "acceptEdits"
   },
   "enableAllProjectMcpServers": false,
@@ -191,69 +194,6 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash(psql:*INSERT*)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'DATABASE INSERT - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash(psql:*UPDATE*)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'DATABASE UPDATE - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash(psql:*DELETE*)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'DATABASE DELETE - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash(psql:*DROP*)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'DATABASE DROP - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash(psql:*TRUNCATE*)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'DATABASE TRUNCATE - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash(psql:*ALTER*)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'DATABASE ALTER - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash(rm *)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'FILE DELETION - Type yes to continue (5s timeout):'; read -t 5 confirm; [ \"$confirm\" = \"yes\" ] || exit 1"
-          }
-        ]
-      },
-      {
         "matcher": "Task",
         "hooks": [
           {
@@ -285,5 +225,6 @@
       }
     ]
   },
-  "outputStyle": "Explanatory"
+  "disableAllHooks": false,
+  "outputStyle": "concise-audio-feedback"
 }

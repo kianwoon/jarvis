@@ -1,5 +1,6 @@
 {
-    "editor.fontFamily": "Work Sans Light,Menlo, Monaco, 'Courier New', monospace",
+    "editor.fontFamily": "Source Code Pro Extra Light",
     "editor.fontSize": 10,
-    "editor.fontVariations": false
+    "editor.fontVariations": false,
+    "editor.fontWeight": "100"
 }
