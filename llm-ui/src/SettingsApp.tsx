@@ -698,6 +698,9 @@ function SettingsApp() {
               setSuccess(prev => ({ ...prev, [category]: false }));
             }, 3000);
           }}
+          onSave={async () => {
+            await saveSettings(category, settingsData[category]);
+          }}
         />
       </div>
     );

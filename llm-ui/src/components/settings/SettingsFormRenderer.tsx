@@ -60,6 +60,7 @@ interface SettingsFormRendererProps {
   onRefresh?: () => void;
   isYamlBased?: boolean;
   onShowSuccess?: (message?: string) => void;
+  onSave?: () => Promise<void>;
 }
 
 const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
@@ -68,9 +69,21 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   onChange,
   onRefresh,
   isYamlBased = false,
-  onShowSuccess
+  onShowSuccess,
+  onSave
 }) => {
   console.log('[DEBUG] SettingsFormRenderer - category:', category, 'data:', data);
+  
+  // Debug: Track when data prop changes
+  React.useEffect(() => {
+    console.log('[DEBUG] SettingsFormRenderer - data prop changed:', {
+      category,
+      dataKeys: data ? Object.keys(data) : 'no data',
+      dataType: typeof data,
+      hasSystemPrompt: data && data.system_prompt !== undefined,
+      systemPromptValue: data && data.system_prompt
+    });
+  }, [data, category]);
   if (category === 'knowledge_graph') {
     console.log('[DEBUG] SettingsFormRenderer - KG data.model_config:', data?.model_config);
     console.log('[DEBUG] SettingsFormRenderer - KG data keys:', Object.keys(data || {}));
@@ -89,6 +102,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   const [testingConnection, setTestingConnection] = React.useState(false);
   const [connectionTestResult, setConnectionTestResult] = React.useState<{success: boolean, message?: string, error?: string} | null>(null);
   
+  
   // Secondary tab state for meta_task model tabs
   const [metaTaskSubTabs, setMetaTaskSubTabs] = React.useState<Record<string, string>>({
     analyzer: 'model_selection',
@@ -101,6 +115,11 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   const [metaTaskModels, setMetaTaskModels] = React.useState<Array<{name: string, id: string, size: string, modified: string, context_length: string}>>([]); 
   const [metaTaskModelsLoading, setMetaTaskModelsLoading] = React.useState(false);
   const [metaTaskModelsFetched, setMetaTaskModelsFetched] = React.useState(false);
+  
+  // Simplified field change handler - directly calls parent onChange
+  const handleFieldChange = React.useCallback((field: string, value: any) => {
+    onChange(field, value);
+  }, [onChange]);
   
   // Update activeTab when category changes
   React.useEffect(() => {
@@ -308,7 +327,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
       <DatabaseTableManager
         category={category as 'collection_registry' | 'langgraph_agents'}
         data={records}
-        onChange={(newData) => onChange('records', newData)}
+        onChange={(newData) => handleFieldChange('records', newData)}
         onRefresh={onRefresh || (() => {})}
       />
     );
@@ -321,7 +340,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
       <DatabaseTableManager
         category={category as 'collection_registry' | 'langgraph_agents'}
         data={records}
-        onChange={(newData) => onChange('agents', newData)}
+        onChange={(newData) => handleFieldChange('agents', newData)}
         onRefresh={onRefresh || (() => {})}
       />
     );
@@ -329,7 +348,7 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
 
   // Special handling for timeout configuration
   if (category === 'timeout') {
-    return <TimeoutConfiguration data={data} onChange={onChange} onShowSuccess={onShowSuccess} />;
+    return <TimeoutConfiguration data={data} onChange={handleFieldChange} onShowSuccess={onShowSuccess} />;
   }
 
   // Special handling for radiating configuration
@@ -339,12 +358,12 @@ const SettingsFormRenderer: React.FC<SettingsFormRendererProps> = ({
   
   // Special handling for meta_task configuration
   if (category === 'meta_task') {
-    return <MetaTaskSettings settings={data} onChange={onChange} category={category} />;
+    return <MetaTaskSettings settings={data} onChange={handleFieldChange} category={category} />;
   }
 
   // Special handling for synthesis prompts configuration
   if (category === 'synthesis_prompts') {
-    return <SynthesisPromptsSettings data={data} onChange={onChange} onRefresh={onRefresh} onShowSuccess={onShowSuccess} />;
+    return <SynthesisPromptsSettings data={data} onChange={handleFieldChange} onRefresh={onRefresh} onShowSuccess={onShowSuccess} />;
   }
 
   // Knowledge graph settings are now consolidated under LLM category
@@ -693,7 +712,8 @@ const ModelSelector: React.FC<{
   depth: number;
   onShowSuccess?: (message?: string) => void;
   customOnChange?: (field: string, value: any) => void;
-}> = ({ fieldKey, value, onChangeHandler, depth, onShowSuccess, customOnChange }) => {
+  data?: any;
+}> = ({ fieldKey, value, onChangeHandler, depth, onShowSuccess, customOnChange, data }) => {
   const [models, setModels] = React.useState<Array<{name: string, id: string, size: string, modified: string, context_length: string}>>([]);
   const [loading, setLoading] = React.useState(false);
 
@@ -766,29 +786,48 @@ const ModelSelector: React.FC<{
             <Tooltip title="Update available models and reload LLM cache with current settings">
               <Button 
                 size="small" 
-                onClick={async () => {
-                  // First fetch available models
-                  await fetchAvailableModels();
+                onClick={async (event) => {
+                  // Prevent any form submission
+                  event.preventDefault();
+                  event.stopPropagation();
                   
-                  // Then reload cache
                   try {
-                    const response = await fetch('/api/v1/settings/llm/cache/reload', { method: 'POST' });
+                    // Step 1: Save current settings directly to API using form data
+                    const saveResponse = await fetch('/api/v1/settings/llm', {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ settings: data })
+                    });
+                    
+                    if (!saveResponse.ok) {
+                      throw new Error(`Save failed with status: ${saveResponse.status}`);
+                    }
+                    
+                    // Step 2: Fetch available models
+                    await fetchAvailableModels();
+                    
+                    // Step 3: Reload cache (works with empty body)
+                    const response = await fetch('/api/v1/settings/llm/cache/reload', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({})
+                    });
+                    
                     if (response.ok) {
                       const result = await response.json();
-                      console.log('LLM cache reloaded:', result);
                       if (onShowSuccess) {
-                        onShowSuccess('Models updated and cache reloaded successfully!');
+                        onShowSuccess('Settings saved, models updated, and cache reloaded successfully!');
                       }
                     } else {
-                      console.error('Failed to reload cache');
+                      console.error('Failed to reload cache - Status:', response.status);
                       if (onShowSuccess) {
-                        onShowSuccess('Models updated but cache reload failed');
+                        onShowSuccess(`Models updated but cache reload failed: ${response.status}`);
                       }
                     }
                   } catch (error) {
-                    console.error('Error reloading cache:', error);
+                    console.error('Error in update process:', error);
                     if (onShowSuccess) {
-                      onShowSuccess('Models updated but cache reload failed');
+                      onShowSuccess(`Update failed: ${error.message}`);
                     }
                   }
                 }}
@@ -963,8 +1002,10 @@ const renderRAGFieldsWithCards = (
   fields: Array<{key: string, value: any}>,
   categoryKey: string,
   onChange: (field: string, value: any) => void,
-  onShowSuccess?: (message?: string) => void,
-  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void) => React.ReactNode
+  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void, data?: any, formData?: any) => React.ReactNode,
+  data?: any,
+  handleFieldChange?: (field: string, value: any) => void,
+  onShowSuccess?: (message?: string) => void
 ) => {
   // Define card configurations for each tab
   const cardConfigurations: Record<string, Array<{title: string, subtitle: string, fields: string[]}>> = {
@@ -1086,8 +1127,8 @@ const renderRAGFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {cardFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                onChange(fieldKey, fieldValue);
-              }, 'rag', onShowSuccess)
+                handleFieldChange && handleFieldChange(fieldKey, fieldValue);
+              }, 'rag', onShowSuccess, data)
             )}
           </div>
         </CardContent>
@@ -1109,8 +1150,8 @@ const renderRAGFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {unassignedFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                onChange(fieldKey, fieldValue);
-              }, 'rag', onShowSuccess)
+                handleFieldChange && handleFieldChange(fieldKey, fieldValue);
+              }, 'rag', onShowSuccess, data)
             )}
           </div>
         </CardContent>
@@ -1131,8 +1172,10 @@ const renderPerformanceFieldsWithCards = (
   fields: Array<{key: string, value: any}>,
   categoryKey: string,
   onChange: (field: string, value: any) => void,
-  onShowSuccess?: (message?: string) => void,
-  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void) => React.ReactNode
+  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void, data?: any, formData?: any) => React.ReactNode,
+  data?: any,
+  handleFieldChange?: (field: string, value: any) => void,
+  onShowSuccess?: (message?: string) => void
 ) => {
   // Debug logging for Performance Optimization
   console.log('[DEBUG] Performance Optimization - categoryKey:', categoryKey);
@@ -1232,8 +1275,8 @@ const renderPerformanceFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {cardFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                onChange(fieldKey, fieldValue);
-              }, 'large_generation', onShowSuccess)
+                handleFieldChange(fieldKey, fieldValue);
+              }, 'large_generation', onShowSuccess, data)
             )}
           </div>
         </CardContent>
@@ -1255,8 +1298,8 @@ const renderPerformanceFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {unassignedFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                onChange(fieldKey, fieldValue);
-              }, 'large_generation', onShowSuccess)
+                handleFieldChange(fieldKey, fieldValue);
+              }, 'large_generation', onShowSuccess, data)
             )}
           </div>
         </CardContent>
@@ -1277,8 +1320,10 @@ const renderLangfuseFieldsWithCards = (
   fields: Array<{key: string, value: any}>,
   categoryKey: string,
   onChange: (field: string, value: any) => void,
-  onShowSuccess?: (message?: string) => void,
-  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void) => React.ReactNode
+  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void, data?: any, formData?: any) => React.ReactNode,
+  data?: any,
+  handleFieldChange?: (field: string, value: any) => void,
+  onShowSuccess?: (message?: string) => void
 ) => {
   // Debug logging for Langfuse
   console.log('[DEBUG] Langfuse - categoryKey:', categoryKey);
@@ -1347,8 +1392,8 @@ const renderLangfuseFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {cardFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                onChange(fieldKey, fieldValue);
-              }, 'langfuse', onShowSuccess)
+                handleFieldChange(fieldKey, fieldValue);
+              }, 'langfuse', onShowSuccess, data)
             )}
           </div>
         </CardContent>
@@ -1370,8 +1415,8 @@ const renderLangfuseFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {unassignedFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                onChange(fieldKey, fieldValue);
-              }, 'langfuse', onShowSuccess)
+                handleFieldChange(fieldKey, fieldValue);
+              }, 'langfuse', onShowSuccess, data)
             )}
           </div>
         </CardContent>
@@ -1392,8 +1437,10 @@ const renderEnvironmentFieldsWithCards = (
   fields: Array<{key: string, value: any}>,
   categoryKey: string,
   onChange: (field: string, value: any) => void,
-  onShowSuccess?: (message?: string) => void,
-  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void) => React.ReactNode
+  renderFieldFn: (key: string, value: any, depth: number, customOnChange: (field: string, value: any) => void, fieldCategory: string, onShowSuccessCallback?: (message?: string) => void, data?: any, formData?: any) => React.ReactNode,
+  data?: any,
+  handleFieldChange?: (field: string, value: any) => void,
+  onShowSuccess?: (message?: string) => void
 ) => {
   // Debug logging for Environment
   console.log('[DEBUG] Environment - categoryKey:', categoryKey);
@@ -1462,8 +1509,8 @@ const renderEnvironmentFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {cardFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                onChange(fieldKey, fieldValue);
-              }, 'environment', onShowSuccess)
+                handleFieldChange(fieldKey, fieldValue);
+              }, 'environment', onShowSuccess, data)
             )}
           </div>
         </CardContent>
@@ -1485,8 +1532,8 @@ const renderEnvironmentFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {unassignedFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                onChange(fieldKey, fieldValue);
-              }, 'environment', onShowSuccess)
+                handleFieldChange(fieldKey, fieldValue);
+              }, 'environment', onShowSuccess, data)
             )}
           </div>
         </CardContent>
@@ -2464,7 +2511,8 @@ const renderStandardForm = (
     return null;
   };
 
-  const renderField = (key: string, value: any, depth: number = 0, customOnChange?: (field: string, value: any) => void, fieldCategory?: string, onShowSuccessCallback?: (message?: string) => void) => {
+  const renderField = (key: string, value: any, depth: number = 0, customOnChange?: (field: string, value: any) => void, fieldCategory?: string, onShowSuccessCallback?: (message?: string) => void, data?: any, formData?: any) => {
+    const onChangeHandler = customOnChange || ((field: string, value: any) => {});
     const formatLabel = (str: string) => {
       // Remove redundant "settings." prefix if present
       let cleanStr = str;
@@ -2546,7 +2594,6 @@ const renderStandardForm = (
       // Default: replace underscores with spaces and capitalize words
       return cleanStr.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     };
-    const onChangeHandler = customOnChange || onChange;
     
     // Detect field complexity for layout
     const isComplexField = (key: string, value: any): boolean => {
@@ -2741,6 +2788,7 @@ const renderStandardForm = (
             depth={depth}
             onShowSuccess={onShowSuccessCallback || onShowSuccess}
             customOnChange={customOnChange}
+            data={data}
           />
         );
       }
@@ -3051,7 +3099,7 @@ const renderStandardForm = (
               if (nestedKey === 'mode') {
                 return null;
               }
-              return renderField(`${key}.${nestedKey}`, nestedValue, depth, onChangeHandler, fieldCategory);
+              return renderField(`${key}.${nestedKey}`, nestedValue, depth, onChangeHandler, fieldCategory, undefined, data, formData);
             })}
           </div>
         );
@@ -3068,7 +3116,7 @@ const renderStandardForm = (
                   console.log('[DEBUG] Nested field onChange:', { field, nestedKey, val, parentKey: key });
                   const updatedValue = { ...value, [nestedKey]: val };
                   onChangeHandler(key, updatedValue);
-                }, fieldCategory)
+                }, fieldCategory, undefined, data, formData)
               )}
             </div>
           </div>
@@ -3276,19 +3324,19 @@ const renderStandardForm = (
                           onChange={(e) => {
                             if (categoryKey === 'settings') {
                               const updatedMainLlm = { ...data.main_llm, mode: e.target.value };
-                              onChange('main_llm', updatedMainLlm);
+                              onChangeHandler('main_llm', updatedMainLlm);
                             } else if (categoryKey === 'second_llm') {
                               const updatedSecondLlm = { ...data.second_llm, mode: e.target.value };
-                              onChange('second_llm', updatedSecondLlm);
+                              onChangeHandler('second_llm', updatedSecondLlm);
                             } else if (categoryKey === 'knowledge_graph') {
                               const updatedKnowledgeGraph = { ...data.knowledge_graph, mode: e.target.value };
-                              onChange('knowledge_graph', updatedKnowledgeGraph);
+                              onChangeHandler('knowledge_graph', updatedKnowledgeGraph);
                             } else if (categoryKey === 'search_optimization') {
                               const updatedSearchOptimization = { ...data.search_optimization, mode: e.target.value };
-                              onChange('search_optimization', updatedSearchOptimization);
+                              onChangeHandler('search_optimization', updatedSearchOptimization);
                             } else {
                               const updatedQueryClassifier = { ...data.query_classifier, mode: e.target.value };
-                              onChange('query_classifier', updatedQueryClassifier);
+                              onChangeHandler('query_classifier', updatedQueryClassifier);
                             }
                           }}
                         >
@@ -3387,7 +3435,7 @@ const renderStandardForm = (
                                 onChange={(e) => {
                                   const modelKey = `${categoryKey}_model`;
                                   const updatedModel = { ...data[modelKey], mode: e.target.value };
-                                  onChange(modelKey, updatedModel);
+                                  onChangeHandler(modelKey, updatedModel);
                                 }}
                               >
                                 <FormControlLabel 
@@ -3470,14 +3518,14 @@ const renderStandardForm = (
                                     if (customModel) {
                                       const modelKey = `${categoryKey}_model`;
                                       const updatedModel = { ...data[modelKey], model: customModel };
-                                      onChange(modelKey, updatedModel);
+                                      onChangeHandler(modelKey, updatedModel);
                                     }
                                     return;
                                   }
                                   
                                   const modelKey = `${categoryKey}_model`;
                                   const updatedModel = { ...data[modelKey], model: newModelName };
-                                  onChange(modelKey, updatedModel);
+                                  onChangeHandler(modelKey, updatedModel);
                                   
                                   // Auto-update context length if available
                                   const selectedModel = metaTaskModels.find(m => m.name === newModelName);
@@ -3628,7 +3676,7 @@ const renderStandardForm = (
                                         const modelKey = `${categoryKey}_model`;
                                         const updatedModel = { ...data[modelKey], temperature: val };
                                         onChange(modelKey, updatedModel);
-                                      }, categoryKey)}
+                                      }, categoryKey, undefined, data)}
                                       <Typography variant="caption" color="text.secondary">
                                         Controls randomness. Lower values make output more focused and deterministic.
                                       </Typography>
@@ -3647,7 +3695,7 @@ const renderStandardForm = (
                                       onChange={(e) => {
                                         const modelKey = `${categoryKey}_model`;
                                         const updatedModel = { ...data[modelKey], temperature: parseFloat(e.target.value) };
-                                        onChange(modelKey, updatedModel);
+                                        onChangeHandler(modelKey, updatedModel);
                                       }}
                                       inputProps={{ min: 0, max: 2, step: 0.1 }}
                                     />
@@ -3673,7 +3721,7 @@ const renderStandardForm = (
                                         const modelKey = `${categoryKey}_model`;
                                         const updatedModel = { ...data[modelKey], max_tokens: val };
                                         onChange(modelKey, updatedModel);
-                                      }, categoryKey)}
+                                      }, categoryKey, undefined, data)}
                                       <Typography variant="caption" color="text.secondary">
                                         Maximum number of tokens to generate.
                                       </Typography>
@@ -3718,7 +3766,7 @@ const renderStandardForm = (
                                         const modelKey = `${categoryKey}_model`;
                                         const updatedModel = { ...data[modelKey], top_p: val };
                                         onChange(modelKey, updatedModel);
-                                      }, categoryKey)}
+                                      }, categoryKey, undefined, data)}
                                       <Typography variant="caption" color="text.secondary">
                                         Nucleus sampling threshold. Consider tokens with cumulative probability.
                                       </Typography>
@@ -3863,7 +3911,7 @@ const renderStandardForm = (
                               onChange={(e) => {
                                 const modelKey = `${categoryKey}_model`;
                                 const updatedModel = { ...data[modelKey], system_prompt: e.target.value };
-                                onChange(modelKey, updatedModel);
+                                onChangeHandler(modelKey, updatedModel);
                               }}
                               placeholder={`Enter the system prompt for the ${categoryKey} model...`}
                             />
@@ -3948,22 +3996,22 @@ const renderStandardForm = (
 
                   // Special rendering for RAG settings with card grouping
                   if (category === 'rag') {
-                    return renderRAGFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
+                    return renderRAGFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, handleFieldChange, onShowSuccess);
                   }
                   
                   // Special rendering for Performance Optimization settings with card grouping
                   if (category === 'large_generation') {
-                    return renderPerformanceFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
+                    return renderPerformanceFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, handleFieldChange, onShowSuccess);
                   }
                   
                   // Special rendering for Langfuse/Monitoring settings with card grouping
                   if (category === 'langfuse') {
-                    return renderLangfuseFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
+                    return renderLangfuseFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, handleFieldChange, onShowSuccess);
                   }
                   
                   // Special rendering for Environment & Runtime settings with card grouping
                   if (category === 'environment') {
-                    return renderEnvironmentFieldsWithCards(sortedFields, categoryKey, onChange, onShowSuccess, renderField);
+                    return renderEnvironmentFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, handleFieldChange, onShowSuccess);
                   }
                   
                   // Special handling for Knowledge Graph category OR Knowledge Graph tab in LLM category
@@ -4030,8 +4078,8 @@ const renderStandardForm = (
                           {modelField && (
                             <div style={{ width: '100%', marginBottom: '24px' }}>
                               {renderField(modelField.key, modelField.value, 0, (fieldKey, fieldValue) => {
-                                onChange(fieldKey, fieldValue);
-                              }, category, onShowSuccess)}
+                                handleFieldChange(fieldKey, fieldValue);
+                              }, category, onShowSuccess, data)}
                             </div>
                           )}
                           
@@ -4050,8 +4098,8 @@ const renderStandardForm = (
                             }}>
                               {leftColumnFields.map(({ key, value }) => 
                                 renderField(key, value, 0, (fieldKey, fieldValue) => {
-                                  onChange(fieldKey, fieldValue);
-                                }, category, onShowSuccess)
+                                  handleFieldChange(fieldKey, fieldValue);
+                                }, category, onShowSuccess, data)
                               )}
                             </div>
                             
@@ -4064,8 +4112,8 @@ const renderStandardForm = (
                             }}>
                               {rightColumnFields.map(({ key, value }) => 
                                 renderField(key, value, 0, (fieldKey, fieldValue) => {
-                                  onChange(fieldKey, fieldValue);
-                                }, category, onShowSuccess)
+                                  handleFieldChange(fieldKey, fieldValue);
+                                }, category, onShowSuccess, data)
                               )}
                             </div>
                           </div>
@@ -4117,8 +4165,8 @@ const renderStandardForm = (
                           {modelField && (
                             <div style={{ width: '100%', marginBottom: '24px' }}>
                               {renderField(modelField.key, modelField.value, 0, (fieldKey, fieldValue) => {
-                                onChange(fieldKey, fieldValue);
-                              }, category, onShowSuccess)}
+                                handleFieldChange(fieldKey, fieldValue);
+                              }, category, onShowSuccess, data)}
                             </div>
                           )}
                           
@@ -4137,8 +4185,8 @@ const renderStandardForm = (
                             }}>
                               {firstColumnFields.map(({ key, value }) => 
                                 renderField(key, value, 0, (fieldKey, fieldValue) => {
-                                  onChange(fieldKey, fieldValue);
-                                }, category, onShowSuccess)
+                                  handleFieldChange(fieldKey, fieldValue);
+                                }, category, onShowSuccess, data)
                               )}
                             </div>
                             
@@ -4151,8 +4199,8 @@ const renderStandardForm = (
                             }}>
                               {secondColumnFields.map(({ key, value }) => 
                                 renderField(key, value, 0, (fieldKey, fieldValue) => {
-                                  onChange(fieldKey, fieldValue);
-                                }, category, onShowSuccess)
+                                  handleFieldChange(fieldKey, fieldValue);
+                                }, category, onShowSuccess, data)
                               )}
                             </div>
                           </div>
@@ -4166,7 +4214,7 @@ const renderStandardForm = (
                     renderField(key, value, 0, (fieldKey, fieldValue) => {
                       // Handle nested field updates properly
                       onChange(fieldKey, fieldValue);
-                    }, category, onShowSuccess)
+                    }, category, onShowSuccess, data, data)
                   );
                 })()}
                 </div>

@@ -1,6 +1,6 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Body
 from sqlalchemy.orm import Session
-from app.core.db import SessionLocal, Settings as SettingsModel, MCPManifest, MCPTool, Base
+from app.core.db import SessionLocal, Settings as SettingsModel, MCPManifest, MCPTool, Base, get_db
 from app.core.llm_settings_cache import reload_llm_settings
 from app.core.vector_db_settings_cache import reload_vector_db_settings
 from app.core.embedding_settings_cache import reload_embedding_settings
@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Pydantic models
+class CacheReloadRequest(BaseModel):
+    settings: Optional[Dict[str, Any]] = None
+
 def deep_merge_settings(existing_settings: Dict[str, Any], new_settings: Dict[str, Any]) -> Dict[str, Any]:
     """
     Deep merge new settings into existing settings, preserving all existing fields
@@ -49,16 +53,144 @@ def deep_merge_settings(existing_settings: Dict[str, Any], new_settings: Dict[st
     
     return merged
 
-@router.post("/llm/cache/reload")
-def reload_llm_cache():
-    """Force reload LLM settings cache from database"""
+def _flush_redis_cache():
+    """Flush all settings-related Redis cache entries"""
     try:
+        from app.core.redis_client import get_redis_client
+        redis_client = get_redis_client()
+        if not redis_client:
+            logger.warning("Redis client not available - cache flush skipped")
+            return False, "Redis client not available"
+        
+        # Comprehensive list of cache keys used across the system
+        cache_keys = [
+            # Core settings caches
+            'llm_settings_cache',
+            'query_classifier_settings',
+            'vector_db_settings_cache',
+            'embedding_settings_cache',
+            'rag_settings_cache',
+            'knowledge_graph_settings_cache',
+            'radiating_settings_cache',
+            'timeout_settings_cache',
+            'overflow_settings_cache',
+            'meta_task_settings_cache',
+            'iceberg_settings_cache',
+            'langfuse_settings_cache',
+            'idc_settings_cache',
+            
+            # MCP related caches
+            'mcp_tools_cache',
+            'mcp_manifests_cache',
+            'mcp_server_cache',
+            
+            # Prompt and synthesis caches
+            'synthesis_prompts_cache',
+            'formatting_templates_cache',
+            'system_behaviors_cache',
+            
+            # Automation caches
+            'automation_workflows_cache',
+            'automation_executions_cache',
+            
+            # Agent and performance caches
+            'langgraph_agents_cache',
+            'collection_registry_cache',
+            'enterprise_llm_cache',
+            
+            # Emergency fallback cache
+            'llm_settings_cache_emergency'
+        ]
+        
+        # Delete all cache keys
+        deleted_keys = []
+        for key in cache_keys:
+            try:
+                result = redis_client.delete(key)
+                if result > 0:
+                    deleted_keys.append(key)
+            except Exception as e:
+                logger.warning(f"Failed to delete cache key {key}: {e}")
+        
+        logger.info(f"Redis cache flush completed - deleted {len(deleted_keys)} keys: {deleted_keys}")
+        return True, f"Cleared {len(deleted_keys)} cache entries"
+        
+    except Exception as e:
+        logger.error(f"Failed to flush Redis cache: {str(e)}")
+        return False, f"Cache flush failed: {str(e)}"
+
+@router.post("/llm/cache/reload")
+def reload_llm_cache(request: Optional[CacheReloadRequest] = Body(None), db: Session = Depends(get_db)):
+    """Force reload LLM settings cache from database and clear Redis cache
+    
+    If settings are provided in the request body, they will be saved to the database first
+    before reloading the cache, ensuring the cache contains the latest form data.
+    """
+    try:
+        settings_saved = False
+        
+        # Debug: Log the received request
+        logger.info(f"Reload cache request received: {request}")
+        if request:
+            logger.info(f"Request settings: {request.settings}")
+        
+        # If settings are provided, save them to database first
+        if request and request.settings:
+            logger.info("Saving LLM settings to database before cache reload")
+            logger.info(f"Settings to save: {request.settings}")
+            
+            # Get existing settings for deep merge
+            settings_row = db.query(SettingsModel).filter(SettingsModel.category == 'llm').first()
+            existing_settings = settings_row.settings if settings_row else {}
+            
+            # Deep merge to preserve existing complex fields
+            merged_settings = deep_merge_settings(existing_settings, request.settings)
+            logger.info(f"Merged LLM settings keys: {list(merged_settings.keys())}")
+            
+            # Validate that critical fields are preserved
+            critical_fields = ['main_llm', 'second_llm', 'query_classifier', 'search_optimization', 'thinking_mode_params', 'non_thinking_mode_params']
+            preserved_fields = [field for field in critical_fields if field in existing_settings and field in merged_settings]
+            if preserved_fields:
+                logger.info(f"Preserved critical LLM fields: {preserved_fields}")
+            
+            # Update or create settings row
+            if settings_row:
+                settings_row.settings = merged_settings
+            else:
+                logger.info("Creating new LLM settings")
+                settings_row = SettingsModel(category='llm', settings=merged_settings)
+                db.add(settings_row)
+            
+            # Commit the changes
+            db.commit()
+            db.refresh(settings_row)
+            logger.info("LLM settings saved with deep merge")
+            settings_saved = True
+        else:
+            if not request:
+                logger.info("No request body provided, proceeding with cache reload only")
+            elif not request.settings:
+                logger.info("Request provided but no settings data, proceeding with cache reload only")
+            else:
+                logger.info("Unknown case in request handling")
+        
+        # First, flush Redis cache to ensure fresh data
+        cache_flushed, flush_message = _flush_redis_cache()
+        
+        # Reload LLM settings from database
         settings = reload_llm_settings()
+        
+        # Also reload query classifier settings to ensure consistency
+        reload_query_classifier_settings()
+        
         return {
             "success": True, 
-            "message": "LLM cache reloaded successfully",
-            "model": settings.get("model", "unknown"),
-            "cache_size": len(str(settings))
+            "message": "LLM cache reloaded successfully" + (" (settings saved first)" if settings_saved else ""),
+            "model": settings.get("main_llm", {}).get("model", "unknown"),
+            "cache_size": len(str(settings)),
+            "redis_cache_flushed": cache_flushed,
+            "flush_details": flush_message,
+            "settings_saved": settings_saved
         }
     except Exception as e:
         logger.error(f"Failed to reload LLM cache: {str(e)}")
@@ -170,13 +302,94 @@ def reload_synthesis_prompts_cache():
         logger.error(f"Failed to reload synthesis prompts cache: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload synthesis prompts cache: {str(e)}")
 
-# Dependency to get DB session
-def get_db():
-    db = SessionLocal()
+@router.post("/cache/flush")
+def flush_redis_cache():
+    """Flush all Redis cache entries - comprehensive cache clear"""
     try:
-        yield db
-    finally:
-        db.close()
+        cache_flushed, flush_message = _flush_redis_cache()
+        
+        if cache_flushed:
+            return {
+                "success": True,
+                "message": "Redis cache flushed successfully",
+                "details": flush_message
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to flush Redis cache",
+                "details": flush_message
+            }
+    except Exception as e:
+        logger.error(f"Failed to flush Redis cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to flush Redis cache: {str(e)}")
+
+@router.post("/cache/reload-all")
+def reload_all_caches():
+    """Comprehensive cache reload - flush Redis and reload all settings from database"""
+    try:
+        # First, flush Redis cache
+        cache_flushed, flush_message = _flush_redis_cache()
+        
+        # Then reload all settings caches
+        reloaded_caches = []
+        errors = []
+        
+        cache_functions = [
+            ("LLM", reload_llm_settings),
+            ("Query Classifier", reload_query_classifier_settings),
+            ("Vector DB", reload_vector_db_settings),
+            ("Embedding", reload_embedding_settings),
+            ("RAG", reload_rag_settings),
+            ("Knowledge Graph", reload_knowledge_graph_settings),
+            ("Radiating", reload_radiating_settings),
+            ("Timeout", reload_timeout_settings),
+            ("Meta Task", reload_meta_task_settings),
+            ("Synthesis Prompts", reload_synthesis_prompts),
+        ]
+        
+        for cache_name, reload_func in cache_functions:
+            try:
+                reload_func()
+                reloaded_caches.append(cache_name)
+            except Exception as e:
+                error_msg = f"{cache_name}: {str(e)}"
+                errors.append(error_msg)
+                logger.error(f"Failed to reload {cache_name} cache: {e}")
+        
+        # Try to reload additional caches that might exist
+        try:
+            reload_iceberg_settings()
+            reloaded_caches.append("Iceberg")
+        except:
+            pass
+            
+        try:
+            from app.core.overflow_settings_cache import reload_overflow_settings
+            reload_overflow_settings()
+            reloaded_caches.append("Overflow")
+        except:
+            pass
+            
+        try:
+            reload_enabled_mcp_tools()
+            reloaded_caches.append("MCP Tools")
+        except:
+            pass
+        
+        return {
+            "success": len(errors) == 0,
+            "message": f"Cache reload completed - {len(reloaded_caches)} caches reloaded",
+            "redis_cache_flushed": cache_flushed,
+            "flush_details": flush_message,
+            "reloaded_caches": reloaded_caches,
+            "errors": errors if errors else None
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to reload all caches: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload all caches: {str(e)}")
+
 
 class SettingsUpdate(BaseModel):
     settings: Dict[str, Any]
@@ -541,10 +754,9 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
                 'min_confidence_threshold', 'max_classifications', 'classifier_max_tokens',
                 'enable_hybrid_detection', 'confidence_decay_factor', 'pattern_combination_bonus',
                 'llm_direct_threshold', 'multi_agent_threshold', 'direct_execution_threshold',
-                'system_prompt',
-                # New LLM-based classification fields
+                # LLM-based classification fields
                 'enable_llm_classification', 'llm_model', 'context_length', 'llm_temperature', 'llm_max_tokens',
-                'llm_timeout_seconds', 'llm_system_prompt', 'fallback_to_patterns', 'llm_classification_priority'
+                'llm_timeout_seconds', 'system_prompt', 'fallback_to_patterns', 'llm_classification_priority'
             ]
             
             # Extract query_classifier fields if they exist at top level

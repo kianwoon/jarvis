@@ -107,7 +107,8 @@ class EnhancedQueryClassifier:
             enable_llm = dynamic_settings.get('enable_llm_classification', False)
             # Try both old and new schema model field names
             llm_model = dynamic_settings.get('llm_model', '').strip() or dynamic_settings.get('model', '').strip()
-            llm_system_prompt = dynamic_settings.get('llm_system_prompt', '').strip()
+            # Try both old and new prompt field names - system_prompt is preferred
+            llm_system_prompt = dynamic_settings.get('system_prompt', '').strip() or dynamic_settings.get('llm_system_prompt', '').strip()
             
             if enable_llm and llm_model and llm_system_prompt:
                 self.use_llm_classification = True
@@ -119,7 +120,7 @@ class EnhancedQueryClassifier:
                 elif not llm_model:
                     logger.info("LLM-based query classification disabled - no model configured")
                 elif not llm_system_prompt:
-                    logger.info("LLM-based query classification disabled - no system prompt configured")
+                    logger.info("LLM-based query classification disabled - no system_prompt or llm_system_prompt configured")
                 
         except ImportError as e:
             logger.warning(f"Query Classifier settings cache not available yet: {e}")

@@ -43,7 +43,7 @@ DEFAULT_QUERY_CLASSIFIER_SETTINGS = {
     "llm_temperature": 0.1,  # Lower temperature for consistent classification
     "llm_max_tokens": 10,  # Token limit for classification responses (auto-updated to 75% of context)
     "llm_timeout_seconds": 5,  # Timeout for LLM classification calls
-    "llm_system_prompt": "You are a query classifier. Analyze the user's query and determine whether to use 'rag' or 'tool'.\n\n## Decision Process:\n1. Read the user's query carefully\n2. Check if the query matches any RAG collection descriptions below\n3. Check if the query matches any tool descriptions below\n4. Make your decision based on which resource best matches the query intent\n\n## rag information\nRAG collections available:\n{rag_collection}\n\n## tools information\nMCP tools available:\n{mcp_tools}\n\n## Important:\n- Choose 'rag' ONLY if the query clearly matches one of the RAG collection descriptions\n- Choose 'tool' if the query matches a tool description OR if you need external/current information\n- When uncertain, choose 'tool'\n\nBased on your analysis, answer in this exact format: TYPE|CONFIDENCE (e.g., 'rag|0.85'). Do not include explanations or other text.",
+    "system_prompt": "You are a query classifier. Analyze the user's query and determine whether to use 'rag' or 'tool'.\n\n## Decision Process:\n1. Read the user's query carefully\n2. Check if the query matches any RAG collection descriptions below\n3. Check if the query matches any tool descriptions below\n4. Make your decision based on which resource best matches the query intent\n\n## rag information\nRAG collections available:\n{rag_collection}\n\n## tools information\nMCP tools available:\n{mcp_tools}\n\n## Important:\n- Choose 'rag' ONLY if the query clearly matches one of the RAG collection descriptions\n- Choose 'tool' if the query matches a tool description OR if you need external/current information\n- When uncertain, choose 'tool'\n\nBased on your analysis, answer in this exact format: TYPE|CONFIDENCE (e.g., 'rag|0.85'). Do not include explanations or other text.",
     "tool_suggestion_prompt": "Select the most appropriate tool for this query based on the tool descriptions.\n\nQuery: {query}\n\nAvailable MCP Tools with descriptions:\n{tool_info}\n\n## Instructions:\n1. Read the query and understand what the user is asking for\n2. Review each tool's description carefully\n3. Select the tool whose description best matches the query's intent\n4. Consider the context and purpose of the query\n\nReturn ONLY the exact tool name that best matches the query.",
     "fallback_to_patterns": True,  # Fallback to pattern-based classification if LLM fails
     "llm_classification_priority": True  # If true, use LLM first; if false, use patterns first
@@ -179,7 +179,12 @@ def validate_query_classifier_settings(settings: Dict) -> Dict:
     
     # Validate strings
     validated["llm_model"] = str(validated.get("llm_model", "")).strip()
-    validated["llm_system_prompt"] = str(validated.get("llm_system_prompt", DEFAULT_QUERY_CLASSIFIER_SETTINGS["llm_system_prompt"])).strip()
+    # Use system_prompt as preferred field, fallback to llm_system_prompt for backwards compatibility
+    system_prompt = validated.get("system_prompt", "").strip() or validated.get("llm_system_prompt", "").strip() or DEFAULT_QUERY_CLASSIFIER_SETTINGS["system_prompt"]
+    validated["system_prompt"] = str(system_prompt).strip()
+    # Remove llm_system_prompt if it exists to avoid confusion
+    if "llm_system_prompt" in validated:
+        del validated["llm_system_prompt"]
     validated["tool_suggestion_prompt"] = str(validated.get("tool_suggestion_prompt", DEFAULT_QUERY_CLASSIFIER_SETTINGS["tool_suggestion_prompt"])).strip()
     
     return validated
