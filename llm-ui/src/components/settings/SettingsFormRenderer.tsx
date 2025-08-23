@@ -1275,7 +1275,7 @@ const renderPerformanceFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {cardFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                handleFieldChange(fieldKey, fieldValue);
+                handleFieldChange ? handleFieldChange(fieldKey, fieldValue) : onChange(fieldKey, fieldValue);
               }, 'large_generation', onShowSuccess, data)
             )}
           </div>
@@ -1298,7 +1298,7 @@ const renderPerformanceFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {unassignedFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                handleFieldChange(fieldKey, fieldValue);
+                handleFieldChange ? handleFieldChange(fieldKey, fieldValue) : onChange(fieldKey, fieldValue);
               }, 'large_generation', onShowSuccess, data)
             )}
           </div>
@@ -1392,7 +1392,7 @@ const renderLangfuseFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {cardFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                handleFieldChange(fieldKey, fieldValue);
+                handleFieldChange ? handleFieldChange(fieldKey, fieldValue) : onChange(fieldKey, fieldValue);
               }, 'langfuse', onShowSuccess, data)
             )}
           </div>
@@ -1415,7 +1415,7 @@ const renderLangfuseFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {unassignedFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                handleFieldChange(fieldKey, fieldValue);
+                handleFieldChange ? handleFieldChange(fieldKey, fieldValue) : onChange(fieldKey, fieldValue);
               }, 'langfuse', onShowSuccess, data)
             )}
           </div>
@@ -1509,7 +1509,7 @@ const renderEnvironmentFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {cardFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                handleFieldChange(fieldKey, fieldValue);
+                handleFieldChange ? handleFieldChange(fieldKey, fieldValue) : onChange(fieldKey, fieldValue);
               }, 'environment', onShowSuccess, data)
             )}
           </div>
@@ -1532,7 +1532,7 @@ const renderEnvironmentFieldsWithCards = (
           <div className="jarvis-form-grid single-column">
             {unassignedFields.map(({ key, value }) => 
               renderFieldFn(key, value, 0, (fieldKey, fieldValue) => {
-                handleFieldChange(fieldKey, fieldValue);
+                handleFieldChange ? handleFieldChange(fieldKey, fieldValue) : onChange(fieldKey, fieldValue);
               }, 'environment', onShowSuccess, data)
             )}
           </div>
@@ -3996,22 +3996,22 @@ const renderStandardForm = (
 
                   // Special rendering for RAG settings with card grouping
                   if (category === 'rag') {
-                    return renderRAGFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, handleFieldChange, onShowSuccess);
+                    return renderRAGFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, onChange, onShowSuccess);
                   }
                   
                   // Special rendering for Performance Optimization settings with card grouping
                   if (category === 'large_generation') {
-                    return renderPerformanceFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, handleFieldChange, onShowSuccess);
+                    return renderPerformanceFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, onChange, onShowSuccess);
                   }
                   
                   // Special rendering for Langfuse/Monitoring settings with card grouping
                   if (category === 'langfuse') {
-                    return renderLangfuseFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, handleFieldChange, onShowSuccess);
+                    return renderLangfuseFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, onChange, onShowSuccess);
                   }
                   
                   // Special rendering for Environment & Runtime settings with card grouping
                   if (category === 'environment') {
-                    return renderEnvironmentFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, handleFieldChange, onShowSuccess);
+                    return renderEnvironmentFieldsWithCards(sortedFields, categoryKey, onChange, renderField, data, onChange, onShowSuccess);
                   }
                   
                   // Special handling for Knowledge Graph category OR Knowledge Graph tab in LLM category
@@ -4078,7 +4078,7 @@ const renderStandardForm = (
                           {modelField && (
                             <div style={{ width: '100%', marginBottom: '24px' }}>
                               {renderField(modelField.key, modelField.value, 0, (fieldKey, fieldValue) => {
-                                handleFieldChange(fieldKey, fieldValue);
+                                onChange(fieldKey, fieldValue);
                               }, category, onShowSuccess, data)}
                             </div>
                           )}
@@ -4098,7 +4098,7 @@ const renderStandardForm = (
                             }}>
                               {leftColumnFields.map(({ key, value }) => 
                                 renderField(key, value, 0, (fieldKey, fieldValue) => {
-                                  handleFieldChange(fieldKey, fieldValue);
+                                  onChange(fieldKey, fieldValue);
                                 }, category, onShowSuccess, data)
                               )}
                             </div>
@@ -4112,7 +4112,7 @@ const renderStandardForm = (
                             }}>
                               {rightColumnFields.map(({ key, value }) => 
                                 renderField(key, value, 0, (fieldKey, fieldValue) => {
-                                  handleFieldChange(fieldKey, fieldValue);
+                                  onChange(fieldKey, fieldValue);
                                 }, category, onShowSuccess, data)
                               )}
                             </div>
@@ -4165,7 +4165,7 @@ const renderStandardForm = (
                           {modelField && (
                             <div style={{ width: '100%', marginBottom: '24px' }}>
                               {renderField(modelField.key, modelField.value, 0, (fieldKey, fieldValue) => {
-                                handleFieldChange(fieldKey, fieldValue);
+                                onChange(fieldKey, fieldValue);
                               }, category, onShowSuccess, data)}
                             </div>
                           )}
@@ -4185,7 +4185,7 @@ const renderStandardForm = (
                             }}>
                               {firstColumnFields.map(({ key, value }) => 
                                 renderField(key, value, 0, (fieldKey, fieldValue) => {
-                                  handleFieldChange(fieldKey, fieldValue);
+                                  onChange(fieldKey, fieldValue);
                                 }, category, onShowSuccess, data)
                               )}
                             </div>
@@ -4199,7 +4199,7 @@ const renderStandardForm = (
                             }}>
                               {secondColumnFields.map(({ key, value }) => 
                                 renderField(key, value, 0, (fieldKey, fieldValue) => {
-                                  handleFieldChange(fieldKey, fieldValue);
+                                  onChange(fieldKey, fieldValue);
                                 }, category, onShowSuccess, data)
                               )}
                             </div>

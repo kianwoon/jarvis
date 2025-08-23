@@ -200,6 +200,98 @@ export const MessageContent = React.memo(({ content }: { content: string }) => {
                   >
                     {children}
                   </Box>
+                ),
+                // Enhanced Table Components for Professional Styling
+                table: ({ children }) => (
+                  <Box
+                    component="div"
+                    sx={{
+                      overflowX: 'auto',
+                      margin: '16px 0',
+                      borderRadius: 1,
+                      border: '1px solid',
+                      borderColor: 'divider',
+                      '& table': {
+                        width: '100%',
+                        borderCollapse: 'collapse',
+                        backgroundColor: 'background.paper'
+                      }
+                    }}
+                  >
+                    <Box component="table">
+                      {children}
+                    </Box>
+                  </Box>
+                ),
+                thead: ({ children }) => (
+                  <Box
+                    component="thead"
+                    sx={{
+                      backgroundColor: 'action.hover',
+                      '& th': {
+                        fontWeight: 600,
+                        color: 'text.primary',
+                        borderBottom: '2px solid',
+                        borderBottomColor: 'divider'
+                      }
+                    }}
+                  >
+                    {children}
+                  </Box>
+                ),
+                tbody: ({ children }) => (
+                  <Box component="tbody">
+                    {children}
+                  </Box>
+                ),
+                tr: ({ children }) => (
+                  <Box
+                    component="tr"
+                    sx={{
+                      '&:nth-of-type(even)': {
+                        backgroundColor: 'action.hover'
+                      },
+                      '&:hover': {
+                        backgroundColor: 'action.selected',
+                        transition: 'background-color 0.2s ease'
+                      }
+                    }}
+                  >
+                    {children}
+                  </Box>
+                ),
+                th: ({ children }) => (
+                  <Typography
+                    component="th"
+                    sx={{
+                      padding: '12px 16px',
+                      textAlign: 'left',
+                      fontWeight: 600,
+                      fontSize: '0.875rem',
+                      lineHeight: 1.4,
+                      color: 'text.primary',
+                      borderBottom: '1px solid',
+                      borderBottomColor: 'divider'
+                    }}
+                  >
+                    {children}
+                  </Typography>
+                ),
+                td: ({ children }) => (
+                  <Typography
+                    component="td"
+                    sx={{
+                      padding: '12px 16px',
+                      fontSize: '0.875rem',
+                      lineHeight: 1.4,
+                      color: 'text.primary',
+                      borderBottom: '1px solid',
+                      borderBottomColor: 'divider',
+                      verticalAlign: 'top'
+                    }}
+                  >
+                    {children}
+                  </Typography>
                 )
               }}
             >
