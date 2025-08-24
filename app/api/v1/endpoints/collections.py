@@ -48,11 +48,11 @@ async def test_index_endpoint():
 # Pydantic models
 class CollectionCreate(BaseModel):
     collection_name: str
-    collection_type: str
-    description: str
-    metadata_schema: Dict[str, Any]
-    search_config: Dict[str, Any]
-    access_config: Dict[str, Any]
+    collection_type: str = "general"
+    description: str = ""
+    metadata_schema: Dict[str, Any] = {"fields": [], "chunk_size": 1500, "chunk_overlap": 200}
+    search_config: Dict[str, Any] = {"strategy": "balanced", "bm25_weight": 0.3, "enable_bm25": True, "max_results": 10, "similarity_threshold": 0.7}
+    access_config: Dict[str, Any] = {"restricted": False, "allowed_users": []}
 
 class CollectionUpdate(BaseModel):
     collection_type: Optional[str] = None
@@ -79,7 +79,18 @@ def get_milvus_connection():
     if vector_db_settings.get('active') != 'milvus':
         raise HTTPException(status_code=400, detail="Milvus is not the active vector database")
     
-    milvus_config = vector_db_settings.get('milvus', {})
+    # Handle both old and new format
+    milvus_config = {}
+    if 'databases' in vector_db_settings:
+        # New format: find Milvus database in databases array
+        for db in vector_db_settings.get('databases', []):
+            if db.get('id') == 'milvus' and db.get('enabled', True):
+                milvus_config = db.get('config', {})
+                break
+    else:
+        # Old format: direct access
+        milvus_config = vector_db_settings.get('milvus', {})
+    
     try:
         # Check if using cloud Milvus (Zilliz) with URI and token
         milvus_uri = milvus_config.get('MILVUS_URI')
@@ -87,6 +98,7 @@ def get_milvus_connection():
         
         if milvus_uri and milvus_token:
             # Cloud Milvus connection
+            logger.info(f"Connecting to cloud Milvus at {milvus_uri}")
             connections.connect(
                 alias="default",
                 uri=milvus_uri,
@@ -95,12 +107,17 @@ def get_milvus_connection():
             )
         else:
             # Local Milvus connection
+            host = milvus_config.get('host', 'localhost')
+            port = milvus_config.get('port', 19530)
+            logger.info(f"Connecting to local Milvus at {host}:{port}")
             connections.connect(
                 alias="default",
-                host=milvus_config.get('host', 'localhost'),
-                port=milvus_config.get('port', 19530),
+                host=host,
+                port=port,
                 timeout=5
             )
+        
+        logger.info("✅ Successfully connected to Milvus")
         return True
     except Exception as e:
         logger.error(f"Failed to connect to Milvus: {e}")
@@ -538,7 +555,7 @@ async def create_collection(collection: CollectionCreate, db=Depends(get_db)):
         if not collection.collection_name or not collection.collection_name.replace('_', '').replace('-', '').isalnum():
             raise HTTPException(status_code=400, detail="Collection name must contain only letters, numbers, hyphens, and underscores")
         
-        # Try to connect to Milvus and create collection
+        # Connect to Milvus and create collection (must succeed)
         try:
             get_milvus_connection()
             
@@ -546,48 +563,73 @@ async def create_collection(collection: CollectionCreate, db=Depends(get_db)):
             if utility.has_collection(collection.collection_name):
                 raise HTTPException(status_code=400, detail="Collection already exists in vector database")
             
-            # Create Milvus collection
+            # Create Milvus collection - this must succeed before database save
             create_milvus_collection(collection.collection_name, collection.metadata_schema)
-        except HTTPException as e:
-            # If it's a connection error, log it but continue
-            # The collection registry can still work without Milvus
-            if "Failed to connect to vector database" in str(e.detail):
-                logger.warning(f"Milvus not available, creating collection registry entry only: {e.detail}")
-            else:
-                raise
+            logger.info(f"✅ Successfully created Milvus collection: {collection.collection_name}")
+            
+        except Exception as e:
+            # If Milvus creation fails, don't proceed with database save
+            logger.error(f"❌ Failed to create Milvus collection '{collection.collection_name}': {str(e)}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to create collection in vector database: {str(e)}"
+            )
         
-        # Insert into database
-        query = """
-            INSERT INTO collection_registry 
-            (collection_name, collection_type, description, metadata_schema, 
-             search_config, access_config, created_at, updated_at)
-            VALUES (:collection_name, :collection_type, :description, :metadata_schema, 
-                    :search_config, :access_config, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """
+        # Auto-generate description if empty
+        description = collection.description or f"Custom collection: {collection.collection_name}"
         
-        db.execute(text(query), {
-            "collection_name": collection.collection_name,
-            "collection_type": collection.collection_type,
-            "description": collection.description,
-            "metadata_schema": json.dumps(collection.metadata_schema),
-            "search_config": json.dumps(collection.search_config),
-            "access_config": json.dumps(collection.access_config)
-        })
-        db.commit()
+        # Save to database (if this fails, cleanup Milvus collection)
+        try:
+            # Insert into database
+            query = """
+                INSERT INTO collection_registry 
+                (collection_name, collection_type, description, metadata_schema, 
+                 search_config, access_config, created_at, updated_at)
+                VALUES (:collection_name, :collection_type, :description, :metadata_schema, 
+                        :search_config, :access_config, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """
+            
+            db.execute(text(query), {
+                "collection_name": collection.collection_name,
+                "collection_type": collection.collection_type,
+                "description": description,
+                "metadata_schema": json.dumps(collection.metadata_schema),
+                "search_config": json.dumps(collection.search_config),
+                "access_config": json.dumps(collection.access_config)
+            })
+            db.commit()
+            
+            # Initialize statistics
+            stats_query = """
+                INSERT INTO collection_statistics 
+                (collection_name, document_count, total_chunks, storage_size_mb, last_updated)
+                VALUES (:collection_name, 0, 0, 0.0, CURRENT_TIMESTAMP)
+            """
+            db.execute(text(stats_query), {"collection_name": collection.collection_name})
+            db.commit()
+            
+            logger.info(f"✅ Successfully saved collection to database: {collection.collection_name}")
+            
+        except Exception as e:
+            # Database save failed, cleanup Milvus collection
+            db.rollback()
+            logger.error(f"❌ Database save failed, cleaning up Milvus collection: {str(e)}")
+            
+            try:
+                # Cleanup Milvus collection
+                if utility.has_collection(collection.collection_name):
+                    utility.drop_collection(collection.collection_name)
+                    logger.info(f"🧹 Cleaned up Milvus collection: {collection.collection_name}")
+            except Exception as cleanup_error:
+                logger.error(f"Failed to cleanup Milvus collection: {cleanup_error}")
+            
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to save collection to database: {str(e)}"
+            )
         
-        # Initialize statistics
-        stats_query = """
-            INSERT INTO collection_statistics 
-            (collection_name, document_count, total_chunks, storage_size_mb, last_updated)
-            VALUES (:collection_name, 0, 0, 0.0, CURRENT_TIMESTAMP)
-        """
-        db.execute(text(stats_query), {"collection_name": collection.collection_name})
-        db.commit()
-        
-        # Invalidate cache
+        # Invalidate cache and return the created collection
         invalidate_collection_cache(collection.collection_name)
-        
-        # Return the created collection
         return await get_collection(collection.collection_name, db)
         
     except HTTPException:

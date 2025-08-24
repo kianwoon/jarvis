@@ -48,6 +48,11 @@ const NavigationBar: React.FC<NavigationBarProps> = ({ currentTab }) => {
           window.location.href = '/idc.html';
         }
         break;
+      case 7:
+        if (currentTab !== 7) {
+          window.location.href = '/notebook.html';
+        }
+        break;
     }
   };
 
@@ -106,6 +111,11 @@ const NavigationBar: React.FC<NavigationBarProps> = ({ currentTab }) => {
           label="IDC" 
           id="tab-6"
           aria-controls="tabpanel-6"
+        />
+        <Tab 
+          label="Notebooks" 
+          id="tab-7"
+          aria-controls="tabpanel-7"
         />
       </Tabs>
     </Box>

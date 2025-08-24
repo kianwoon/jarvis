@@ -15,8 +15,11 @@ export default defineConfig({
         'multi-agent': resolve(__dirname, 'multi-agent.html'),
         'settings': resolve(__dirname, 'settings.html'),
         'workflow': resolve(__dirname, 'workflow.html'),
+        'meta-task': resolve(__dirname, 'meta-task.html'),
         'knowledge-graph': resolve(__dirname, 'knowledge-graph.html'),
-        'idc': resolve(__dirname, 'idc.html')
+        'idc': resolve(__dirname, 'idc.html'),
+        'notebook': resolve(__dirname, 'notebook.html'),
+        'admin': resolve(__dirname, 'admin.html')
       }
     }
   },

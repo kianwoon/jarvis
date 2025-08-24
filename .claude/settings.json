@@ -223,5 +223,5 @@
     ]
   },
   "disableAllHooks": false,
-  "outputStyle": "speedy-casual"
+  "outputStyle": "concise-audio-feedback"
 }

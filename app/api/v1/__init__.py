@@ -23,6 +23,7 @@ from app.api.v1.endpoints import unified_processing
 from app.api.v1.endpoints import idc
 from app.api.v1.endpoints import radiating
 from app.api.v1.endpoints import meta_task
+from app.api.v1.endpoints import notebooks
 import logging
 
 logger = logging.getLogger(__name__)
@@ -227,4 +228,10 @@ api_router.include_router(
     meta_task.router,
     prefix="/meta-task",
     tags=["meta-task"]
+)
+
+api_router.include_router(
+    notebooks.router,
+    prefix="/notebooks",
+    tags=["notebooks"]
 )

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>System Administration - Jarvis</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100vh;
+        overflow: hidden;
+        font-family: Arial, Helvetica, system-ui, -apple-system, sans-serif;
+        transition: background-color 0.3s ease, color 0.3s ease;
+      }
+      
+      /* Light mode (default) */
+      html[data-theme="light"] body {
+        background: #f5f5f5;
+        color: #333;
+      }
+      
+      /* Dark mode */
+      html[data-theme="dark"] body {
+        background: #121212;
+        color: #fff;
+      }
+      
+      #root {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+    </style>
+    
+    <script>
+      // Apply theme immediately based on localStorage setting
+      (function() {
+        const saved = localStorage.getItem('jarvis-dark-mode');
+        const darkMode = saved ? JSON.parse(saved) : false;
+        // Use documentElement since body doesn't exist yet
+        document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Set theme on body element once it's available
+      (function() {
+        const saved = localStorage.getItem('jarvis-dark-mode');
+        const darkMode = saved ? JSON.parse(saved) : false;
+        document.body.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+      })();
+    </script>
+    <script type="module" src="/src/admin.tsx"></script>
+  </body>
+</html>

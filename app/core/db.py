@@ -371,11 +371,14 @@ class GraphSchemaEvolution(Base):
     )
 
 class DocumentCrossReference(Base):
-    """Cross-reference mapping between Milvus chunks and Neo4j entities"""
+    """Cross-reference mapping between Milvus chunks and Neo4j entities, with document-to-document references"""
     __tablename__ = "document_cross_references"
     
     id = Column(Integer, primary_key=True, index=True)
     document_id = Column(String(255), ForeignKey('knowledge_graph_documents.document_id'), nullable=False, index=True)
+    
+    # Document-to-document references
+    referenced_document_id = Column(String(255), ForeignKey('knowledge_graph_documents.document_id'), nullable=True, index=True)
     
     # Milvus references
     milvus_collection = Column(String(100), nullable=False)

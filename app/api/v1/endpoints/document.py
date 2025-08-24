@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -21,6 +21,8 @@ from app.rag.bm25_processor import BM25Processor
 from app.core.document_classifier import get_document_classifier
 from app.core.collection_registry_cache import get_collection_config
 from app.utils.metadata_extractor import MetadataExtractor
+from app.core.db import get_db, KnowledgeGraphDocument
+from sqlalchemy.orm import Session
 
 router = APIRouter()
 
@@ -28,6 +30,19 @@ class DocumentRequest(BaseModel):
     topic: str
     doc_id: str
     metadata: Optional[dict] = None
+
+class DocumentInfo(BaseModel):
+    document_id: str
+    filename: str
+    file_type: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+    processing_status: str
+    milvus_collection: Optional[str] = None
+    created_at: str
+
+class DocumentsListResponse(BaseModel):
+    documents: List[DocumentInfo]
+    total_count: int
 
 # Custom embedding function for HTTP endpoint
 class HTTPEmbeddingFunction:
@@ -59,9 +74,33 @@ class HTTPEmbeddingFunction:
                     print("Response content:", resp.content)
                 resp.raise_for_status()
                 
-                embedding_data = resp.json()["embeddings"][0]
-                embeddings.append(embedding_data)
-                print(f"[DEBUG] HTTPEmbeddingFunction: Successfully got embedding with dimension {len(embedding_data)}")
+                # Parse JSON response with error handling for KeyError 'embeddings'
+                try:
+                    response_json = resp.json()
+                    print(f"[DEBUG] HTTPEmbeddingFunction: Response JSON keys: {list(response_json.keys())}")
+                    
+                    if "embeddings" not in response_json:
+                        print(f"[ERROR] HTTPEmbeddingFunction: KeyError - 'embeddings' key not found in response")
+                        print(f"[ERROR] HTTPEmbeddingFunction: Full response: {response_json}")
+                        raise KeyError("'embeddings' key not found in embedding service response")
+                    
+                    if not isinstance(response_json["embeddings"], list) or len(response_json["embeddings"]) == 0:
+                        print(f"[ERROR] HTTPEmbeddingFunction: Embeddings list is empty or invalid")
+                        print(f"[ERROR] HTTPEmbeddingFunction: Embeddings value: {response_json['embeddings']}")
+                        raise ValueError("Embeddings list is empty or invalid")
+                    
+                    embedding_data = response_json["embeddings"][0]
+                    embeddings.append(embedding_data)
+                    print(f"[DEBUG] HTTPEmbeddingFunction: Successfully got embedding with dimension {len(embedding_data)}")
+                    
+                except KeyError as ke:
+                    print(f"[ERROR] HTTPEmbeddingFunction: KeyError accessing response - {str(ke)}")
+                    print(f"[ERROR] HTTPEmbeddingFunction: Response content: {resp.content}")
+                    raise HTTPException(status_code=500, detail=f"Invalid embedding service response format: {str(ke)}")
+                except json.JSONDecodeError as je:
+                    print(f"[ERROR] HTTPEmbeddingFunction: JSON decode error - {str(je)}")
+                    print(f"[ERROR] HTTPEmbeddingFunction: Raw response: {resp.content}")
+                    raise HTTPException(status_code=500, detail=f"Invalid JSON response from embedding service: {str(je)}")
                 
             except requests.exceptions.Timeout as e:
                 print(f"[ERROR] HTTPEmbeddingFunction: Timeout after 30 seconds for text: {normalized_text[:50]}...")
@@ -149,6 +188,72 @@ async def generate_document(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to start document generation: {str(e)}"
+        )
+
+@router.get("/", response_model=DocumentsListResponse)
+async def list_documents(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Page size"),
+    status: Optional[str] = Query(None, description="Filter by processing status"),
+    file_type: Optional[str] = Query(None, description="Filter by file type"),
+    db: Session = Depends(get_db)
+):
+    """
+    List available documents that can be added to notebooks.
+    
+    Args:
+        page: Page number (1-based)
+        page_size: Number of items per page
+        status: Filter by processing status (completed, processing, failed, etc.)
+        file_type: Filter by file type (pdf, txt, etc.)
+        db: Database session
+        
+    Returns:
+        Paginated list of available documents
+    """
+    try:
+        print(f"📋 Listing documents: page={page}, size={page_size}, status={status}, file_type={file_type}")
+        
+        # Build query
+        query = db.query(KnowledgeGraphDocument)
+        
+        # Apply filters
+        if status:
+            query = query.filter(KnowledgeGraphDocument.processing_status == status)
+        if file_type:
+            query = query.filter(KnowledgeGraphDocument.file_type == file_type)
+        
+        # Get total count
+        total_count = query.count()
+        
+        # Apply pagination
+        documents = query.offset((page - 1) * page_size).limit(page_size).all()
+        
+        # Convert to response format
+        document_list = []
+        for doc in documents:
+            document_list.append(DocumentInfo(
+                document_id=doc.document_id,
+                filename=doc.filename,
+                file_type=doc.file_type,
+                file_size_bytes=doc.file_size_bytes,
+                processing_status=doc.processing_status,
+                milvus_collection=doc.milvus_collection,
+                created_at=doc.created_at.isoformat() if doc.created_at else ""
+            ))
+        
+        print(f"✅ Found {len(document_list)} documents (total: {total_count})")
+        
+        return DocumentsListResponse(
+            documents=document_list,
+            total_count=total_count
+        )
+        
+    except Exception as e:
+        print(f"❌ Error listing documents: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list documents: {str(e)}"
         )
 
 @router.post("/upload_pdf")
