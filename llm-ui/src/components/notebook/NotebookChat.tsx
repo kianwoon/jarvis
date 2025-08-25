@@ -167,6 +167,9 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
           try {
             const data = JSON.parse(line);
             
+            // Debug: Log all response data to understand format
+            console.log('📨 Received response data:', data);
+            
             if (data.type === 'status' && data.message) {
               setStatusMessage(data.message);
               // Clear status message after 3 seconds unless it's replaced
@@ -180,10 +183,11 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
               setTimeout(() => {
                 setStatusMessage(prev => prev === classificationMsg ? '' : prev);
               }, 2000);
-            } else if (data.token) {
+            } else if (data.token || data.chunk) {
               // Clear status message when actual content starts
               setStatusMessage('');
-              assistantMessage.content += data.token;
+              const tokenText = data.token || data.chunk;
+              assistantMessage.content += tokenText;
               if (data.metadata) {
                 assistantMessage.metadata = data.metadata;
               }
@@ -196,10 +200,11 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
               assistantMessage.content = data.answer;
               assistantMessage.metadata = data.metadata;
               
-              if (data.context_documents || data.retrieved_docs || data.documents) {
-                assistantMessage.context = (data.context_documents || data.retrieved_docs || data.documents).map((doc: any) => ({
+              if (data.sources || data.context_documents || data.retrieved_docs || data.documents) {
+                const sources = data.sources || data.context_documents || data.retrieved_docs || data.documents;
+                assistantMessage.context = sources.map((doc: any) => ({
                   content: doc.content || doc.text || '',
-                  source: doc.source || doc.metadata?.source || 'Unknown',
+                  source: doc.source || doc.document_name || doc.metadata?.source || 'Unknown',
                   score: doc.relevance_score || doc.score
                 }));
               }
@@ -211,10 +216,22 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
               break;
             }
           } catch (e) {
-            // Skip invalid JSON lines
+            // Log parsing errors to help debug response format issues
+            console.warn('⚠️ Failed to parse response line:', line, 'Error:', e);
           }
         }
       }
+      
+      // If we have partial content from streaming but never got a final response, keep it
+      if (assistantMessage && assistantMessage.content.trim()) {
+        console.log('💾 Preserving partial streaming response:', assistantMessage.content.length, 'characters');
+        setMessages(prev => 
+          prev.map(msg => 
+            msg.id === assistantMessage.id ? assistantMessage : msg
+          )
+        );
+      }
+      
     } catch (error) {
       console.error('Notebook chat request failed:', error);
       setError(getErrorMessage(error));

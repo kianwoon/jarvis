@@ -16,6 +16,7 @@ from app.models.notebook_models import (
 )
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.embedding_settings_cache import get_embedding_settings
+from app.core.notebook_llm_settings_cache import get_notebook_llm_settings
 from app.api.v1.endpoints.document import HTTPEmbeddingFunction
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from pymilvus import connections, Collection, utility
@@ -242,7 +243,27 @@ class NotebookRAGService:
                         "params": {"nprobe": 10}
                     }
                     
-                    limit = min(top_k * 2, 50)  # Get more results for filtering
+                    # Get configurable retrieval limits for comprehensive coverage
+                    try:
+                        notebook_settings = get_notebook_llm_settings()
+                        max_retrieval_chunks = notebook_settings.get('notebook_llm', {}).get('max_retrieval_chunks', 200)
+                        retrieval_multiplier = notebook_settings.get('notebook_llm', {}).get('retrieval_multiplier', 3)
+                        # Document-aware retrieval settings
+                        include_neighboring_chunks = notebook_settings.get('notebook_llm', {}).get('include_neighboring_chunks', True)
+                        neighbor_chunk_radius = notebook_settings.get('notebook_llm', {}).get('neighbor_chunk_radius', 2)
+                        document_completeness_threshold = notebook_settings.get('notebook_llm', {}).get('document_completeness_threshold', 0.8)
+                        enable_document_aware_retrieval = notebook_settings.get('notebook_llm', {}).get('enable_document_aware_retrieval', True)
+                    except Exception as e:
+                        self.logger.warning(f"Could not load notebook settings, using defaults: {e}")
+                        max_retrieval_chunks = 200  # Default for comprehensive retrieval
+                        retrieval_multiplier = 3    # Default multiplier
+                        # Document-aware retrieval defaults
+                        include_neighboring_chunks = True
+                        neighbor_chunk_radius = 2
+                        document_completeness_threshold = 0.8
+                        enable_document_aware_retrieval = True
+                    
+                    limit = min(top_k * retrieval_multiplier, max_retrieval_chunks)
                     
                     self.logger.debug(f"[DEBUG] About to call collection.search with limit: {limit}")
                     if doc_filter:
@@ -259,8 +280,8 @@ class NotebookRAGService:
                             output_fields=["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
                         )
                         
-                        # Convert results to our format
-                        results = []
+                        # Convert initial results to our format
+                        initial_results = []
                         for hits in search_results:
                             for hit in hits:
                                 # Extract fields from Milvus result
@@ -282,7 +303,23 @@ class NotebookRAGService:
                                     'metadata': metadata
                                 }
                                 
-                                results.append((doc, hit.score))
+                                initial_results.append((doc, hit.score))
+                        
+                        # Apply document-aware retrieval logic
+                        if enable_document_aware_retrieval and initial_results:
+                            results = await self._apply_document_aware_retrieval(
+                                initial_results, 
+                                collection,
+                                query_embedding,
+                                search_params,
+                                doc_filter,
+                                include_neighboring_chunks,
+                                neighbor_chunk_radius,
+                                document_completeness_threshold,
+                                max_retrieval_chunks
+                            )
+                        else:
+                            results = initial_results
                         
                         self.logger.debug(f"[DEBUG] Successfully executed direct search, got {len(results)} results")
                     except Exception as search_err:
@@ -466,7 +503,14 @@ class NotebookRAGService:
                         self.logger.debug(f"[SOURCE_ADDED] Current all_sources count: {len(all_sources)}")
                         self.logger.debug(f"[SOURCE_ADDED] Last added source type: '{source.source_type}', name: '{source.document_name}'")
                         
-                        if len(all_sources) >= top_k * 3:  # Collect more for better ranking
+                        # Use configurable multiplier for source collection
+                        try:
+                            notebook_settings = get_notebook_llm_settings()
+                            collection_multiplier = notebook_settings.get('notebook_llm', {}).get('collection_multiplier', 4)
+                        except Exception:
+                            collection_multiplier = 4  # Default for comprehensive collection
+                        
+                        if len(all_sources) >= top_k * collection_multiplier:
                             break
                     
                     self.logger.debug(f"Found {len(results)} results from collection {collection_name}")
@@ -529,6 +573,441 @@ class NotebookRAGService:
                 collections_searched=[]
             )
     
+    async def _apply_document_aware_retrieval(
+        self,
+        initial_results: List[tuple],
+        collection,
+        query_embedding: List[float],
+        search_params: Dict[str, Any],
+        doc_filter: Optional[str],
+        include_neighboring_chunks: bool,
+        neighbor_chunk_radius: int,
+        document_completeness_threshold: float,
+        max_retrieval_chunks: int
+    ) -> List[tuple]:
+        """
+        Apply document-aware retrieval logic to initial results with memory-first prioritization.
+        
+        This method implements NotebookLM-style comprehensive information coverage by:
+        1. Separating memory sources from document sources (memory-first priority)
+        2. Grouping chunks by document and calculating document-level scores
+        3. Retrieving ALL memory chunks for completeness (memories are user-curated)
+        4. Retrieving neighboring chunks when a chunk matches
+        5. Including complete documents when they exceed the completeness threshold
+        6. Boosting memory chunk scores for final ranking
+        
+        Args:
+            initial_results: Initial search results as (doc, score) tuples
+            collection: Milvus collection instance
+            query_embedding: Query embedding vector
+            search_params: Milvus search parameters
+            doc_filter: Document filter expression
+            include_neighboring_chunks: Whether to include neighboring chunks
+            neighbor_chunk_radius: Number of chunks to include before and after matches
+            document_completeness_threshold: Score threshold for including complete documents
+            max_retrieval_chunks: Maximum number of chunks to retrieve
+            
+        Returns:
+            Enhanced results with document-aware retrieval and memory-first prioritization applied
+        """
+        try:
+            from collections import defaultdict
+            import re
+            
+            if not initial_results:
+                return initial_results
+            
+            self.logger.debug(f"[DOCUMENT_AWARE] Starting document-aware retrieval with memory-first prioritization, {len(initial_results)} initial results")
+            
+            # Load memory prioritization settings
+            try:
+                notebook_settings = get_notebook_llm_settings()
+                prioritize_memory_sources = notebook_settings.get('notebook_llm', {}).get('prioritize_memory_sources', True)
+                memory_score_boost = notebook_settings.get('notebook_llm', {}).get('memory_score_boost', 0.2)
+                include_all_memory_chunks = notebook_settings.get('notebook_llm', {}).get('include_all_memory_chunks', True)
+            except Exception as e:
+                self.logger.warning(f"Could not load memory prioritization settings, using defaults: {e}")
+                prioritize_memory_sources = True
+                memory_score_boost = 0.2
+                include_all_memory_chunks = True
+            
+            self.logger.debug(f"[MEMORY_PRIORITY] Settings: prioritize={prioritize_memory_sources}, boost={memory_score_boost}, include_all={include_all_memory_chunks}")
+            
+            # Step 1: Separate memory sources from document sources
+            memory_chunks = []
+            document_chunks = []
+            
+            for doc, score in initial_results:
+                if self._is_memory_source(doc):
+                    memory_chunks.append((doc, score))
+                    self.logger.debug(f"[MEMORY_PRIORITY] Identified memory chunk: {doc.get('metadata', {}).get('doc_id', 'unknown')}")
+                else:
+                    document_chunks.append((doc, score))
+            
+            self.logger.debug(f"[MEMORY_PRIORITY] Separated {len(memory_chunks)} memory chunks and {len(document_chunks)} document chunks")
+            
+            enhanced_results = []
+            processed_chunk_ids = set()
+            
+            # Step 2: Process memory sources first (if prioritization enabled)
+            if prioritize_memory_sources and memory_chunks:
+                self.logger.debug(f"[MEMORY_PRIORITY] Processing memory chunks first")
+                
+                # Group memory chunks by document ID
+                memory_by_document = defaultdict(list)
+                for doc, score in memory_chunks:
+                    doc_id = doc.get('metadata', {}).get('doc_id', '')
+                    base_doc_id = self._extract_base_document_id(doc_id)
+                    memory_by_document[base_doc_id].append((doc, score, doc_id))
+                
+                # Process each memory document
+                for base_doc_id, memory_doc_chunks in memory_by_document.items():
+                    self.logger.debug(f"[MEMORY_PRIORITY] Processing memory document {base_doc_id[:12]}... with {len(memory_doc_chunks)} chunks")
+                    
+                    if include_all_memory_chunks:
+                        # Retrieve ALL chunks from this memory document for completeness
+                        try:
+                            all_memory_chunks = await self._retrieve_complete_document_chunks(
+                                collection, base_doc_id, query_embedding, search_params, doc_filter, max_retrieval_chunks
+                            )
+                            
+                            # Add all memory chunks with score boost
+                            for chunk_doc, chunk_score in all_memory_chunks:
+                                chunk_id = chunk_doc.get('metadata', {}).get('doc_id', '')
+                                if chunk_id not in processed_chunk_ids:
+                                    # Boost memory chunk score
+                                    boosted_score = min(chunk_score + memory_score_boost, 1.0)
+                                    enhanced_results.append((chunk_doc, boosted_score))
+                                    processed_chunk_ids.add(chunk_id)
+                                    self.logger.debug(f"[MEMORY_PRIORITY] Added complete memory chunk {chunk_id} with boosted score {boosted_score:.3f}")
+                        except Exception as e:
+                            self.logger.warning(f"[MEMORY_PRIORITY] Could not retrieve complete memory document {base_doc_id}: {e}")
+                            # Fallback to just the matching chunks
+                            for doc, score, doc_id in memory_doc_chunks:
+                                if doc_id not in processed_chunk_ids:
+                                    boosted_score = min(score + memory_score_boost, 1.0)
+                                    enhanced_results.append((doc, boosted_score))
+                                    processed_chunk_ids.add(doc_id)
+                    else:
+                        # Just add the matching memory chunks with boost
+                        for doc, score, doc_id in memory_doc_chunks:
+                            if doc_id not in processed_chunk_ids:
+                                boosted_score = min(score + memory_score_boost, 1.0)
+                                enhanced_results.append((doc, boosted_score))
+                                processed_chunk_ids.add(doc_id)
+            
+            self.logger.debug(f"[MEMORY_PRIORITY] After memory processing: {len(enhanced_results)} chunks")
+            
+            # Step 3: Process document sources (if space remaining)
+            remaining_capacity = max_retrieval_chunks - len(enhanced_results)
+            if remaining_capacity > 0 and document_chunks:
+                self.logger.debug(f"[MEMORY_PRIORITY] Processing document chunks with remaining capacity: {remaining_capacity}")
+                
+                # Group document chunks by document
+                chunks_by_document = defaultdict(list)
+                for doc, score in document_chunks:
+                    doc_id = doc.get('metadata', {}).get('doc_id', '')
+                    base_doc_id = self._extract_base_document_id(doc_id)
+                    chunks_by_document[base_doc_id].append((doc, score, doc_id))
+            
+                # Calculate document-level scores for remaining document chunks
+                document_scores = {}
+                for base_doc_id, chunks in chunks_by_document.items():
+                    if chunks:
+                        # Calculate average score for the document
+                        avg_score = sum(score for _, score, _ in chunks) / len(chunks)
+                        # Weight by number of matching chunks
+                        weighted_score = avg_score * min(len(chunks) / 3.0, 1.5)  # Cap multiplier at 1.5x
+                        document_scores[base_doc_id] = weighted_score
+                        
+                        self.logger.debug(f"[DOCUMENT_AWARE] Document {base_doc_id[:12]}... score: {weighted_score:.3f} (avg: {avg_score:.3f}, chunks: {len(chunks)})")
+                
+                # Process documents in order of relevance (fill remaining capacity)
+                for base_doc_id, doc_score in sorted(document_scores.items(), key=lambda x: x[1], reverse=True):
+                    if len(enhanced_results) >= max_retrieval_chunks:
+                        break
+                        
+                    document_chunks_list = chunks_by_document[base_doc_id]
+                    
+                    # Check if document exceeds completeness threshold
+                    should_include_complete_document = doc_score >= document_completeness_threshold
+                    
+                    if should_include_complete_document:
+                        self.logger.debug(f"[DOCUMENT_AWARE] Including complete document {base_doc_id[:12]}... (score: {doc_score:.3f} >= {document_completeness_threshold})")
+                        
+                        # Retrieve all chunks from this document
+                        all_doc_chunks = await self._retrieve_complete_document_chunks(
+                            collection, base_doc_id, query_embedding, search_params, doc_filter, remaining_capacity
+                        )
+                        
+                        # Add all chunks from complete document
+                        for chunk_doc, chunk_score in all_doc_chunks:
+                            if len(enhanced_results) >= max_retrieval_chunks:
+                                break
+                            chunk_id = chunk_doc.get('metadata', {}).get('doc_id', '')
+                            if chunk_id not in processed_chunk_ids:
+                                enhanced_results.append((chunk_doc, chunk_score))
+                                processed_chunk_ids.add(chunk_id)
+                    else:
+                        # Process individual matching chunks and their neighbors
+                        for doc, score, doc_id in document_chunks_list:
+                            if len(enhanced_results) >= max_retrieval_chunks:
+                                break
+                            if doc_id not in processed_chunk_ids:
+                                enhanced_results.append((doc, score))
+                                processed_chunk_ids.add(doc_id)
+                                
+                                # Retrieve neighboring chunks if enabled
+                                if include_neighboring_chunks and len(enhanced_results) < max_retrieval_chunks:
+                                    neighbor_chunks = await self._retrieve_neighboring_chunks(
+                                        collection, doc_id, neighbor_chunk_radius, doc_filter
+                                    )
+                                
+                                    for neighbor_doc, neighbor_score in neighbor_chunks:
+                                        if len(enhanced_results) >= max_retrieval_chunks:
+                                            break
+                                        neighbor_id = neighbor_doc.get('metadata', {}).get('doc_id', '')
+                                        if neighbor_id not in processed_chunk_ids:
+                                            enhanced_results.append((neighbor_doc, neighbor_score))
+                                            processed_chunk_ids.add(neighbor_id)
+            
+            # Step 4: Final sorting and output
+            self.logger.debug(f"[MEMORY_PRIORITY] Final enhanced results: {len(enhanced_results)} chunks from {len(processed_chunk_ids)} unique chunks")
+            
+            # Sort by relevance score (memories will naturally rank higher due to score boost)
+            enhanced_results.sort(key=lambda x: x[1], reverse=True)
+            final_results = enhanced_results[:max_retrieval_chunks]
+            
+            # Debug: Log final ranking to verify memory prioritization
+            memory_count = sum(1 for doc, score in final_results if self._is_memory_source(doc))
+            self.logger.debug(f"[MEMORY_PRIORITY] Final ranking: {memory_count} memory chunks, {len(final_results) - memory_count} document chunks")
+            
+            return final_results
+            
+        except Exception as e:
+            self.logger.error(f"[DOCUMENT_AWARE] Error in document-aware retrieval: {str(e)}")
+            self.logger.error(f"[DOCUMENT_AWARE] Falling back to original results")
+            return initial_results
+    
+    def _extract_base_document_id(self, doc_id: str) -> str:
+        """
+        Extract base document ID from chunk ID.
+        
+        For chunked IDs like '33997c75bf33_p1_c6', returns '33997c75bf33'.
+        For memory UUIDs, returns the full UUID.
+        """
+        if not doc_id:
+            return doc_id
+        
+        # Check if this looks like a UUID (memory ID)
+        if len(doc_id) == 36 and doc_id.count('-') == 4:
+            return doc_id
+        
+        # For document chunks, extract base ID before first underscore
+        if '_' in doc_id:
+            return doc_id.split('_')[0]
+        
+        return doc_id
+    
+    def _is_memory_source(self, chunk_data: Dict[str, Any]) -> bool:
+        """
+        Check if a chunk is from a memory source.
+        
+        Memory sources are identified by:
+        1. doc_type: 'memory' in metadata
+        2. doc_id in UUID format (36 chars with 4 dashes)
+        
+        Args:
+            chunk_data: Document data dictionary with metadata
+            
+        Returns:
+            True if this is a memory source, False otherwise
+        """
+        try:
+            # Extract metadata from different possible structures
+            metadata = {}
+            if isinstance(chunk_data, dict):
+                if 'metadata' in chunk_data:
+                    metadata = chunk_data['metadata']
+                else:
+                    # Chunk_data might be the metadata itself
+                    metadata = chunk_data
+            elif hasattr(chunk_data, 'metadata'):
+                metadata = chunk_data.metadata if isinstance(chunk_data.metadata, dict) else {}
+            
+            # Check doc_type first
+            doc_type = metadata.get('doc_type', '')
+            if doc_type == 'memory':
+                return True
+            
+            # Check doc_id format (UUID pattern)
+            doc_id = metadata.get('doc_id', '')
+            if doc_id and len(doc_id) == 36 and doc_id.count('-') == 4:
+                return True
+            
+            return False
+        except Exception as e:
+            self.logger.debug(f"[MEMORY_DETECTION] Error detecting memory source: {str(e)}")
+            return False
+    
+    async def _retrieve_complete_document_chunks(
+        self,
+        collection,
+        base_doc_id: str,
+        query_embedding: List[float],
+        search_params: Dict[str, Any],
+        doc_filter: Optional[str],
+        max_chunks: int
+    ) -> List[tuple]:
+        """
+        Retrieve all chunks from a complete document.
+        """
+        try:
+            # Create filter for all chunks from this document
+            if len(base_doc_id) == 36 and base_doc_id.count('-') == 4:
+                # Memory ID - exact match
+                complete_doc_filter = f"doc_id == '{base_doc_id}'"
+            else:
+                # Document ID - prefix match for all chunks
+                complete_doc_filter = f"doc_id like '{base_doc_id}%'"
+            
+            # Combine with existing doc_filter if present
+            if doc_filter:
+                complete_doc_filter = f"({doc_filter}) and ({complete_doc_filter})"
+            
+            # Search for all chunks from this document
+            search_results = collection.search(
+                data=[query_embedding],
+                anns_field="vector",
+                param=search_params,
+                limit=max_chunks,
+                expr=complete_doc_filter,
+                output_fields=["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
+            )
+            
+            results = []
+            for hits in search_results:
+                for hit in hits:
+                    content = hit.entity.get('content', '')
+                    metadata = {
+                        'doc_id': hit.entity.get('doc_id', ''),
+                        'source': hit.entity.get('source', ''),
+                        'page': hit.entity.get('page', 0),
+                        'doc_type': hit.entity.get('doc_type', ''),
+                        'uploaded_at': hit.entity.get('uploaded_at', ''),
+                        'section': hit.entity.get('section', ''),
+                        'author': hit.entity.get('author', ''),
+                        'hash': hit.entity.get('hash', '')
+                    }
+                    
+                    doc = {
+                        'page_content': content,
+                        'metadata': metadata
+                    }
+                    
+                    results.append((doc, hit.score))
+            
+            self.logger.debug(f"[COMPLETE_DOC] Retrieved {len(results)} chunks for document {base_doc_id[:12]}...")
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"[COMPLETE_DOC] Error retrieving complete document {base_doc_id}: {str(e)}")
+            return []
+    
+    async def _retrieve_neighboring_chunks(
+        self,
+        collection,
+        chunk_id: str,
+        radius: int,
+        doc_filter: Optional[str]
+    ) -> List[tuple]:
+        """
+        Retrieve neighboring chunks around a given chunk.
+        
+        For chunk IDs like 'doc_id_p1_c5', retrieves chunks c3, c4, c6, c7 (with radius=2).
+        """
+        try:
+            import re
+            
+            neighbors = []
+            
+            # Parse chunk ID to extract base document and chunk info
+            if '_' not in chunk_id:
+                return neighbors  # Can't find neighbors for non-chunked IDs
+            
+            # Extract chunk number from IDs like 'doc_id_p1_c5'
+            match = re.search(r'(.+_p\d+_c)(\d+)$', chunk_id)
+            if not match:
+                return neighbors
+            
+            chunk_prefix = match.group(1)  # 'doc_id_p1_c'
+            chunk_num = int(match.group(2))  # 5
+            
+            # Generate neighboring chunk IDs
+            neighbor_chunk_ids = []
+            for offset in range(-radius, radius + 1):
+                if offset == 0:  # Skip the original chunk
+                    continue
+                neighbor_num = chunk_num + offset
+                if neighbor_num >= 0:  # Don't go below chunk 0
+                    neighbor_id = f"{chunk_prefix}{neighbor_num}"
+                    neighbor_chunk_ids.append(neighbor_id)
+            
+            if not neighbor_chunk_ids:
+                return neighbors
+            
+            # Create filter for neighboring chunks
+            neighbor_conditions = [f"doc_id == '{nid}'" for nid in neighbor_chunk_ids]
+            neighbor_filter = " or ".join(neighbor_conditions)
+            
+            # Combine with existing doc_filter if present
+            if doc_filter:
+                neighbor_filter = f"({doc_filter}) and ({neighbor_filter})"
+            
+            # Search for neighboring chunks
+            # Use the actual query embedding for consistency
+            neighbor_embedding = query_embedding if query_embedding else [0.0] * 384
+            
+            search_results = collection.search(
+                data=[neighbor_embedding],
+                anns_field="vector",
+                param={"metric_type": "COSINE", "params": {"nprobe": 10}},
+                limit=len(neighbor_chunk_ids),
+                expr=neighbor_filter,
+                output_fields=["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
+            )
+            
+            for hits in search_results:
+                for hit in hits:
+                    content = hit.entity.get('content', '')
+                    if content:  # Only include chunks with content
+                        metadata = {
+                            'doc_id': hit.entity.get('doc_id', ''),
+                            'source': hit.entity.get('source', ''),
+                            'page': hit.entity.get('page', 0),
+                            'doc_type': hit.entity.get('doc_type', ''),
+                            'uploaded_at': hit.entity.get('uploaded_at', ''),
+                            'section': hit.entity.get('section', ''),
+                            'author': hit.entity.get('author', ''),
+                            'hash': hit.entity.get('hash', '')
+                        }
+                        
+                        doc = {
+                            'page_content': content,
+                            'metadata': metadata
+                        }
+                        
+                        # Assign a moderate score to neighboring chunks
+                        neighbor_score = 0.7  # Fixed score for neighbors
+                        neighbors.append((doc, neighbor_score))
+            
+            self.logger.debug(f"[NEIGHBORS] Retrieved {len(neighbors)} neighboring chunks for {chunk_id}")
+            return neighbors
+            
+        except Exception as e:
+            self.logger.error(f"[NEIGHBORS] Error retrieving neighbors for {chunk_id}: {str(e)}")
+            return []
+
     async def _get_notebook_collections(
         self,
         db: Session,

@@ -408,7 +408,7 @@ const DocumentAdminPage: React.FC = () => {
           <Grid item xs={12} sm={6} md={3}>
             <Card variant="outlined">
               <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <Typography variant="h5" color="primary" fontWeight="bold">
+                <Typography variant="h5" color="primary" fontWeight="bold" component="div">
                   {loading ? <Skeleton width={60} /> : stats.total_documents.toLocaleString()}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
@@ -420,7 +420,7 @@ const DocumentAdminPage: React.FC = () => {
           <Grid item xs={12} sm={6} md={3}>
             <Card variant="outlined">
               <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <Typography variant="h5" color="success.main" fontWeight="bold">
+                <Typography variant="h5" color="success.main" fontWeight="bold" component="div">
                   {loading ? <Skeleton width={60} /> : stats.completed_documents.toLocaleString()}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
@@ -432,7 +432,7 @@ const DocumentAdminPage: React.FC = () => {
           <Grid item xs={12} sm={6} md={3}>
             <Card variant="outlined">
               <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <Typography variant="h5" color="warning.main" fontWeight="bold">
+                <Typography variant="h5" color="warning.main" fontWeight="bold" component="div">
                   {loading ? <Skeleton width={60} /> : stats.orphaned_documents.toLocaleString()}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
@@ -444,7 +444,7 @@ const DocumentAdminPage: React.FC = () => {
           <Grid item xs={12} sm={6} md={3}>
             <Card variant="outlined">
               <CardContent sx={{ textAlign: 'center', py: 2 }}>
-                <Typography variant="h5" color="info.main" fontWeight="bold">
+                <Typography variant="h5" color="info.main" fontWeight="bold" component="div">
                   {loading ? <Skeleton width={60} /> : formatFileSize(stats.total_size_bytes)}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
@@ -758,12 +758,12 @@ const DocumentAdminPage: React.FC = () => {
                               <Grid item xs={12} md={6}>
                                 <Card variant="outlined">
                                   <CardContent>
-                                    <Typography variant="subtitle1" gutterBottom>
+                                    <Typography variant="subtitle1" gutterBottom component="div">
                                       <DatabaseIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
                                       Database Information
                                     </Typography>
                                     <Box sx={{ pl: 2 }}>
-                                      <Typography variant="body2" color="text.secondary">
+                                      <Typography variant="body2" color="text.secondary" component="div">
                                         Document ID: <code>{doc.document_id}</code>
                                       </Typography>
                                       <Typography variant="body2" color="text.secondary">
@@ -787,7 +787,7 @@ const DocumentAdminPage: React.FC = () => {
                               <Grid item xs={12} md={6}>
                                 <Card variant="outlined">
                                   <CardContent>
-                                    <Typography variant="subtitle1" gutterBottom>
+                                    <Typography variant="subtitle1" gutterBottom component="div">
                                       <EmbeddingIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
                                       Processing Information
                                     </Typography>
@@ -809,7 +809,7 @@ const DocumentAdminPage: React.FC = () => {
                                 <Grid item xs={12}>
                                   <Card variant="outlined">
                                     <CardContent>
-                                      <Typography variant="subtitle1" gutterBottom>
+                                      <Typography variant="subtitle1" gutterBottom component="div">
                                         <NotebookIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
                                         Used in Notebooks ({doc.notebooks_using.length})
                                       </Typography>
@@ -906,7 +906,7 @@ const DocumentAdminPage: React.FC = () => {
 
                 {info.notebooks_using.length > 0 && (
                   <Box>
-                    <Typography variant="subtitle2" gutterBottom>
+                    <Typography variant="subtitle2" gutterBottom component="div">
                       Will be removed from notebooks:
                     </Typography>
                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
@@ -976,11 +976,11 @@ const DocumentAdminPage: React.FC = () => {
                 </Typography>
                 {!deletionResults.success && deletionResults.overall_errors.length > 0 && (
                   <Box sx={{ mt: 1 }}>
-                    <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                    <Typography variant="body2" sx={{ fontWeight: 'bold' }} component="div">
                       Overall Errors:
                     </Typography>
                     {deletionResults.overall_errors.map((error, index) => (
-                      <Typography key={index} variant="body2" color="error">
+                      <Typography key={index} variant="body2" color="error" component="div">
                         • {error}
                       </Typography>
                     ))}
@@ -1052,18 +1052,18 @@ const DocumentAdminPage: React.FC = () => {
                     <Collapse in={expandedDetails.has(detail.document_id)}>
                       {detail.errors.length > 0 && (
                         <Box sx={{ mt: 2 }}>
-                          <Typography variant="subtitle2" color="error" gutterBottom>
+                          <Typography variant="subtitle2" color="error" gutterBottom component="div">
                             Errors:
                           </Typography>
                           {detail.errors.map((error, index) => (
-                            <Typography key={index} variant="body2" color="error">
+                            <Typography key={index} variant="body2" color="error" component="div">
                               • {error}
                             </Typography>
                           ))}
                         </Box>
                       )}
                       <Box sx={{ mt: 2 }}>
-                        <Typography variant="caption" color="text.secondary">
+                        <Typography variant="caption" color="text.secondary" component="div">
                           Started: {new Date(detail.started_at).toLocaleString()}<br/>
                           {detail.completed_at && `Completed: ${new Date(detail.completed_at).toLocaleString()}`}
                         </Typography>
