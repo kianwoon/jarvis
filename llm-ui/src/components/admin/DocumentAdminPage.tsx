@@ -48,6 +48,7 @@ import {
   Description as DocumentIcon,
   Storage as DatabaseIcon,
   Psychology as EmbeddingIcon,
+  Psychology as MemoryIcon,
   AccountTree as GraphIcon,
   Speed as CacheIcon,
   Book as NotebookIcon,
@@ -61,7 +62,8 @@ import {
   Visibility as ViewIcon,
   Settings as AdminIcon,
   ExitToApp as ExitIcon,
-  AutoFixHigh as AutoFixIcon
+  AutoFixHigh as AutoFixIcon,
+  Edit as EditIcon
 } from '@mui/icons-material';
 import { 
   notebookAPI, 
@@ -93,6 +95,12 @@ const DocumentAdminPage: React.FC = () => {
   // Chunk editing state
   const [chunkEditDialogOpen, setChunkEditDialogOpen] = useState(false);
   const [selectedDocumentForChunks, setSelectedDocumentForChunks] = useState<SystemDocument | null>(null);
+
+  // Memory names cache
+  const [memoryNamesCache, setMemoryNamesCache] = useState<Map<string, string>>(new Map());
+  const [memoryNamesUpdateTrigger, setMemoryNamesUpdateTrigger] = useState(0);
+  const [fetchingMemoryIds, setFetchingMemoryIds] = useState<Set<string>>(new Set());
+  const [failedMemoryIds, setFailedMemoryIds] = useState<Set<string>>(new Set());
 
   // Filter and pagination state
   const [search, setSearch] = useState('');
@@ -127,6 +135,8 @@ const DocumentAdminPage: React.FC = () => {
     try {
       setLoading(true);
       setError('');
+      // Clear failed memory IDs when refreshing documents to allow retry
+      setFailedMemoryIds(new Set());
       
       const result = await notebookAPI.getAllSystemDocuments({
         page: pagination.page,
@@ -213,7 +223,7 @@ const DocumentAdminPage: React.FC = () => {
   };
 
   // Pagination handler
-  const handleChangePage = (event: unknown, newPage: number) => {
+  const handleChangePage = (_event: unknown, newPage: number) => {
     setPagination(prev => ({ ...prev, page: newPage + 1 }));
   };
 
@@ -236,6 +246,17 @@ const DocumentAdminPage: React.FC = () => {
     setSortBy('created_at');
     setSortOrder('desc');
     setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  // Edit handlers
+  const handleEditMemory = (document: SystemDocument) => {
+    setSelectedDocumentForChunks(document);
+    setChunkEditDialogOpen(true);
+  };
+
+  const handleEditDocument = (document: SystemDocument) => {
+    setSelectedDocumentForChunks(document);
+    setChunkEditDialogOpen(true);
   };
 
   // Chunk editing handler
@@ -332,10 +353,126 @@ const DocumentAdminPage: React.FC = () => {
     window.location.href = '/notebook.html';
   };
 
-  const getFileIcon = (fileType?: string) => {
+  const getFileIcon = (fileType?: string, filename?: string) => {
+    if (filename && isMemoryDocument(filename)) {
+      return <MemoryIcon color="secondary" />;
+    }
     if (!fileType) return <DocumentIcon />;
     if (fileType.includes('pdf')) return <DocumentIcon color="error" />;
     return <DocumentIcon color="primary" />;
+  };
+
+  // Helper functions for memory documents
+  const isMemoryDocument = (filename: string): boolean => {
+    return filename.startsWith('memory_');
+  };
+
+  const extractMemoryId = (filename: string): string | null => {
+    if (isMemoryDocument(filename)) {
+      return filename.replace('memory_', '');
+    }
+    return null;
+  };
+
+  const getMemoryNameFromCache = (memoryId: string): string | null => {
+    return memoryNamesCache.get(memoryId) || null;
+  };
+
+  const fetchMemoryName = useCallback(async (memoryId: string): Promise<string | null> => {
+    try {
+      // Check cache first
+      if (memoryNamesCache.has(memoryId)) {
+        return memoryNamesCache.get(memoryId) || null;
+      }
+      
+      // Mark as being fetched
+      setFetchingMemoryIds(prev => new Set(prev.add(memoryId)));
+      
+      try {
+        // Search across all notebooks to find the memory
+        // First, get all notebooks
+        const notebooks = await notebookAPI.getNotebooks();
+        
+        for (const notebook of notebooks) {
+          try {
+            // Try to get the specific memory from this notebook
+            const memory = await notebookAPI.getMemory(notebook.id, memoryId);
+            if (memory) {
+              // Cache the result for future use
+              console.debug(`Found memory name: ${memory.name} for ID ${memoryId} in notebook ${notebook.id}`);
+              setMemoryNamesCache(prev => new Map(prev.set(memoryId, memory.name)));
+              // Trigger re-render to update display names
+              setMemoryNamesUpdateTrigger(prev => prev + 1);
+              return memory.name;
+            }
+          } catch (error) {
+            // Memory not found in this notebook, continue searching
+            // Only log if it's not a 404 error
+            const errorMsg = error?.message || error?.toString() || '';
+            if (!errorMsg.toLowerCase().includes('404') && 
+                !errorMsg.toLowerCase().includes('not found') && 
+                !errorMsg.toLowerCase().includes('memory not found')) {
+              console.warn(`Error checking memory ${memoryId} in notebook ${notebook.id}:`, error);
+            }
+          }
+        }
+        
+        // Memory not found in any notebook - mark as failed to avoid retrying
+        setFailedMemoryIds(prev => new Set(prev.add(memoryId)));
+        return null;
+      } finally {
+        // Remove from fetching set
+        setFetchingMemoryIds(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(memoryId);
+          return newSet;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to fetch memory name:', err);
+      // Mark as failed to avoid retrying
+      setFailedMemoryIds(prev => new Set(prev.add(memoryId)));
+      return null;
+    }
+  }, []);
+
+  // Trigger memory name fetching for memory documents
+  const triggerMemoryNameFetch = useCallback(async (memoryId: string) => {
+    if (!memoryNamesCache.has(memoryId) && !failedMemoryIds.has(memoryId) && !fetchingMemoryIds.has(memoryId)) {
+      try {
+        await fetchMemoryName(memoryId);
+      } catch (error) {
+        // Silently handle errors - fallback display will be used
+        console.debug(`Could not fetch name for memory ${memoryId}:`, error);
+      }
+    }
+  }, [fetchMemoryName, memoryNamesCache, fetchingMemoryIds, failedMemoryIds]);
+
+  const getDisplayName = (document: SystemDocument): string => {
+    if (isMemoryDocument(document.filename)) {
+      const memoryId = extractMemoryId(document.filename);
+      if (memoryId) {
+        const cachedName = getMemoryNameFromCache(memoryId);
+        if (cachedName) {
+          return `${cachedName} (memory)`;
+        }
+        
+        // Check if currently fetching
+        if (fetchingMemoryIds.has(memoryId)) {
+          return `Loading Memory (${memoryId.slice(0, 8)}...)`;
+        }
+        
+        // Trigger async fetch if not in cache (fire and forget)
+        triggerMemoryNameFetch(memoryId);
+        
+        // Log for debugging
+        console.debug(`Triggering memory name fetch for ${memoryId}`);
+        
+        // Fallback: show user-friendly name with truncated UUID
+        return `Personal Memory (${memoryId.slice(0, 8)}...)`;
+      }
+    }
+    return document.filename;
   };
 
   const getStatusColor = (status: string) => {
@@ -647,7 +784,7 @@ const DocumentAdminPage: React.FC = () => {
                 </TableRow>
               ) : (
                 documents.map((doc) => (
-                  <React.Fragment key={doc.document_id}>
+                  <React.Fragment key={`${doc.document_id}-${memoryNamesUpdateTrigger}`}>
                     <TableRow hover>
                       <TableCell padding="checkbox">
                         <Checkbox
@@ -657,13 +794,19 @@ const DocumentAdminPage: React.FC = () => {
                       </TableCell>
                       <TableCell>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          {getFileIcon(doc.file_type)}
+                          {getFileIcon(doc.file_type, doc.filename)}
                           <Box>
                             <Typography variant="subtitle2" sx={{ fontWeight: 'medium' }}>
-                              {doc.filename}
+                              {getDisplayName(doc)}
                             </Typography>
                             <Typography variant="caption" color="text.secondary">
-                              ID: {doc.document_id.slice(0, 8)}...
+                              {isMemoryDocument(doc.filename) ? (
+                                <Tooltip title={`Full memory ID: ${extractMemoryId(doc.filename)}`}>
+                                  <span>Memory ID: {extractMemoryId(doc.filename)?.slice(0, 8)}...</span>
+                                </Tooltip>
+                              ) : (
+                                `ID: ${doc.document_id.slice(0, 8)}...`
+                              )}
                             </Typography>
                           </Box>
                           {doc.is_orphaned && (
@@ -727,6 +870,30 @@ const DocumentAdminPage: React.FC = () => {
                       </TableCell>
                       <TableCell>
                         <Box sx={{ display: 'flex', gap: 1 }}>
+                          {isMemoryDocument(doc.filename) && (
+                            <Tooltip title="Edit Memory">
+                              <IconButton
+                                size="small"
+                                color="secondary"
+                                onClick={() => handleEditMemory(doc)}
+                                disabled={!doc.milvus_collection || doc.processing_status !== 'completed'}
+                              >
+                                <MemoryIcon />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                          {!isMemoryDocument(doc.filename) && (
+                            <Tooltip title="Edit Document">
+                              <IconButton
+                                size="small"
+                                color="primary"
+                                onClick={() => handleEditDocument(doc)}
+                                disabled={!doc.milvus_collection || doc.processing_status !== 'completed'}
+                              >
+                                <EditIcon />
+                              </IconButton>
+                            </Tooltip>
+                          )}
                           <Tooltip title="Edit Chunks">
                             <IconButton
                               size="small"
@@ -880,7 +1047,10 @@ const DocumentAdminPage: React.FC = () => {
             <Card key={info.document_id} sx={{ mb: 2 }}>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
-                  {info.filename}
+                  {isMemoryDocument(info.filename) ? 
+                    getDisplayName({ filename: info.filename } as SystemDocument) : 
+                    info.filename
+                  }
                 </Typography>
                 
                 <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 2, mb: 2 }}>
@@ -1105,7 +1275,7 @@ const DocumentAdminPage: React.FC = () => {
             <ChunkEditor
               collectionName={selectedDocumentForChunks.milvus_collection!}
               documentId={selectedDocumentForChunks.document_id}
-              contentType="document"
+              contentType={isMemoryDocument(selectedDocumentForChunks.filename) ? "memory" : "document"}
               documentName={selectedDocumentForChunks.filename}
               onChunkChange={() => {
                 // Optionally refresh documents list

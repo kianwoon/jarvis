@@ -24,7 +24,9 @@ import {
   MenuItem,
   ToggleButton,
   ToggleButtonGroup,
-  Divider
+  Divider,
+  CircularProgress,
+  Snackbar
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -38,7 +40,8 @@ import {
   AccessTime as TimeIcon,
   TextSnippet as ContentIcon,
   Psychology as BrainIcon,
-  Clear as ClearIcon
+  Clear as ClearIcon,
+  CheckCircle as CheckCircleIcon
 } from '@mui/icons-material';
 import { 
   notebookAPI, 
@@ -75,6 +78,11 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
   const [memoryDescription, setMemoryDescription] = useState('');
   const [memoryContent, setMemoryContent] = useState('');
   const [creating, setCreating] = useState(false);
+  const [creatingProgress, setCreatingProgress] = useState('');
+  
+  // Success feedback
+  const [successMessage, setSuccessMessage] = useState('');
+  const [showSuccess, setShowSuccess] = useState(false);
   
   // Edit memory dialog
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -133,6 +141,12 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
     try {
       setCreating(true);
       setError('');
+      setCreatingProgress('Preparing memory content...');
+      
+      // Simulate progress stages for better UX
+      setTimeout(() => setCreatingProgress('Embedding content...'), 500);
+      setTimeout(() => setCreatingProgress('Saving to database...'), 1500);
+      setTimeout(() => setCreatingProgress('Indexing vectors...'), 2500);
       
       await notebookAPI.createMemory(notebook.id, {
         name: memoryName.trim(),
@@ -140,11 +154,17 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
         content: memoryContent.trim()
       });
       
+      setCreatingProgress('Memory created successfully!');
+      
       // Reset form
       setMemoryName('');
       setMemoryDescription('');
       setMemoryContent('');
       setCreateDialogOpen(false);
+      
+      // Show success message
+      setSuccessMessage(`Memory "${memoryName.trim()}" created successfully`);
+      setShowSuccess(true);
       
       // Refresh memories
       setPage(1);
@@ -153,8 +173,11 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
       
     } catch (err) {
       setError(getErrorMessage(err));
+      setCreatingProgress('');
     } finally {
       setCreating(false);
+      // Clear progress after a delay
+      setTimeout(() => setCreatingProgress(''), 1000);
     }
   };
 
@@ -553,6 +576,14 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
       >
         <DialogTitle>Create New Memory</DialogTitle>
         <DialogContent>
+          {creating && creatingProgress && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <CircularProgress size={16} />
+                <Typography variant="body2">{creatingProgress}</Typography>
+              </Box>
+            </Alert>
+          )}
           <TextField
             label="Memory Name"
             value={memoryName}
@@ -560,6 +591,7 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
             fullWidth
             margin="normal"
             required
+            disabled={creating}
           />
           <TextField
             label="Description (optional)"
@@ -567,6 +599,7 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
             onChange={(e) => setMemoryDescription(e.target.value)}
             fullWidth
             margin="normal"
+            disabled={creating}
           />
           <TextField
             label="Content"
@@ -577,17 +610,23 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
             multiline
             rows={6}
             required
+            disabled={creating}
             helperText={`${memoryContent.length} characters`}
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setCreateDialogOpen(false)}>
+          <Button 
+            onClick={() => setCreateDialogOpen(false)}
+            disabled={creating}
+          >
             Cancel
           </Button>
           <Button 
             onClick={handleCreateMemory}
             variant="contained"
             disabled={creating || !memoryName.trim() || !memoryContent.trim()}
+            startIcon={creating ? <CircularProgress size={16} /> : <AddIcon />}
+            aria-label={creating ? 'Creating memory, please wait' : 'Create new memory'}
           >
             {creating ? 'Creating...' : 'Create Memory'}
           </Button>
@@ -638,6 +677,8 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
             onClick={handleEditMemory}
             variant="contained"
             disabled={updating || !editMemoryName.trim() || !editMemoryContent.trim()}
+            startIcon={updating ? <CircularProgress size={16} /> : <EditIcon />}
+            aria-label={updating ? 'Updating memory, please wait' : 'Update memory'}
           >
             {updating ? 'Updating...' : 'Update Memory'}
           </Button>
@@ -667,6 +708,8 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
             color="error"
             variant="contained"
             disabled={deleting}
+            startIcon={deleting ? <CircularProgress size={16} /> : <DeleteIcon />}
+            aria-label={deleting ? 'Deleting memory, please wait' : 'Delete memory permanently'}
           >
             {deleting ? 'Deleting...' : 'Delete'}
           </Button>
@@ -697,6 +740,23 @@ const NotebookMemory: React.FC<NotebookMemoryProps> = ({
           Delete Memory
         </MenuItem>
       </Menu>
+      
+      {/* Success Snackbar */}
+      <Snackbar
+        open={showSuccess}
+        autoHideDuration={4000}
+        onClose={() => setShowSuccess(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert 
+          onClose={() => setShowSuccess(false)} 
+          severity="success" 
+          sx={{ width: '100%' }}
+          icon={<CheckCircleIcon />}
+        >
+          {successMessage}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

@@ -69,6 +69,18 @@ interface EditingChunk {
   hasChanges: boolean;
 }
 
+// Utility function to normalize content for display
+const normalizeContentForDisplay = (content: string): string => {
+  if (!content) return '';
+  
+  // Replace single newlines with spaces while preserving paragraph breaks
+  // This handles the Milvus storage format with odd line breaks
+  return content
+    .replace(/(?<!\n)\n(?!\n)/g, ' ') // Single newlines become spaces
+    .replace(/\s+/g, ' ') // Multiple spaces become single space
+    .trim(); // Remove leading/trailing whitespace
+};
+
 const ChunkEditor: React.FC<ChunkEditorProps> = ({
   collectionName,
   documentId,
@@ -88,6 +100,7 @@ const ChunkEditor: React.FC<ChunkEditorProps> = ({
   const [editingChunks, setEditingChunks] = useState<Map<string, EditingChunk>>(new Map());
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const [bulkOperationLoading, setBulkOperationLoading] = useState(false);
+  const [reEmbeddingChunks, setReEmbeddingChunks] = useState<Set<string>>(new Set());
   
   // History dialog
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
@@ -131,7 +144,7 @@ const ChunkEditor: React.FC<ChunkEditorProps> = ({
     const editingChunk: EditingChunk = {
       chunkId: chunk.chunk_id,
       originalContent: chunk.content,
-      editedContent: chunk.content,
+      editedContent: normalizeContentForDisplay(chunk.content), // Start with normalized content for editing
       hasChanges: false
     };
     
@@ -143,10 +156,12 @@ const ChunkEditor: React.FC<ChunkEditorProps> = ({
       const updated = new Map(prev);
       const editing = updated.get(chunkId);
       if (editing) {
+        // Compare against normalized original content to detect actual changes
+        const normalizedOriginal = normalizeContentForDisplay(editing.originalContent);
         updated.set(chunkId, {
           ...editing,
           editedContent: newContent,
-          hasChanges: newContent !== editing.originalContent
+          hasChanges: newContent !== normalizedOriginal
         });
       }
       return updated;
@@ -180,6 +195,41 @@ const ChunkEditor: React.FC<ChunkEditorProps> = ({
       
     } catch (err) {
       setError(getErrorMessage(err));
+    }
+  };
+
+  const handleReEmbedChunk = async (chunkId: string) => {
+    // Find the chunk to get its current content
+    const chunk = chunks.find(c => c.chunk_id === chunkId);
+    if (!chunk) return;
+
+    try {
+      // Add to re-embedding state
+      setReEmbeddingChunks(prev => new Set(prev.add(chunkId)));
+      setError(''); // Clear any previous errors
+
+      const result = await notebookAPI.updateChunk(collectionName, chunkId, {
+        content: chunk.content, // Use existing content
+        re_embed: true // Force re-embedding
+      });
+
+      if (result.success) {
+        // Refresh chunks to show updated data
+        await loadChunks();
+        onChunkChange?.();
+      } else {
+        setError(`Failed to re-embed chunk: ${result.message}`);
+      }
+      
+    } catch (err) {
+      setError(`Failed to re-embed chunk: ${getErrorMessage(err)}`);
+    } finally {
+      // Remove from re-embedding state
+      setReEmbeddingChunks(prev => {
+        const updated = new Set(prev);
+        updated.delete(chunkId);
+        return updated;
+      });
     }
   };
 
@@ -292,8 +342,8 @@ const ChunkEditor: React.FC<ChunkEditorProps> = ({
                   Original Content:
                 </Typography>
                 <Paper sx={{ p: 2, bgcolor: 'error.50', maxHeight: 200, overflow: 'auto' }}>
-                  <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap' }}>
-                    {edit.original_content}
+                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                    {normalizeContentForDisplay(edit.original_content)}
                   </Typography>
                 </Paper>
               </Box>
@@ -302,8 +352,8 @@ const ChunkEditor: React.FC<ChunkEditorProps> = ({
                   Edited Content:
                 </Typography>
                 <Paper sx={{ p: 2, bgcolor: 'success.50', maxHeight: 200, overflow: 'auto' }}>
-                  <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap' }}>
-                    {edit.edited_content}
+                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                    {normalizeContentForDisplay(edit.edited_content)}
                   </Typography>
                 </Paper>
               </Box>
@@ -453,19 +503,24 @@ const ChunkEditor: React.FC<ChunkEditorProps> = ({
                           onChange={(e) => handleContentChange(chunk.chunk_id, e.target.value)}
                           variant="outlined"
                           size="small"
+                          sx={{
+                            '& .MuiInputBase-input': {
+                              lineHeight: 1.5,
+                              fontFamily: 'inherit'
+                            }
+                          }}
                         />
                       ) : (
                         <Typography 
                           variant="body2" 
-                          component="pre"
                           sx={{ 
                             whiteSpace: 'pre-wrap',
                             maxHeight: 200,
                             overflow: 'auto',
-                            fontFamily: 'monospace'
+                            lineHeight: 1.5
                           }}
                         >
-                          {chunk.content}
+                          {normalizeContentForDisplay(chunk.content)}
                         </Typography>
                       )}
                     </TableCell>
@@ -538,6 +593,20 @@ const ChunkEditor: React.FC<ChunkEditorProps> = ({
                                 onClick={() => handleEditChunk(chunk)}
                               >
                                 <EditIcon />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title={reEmbeddingChunks.has(chunk.chunk_id) ? "Re-embedding..." : "Re-embed chunk"}>
+                              <IconButton
+                                size="small"
+                                color="secondary"
+                                onClick={() => handleReEmbedChunk(chunk.chunk_id)}
+                                disabled={reEmbeddingChunks.has(chunk.chunk_id)}
+                              >
+                                {reEmbeddingChunks.has(chunk.chunk_id) ? (
+                                  <CircularProgress size={20} />
+                                ) : (
+                                  <EmbeddingIcon />
+                                )}
                               </IconButton>
                             </Tooltip>
                             <Tooltip title="More options">
@@ -625,11 +694,20 @@ const ChunkEditor: React.FC<ChunkEditorProps> = ({
           <ListItemText>View Edit History</ListItemText>
         </MenuItem>
         <Divider />
-        <MenuItem onClick={() => contextMenu && handleSaveChunk(contextMenu.chunk.chunk_id, true)}>
+        <MenuItem 
+          onClick={() => contextMenu && handleReEmbedChunk(contextMenu.chunk.chunk_id)}
+          disabled={contextMenu ? reEmbeddingChunks.has(contextMenu.chunk.chunk_id) : false}
+        >
           <ListItemIcon>
-            <EmbeddingIcon />
+            {contextMenu && reEmbeddingChunks.has(contextMenu.chunk.chunk_id) ? (
+              <CircularProgress size={20} />
+            ) : (
+              <EmbeddingIcon />
+            )}
           </ListItemIcon>
-          <ListItemText>Re-embed Chunk</ListItemText>
+          <ListItemText>
+            {contextMenu && reEmbeddingChunks.has(contextMenu.chunk.chunk_id) ? "Re-embedding..." : "Re-embed Chunk"}
+          </ListItemText>
         </MenuItem>
       </Menu>
     </Box>

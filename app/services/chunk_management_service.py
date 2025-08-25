@@ -20,6 +20,7 @@ from app.models.notebook_models import (
 from app.core.db import get_db
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.vector_db_settings_cache import get_vector_db_settings
+from app.utils.vector_db_migration import get_active_vector_db_config
 
 # Milvus imports
 from pymilvus import connections, Collection, utility
@@ -35,6 +36,22 @@ class ChunkManagementService:
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+    
+    def _extract_base_document_id(self, milvus_doc_id: str) -> str:
+        """
+        Extract base document ID from Milvus doc_id field.
+        Milvus may store doc_id with suffixes like 'doc_id_p1_c6' for page/chunk info.
+        
+        Args:
+            milvus_doc_id: Full doc_id from Milvus (e.g., '33997c75bf33_p1_c6')
+            
+        Returns:
+            Base document ID (e.g., '33997c75bf33')
+        """
+        # If the doc_id contains page/chunk suffixes (_p#_c#), extract the base part
+        if '_p' in milvus_doc_id:
+            return milvus_doc_id.split('_p')[0]
+        return milvus_doc_id
     
     async def get_chunks_for_document(
         self,
@@ -65,8 +82,14 @@ class ChunkManagementService:
             if not vector_settings:
                 raise ValueError("Vector database settings not found")
             
-            milvus_uri = vector_settings.get('uri')
-            milvus_token = vector_settings.get('token')
+            # Get the active vector database configuration
+            active_db_config = get_active_vector_db_config(vector_settings)
+            if not active_db_config or active_db_config['id'] != 'milvus':
+                raise ValueError("Milvus is not the active vector database or not enabled")
+            
+            milvus_config = active_db_config['config']
+            milvus_uri = milvus_config.get('MILVUS_URI')
+            milvus_token = milvus_config.get('MILVUS_TOKEN')
             
             # Connect to Milvus
             connections.connect(uri=milvus_uri, token=milvus_token)
@@ -81,33 +104,47 @@ class ChunkManagementService:
             offset = (page - 1) * page_size
             
             # Query chunks for this document
-            search_expr = f'doc_id == "{document_id}"'
+            # Use LIKE pattern matching since Milvus may store doc_id with page/chunk suffixes
+            search_expr = f'doc_id like "{document_id}%"'
             
-            # Get total count
-            count_result = collection.query(
-                expr=search_expr,
-                output_fields=["id"],
-                limit=16384  # Max limit
-            )
-            total_count = len(count_result)
+            # Get total count from the all_results we'll fetch anyway
             
-            # Get paginated results
-            results = collection.query(
+            # Get paginated results with ordering
+            # First get all results to sort by section counter, then paginate
+            all_results = collection.query(
                 expr=search_expr,
                 output_fields=["id", "content", "vector", "doc_id", "source", "page", 
                               "doc_type", "uploaded_at", "section", "author"],
-                offset=offset,
-                limit=page_size
+                limit=16384  # Max limit to get all chunks
             )
             
+            # Sort results by section counter (chunk_0, chunk_1, memory_0, memory_1, etc.)
+            def extract_counter(section_name):
+                """Extract numeric counter from section name like 'chunk_0' or 'memory_1'"""
+                try:
+                    if '_' in section_name:
+                        return int(section_name.split('_')[-1])
+                    return 0
+                except (ValueError, IndexError):
+                    return 0
+            
+            # Sort by extracted counter
+            all_results.sort(key=lambda x: extract_counter(x.get('section', '')))
+            
+            # Get total count and apply pagination to sorted results
+            total_count = len(all_results)
+            results = all_results[offset:offset + page_size]
+            
             # Determine content type from knowledge_graph_documents
+            # Use the base document ID since PostgreSQL stores base IDs, not Milvus suffixed ones
+            base_document_id = self._extract_base_document_id(document_id)
             content_type_query = text("""
                 SELECT content_type, edited_chunks_count 
                 FROM knowledge_graph_documents 
                 WHERE document_id = :doc_id
             """)
             
-            kg_result = db.execute(content_type_query, {'doc_id': document_id}).fetchone()
+            kg_result = db.execute(content_type_query, {'doc_id': base_document_id}).fetchone()
             content_type = ContentType.DOCUMENT
             edited_chunks_count = 0
             
@@ -130,7 +167,7 @@ class ChunkManagementService:
                 
                 chunks.append(ChunkResponse(
                     chunk_id=chunk_id,
-                    document_id=document_id,
+                    document_id=base_document_id,
                     content_type=content_type,
                     content=result['content'],
                     vector=result.get('vector'),
@@ -149,7 +186,7 @@ class ChunkManagementService:
             return ChunkListResponse(
                 chunks=chunks,
                 total_count=total_count,
-                document_id=document_id,
+                document_id=base_document_id,
                 content_type=content_type,
                 edited_chunks_count=edited_chunks_count
             )
@@ -183,8 +220,14 @@ class ChunkManagementService:
             if not vector_settings:
                 raise ValueError("Vector database settings not found")
             
-            milvus_uri = vector_settings.get('uri')
-            milvus_token = vector_settings.get('token')
+            # Get the active vector database configuration
+            active_db_config = get_active_vector_db_config(vector_settings)
+            if not active_db_config or active_db_config['id'] != 'milvus':
+                raise ValueError("Milvus is not the active vector database or not enabled")
+            
+            milvus_config = active_db_config['config']
+            milvus_uri = milvus_config.get('MILVUS_URI')
+            milvus_token = milvus_config.get('MILVUS_TOKEN')
             
             # Connect to Milvus
             connections.connect(uri=milvus_uri, token=milvus_token)
@@ -207,7 +250,8 @@ class ChunkManagementService:
                 raise ValueError(f"Chunk {chunk_id} not found")
             
             result = results[0]
-            document_id = result['doc_id']
+            milvus_doc_id = result['doc_id']
+            base_document_id = self._extract_base_document_id(milvus_doc_id)
             
             # Determine content type
             content_type_query = text("""
@@ -216,7 +260,7 @@ class ChunkManagementService:
                 WHERE document_id = :doc_id
             """)
             
-            kg_result = db.execute(content_type_query, {'doc_id': document_id}).fetchone()
+            kg_result = db.execute(content_type_query, {'doc_id': base_document_id}).fetchone()
             content_type = ContentType.DOCUMENT
             if kg_result:
                 content_type = ContentType(kg_result.content_type or 'document')
@@ -230,7 +274,7 @@ class ChunkManagementService:
             
             return ChunkResponse(
                 chunk_id=chunk_id,
-                document_id=document_id,
+                document_id=base_document_id,
                 content_type=content_type,
                 content=result['content'],
                 vector=result.get('vector'),
@@ -287,8 +331,14 @@ class ChunkManagementService:
             if not vector_settings:
                 raise ValueError("Vector database settings not found")
             
-            milvus_uri = vector_settings.get('uri')
-            milvus_token = vector_settings.get('token')
+            # Get the active vector database configuration
+            active_db_config = get_active_vector_db_config(vector_settings)
+            if not active_db_config or active_db_config['id'] != 'milvus':
+                raise ValueError("Milvus is not the active vector database or not enabled")
+            
+            milvus_config = active_db_config['config']
+            milvus_uri = milvus_config.get('MILVUS_URI')
+            milvus_token = milvus_config.get('MILVUS_TOKEN')
             
             # Connect to Milvus
             connections.connect(uri=milvus_uri, token=milvus_token)
