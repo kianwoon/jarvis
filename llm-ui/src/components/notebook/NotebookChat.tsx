@@ -50,13 +50,22 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
   
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   
   // Conversation ID for the notebook chat
   const conversationId = `notebook-${notebook.id}`;
   const storageKey = `jarvis-notebook-chat-${notebook.id}`;
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = (force = false) => {
+    if (!messagesContainerRef.current) return;
+    
+    // Check if user is near the bottom (within 100px) or force scroll
+    const container = messagesContainerRef.current;
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+    
+    if (force || isNearBottom) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   };
 
   // Load conversation from localStorage on component mount
@@ -83,7 +92,12 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
   }, [messages, storageKey]);
 
   useEffect(() => {
-    scrollToBottom();
+    // Auto-scroll only for new assistant messages or when explicitly needed
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      const isNewUserMessage = lastMessage.role === 'user';
+      scrollToBottom(isNewUserMessage);
+    }
   }, [messages]);
 
   const sendMessage = async () => {
@@ -120,8 +134,7 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
       const response = await notebookAPI.startNotebookChat(notebook.id, {
         message: currentInput,
         conversation_id: conversationId,
-        include_context: true,
-        max_sources: 5
+        include_context: true
       });
 
       if (!response.ok) {
@@ -259,7 +272,7 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
   };
 
   return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* Header */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -305,7 +318,42 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
       )}
 
       {/* Messages */}
-      <Paper sx={{ flex: 1, p: 2, overflow: 'auto', mb: 2 }}>
+      <Paper sx={{ 
+        flex: 1, 
+        mb: 2,
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 400, // Minimum height to ensure scrollable area
+        maxHeight: 'calc(100vh - 300px)' // Dynamic max height based on viewport
+      }}>
+        <Box 
+          ref={messagesContainerRef}
+          sx={{
+            flex: 1,
+            overflow: 'auto',
+            overflowX: 'hidden', // Prevent horizontal scroll
+            overflowY: 'scroll', // Force vertical scroll
+            p: 2,
+            minHeight: 0,
+            height: '100%', // Ensure full height usage
+            scrollBehavior: 'smooth',
+            // Force scroll container behavior
+            '&::-webkit-scrollbar': {
+              width: '8px',
+            },
+            '&::-webkit-scrollbar-track': {
+              background: 'rgba(0,0,0,0.1)',
+              borderRadius: '4px'
+            },
+            '&::-webkit-scrollbar-thumb': {
+              background: 'rgba(0,0,0,0.3)',
+              borderRadius: '4px',
+              '&:hover': {
+                background: 'rgba(0,0,0,0.5)'
+              }
+            }
+          }}
+        >
         {messages.length === 0 && (
           <Alert severity="info" icon={<ChatIcon />}>
             <Typography variant="subtitle2" gutterBottom>
@@ -414,7 +462,8 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
           </Box>
         )}
         
-        <div ref={messagesEndRef} />
+          <div ref={messagesEndRef} />
+        </Box>
       </Paper>
 
       {/* Input */}

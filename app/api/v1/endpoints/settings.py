@@ -14,6 +14,7 @@ from app.core.knowledge_graph_settings_cache import reload_knowledge_graph_setti
 from app.core.radiating_settings_cache import reload_radiating_settings
 from app.core.meta_task_settings_cache import reload_meta_task_settings
 from app.core.notebook_llm_settings_cache import reload_notebook_llm_settings
+from app.core.notebook_source_templates_cache import reload_notebook_source_templates
 from app.core.synthesis_prompts_cache import reload_synthesis_prompts
 from app.services.neo4j_service import test_neo4j_connection
 from typing import Any, Dict, Optional, List
@@ -474,6 +475,7 @@ def reload_all_caches():
         cache_functions = [
             ("LLM", reload_llm_settings),
             ("Notebook LLM", reload_notebook_llm_settings),
+            ("Notebook Source Templates", reload_notebook_source_templates),
             ("Query Classifier", reload_query_classifier_settings),
             ("Vector DB", reload_vector_db_settings),
             ("Embedding", reload_embedding_settings),
@@ -2486,3 +2488,70 @@ def get_synthesis_prompts_status(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to get synthesis prompts status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
+
+@router.get("/notebook_source_templates")
+def get_notebook_source_templates(db: Session = Depends(get_db)):
+    """Get current notebook source templates configuration"""
+    try:
+        from app.core.notebook_source_templates_cache import get_notebook_source_templates
+        
+        # Get templates from cache (includes database failover and emergency fallback)
+        templates = get_notebook_source_templates()
+        
+        return {
+            "category": "notebook_source_templates",
+            "settings": templates
+        }
+    except Exception as e:
+        logger.error(f"Failed to get notebook source templates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get notebook source templates: {str(e)}")
+
+@router.put("/notebook_source_templates")
+def update_notebook_source_templates(update: SettingsUpdate, db: Session = Depends(get_db)):
+    """Save notebook source templates configuration to database"""
+    logger.info("Updating notebook source templates settings")
+    logger.info(f"Update payload: persist_to_db={update.persist_to_db}, reload_cache={update.reload_cache}")
+    
+    try:
+        # Validate that settings contain the expected template structure
+        if not isinstance(update.settings, dict):
+            raise HTTPException(status_code=400, detail="Settings must be a dictionary")
+        
+        # Get or create settings row for notebook_source_templates category
+        settings_row = db.query(SettingsModel).filter(SettingsModel.category == 'notebook_source_templates').first()
+        
+        if settings_row:
+            # Update existing settings
+            settings_row.settings = update.settings
+            logger.info(f"Updated existing notebook source templates settings")
+        else:
+            # Create new settings row
+            settings_row = SettingsModel(
+                category='notebook_source_templates',
+                settings=update.settings
+            )
+            db.add(settings_row)
+            logger.info(f"Created new notebook source templates settings")
+        
+        # Commit to database
+        db.commit()
+        logger.info("Notebook source templates settings saved to database successfully")
+        
+        # Reload cache to ensure consistency
+        try:
+            reload_notebook_source_templates()
+            logger.info("Notebook source templates cache reloaded successfully")
+        except Exception as cache_e:
+            logger.warning(f"Failed to reload cache after database save: {str(cache_e)}")
+            # Don't fail the request if cache reload fails, database save succeeded
+        
+        return {
+            "success": True,
+            "message": "Notebook source templates settings updated successfully",
+            "category": "notebook_source_templates"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to update notebook source templates: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update notebook source templates: {str(e)}")

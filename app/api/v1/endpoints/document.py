@@ -214,8 +214,10 @@ async def list_documents(
     try:
         print(f"📋 Listing documents: page={page}, size={page_size}, status={status}, file_type={file_type}")
         
-        # Build query
-        query = db.query(KnowledgeGraphDocument)
+        # Build query - exclude memories, only show actual documents
+        query = db.query(KnowledgeGraphDocument).filter(
+            KnowledgeGraphDocument.content_type == 'document'
+        )
         
         # Apply filters
         if status:

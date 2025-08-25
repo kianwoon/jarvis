@@ -24,14 +24,21 @@ from app.models.notebook_models import (
     NotebookDocumentBulkResponse, NotebookStatsResponse, NotebookOperationResponse,
     NotebookError, NotebookValidationError, NotebookDocumentResponse, 
     NotebookConversationResponse, DocumentDeleteRequest, DocumentDeleteResponse,
-    DocumentUsageInfo, DocumentDeletionSummary, NotebookChatRequest, NotebookChatResponse
+    DocumentUsageInfo, DocumentDeletionSummary, NotebookChatRequest, NotebookChatResponse,
+    # Memory models
+    MemoryCreateRequest, MemoryUpdateRequest, MemoryResponse, MemoryListResponse,
+    # Chunk editing models
+    ChunkUpdateRequest, ChunkResponse, ChunkListResponse, BulkChunkReEmbedRequest,
+    ChunkOperationResponse, BulkChunkOperationResponse
 )
 from pydantic import BaseModel
 from app.services.notebook_service import NotebookService
 from app.services.notebook_rag_service import NotebookRAGService
 from app.services.document_admin_service import DocumentAdminService
+from app.services.chunk_management_service import ChunkManagementService
 from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
 from app.core.notebook_llm_settings_cache import get_notebook_llm_full_config
+from app.core.notebook_source_templates_cache import apply_source_templates
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 
@@ -68,6 +75,7 @@ router = APIRouter()
 # Initialize services
 notebook_service = NotebookService()
 notebook_rag_service = NotebookRAGService()
+chunk_management_service = ChunkManagementService()
 
 # HTTP embedding function for document processing
 import requests
@@ -1444,6 +1452,8 @@ async def notebook_chat(
             
             # Query relevant documents using RAG service
             rag_response = None
+            # DEBUG: Context inclusion check
+            logger.debug(f"[CONTEXT_CHECK_DEBUG] include_context = {request.include_context}")
             if request.include_context:
                 try:
                     rag_response = await notebook_rag_service.query_notebook(
@@ -1453,6 +1463,17 @@ async def notebook_chat(
                         top_k=request.max_sources,
                         include_metadata=True
                     )
+                    
+                    # DEBUG: RAG Query Execution Results
+                    logger.debug(f"[RAG_QUERY_DEBUG] RAG query executed for: '{request.message}'")
+                    logger.debug(f"[RAG_QUERY_DEBUG] Notebook ID: {notebook_id}, Top K: {request.max_sources}")
+                    if rag_response:
+                        logger.debug(f"[RAG_QUERY_DEBUG] RAG response received with {len(rag_response.sources)} sources")
+                        logger.debug(f"[RAG_QUERY_DEBUG] Collections searched: {rag_response.collections_searched}")
+                        for idx, src in enumerate(rag_response.sources):
+                            logger.debug(f"[RAG_QUERY_DEBUG] Source {idx+1}: type='{src.source_type}', name='{src.document_name}', content_len={len(src.content)}")
+                    else:
+                        logger.debug(f"[RAG_QUERY_DEBUG] No RAG response received")
                     
                     yield json.dumps({
                         "status": "context_found",
@@ -1470,12 +1491,25 @@ async def notebook_chat(
                         "notebook_id": notebook_id,
                         "conversation_id": request.conversation_id
                     }) + "\n"
+            else:
+                # DEBUG: Context not included case
+                logger.debug(f"[CONTEXT_CHECK_DEBUG] Context not included - proceeding without RAG search")
             
             # Get notebook LLM configuration
-            llm_config = get_notebook_llm_full_config()
-            if not llm_config:
+            llm_config_full = get_notebook_llm_full_config()
+            if not llm_config_full:
                 yield json.dumps({
                     "error": "Notebook LLM configuration not available",
+                    "notebook_id": notebook_id,
+                    "conversation_id": request.conversation_id
+                }) + "\n"
+                return
+            
+            # Extract the notebook_llm config from the nested structure
+            llm_config = llm_config_full.get('notebook_llm', {})
+            if not llm_config:
+                yield json.dumps({
+                    "error": "Notebook LLM configuration not properly structured in database",
                     "notebook_id": notebook_id,
                     "conversation_id": request.conversation_id
                 }) + "\n"
@@ -1488,34 +1522,90 @@ async def notebook_chat(
                 "conversation_id": request.conversation_id
             }) + "\n"
             
-            # Initialize LLM with proper LLMConfig object
+            # Initialize LLM with database configuration - NO HARDCODED FALLBACKS
             llm_config_obj = LLMConfig(
-                model_name=llm_config.get('model', 'qwen2.5:72b'),
-                temperature=float(llm_config.get('temperature', 0.7)),
-                top_p=float(llm_config.get('top_p', 0.9)),
-                max_tokens=int(llm_config.get('max_tokens', 4096))
+                model_name=llm_config['model'],
+                temperature=float(llm_config['temperature']),
+                top_p=float(llm_config['top_p']),
+                max_tokens=int(llm_config['max_tokens'])
             )
             llm = OllamaLLM(llm_config_obj)
             
-            # Build context-aware prompt
-            system_prompt = "You are a helpful AI assistant for a notebook-based knowledge management system. "
+            # Build context-aware prompt using configurable system prompt from database
+            base_system_prompt = llm_config['system_prompt']
+            system_prompt = base_system_prompt + " "
             context_info = ""
             
             if rag_response and rag_response.sources:
-                system_prompt += f"You have access to {len(rag_response.sources)} relevant document excerpts from this notebook. "
-                system_prompt += "Use the provided context to give accurate, detailed answers. If the context doesn't contain enough information, say so clearly."
+                # DEBUG: RAG Response Analysis
+                logger.debug(f"[RAG_DEBUG] RAG response has {len(rag_response.sources)} sources")
+                for idx, src in enumerate(rag_response.sources):
+                    logger.debug(f"[RAG_DEBUG] Source {idx+1}: name='{src.document_name}', type='{src.source_type}', content_len={len(src.content)}")
+                    if src.source_type == "memory":
+                        logger.debug(f"[RAG_DEBUG] Memory source content preview: '{src.content[:100]}...'")
+                
+                # Count different source types for better prompt customization
+                document_count = sum(1 for src in rag_response.sources if src.source_type != "memory")
+                memory_count = sum(1 for src in rag_response.sources if src.source_type == "memory")
+                
+                # Apply configurable source integration templates
+                source_integration_prompt = apply_source_templates(
+                    total_sources=len(rag_response.sources),
+                    document_count=document_count,
+                    memory_count=memory_count
+                )
+                system_prompt += source_integration_prompt
                 
                 context_info = "\n\n--- RELEVANT CONTEXT FROM NOTEBOOK ---\n"
+                context_info += "The following sources contain information relevant to your question. "
+                context_info += "Please integrate information from ALL sources in your response:\n"
+                
                 for i, source in enumerate(rag_response.sources[:request.max_sources], 1):
-                    context_info += f"\n[Source {i} - {source.document_name or 'Unknown Document'}]:\n"
+                    # Format source name with type prefix for clarity
+                    source_name = source.document_name or 'Unknown'
+                    source_type_prefix = "Personal Memory" if source.source_type == "memory" else "Document"
+                    
+                    # DEBUG: Context Building Process
+                    logger.debug(f"[CONTEXT_DEBUG] Processing source {i}: {source_type_prefix}: {source_name}")
+                    logger.debug(f"[CONTEXT_DEBUG] Source content preview: {source.content[:100]}...")
+                    
+                    context_info += f"\n[Source {i} - {source_type_prefix}: {source_name}]:\n"
                     context_info += source.content[:1000] + ("..." if len(source.content) > 1000 else "")
                     context_info += "\n"
+                
                 context_info += "--- END CONTEXT ---\n\n"
+                
+                # DEBUG: Final Context Analysis
+                logger.debug(f"[CONTEXT_DEBUG] Final context length: {len(context_info)} chars")
+                logger.debug(f"[CONTEXT_DEBUG] Context preview: {context_info[:200]}...")
+                
+                # DEBUG: Check if memory content is in final context
+                if "Memory" in context_info:
+                    logger.debug(f"[CONTEXT_DEBUG] Memory content found in final context")
+                else:
+                    logger.debug(f"[CONTEXT_DEBUG] WARNING: No memory content found in final context")
             else:
+                # DEBUG: No RAG Response Case
+                logger.debug(f"[RAG_DEBUG] No RAG response or no sources found")
+                if rag_response:
+                    logger.debug(f"[RAG_DEBUG] RAG response exists but no sources: {len(rag_response.sources) if rag_response.sources else 0}")
+                else:
+                    logger.debug(f"[RAG_DEBUG] No RAG response at all")
+                
                 system_prompt += "No specific context was found in this notebook for this question. Provide a helpful general response and suggest ways the user might find relevant information."
             
             # Build the full prompt
             full_prompt = f"{system_prompt}\n\n{context_info}User Question: {request.message}\n\nResponse:"
+            
+            # DEBUG: LLM Prompt Construction
+            logger.debug(f"[PROMPT_DEBUG] Full prompt length: {len(full_prompt)} chars")
+            logger.debug(f"[PROMPT_DEBUG] Prompt preview: {full_prompt[:300]}...")
+            
+            # DEBUG: Verify memory context reaches LLM
+            if "Memory" in full_prompt:
+                logger.debug(f"[PROMPT_DEBUG] Memory content confirmed in LLM prompt")
+            else:
+                logger.debug(f"[PROMPT_DEBUG] WARNING: No memory content found in LLM prompt")
             
             # Generate streaming response
             collected_response = ""
@@ -1548,6 +1638,17 @@ async def notebook_chat(
                 "status": "complete"
             }
             
+            # DEBUG: Final Response Analysis
+            logger.debug(f"[RESPONSE_DEBUG] Generated response length: {len(collected_response)} chars")
+            logger.debug(f"[RESPONSE_DEBUG] Response preview: {collected_response[:200]}...")
+            logger.debug(f"[RESPONSE_DEBUG] Final response includes {len(final_response['sources'])} sources")
+            
+            # DEBUG: Check if response mentions employment/memory content
+            if any(keyword in collected_response.lower() for keyword in ['employment', 'job', 'work', 'career', 'company']):
+                logger.debug(f"[RESPONSE_DEBUG] Response contains employment-related content")
+            else:
+                logger.debug(f"[RESPONSE_DEBUG] Response does NOT contain employment-related content")
+            
             yield json.dumps(final_response) + "\n"
             
             logger.info(f"Successfully completed notebook chat for {notebook_id}")
@@ -1562,6 +1663,393 @@ async def notebook_chat(
             }) + "\n"
     
     return StreamingResponse(stream_chat_response(), media_type="application/json")
+
+# Memory Management Endpoints
+
+@router.post("/{notebook_id}/memories", response_model=MemoryResponse, status_code=201)
+async def create_memory(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    request: MemoryCreateRequest = ...,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new memory for a notebook.
+    
+    Args:
+        notebook_id: Target notebook ID
+        request: Memory creation parameters
+        db: Database session
+        
+    Returns:
+        Created memory details
+        
+    Raises:
+        HTTPException: If creation fails
+    """
+    try:
+        logger.info(f"Creating memory '{request.name}' for notebook {notebook_id}")
+        
+        memory = await notebook_service.create_memory(
+            db=db,
+            notebook_id=notebook_id,
+            name=request.name,
+            content=request.content,
+            description=request.description,
+            metadata=request.metadata
+        )
+        
+        logger.info(f"Successfully created memory {memory.memory_id}")
+        return memory
+        
+    except ValueError as e:
+        logger.error(f"Validation error creating memory: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating memory: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create memory: {str(e)}")
+
+@router.get("/{notebook_id}/memories", response_model=MemoryListResponse)
+async def get_memories(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Page size"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get memories for a notebook with pagination.
+    
+    Args:
+        notebook_id: Target notebook ID
+        page: Page number (1-based)
+        page_size: Number of memories per page
+        db: Database session
+        
+    Returns:
+        List of memories with pagination info
+        
+    Raises:
+        HTTPException: If retrieval fails
+    """
+    try:
+        logger.info(f"Getting memories for notebook {notebook_id} (page {page})")
+        
+        memories = await notebook_service.get_memories(
+            db=db,
+            notebook_id=notebook_id,
+            page=page,
+            page_size=page_size
+        )
+        
+        return memories
+        
+    except ValueError as e:
+        logger.error(f"Validation error getting memories: {str(e)}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting memories: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get memories: {str(e)}")
+
+@router.get("/{notebook_id}/memories/{memory_id}", response_model=MemoryResponse)
+async def get_memory(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    memory_id: str = Path(..., description="Memory ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get a specific memory by ID.
+    
+    Args:
+        notebook_id: Target notebook ID
+        memory_id: Memory ID
+        db: Database session
+        
+    Returns:
+        Memory details
+        
+    Raises:
+        HTTPException: If memory not found
+    """
+    try:
+        logger.info(f"Getting memory {memory_id} for notebook {notebook_id}")
+        
+        memory = await notebook_service.get_memory(
+            db=db,
+            notebook_id=notebook_id,
+            memory_id=memory_id
+        )
+        
+        if not memory:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        
+        return memory
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting memory: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get memory: {str(e)}")
+
+@router.put("/{notebook_id}/memories/{memory_id}", response_model=MemoryResponse)
+async def update_memory(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    memory_id: str = Path(..., description="Memory ID"),
+    request: MemoryUpdateRequest = ...,
+    db: Session = Depends(get_db)
+):
+    """
+    Update a memory.
+    
+    Args:
+        notebook_id: Target notebook ID
+        memory_id: Memory ID
+        request: Memory update parameters
+        db: Database session
+        
+    Returns:
+        Updated memory details
+        
+    Raises:
+        HTTPException: If update fails
+    """
+    try:
+        logger.info(f"Updating memory {memory_id} for notebook {notebook_id}")
+        
+        memory = await notebook_service.update_memory(
+            db=db,
+            notebook_id=notebook_id,
+            memory_id=memory_id,
+            name=request.name,
+            description=request.description,
+            content=request.content,
+            metadata=request.metadata
+        )
+        
+        if not memory:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        
+        logger.info(f"Successfully updated memory {memory_id}")
+        return memory
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.error(f"Validation error updating memory: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating memory: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update memory: {str(e)}")
+
+@router.delete("/{notebook_id}/memories/{memory_id}")
+async def delete_memory(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    memory_id: str = Path(..., description="Memory ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a memory and all its associated data.
+    
+    Args:
+        notebook_id: Target notebook ID
+        memory_id: Memory ID
+        db: Database session
+        
+    Returns:
+        Success confirmation
+        
+    Raises:
+        HTTPException: If deletion fails
+    """
+    try:
+        logger.info(f"Deleting memory {memory_id} for notebook {notebook_id}")
+        
+        deleted = await notebook_service.delete_memory(
+            db=db,
+            notebook_id=notebook_id,
+            memory_id=memory_id
+        )
+        
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        
+        logger.info(f"Successfully deleted memory {memory_id}")
+        return {"message": "Memory deleted successfully", "deleted": True}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting memory: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete memory: {str(e)}")
+
+# Chunk Management Endpoints
+
+@router.get("/chunks/{collection_name}/{document_id}", response_model=ChunkListResponse)
+async def get_chunks_for_document(
+    collection_name: str = Path(..., description="Milvus collection name"),
+    document_id: str = Path(..., description="Document or memory ID"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Page size"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all chunks for a specific document or memory.
+    
+    Args:
+        collection_name: Milvus collection name
+        document_id: Document or memory ID
+        page: Page number (1-based)
+        page_size: Number of chunks per page
+        db: Database session
+        
+    Returns:
+        List of chunks with pagination info
+        
+    Raises:
+        HTTPException: If retrieval fails
+    """
+    try:
+        logger.info(f"Getting chunks for document {document_id} from collection {collection_name}")
+        
+        chunks = await chunk_management_service.get_chunks_for_document(
+            db=db,
+            collection_name=collection_name,
+            document_id=document_id,
+            page=page,
+            page_size=page_size
+        )
+        
+        return chunks
+        
+    except ValueError as e:
+        logger.error(f"Validation error getting chunks: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting chunks: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get chunks: {str(e)}")
+
+@router.get("/chunks/{collection_name}/chunk/{chunk_id}", response_model=ChunkResponse)
+async def get_chunk_by_id(
+    collection_name: str = Path(..., description="Milvus collection name"),
+    chunk_id: str = Path(..., description="Chunk ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get a specific chunk by ID.
+    
+    Args:
+        collection_name: Milvus collection name
+        chunk_id: Chunk ID to retrieve
+        db: Database session
+        
+    Returns:
+        Chunk details with edit history
+        
+    Raises:
+        HTTPException: If chunk not found
+    """
+    try:
+        logger.info(f"Getting chunk {chunk_id} from collection {collection_name}")
+        
+        chunk = await chunk_management_service.get_chunk_by_id(
+            db=db,
+            collection_name=collection_name,
+            chunk_id=chunk_id
+        )
+        
+        return chunk
+        
+    except ValueError as e:
+        logger.error(f"Validation error getting chunk: {str(e)}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting chunk: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get chunk: {str(e)}")
+
+@router.put("/chunks/{collection_name}/chunk/{chunk_id}", response_model=ChunkOperationResponse)
+async def update_chunk(
+    collection_name: str = Path(..., description="Milvus collection name"),
+    chunk_id: str = Path(..., description="Chunk ID"),
+    request: ChunkUpdateRequest = ...,
+    user_id: Optional[str] = Query(None, description="User ID making the edit"),
+    db: Session = Depends(get_db)
+):
+    """
+    Update a chunk's content and optionally re-embed it.
+    
+    Args:
+        collection_name: Milvus collection name
+        chunk_id: Chunk ID to update
+        request: Chunk update parameters
+        user_id: User making the edit
+        db: Database session
+        
+    Returns:
+        Operation result
+        
+    Raises:
+        HTTPException: If update fails
+    """
+    try:
+        logger.info(f"Updating chunk {chunk_id} in collection {collection_name}")
+        
+        result = await chunk_management_service.update_chunk(
+            db=db,
+            collection_name=collection_name,
+            chunk_id=chunk_id,
+            new_content=request.content,
+            re_embed=request.re_embed,
+            user_id=user_id,
+            edit_metadata=request.metadata
+        )
+        
+        return result
+        
+    except ValueError as e:
+        logger.error(f"Validation error updating chunk: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating chunk: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update chunk: {str(e)}")
+
+@router.post("/chunks/{collection_name}/bulk-re-embed", response_model=BulkChunkOperationResponse)
+async def bulk_re_embed_chunks(
+    collection_name: str = Path(..., description="Milvus collection name"),
+    request: BulkChunkReEmbedRequest = ...,
+    user_id: Optional[str] = Query(None, description="User ID performing the operation"),
+    db: Session = Depends(get_db)
+):
+    """
+    Re-embed multiple chunks in bulk.
+    
+    Args:
+        collection_name: Milvus collection name
+        request: Bulk re-embed parameters
+        user_id: User performing the operation
+        db: Database session
+        
+    Returns:
+        Bulk operation results
+        
+    Raises:
+        HTTPException: If operation fails
+    """
+    try:
+        logger.info(f"Bulk re-embedding {len(request.chunk_ids)} chunks in collection {collection_name}")
+        
+        result = await chunk_management_service.bulk_re_embed_chunks(
+            db=db,
+            collection_name=collection_name,
+            chunk_ids=request.chunk_ids,
+            user_id=user_id
+        )
+        
+        return result
+        
+    except ValueError as e:
+        logger.error(f"Validation error bulk re-embedding: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error bulk re-embedding: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to bulk re-embed: {str(e)}")
 
 # Error handlers are handled at the app level, not router level
 # The individual endpoints already have proper try/catch blocks with HTTPException

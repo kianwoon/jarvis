@@ -265,6 +265,7 @@ class KnowledgeGraphDocument(Base):
     file_hash = Column(String(64), nullable=False, index=True)
     file_size_bytes = Column(Integer, nullable=True)
     file_type = Column(String(50), nullable=True)
+    content_type = Column(String(50), nullable=False, default='document', index=True)  # 'document', 'memory'
     
     # Processing configuration
     milvus_collection = Column(String(100), nullable=True)

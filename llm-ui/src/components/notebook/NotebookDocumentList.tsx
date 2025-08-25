@@ -387,7 +387,7 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
   );
 
   return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* Controls */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
         <TextField
@@ -537,29 +537,25 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
                   <ListItemIcon>
                     {getFileIcon(notebookDoc.document_type)}
                   </ListItemIcon>
-                  <ListItemText
-                    primary={
-                      <Typography variant="subtitle1" noWrap>
-                        {notebookDoc.document_name}
-                      </Typography>
-                    }
-                    secondary={
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
-                        <Chip
-                          icon={<SizeIcon />}
-                          label={formatFileSize(notebookDoc.metadata?.file_size_bytes || 0)}
-                          size="small"
-                          variant="outlined"
-                        />
-                        <Chip
-                          icon={<TimeIcon />}
-                          label={formatRelativeTime(notebookDoc.added_at)}
-                          size="small"
-                          variant="outlined"
-                        />
-                      </Box>
-                    }
-                  />
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="subtitle1" noWrap>
+                      {notebookDoc.document_name}
+                    </Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
+                      <Chip
+                        icon={<SizeIcon />}
+                        label={formatFileSize(notebookDoc.metadata?.file_size_bytes || 0)}
+                        size="small"
+                        variant="outlined"
+                      />
+                      <Chip
+                        icon={<TimeIcon />}
+                        label={formatRelativeTime(notebookDoc.added_at)}
+                        size="small"
+                        variant="outlined"
+                      />
+                    </Box>
+                  </Box>
                   <ListItemSecondaryAction>
                     <IconButton 
                       edge="end"

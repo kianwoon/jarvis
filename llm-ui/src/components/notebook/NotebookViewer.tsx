@@ -24,6 +24,7 @@ import {
   Edit as EditIcon,
   Description as DocumentIcon,
   Chat as ChatIcon,
+  Memory as MemoryIcon,
   Folder as FolderIcon,
   AccessTime as TimeIcon,
   LightMode as LightModeIcon,
@@ -32,6 +33,7 @@ import {
 import NavigationBar from '../shared/NavigationBar';
 import NotebookDocumentList from './NotebookDocumentList';
 import NotebookChat from './NotebookChat';
+import NotebookMemory from './NotebookMemory';
 import { 
   notebookAPI, 
   Notebook, 
@@ -55,18 +57,20 @@ interface TabPanelProps {
 
 function TabPanel({ children, value, index }: TabPanelProps) {
   return (
-    <div
+    <Box
       role="tabpanel"
-      hidden={value !== index}
       id={`notebook-tabpanel-${index}`}
       aria-labelledby={`notebook-tab-${index}`}
+      sx={{
+        flex: 1,
+        display: value === index ? 'flex' : 'none',
+        flexDirection: 'column',
+        height: '100%',
+        minHeight: 0
+      }}
     >
-      {value === index && (
-        <Box sx={{ height: '100%' }}>
-          {children}
-        </Box>
-      )}
-    </div>
+      {children}
+    </Box>
   );
 }
 
@@ -244,7 +248,7 @@ const NotebookViewer: React.FC<NotebookViewerProps> = ({
         
         <NavigationBar currentTab={7} />
       
-      <Box sx={{ p: 3, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <Box sx={{ p: 3, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         {/* Header */}
         <Box sx={{ mb: 3 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'between', mb: 2 }}>
@@ -348,18 +352,30 @@ const NotebookViewer: React.FC<NotebookViewerProps> = ({
               aria-controls="notebook-tabpanel-0"
             />
             <Tab 
-              icon={<ChatIcon />} 
-              label="Chat" 
+              icon={<MemoryIcon />} 
+              label="Memory" 
               iconPosition="start"
               id="notebook-tab-1"
               aria-controls="notebook-tabpanel-1"
+            />
+            <Tab 
+              icon={<ChatIcon />} 
+              label="Chat" 
+              iconPosition="start"
+              id="notebook-tab-2"
+              aria-controls="notebook-tabpanel-2"
               disabled={notebook.document_count === 0}
             />
           </Tabs>
         </Box>
 
         {/* Tab Panels */}
-        <Box sx={{ flex: 1, overflow: 'hidden' }}>
+        <Box sx={{ 
+          flex: 1, 
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column'
+        }}>
           <TabPanel value={currentTab} index={0}>
             <NotebookDocumentList
               notebook={notebook}
@@ -368,6 +384,13 @@ const NotebookViewer: React.FC<NotebookViewerProps> = ({
           </TabPanel>
           
           <TabPanel value={currentTab} index={1}>
+            <NotebookMemory
+              notebook={notebook}
+              onMemoryChange={handleDocumentChange}
+            />
+          </TabPanel>
+          
+          <TabPanel value={currentTab} index={2}>
             {notebook.document_count > 0 ? (
               <NotebookChat
                 notebook={notebook}

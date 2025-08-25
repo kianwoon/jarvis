@@ -189,6 +189,104 @@ export interface DocumentDeleteResponse {
   timestamp?: string;
 }
 
+// Memory interfaces
+export interface Memory {
+  id: string;
+  notebook_id: string;
+  memory_id: string;
+  name: string;
+  description?: string;
+  content: string;
+  milvus_collection?: string;
+  chunk_count: number;
+  created_at: string;
+  updated_at: string;
+  metadata?: Record<string, any>;
+}
+
+export interface CreateMemoryRequest {
+  name: string;
+  description?: string;
+  content: string;
+  metadata?: Record<string, any>;
+}
+
+export interface UpdateMemoryRequest {
+  name?: string;
+  description?: string;
+  content?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface MemoryListResponse {
+  memories: Memory[];
+  total_count: number;
+  page: number;
+  page_size: number;
+}
+
+// Chunk editing interfaces
+export interface ChunkEditHistory {
+  id: string;
+  chunk_id: string;
+  original_content: string;
+  edited_content: string;
+  edited_by?: string;
+  edited_at: string;
+  re_embedded: boolean;
+  metadata?: Record<string, any>;
+}
+
+export interface Chunk {
+  chunk_id: string;
+  document_id: string;
+  content_type: 'document' | 'memory';
+  content: string;
+  vector?: number[];
+  metadata: {
+    source: string;
+    page: number;
+    doc_type: string;
+    uploaded_at: string;
+    section: string;
+    author: string;
+  };
+  edit_history: ChunkEditHistory[];
+  last_edited?: string;
+}
+
+export interface ChunkListResponse {
+  chunks: Chunk[];
+  total_count: number;
+  document_id: string;
+  content_type: 'document' | 'memory';
+  edited_chunks_count: number;
+}
+
+export interface UpdateChunkRequest {
+  content: string;
+  re_embed?: boolean;
+  metadata?: Record<string, any>;
+}
+
+export interface ChunkOperationResponse {
+  success: boolean;
+  chunk_id: string;
+  message: string;
+  re_embedded: boolean;
+  timestamp?: string;
+}
+
+export interface BulkChunkOperationResponse {
+  success: boolean;
+  total_requested: number;
+  successful_operations: number;
+  failed_operations: number;
+  operation_details: ChunkOperationResponse[];
+  message: string;
+  timestamp?: string;
+}
+
 class NotebookAPI {
   private baseUrl = '/api/v1/notebooks';
 
@@ -409,6 +507,128 @@ class NotebookAPI {
 
     const response = await fetch(`${this.baseUrl}/system/documents?${params.toString()}`);
     return await this.handleResponse(response);
+  }
+
+  // Memory Management Methods
+
+  async createMemory(notebookId: string, request: CreateMemoryRequest): Promise<Memory> {
+    const response = await fetch(`${this.baseUrl}/${notebookId}/memories`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+    const data = await this.handleResponse<Memory>(response);
+    return data;
+  }
+
+  async getMemories(notebookId: string, page: number = 1, pageSize: number = 20): Promise<MemoryListResponse> {
+    const params = new URLSearchParams({
+      page: page.toString(),
+      page_size: pageSize.toString(),
+    });
+    
+    const response = await fetch(`${this.baseUrl}/${notebookId}/memories?${params.toString()}`);
+    const data = await this.handleResponse<MemoryListResponse>(response);
+    return data;
+  }
+
+  async getMemory(notebookId: string, memoryId: string): Promise<Memory> {
+    const response = await fetch(`${this.baseUrl}/${notebookId}/memories/${memoryId}`);
+    const data = await this.handleResponse<Memory>(response);
+    return data;
+  }
+
+  async updateMemory(notebookId: string, memoryId: string, request: UpdateMemoryRequest): Promise<Memory> {
+    const response = await fetch(`${this.baseUrl}/${notebookId}/memories/${memoryId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+    const data = await this.handleResponse<Memory>(response);
+    return data;
+  }
+
+  async deleteMemory(notebookId: string, memoryId: string): Promise<{ message: string; deleted: boolean }> {
+    const response = await fetch(`${this.baseUrl}/${notebookId}/memories/${memoryId}`, {
+      method: 'DELETE',
+    });
+    const data = await this.handleResponse<{ message: string; deleted: boolean }>(response);
+    return data;
+  }
+
+  // Chunk Management Methods
+
+  async getChunksForDocument(
+    collectionName: string,
+    documentId: string,
+    page: number = 1,
+    pageSize: number = 20
+  ): Promise<ChunkListResponse> {
+    const params = new URLSearchParams({
+      page: page.toString(),
+      page_size: pageSize.toString(),
+    });
+    
+    const response = await fetch(`${this.baseUrl}/chunks/${collectionName}/${documentId}?${params.toString()}`);
+    const data = await this.handleResponse<ChunkListResponse>(response);
+    return data;
+  }
+
+  async getChunkById(collectionName: string, chunkId: string): Promise<Chunk> {
+    const response = await fetch(`${this.baseUrl}/chunks/${collectionName}/chunk/${chunkId}`);
+    const data = await this.handleResponse<Chunk>(response);
+    return data;
+  }
+
+  async updateChunk(
+    collectionName: string,
+    chunkId: string,
+    request: UpdateChunkRequest,
+    userId?: string
+  ): Promise<ChunkOperationResponse> {
+    const params = new URLSearchParams();
+    if (userId) params.append('user_id', userId);
+    
+    const url = `${this.baseUrl}/chunks/${collectionName}/chunk/${chunkId}${
+      params.toString() ? `?${params.toString()}` : ''
+    }`;
+    
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+    const data = await this.handleResponse<ChunkOperationResponse>(response);
+    return data;
+  }
+
+  async bulkReEmbedChunks(
+    collectionName: string,
+    chunkIds: string[],
+    userId?: string
+  ): Promise<BulkChunkOperationResponse> {
+    const params = new URLSearchParams();
+    if (userId) params.append('user_id', userId);
+    
+    const url = `${this.baseUrl}/chunks/${collectionName}/bulk-re-embed${
+      params.toString() ? `?${params.toString()}` : ''
+    }`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ chunk_ids: chunkIds }),
+    });
+    const data = await this.handleResponse<BulkChunkOperationResponse>(response);
+    return data;
   }
 }
 

@@ -60,7 +60,8 @@ import {
   GetApp as ExportIcon,
   Visibility as ViewIcon,
   Settings as AdminIcon,
-  ExitToApp as ExitIcon
+  ExitToApp as ExitIcon,
+  AutoFixHigh as AutoFixIcon
 } from '@mui/icons-material';
 import { 
   notebookAPI, 
@@ -74,6 +75,7 @@ import {
   formatFileSize, 
   formatRelativeTime 
 } from '../notebook/NotebookAPI';
+import ChunkEditor from '../notebook/ChunkEditor';
 
 
 const DocumentAdminPage: React.FC = () => {
@@ -87,6 +89,10 @@ const DocumentAdminPage: React.FC = () => {
   const [deletionResults, setDeletionResults] = useState<DocumentDeleteResponse | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [expandedDetails, setExpandedDetails] = useState<Set<string>>(new Set());
+
+  // Chunk editing state
+  const [chunkEditDialogOpen, setChunkEditDialogOpen] = useState(false);
+  const [selectedDocumentForChunks, setSelectedDocumentForChunks] = useState<SystemDocument | null>(null);
 
   // Filter and pagination state
   const [search, setSearch] = useState('');
@@ -230,6 +236,17 @@ const DocumentAdminPage: React.FC = () => {
     setSortBy('created_at');
     setSortOrder('desc');
     setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  // Chunk editing handler
+  const handleEditChunks = (document: SystemDocument) => {
+    setSelectedDocumentForChunks(document);
+    setChunkEditDialogOpen(true);
+  };
+
+  const handleCloseChunkEditor = () => {
+    setChunkEditDialogOpen(false);
+    setSelectedDocumentForChunks(null);
   };
 
   // Delete dialog handlers
@@ -630,94 +647,193 @@ const DocumentAdminPage: React.FC = () => {
                 </TableRow>
               ) : (
                 documents.map((doc) => (
-                  <TableRow key={doc.document_id} hover>
-                    <TableCell padding="checkbox">
-                      <Checkbox
-                        checked={selectedDocuments.has(doc.document_id)}
-                        onChange={(e) => handleSelectDocument(doc.document_id, e.target.checked)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        {getFileIcon(doc.file_type)}
-                        <Box>
-                          <Typography variant="subtitle2" sx={{ fontWeight: 'medium' }}>
-                            {doc.filename}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            ID: {doc.document_id.slice(0, 8)}...
-                          </Typography>
-                        </Box>
-                        {doc.is_orphaned && (
-                          <Chip
-                            label="Orphaned"
-                            size="small"
-                            color="warning"
-                            variant="outlined"
-                          />
-                        )}
-                      </Box>
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="body2">
-                        {formatFileSize(doc.file_size_bytes)}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {doc.chunks_processed}/{doc.total_chunks} chunks
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={doc.processing_status}
-                        size="small"
-                        color={getStatusColor(doc.processing_status) as any}
-                        variant="outlined"
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="body2" sx={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {doc.milvus_collection || 'None'}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Badge badgeContent={doc.notebook_count} color="primary">
-                        <NotebookIcon />
-                      </Badge>
-                      {doc.notebooks_using.length > 0 && (
-                        <Box sx={{ mt: 0.5 }}>
-                          {doc.notebooks_using.slice(0, 2).map(nb => (
-                            <Chip
-                              key={nb.id}
-                              label={nb.name}
-                              size="small"
-                              variant="outlined"
-                              sx={{ mr: 0.5, mb: 0.5 }}
-                            />
-                          ))}
-                          {doc.notebooks_using.length > 2 && (
-                            <Typography variant="caption" color="text.secondary">
-                              +{doc.notebooks_using.length - 2} more
+                  <React.Fragment key={doc.document_id}>
+                    <TableRow hover>
+                      <TableCell padding="checkbox">
+                        <Checkbox
+                          checked={selectedDocuments.has(doc.document_id)}
+                          onChange={(e) => handleSelectDocument(doc.document_id, e.target.checked)}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          {getFileIcon(doc.file_type)}
+                          <Box>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 'medium' }}>
+                              {doc.filename}
                             </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              ID: {doc.document_id.slice(0, 8)}...
+                            </Typography>
+                          </Box>
+                          {doc.is_orphaned && (
+                            <Chip
+                              label="Orphaned"
+                              size="small"
+                              color="warning"
+                              variant="outlined"
+                            />
                           )}
                         </Box>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="body2">
-                        {formatRelativeTime(doc.created_at)}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Tooltip title="View Details">
-                        <IconButton
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {formatFileSize(doc.file_size_bytes)}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {doc.chunks_processed}/{doc.total_chunks} chunks
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          label={doc.processing_status}
                           size="small"
-                          onClick={() => toggleDetailExpansion(doc.document_id)}
-                        >
-                          {expandedDetails.has(doc.document_id) ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-                        </IconButton>
-                      </Tooltip>
-                    </TableCell>
-                  </TableRow>
+                          color={getStatusColor(doc.processing_status) as any}
+                          variant="outlined"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2" sx={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {doc.milvus_collection || 'None'}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Badge badgeContent={doc.notebook_count} color="primary">
+                          <NotebookIcon />
+                        </Badge>
+                        {doc.notebooks_using.length > 0 && (
+                          <Box sx={{ mt: 0.5 }}>
+                            {doc.notebooks_using.slice(0, 2).map(nb => (
+                              <Chip
+                                key={nb.id}
+                                label={nb.name}
+                                size="small"
+                                variant="outlined"
+                                sx={{ mr: 0.5, mb: 0.5 }}
+                              />
+                            ))}
+                            {doc.notebooks_using.length > 2 && (
+                              <Typography variant="caption" color="text.secondary">
+                                +{doc.notebooks_using.length - 2} more
+                              </Typography>
+                            )}
+                          </Box>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {formatRelativeTime(doc.created_at)}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', gap: 1 }}>
+                          <Tooltip title="Edit Chunks">
+                            <IconButton
+                              size="small"
+                              onClick={() => handleEditChunks(doc)}
+                              disabled={!doc.milvus_collection || doc.processing_status !== 'completed'}
+                            >
+                              <AutoFixIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="View Details">
+                            <IconButton
+                              size="small"
+                              onClick={() => toggleDetailExpansion(doc.document_id)}
+                            >
+                              {expandedDetails.has(doc.document_id) ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                            </IconButton>
+                          </Tooltip>
+                        </Box>
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={8}>
+                        <Collapse in={expandedDetails.has(doc.document_id)} timeout="auto" unmountOnExit>
+                          <Box sx={{ margin: 2 }}>
+                            <Typography variant="h6" gutterBottom component="div">
+                              Document Details
+                            </Typography>
+                            <Grid container spacing={2}>
+                              <Grid item xs={12} md={6}>
+                                <Card variant="outlined">
+                                  <CardContent>
+                                    <Typography variant="subtitle1" gutterBottom>
+                                      <DatabaseIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                                      Database Information
+                                    </Typography>
+                                    <Box sx={{ pl: 2 }}>
+                                      <Typography variant="body2" color="text.secondary">
+                                        Document ID: <code>{doc.document_id}</code>
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary">
+                                        File Type: {doc.file_type || 'Unknown'}
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary">
+                                        File Size: {formatFileSize(doc.file_size_bytes)}
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary">
+                                        Created: {new Date(doc.created_at).toLocaleString()}
+                                      </Typography>
+                                      {doc.updated_at && (
+                                        <Typography variant="body2" color="text.secondary">
+                                          Updated: {new Date(doc.updated_at).toLocaleString()}
+                                        </Typography>
+                                      )}
+                                    </Box>
+                                  </CardContent>
+                                </Card>
+                              </Grid>
+                              <Grid item xs={12} md={6}>
+                                <Card variant="outlined">
+                                  <CardContent>
+                                    <Typography variant="subtitle1" gutterBottom>
+                                      <EmbeddingIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                                      Processing Information
+                                    </Typography>
+                                    <Box sx={{ pl: 2 }}>
+                                      <Typography variant="body2" color="text.secondary" component="div">
+                                        Status: <Chip label={doc.processing_status} size="small" color={getStatusColor(doc.processing_status) as any} />
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                        Chunks: {doc.chunks_processed}/{doc.total_chunks}
+                                      </Typography>
+                                      <Typography variant="body2" color="text.secondary">
+                                        Milvus Collection: {doc.milvus_collection || 'None'}
+                                      </Typography>
+                                    </Box>
+                                  </CardContent>
+                                </Card>
+                              </Grid>
+                              {doc.notebooks_using.length > 0 && (
+                                <Grid item xs={12}>
+                                  <Card variant="outlined">
+                                    <CardContent>
+                                      <Typography variant="subtitle1" gutterBottom>
+                                        <NotebookIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                                        Used in Notebooks ({doc.notebooks_using.length})
+                                      </Typography>
+                                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, pl: 2 }}>
+                                        {doc.notebooks_using.map(notebook => (
+                                          <Chip
+                                            key={notebook.id}
+                                            label={notebook.name}
+                                            size="small"
+                                            color="primary"
+                                            variant="outlined"
+                                          />
+                                        ))}
+                                      </Box>
+                                    </CardContent>
+                                  </Card>
+                                </Grid>
+                              )}
+                            </Grid>
+                          </Box>
+                        </Collapse>
+                      </TableCell>
+                    </TableRow>
+                  </React.Fragment>
                 ))
               )}
             </TableBody>
@@ -964,6 +1080,41 @@ const DocumentAdminPage: React.FC = () => {
             Close
           </Button>
         </DialogActions>
+      </Dialog>
+
+      {/* Chunk Editor Dialog */}
+      <Dialog
+        open={chunkEditDialogOpen}
+        onClose={handleCloseChunkEditor}
+        maxWidth="xl"
+        fullWidth
+        fullScreen
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Typography variant="h6">
+              Edit Chunks: {selectedDocumentForChunks?.filename}
+            </Typography>
+            <IconButton onClick={handleCloseChunkEditor}>
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          {selectedDocumentForChunks && (
+            <ChunkEditor
+              collectionName={selectedDocumentForChunks.milvus_collection!}
+              documentId={selectedDocumentForChunks.document_id}
+              contentType="document"
+              documentName={selectedDocumentForChunks.filename}
+              onChunkChange={() => {
+                // Optionally refresh documents list
+                loadDocuments();
+              }}
+              onClose={handleCloseChunkEditor}
+            />
+          )}
+        </DialogContent>
       </Dialog>
     </Box>
   );

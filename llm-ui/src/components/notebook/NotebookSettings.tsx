@@ -20,15 +20,43 @@ import {
   RadioGroup,
   FormControlLabel,
   Paper,
-  Grid
+  Grid,
+  Switch,
+  FormControlLabel as MuiFormControlLabel,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Divider
 } from '@mui/material';
 import {
   Save as SaveIcon,
   CheckCircle as CheckCircleIcon,
-  Cached as CacheIcon
+  Cached as CacheIcon,
+  ExpandMore as ExpandMoreIcon,
+  Settings as SettingsIcon
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import '../../styles/settings-theme.css';
+
+// Source template interface
+interface SourceTemplate {
+  active: boolean;
+  template: string;
+  description: string;
+  variables: string[];
+}
+
+// Notebook source templates interface
+interface NotebookSourceTemplates {
+  base_source_intro: SourceTemplate;
+  mixed_sources_detail: SourceTemplate;
+  memory_only_detail: SourceTemplate;
+  document_only_detail: SourceTemplate;
+  no_specific_detail: SourceTemplate;
+  synthesis_instruction: SourceTemplate;
+  memory_context_explanation: SourceTemplate;
+  comprehensive_answer_instruction: SourceTemplate;
+}
 
 // Notebook-specific LLM settings interface
 interface NotebookLLMSettings {
@@ -66,6 +94,9 @@ const NotebookSettings: React.FC<NotebookSettingsProps> = ({
   
   // State management - Initialize empty, load from database
   const [settings, setSettings] = useState<NotebookLLMSettings | null>(null);
+  const [sourceTemplates, setSourceTemplates] = useState<NotebookSourceTemplates | null>(null);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [templatesSaving, setTemplatesSaving] = useState(false);
   
   const [models, setModels] = useState<Model[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,6 +107,7 @@ const NotebookSettings: React.FC<NotebookSettingsProps> = ({
   useEffect(() => {
     loadSettings();
     fetchAvailableModels();
+    loadSourceTemplates();
   }, [notebookId]);
 
   // Load notebook-specific settings
@@ -121,6 +153,132 @@ const NotebookSettings: React.FC<NotebookSettingsProps> = ({
     } finally {
       setLoading(false);
     }
+  };
+
+  // Load source templates
+  const loadSourceTemplates = async () => {
+    setTemplatesLoading(true);
+    
+    try {
+      const response = await fetch('/api/v1/settings/notebook_source_templates');
+      
+      if (response.ok) {
+        const data = await response.json();
+        setSourceTemplates(data.settings || getDefaultSourceTemplates());
+      } else if (response.status === 404) {
+        // No templates found, use defaults
+        setSourceTemplates(getDefaultSourceTemplates());
+        enqueueSnackbar('Using default source templates - no custom templates found', { variant: 'info' });
+      } else {
+        throw new Error(`Failed to load source templates: ${response.status}`);
+      }
+    } catch (error) {
+      console.error('Failed to load source templates:', error);
+      setSourceTemplates(getDefaultSourceTemplates());
+      enqueueSnackbar('Failed to load source templates, using defaults', { variant: 'warning' });
+    } finally {
+      setTemplatesLoading(false);
+    }
+  };
+
+  // Get default source templates
+  const getDefaultSourceTemplates = (): NotebookSourceTemplates => {
+    return {
+      base_source_intro: {
+        active: true,
+        template: "You have access to {total_sources} relevant information sources from this notebook",
+        description: "Base template for introducing available sources",
+        variables: ["total_sources"]
+      },
+      mixed_sources_detail: {
+        active: true,
+        template: ", including {document_count} document{document_plural} and {memory_count} personal memor{memory_plural}. ",
+        description: "Template for when both documents and memories are present",
+        variables: ["document_count", "document_plural", "memory_count", "memory_plural"]
+      },
+      memory_only_detail: {
+        active: true,
+        template: ", including {memory_count} personal memor{memory_plural}. ",
+        description: "Template for memory-only sources",
+        variables: ["memory_count", "memory_plural"]
+      },
+      document_only_detail: {
+        active: true,
+        template: ", including {document_count} document{document_plural}. ",
+        description: "Template for document-only sources",
+        variables: ["document_count", "document_plural"]
+      },
+      no_specific_detail: {
+        active: true,
+        template: ". ",
+        description: "Template fallback for general sources",
+        variables: []
+      },
+      synthesis_instruction: {
+        active: true,
+        template: "When responding, synthesize information from ALL provided sources - both documents and memories contain valuable context. ",
+        description: "Instruction for synthesizing all source types",
+        variables: []
+      },
+      memory_context_explanation: {
+        active: true,
+        template: "Memories typically contain personal experiences, recent developments, or contextual information that complements the formal document content. ",
+        description: "Explanation of what memories contain",
+        variables: []
+      },
+      comprehensive_answer_instruction: {
+        active: true,
+        template: "Provide comprehensive answers that integrate insights from all available sources. If the context does not contain enough information, say so clearly.",
+        description: "Instruction for comprehensive responses",
+        variables: []
+      }
+    };
+  };
+
+  // Save source templates
+  const saveSourceTemplates = async () => {
+    if (!sourceTemplates) {
+      enqueueSnackbar('No source templates to save', { variant: 'warning' });
+      return;
+    }
+
+    setTemplatesSaving(true);
+    
+    try {
+      const response = await fetch('/api/v1/settings/notebook_source_templates', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          settings: sourceTemplates
+        })
+      });
+
+      if (response.ok) {
+        enqueueSnackbar('Source templates saved successfully', { variant: 'success' });
+      } else {
+        throw new Error(`Failed to save source templates: ${response.status}`);
+      }
+    } catch (error) {
+      console.error('Failed to save source templates:', error);
+      enqueueSnackbar('Failed to save source templates', { variant: 'error' });
+    } finally {
+      setTemplatesSaving(false);
+    }
+  };
+
+  // Handle source template changes
+  const handleSourceTemplateChange = (templateKey: keyof NotebookSourceTemplates, field: keyof SourceTemplate, value: any) => {
+    if (!sourceTemplates) return;
+    
+    setSourceTemplates(prev => prev ? ({
+      ...prev,
+      [templateKey]: {
+        ...prev[templateKey],
+        [field]: value
+      }
+    }) : null);
   };
 
   // Fetch available models (matching existing pattern)
@@ -590,6 +748,165 @@ const NotebookSettings: React.FC<NotebookSettingsProps> = ({
               />
             </Tooltip>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Source Integration Templates Card */}
+      <Card variant="outlined" sx={{ mb: 2 }}>
+        <CardHeader 
+          title="Source Integration Templates"
+          subheader="Configure how the LLM integrates notebook sources (documents and memories)"
+          avatar={<SettingsIcon color="primary" />}
+          action={
+            <Button
+              variant="contained"
+              color="secondary"
+              onClick={saveSourceTemplates}
+              disabled={templatesSaving || !sourceTemplates}
+              startIcon={templatesSaving ? <CircularProgress size={16} /> : <SaveIcon />}
+            >
+              {templatesSaving ? 'Saving...' : 'Save Templates'}
+            </Button>
+          }
+        />
+        <CardContent>
+          {templatesLoading ? (
+            <Box display="flex" justifyContent="center" alignItems="center" p={4}>
+              <CircularProgress size={24} />
+              <Typography ml={2}>Loading source templates...</Typography>
+            </Box>
+          ) : sourceTemplates ? (
+            <>
+              <Alert severity="info" sx={{ mb: 3 }}>
+                <Typography variant="body2">
+                  These templates control how the LLM introduces and processes different types of sources from your notebook. 
+                  Available variables: <strong>{'{total_sources}'}</strong>, <strong>{'{document_count}'}</strong>, 
+                  <strong>{'{memory_count}'}</strong>, <strong>{'{document_plural}'}</strong>, <strong>{'{memory_plural}'}</strong>
+                </Typography>
+              </Alert>
+              
+              <Box sx={{ mb: 2 }}>
+                {Object.entries(sourceTemplates).map(([key, template]) => {
+                  const templateKey = key as keyof NotebookSourceTemplates;
+                  const friendlyName = key.split('_').map(word => 
+                    word.charAt(0).toUpperCase() + word.slice(1)
+                  ).join(' ');
+                  
+                  return (
+                    <Accordion key={key} sx={{ mb: 1 }}>
+                      <AccordionSummary 
+                        expandIcon={<ExpandMoreIcon />}
+                        sx={{ 
+                          backgroundColor: 'action.hover',
+                          '&:hover': { backgroundColor: 'action.selected' },
+                          borderRadius: 1
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                          <Box sx={{ flex: 1 }}>
+                            <Typography variant="h6" sx={{ fontSize: '14px', fontWeight: 600 }}>
+                              {friendlyName}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ fontSize: '12px' }}>
+                              {template.description}
+                            </Typography>
+                          </Box>
+                          <MuiFormControlLabel
+                            control={
+                              <Switch
+                                checked={template.active}
+                                onChange={(e) => handleSourceTemplateChange(templateKey, 'active', e.target.checked)}
+                                onClick={(e) => e.stopPropagation()}
+                                size="small"
+                              />
+                            }
+                            label={template.active ? 'Active' : 'Inactive'}
+                            sx={{ mr: 2 }}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        </Box>
+                      </AccordionSummary>
+                      <AccordionDetails sx={{ backgroundColor: 'background.paper' }}>
+                        <Box sx={{ mb: 2 }}>
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                            Variables: {template.variables.length > 0 ? 
+                              template.variables.map(v => `{${v}}`).join(', ') : 
+                              'None'
+                            }
+                          </Typography>
+                          <Divider sx={{ my: 2 }} />
+                        </Box>
+                        
+                        <TextField
+                          label="Template Content"
+                          value={template.template}
+                          onChange={(e) => handleSourceTemplateChange(templateKey, 'template', e.target.value)}
+                          multiline
+                          minRows={2}
+                          maxRows={8}
+                          fullWidth
+                          variant="outlined"
+                          disabled={!template.active}
+                          helperText={!template.active ? 'Template is inactive' : 'Use variables like {total_sources}, {document_count}, {memory_count}'}
+                          sx={{
+                            '& .MuiInputBase-root': {
+                              fontFamily: 'monospace',
+                              fontSize: '13px',
+                              lineHeight: 1.4,
+                              backgroundColor: template.active ? 'background.paper' : 'action.disabledBackground'
+                            }
+                          }}
+                        />
+                        
+                        <Box sx={{ mt: 2, p: 2, backgroundColor: 'action.hover', borderRadius: 1 }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, display: 'block', mb: 1 }}>
+                            PREVIEW:
+                          </Typography>
+                          <Typography 
+                            variant="body2" 
+                            sx={{ 
+                              fontFamily: 'monospace', 
+                              fontSize: '12px',
+                              backgroundColor: 'background.paper',
+                              p: 1.5,
+                              borderRadius: 0.5,
+                              border: '1px solid',
+                              borderColor: 'divider',
+                              whiteSpace: 'pre-wrap',
+                              color: template.active ? 'text.primary' : 'text.disabled'
+                            }}
+                          >
+                            {template.template.replace(/{(\w+)}/g, (match, variable) => {
+                              // Show example values for preview
+                              const examples: Record<string, string> = {
+                                'total_sources': '5',
+                                'document_count': '3',
+                                'memory_count': '2',
+                                'document_plural': 's',
+                                'memory_plural': 'ies'
+                              };
+                              return examples[variable] || match;
+                            })}
+                          </Typography>
+                        </Box>
+                      </AccordionDetails>
+                    </Accordion>
+                  );
+                })}
+              </Box>
+              
+              <Alert severity="success" sx={{ mt: 2 }}>
+                <Typography variant="body2">
+                  These templates will be automatically applied when the notebook LLM processes sources. 
+                  Active templates will be combined to create contextual prompts for different source scenarios.
+                </Typography>
+              </Alert>
+            </>
+          ) : (
+            <Alert severity="warning">
+              <Typography>Failed to load source templates. Please refresh the page.</Typography>
+            </Alert>
+          )}
         </CardContent>
       </Card>
     </Box>

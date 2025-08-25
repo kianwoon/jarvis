@@ -98,7 +98,10 @@
       "Read(//Users/kianwoonwong/.claude/**)",
       "Read(//Users/kianwoonwong/Downloads/MCP/**)",
       "Read(//Users/kianwoonwong/Downloads/MCP/**)",
-      "Bash(PGPASSWORD=postgres psql -h localhost -U postgres -d llm_platform -c \"\\dt\")"
+      "Bash(PGPASSWORD=postgres psql -h localhost -U postgres -d llm_platform -c \"\\dt\")",
+      "Bash(PGPASSWORD=postgres psql -h localhost -U postgres -d llm_platform -c \"\\d settings\")",
+      "Bash(psql -c 'SELECT *;')",
+      "Bash(PGPASSWORD=postgres psql:*)"
     ],
     "deny": [
       "Bash(chown:*)",

@@ -825,3 +825,690 @@ class NotebookService:
             }
         except Exception:
             return {'document_count': 0, 'conversation_count': 0}
+    
+    # Memory Management Methods
+    
+    async def create_memory(
+        self,
+        db: Session,
+        notebook_id: str,
+        name: str,
+        content: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> 'MemoryResponse':
+        """
+        Create a new memory for a notebook.
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID
+            name: Memory name
+            content: Memory content
+            description: Optional description
+            metadata: Optional metadata
+            
+        Returns:
+            Created memory response
+            
+        Raises:
+            ValueError: If validation fails
+            IntegrityError: If database constraints are violated
+            DatabaseError: If database operation fails
+        """
+        try:
+            self.logger.info(f"Creating memory '{name}' for notebook {notebook_id}")
+            
+            # Validate input
+            if not name or not name.strip():
+                raise ValueError("Memory name cannot be empty")
+            if not content or not content.strip():
+                raise ValueError("Memory content cannot be empty")
+            
+            # Verify notebook exists
+            if not await self.notebook_exists(db, notebook_id):
+                raise ValueError(f"Notebook {notebook_id} not found")
+            
+            # Create memory record
+            memory_id = str(uuid.uuid4())
+            now = datetime.now()
+            
+            # Import here to avoid circular imports
+            from app.models.notebook_models import MemoryResponse
+            
+            # Process content: chunk, embed, store in Milvus
+            chunk_count, target_collection = await self._process_memory_content(
+                db=db,
+                memory_id=memory_id,
+                content=content.strip(),
+                metadata=metadata or {}
+            )
+            
+            # Use the safe synchronized memory creation function
+            sync_result = db.execute(text("""
+                SELECT success, message, memory_id FROM create_memory_synchronized(
+                    :notebook_id, :memory_id, :name, :description, :content, 
+                    :milvus_collection, :chunk_count, :metadata
+                )
+            """), {
+                'notebook_id': notebook_id,
+                'memory_id': memory_id,
+                'name': name.strip(),
+                'description': description,
+                'content': content.strip(),
+                'milvus_collection': target_collection,
+                'chunk_count': chunk_count,
+                'metadata': json.dumps(metadata) if metadata else None
+            })
+            
+            sync_row = sync_result.fetchone()
+            if not sync_row.success:
+                raise ValueError(f"Failed to create synchronized memory: {sync_row.message}")
+            
+            # Get the created memory record
+            result = db.execute(text("""
+                SELECT id, notebook_id, memory_id, name, description, content, 
+                       milvus_collection, chunk_count, created_at, updated_at, metadata
+                FROM notebook_memories 
+                WHERE memory_id = :memory_id
+            """), {'memory_id': memory_id})
+            
+            row = result.fetchone()
+            db.commit()
+            
+            self.logger.info(f"Successfully created memory {memory_id}")
+            
+            return MemoryResponse(
+                id=str(row.id),
+                notebook_id=str(row.notebook_id),
+                memory_id=row.memory_id,
+                name=row.name,
+                description=row.description,
+                content=row.content,
+                milvus_collection=row.milvus_collection,
+                chunk_count=row.chunk_count,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                metadata=json.loads(row.metadata) if row.metadata else None
+            )
+            
+        except ValueError:
+            raise
+        except IntegrityError as e:
+            db.rollback()
+            self.logger.error(f"Integrity error creating memory: {str(e)}")
+            raise
+        except DatabaseError as e:
+            db.rollback()
+            self.logger.error(f"Database error creating memory: {str(e)}")
+            raise
+        except Exception as e:
+            db.rollback()
+            self.logger.error(f"Unexpected error creating memory: {str(e)}")
+            raise
+    
+    async def get_memories(
+        self,
+        db: Session,
+        notebook_id: str,
+        page: int = 1,
+        page_size: int = 20
+    ) -> 'MemoryListResponse':
+        """
+        Get memories for a notebook with pagination.
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID
+            page: Page number (1-based)
+            page_size: Number of memories per page
+            
+        Returns:
+            List of memories with pagination info
+        """
+        try:
+            self.logger.info(f"Getting memories for notebook {notebook_id}")
+            
+            # Import here to avoid circular imports
+            from app.models.notebook_models import MemoryResponse, MemoryListResponse
+            
+            # Verify notebook exists
+            if not await self.notebook_exists(db, notebook_id):
+                raise ValueError(f"Notebook {notebook_id} not found")
+            
+            # Calculate offset
+            offset = (page - 1) * page_size
+            
+            # Get total count
+            count_query = text("""
+                SELECT COUNT(*) as total
+                FROM notebook_memories
+                WHERE notebook_id = :notebook_id
+            """)
+            
+            count_result = db.execute(count_query, {'notebook_id': notebook_id})
+            total_count = count_result.fetchone().total
+            
+            # Get paginated memories
+            memories_query = text("""
+                SELECT id, notebook_id, memory_id, name, description, content,
+                       milvus_collection, chunk_count, created_at, updated_at, metadata
+                FROM notebook_memories
+                WHERE notebook_id = :notebook_id
+                ORDER BY created_at DESC
+                LIMIT :limit OFFSET :offset
+            """)
+            
+            result = db.execute(memories_query, {
+                'notebook_id': notebook_id,
+                'limit': page_size,
+                'offset': offset
+            })
+            
+            memories = []
+            for row in result.fetchall():
+                memories.append(MemoryResponse(
+                    id=str(row.id),
+                    notebook_id=str(row.notebook_id),
+                    memory_id=row.memory_id,
+                    name=row.name,
+                    description=row.description,
+                    content=row.content,
+                    milvus_collection=row.milvus_collection,
+                    chunk_count=row.chunk_count,
+                    created_at=row.created_at,
+                    updated_at=row.updated_at,
+                    metadata=json.loads(row.metadata) if row.metadata else None
+                ))
+            
+            return MemoryListResponse(
+                memories=memories,
+                total_count=total_count,
+                page=page,
+                page_size=page_size
+            )
+            
+        except ValueError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Error getting memories: {str(e)}")
+            raise
+    
+    async def get_memory(
+        self,
+        db: Session,
+        notebook_id: str,
+        memory_id: str
+    ) -> Optional['MemoryResponse']:
+        """
+        Get a specific memory by ID.
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID
+            memory_id: Memory ID
+            
+        Returns:
+            Memory response or None if not found
+        """
+        try:
+            self.logger.info(f"Getting memory {memory_id} for notebook {notebook_id}")
+            
+            # Import here to avoid circular imports
+            from app.models.notebook_models import MemoryResponse
+            
+            query = text("""
+                SELECT id, notebook_id, memory_id, name, description, content,
+                       milvus_collection, chunk_count, created_at, updated_at, metadata
+                FROM notebook_memories
+                WHERE notebook_id = :notebook_id AND memory_id = :memory_id
+            """)
+            
+            result = db.execute(query, {
+                'notebook_id': notebook_id,
+                'memory_id': memory_id
+            })
+            
+            row = result.fetchone()
+            
+            if not row:
+                return None
+            
+            return MemoryResponse(
+                id=str(row.id),
+                notebook_id=str(row.notebook_id),
+                memory_id=row.memory_id,
+                name=row.name,
+                description=row.description,
+                content=row.content,
+                milvus_collection=row.milvus_collection,
+                chunk_count=row.chunk_count,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                metadata=json.loads(row.metadata) if row.metadata else None
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error getting memory: {str(e)}")
+            raise
+    
+    async def update_memory(
+        self,
+        db: Session,
+        notebook_id: str,
+        memory_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        content: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Optional['MemoryResponse']:
+        """
+        Update a memory.
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID
+            memory_id: Memory ID
+            name: Updated name
+            description: Updated description
+            content: Updated content (will trigger re-processing)
+            metadata: Updated metadata
+            
+        Returns:
+            Updated memory response or None if not found
+        """
+        try:
+            self.logger.info(f"Updating memory {memory_id} for notebook {notebook_id}")
+            
+            # Import here to avoid circular imports
+            from app.models.notebook_models import MemoryResponse
+            
+            # Get current memory
+            current_memory = await self.get_memory(db, notebook_id, memory_id)
+            if not current_memory:
+                return None
+            
+            # Prepare update fields
+            update_fields = []
+            update_params = {'notebook_id': notebook_id, 'memory_id': memory_id}
+            
+            if name is not None and name.strip():
+                update_fields.append("name = :name")
+                update_params['name'] = name.strip()
+            
+            if description is not None:
+                update_fields.append("description = :description")
+                update_params['description'] = description
+            
+            if metadata is not None:
+                update_fields.append("metadata = :metadata")
+                update_params['metadata'] = json.dumps(metadata)
+            
+            # Handle content update (requires re-processing)
+            if content is not None and content.strip():
+                update_fields.append("content = :content")
+                update_fields.append("chunk_count = :chunk_count")
+                update_params['content'] = content.strip()
+                
+                # Re-process content
+                chunk_count, target_collection = await self._process_memory_content(
+                    db=db,
+                    memory_id=memory_id,
+                    content=content.strip(),
+                    metadata=metadata or current_memory.metadata or {},
+                    is_update=True
+                )
+                update_params['chunk_count'] = chunk_count
+            
+            if not update_fields:
+                # No changes to make
+                return current_memory
+            
+            update_fields.append("updated_at = NOW()")
+            
+            update_query = text(f"""
+                UPDATE notebook_memories 
+                SET {', '.join(update_fields)}
+                WHERE notebook_id = :notebook_id AND memory_id = :memory_id
+                RETURNING id, notebook_id, memory_id, name, description, content,
+                         milvus_collection, chunk_count, created_at, updated_at, metadata
+            """)
+            
+            result = db.execute(update_query, update_params)
+            row = result.fetchone()
+            
+            if not row:
+                return None
+            
+            db.commit()
+            
+            self.logger.info(f"Successfully updated memory {memory_id}")
+            
+            return MemoryResponse(
+                id=str(row.id),
+                notebook_id=str(row.notebook_id),
+                memory_id=row.memory_id,
+                name=row.name,
+                description=row.description,
+                content=row.content,
+                milvus_collection=row.milvus_collection,
+                chunk_count=row.chunk_count,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                metadata=json.loads(row.metadata) if row.metadata else None
+            )
+            
+        except Exception as e:
+            db.rollback()
+            self.logger.error(f"Error updating memory: {str(e)}")
+            raise
+    
+    async def delete_memory(
+        self,
+        db: Session,
+        notebook_id: str,
+        memory_id: str
+    ) -> bool:
+        """
+        Delete a memory and all its associated data.
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID
+            memory_id: Memory ID
+            
+        Returns:
+            True if deleted, False if not found
+        """
+        try:
+            self.logger.info(f"Deleting memory {memory_id} for notebook {notebook_id}")
+            
+            # Get memory details before deletion
+            memory = await self.get_memory(db, notebook_id, memory_id)
+            if not memory:
+                return False
+            
+            # Delete from Milvus
+            await self._delete_memory_from_milvus(memory_id, memory.milvus_collection)
+            
+            # Delete from knowledge_graph_documents
+            kg_delete_query = text("""
+                DELETE FROM knowledge_graph_documents
+                WHERE document_id = :memory_id AND content_type = 'memory'
+            """)
+            db.execute(kg_delete_query, {'memory_id': memory_id})
+            
+            # Delete from notebook_memories
+            memory_delete_query = text("""
+                DELETE FROM notebook_memories
+                WHERE notebook_id = :notebook_id AND memory_id = :memory_id
+            """)
+            
+            result = db.execute(memory_delete_query, {
+                'notebook_id': notebook_id,
+                'memory_id': memory_id
+            })
+            
+            deleted = result.rowcount > 0
+            
+            if deleted:
+                db.commit()
+                self.logger.info(f"Successfully deleted memory {memory_id}")
+            else:
+                db.rollback()
+            
+            return deleted
+            
+        except Exception as e:
+            db.rollback()
+            self.logger.error(f"Error deleting memory: {str(e)}")
+            raise
+    
+    async def _process_memory_content(
+        self,
+        db: Session,
+        memory_id: str,
+        content: str,
+        metadata: Dict[str, Any],
+        is_update: bool = False
+    ) -> int:
+        """
+        Process memory content: chunk, embed, and store in Milvus.
+        
+        Args:
+            db: Database session
+            memory_id: Memory ID
+            content: Content to process
+            metadata: Memory metadata
+            is_update: Whether this is an update operation
+            
+        Returns:
+            Number of chunks created
+        """
+        try:
+            from langchain.text_splitter import RecursiveCharacterTextSplitter
+            from app.core.embedding_settings_cache import get_embedding_settings
+            from app.core.vector_db_settings_cache import get_vector_db_settings
+            from app.core.collection_registry_cache import get_collection_config
+            from pymilvus import connections, Collection, utility
+            import requests
+            import hashlib
+            
+            # Get settings
+            embedding_settings = get_embedding_settings()
+            vector_settings_raw = get_vector_db_settings()
+            
+            if not embedding_settings or not vector_settings_raw:
+                raise ValueError("Missing embedding or vector database settings")
+            
+            # Migrate and get active Milvus configuration
+            from app.utils.vector_db_migration import migrate_vector_db_settings
+            vector_db_cfg = migrate_vector_db_settings(vector_settings_raw)
+            
+            # Find active Milvus database
+            milvus_db = None
+            for db_config in vector_db_cfg.get("databases", []):
+                if db_config.get("id") == "milvus" and db_config.get("enabled"):
+                    milvus_db = db_config
+                    break
+            
+            if not milvus_db:
+                raise ValueError("No active Milvus configuration found")
+            
+            # Use notebooks collection - matches document upload pattern 
+            target_collection = 'notebooks'
+            collection_config = get_collection_config(target_collection)
+            
+            if not collection_config:
+                raise ValueError(f"Collection '{target_collection}' not found. Please initialize it first.")
+            
+            # Split content into chunks
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+                length_function=len
+            )
+            
+            chunks = text_splitter.split_text(content)
+            
+            # Generate embeddings
+            endpoint = embedding_settings.get('embedding_endpoint')
+            if not endpoint:
+                raise ValueError("Embedding endpoint not configured")
+            
+            embeddings = []
+            for chunk in chunks:
+                payload = {"texts": [chunk.lower().strip()]}
+                response = requests.post(endpoint, json=payload, timeout=30)
+                response.raise_for_status()
+                embedding_data = response.json()["embeddings"][0]
+                embeddings.append(embedding_data)
+            
+            # Connect to Milvus
+            milvus_cfg = milvus_db.get("config", {})
+            milvus_uri = milvus_cfg.get("MILVUS_URI")
+            milvus_token = milvus_cfg.get("MILVUS_TOKEN")
+            connections.connect(uri=milvus_uri, token=milvus_token)
+            
+            # Ensure collection exists
+            from app.api.v1.endpoints.notebooks import ensure_milvus_collection
+            collection = ensure_milvus_collection(
+                target_collection,
+                len(embeddings[0]) if embeddings else 384,
+                milvus_uri,
+                milvus_token
+            )
+            
+            # If updating, delete existing chunks
+            if is_update:
+                delete_expr = f'doc_id == "{memory_id}"'
+                collection.delete(expr=delete_expr)
+                collection.flush()
+            
+            # Prepare data for insertion
+            chunk_ids = [str(uuid.uuid4()) for _ in chunks]
+            now_iso = datetime.now().isoformat()
+            
+            data = [
+                chunk_ids,
+                embeddings,
+                chunks,
+                [f"memory:{memory_id}" for _ in chunks],  # source
+                [0 for _ in chunks],  # page
+                ['memory' for _ in chunks],  # doc_type
+                [now_iso for _ in chunks],  # uploaded_at
+                [f'memory_{i}' for i in range(len(chunks))],  # section
+                ['' for _ in chunks],  # author
+                [hashlib.sha256(chunk.encode()).hexdigest() for chunk in chunks],  # hash
+                [memory_id for _ in chunks],  # doc_id
+                ['' for _ in chunks],  # bm25_tokens
+                [0 for _ in chunks],  # bm25_term_count
+                [0 for _ in chunks],  # bm25_unique_terms
+                ['' for _ in chunks],  # bm25_top_terms
+                [now_iso for _ in chunks],  # creation_date
+                [now_iso for _ in chunks],  # last_modified_date
+            ]
+            
+            # Insert into Milvus
+            collection.insert(data)
+            collection.flush()
+            
+            # Create or update knowledge_graph_documents record with content-based deduplication
+            content_hash = hashlib.sha256(content.encode()).hexdigest()
+            
+            # First check if content already exists
+            existing_check_query = text("""
+                SELECT document_id, chunks_processed 
+                FROM knowledge_graph_documents 
+                WHERE file_hash = :file_hash AND content_type = 'memory'
+                LIMIT 1
+            """)
+            
+            existing_result = db.execute(existing_check_query, {'file_hash': content_hash}).fetchone()
+            
+            if existing_result and not is_update:
+                # Content already exists, don't create duplicate
+                self.logger.info(f"Memory content already exists with document_id {existing_result.document_id}, skipping duplicate creation")
+                return existing_result.chunks_processed, target_collection
+            elif existing_result and is_update:
+                # For updates, use the existing document_id to maintain consistency
+                existing_doc_id = existing_result.document_id
+                # Update the existing record
+                kg_update_query = text("""
+                    UPDATE knowledge_graph_documents 
+                    SET chunks_processed = :chunks,
+                        total_chunks = :chunks,
+                        processing_completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE document_id = :doc_id
+                """)
+                
+                db.execute(kg_update_query, {
+                    'doc_id': existing_doc_id,
+                    'chunks': len(chunks)
+                })
+            else:
+                # Content doesn't exist, create new record
+                kg_insert_query = text("""
+                    INSERT INTO knowledge_graph_documents 
+                    (document_id, filename, file_hash, file_type, content_type, 
+                     milvus_collection, processing_status, chunks_processed, 
+                     total_chunks, processing_completed_at)
+                    VALUES (:doc_id, :filename, :file_hash, 'memory', 'memory',
+                            :collection, 'completed', :chunks, :chunks, NOW())
+                """)
+                
+                db.execute(kg_insert_query, {
+                    'doc_id': memory_id,
+                    'filename': f'memory_{memory_id}',
+                    'file_hash': content_hash,
+                    'collection': target_collection,
+                    'chunks': len(chunks)
+                })
+            
+            return len(chunks), target_collection
+            
+        except Exception as e:
+            self.logger.error(f"Error processing memory content: {str(e)}")
+            raise
+    
+    async def _delete_memory_from_milvus(
+        self,
+        memory_id: str,
+        collection_name: Optional[str]
+    ) -> None:
+        """
+        Delete memory chunks from Milvus.
+        
+        Args:
+            memory_id: Memory ID
+            collection_name: Milvus collection name
+        """
+        try:
+            if not collection_name:
+                self.logger.warning(f"No collection specified for memory {memory_id}")
+                return
+            
+            from app.core.vector_db_settings_cache import get_vector_db_settings
+            from pymilvus import connections, Collection, utility
+            
+            vector_settings_raw = get_vector_db_settings()
+            if not vector_settings_raw:
+                return
+            
+            # Migrate and get active Milvus configuration
+            from app.utils.vector_db_migration import migrate_vector_db_settings
+            vector_db_cfg = migrate_vector_db_settings(vector_settings_raw)
+            
+            # Find active Milvus database
+            milvus_db = None
+            for db_config in vector_db_cfg.get("databases", []):
+                if db_config.get("id") == "milvus" and db_config.get("enabled"):
+                    milvus_db = db_config
+                    break
+            
+            if not milvus_db:
+                self.logger.warning("No active Milvus configuration found")
+                return
+            
+            milvus_cfg = milvus_db.get("config", {})
+            milvus_uri = milvus_cfg.get("MILVUS_URI")
+            milvus_token = milvus_cfg.get("MILVUS_TOKEN")
+            connections.connect(uri=milvus_uri, token=milvus_token)
+            
+            if not utility.has_collection(collection_name):
+                self.logger.warning(f"Collection {collection_name} not found")
+                return
+            
+            collection = Collection(collection_name)
+            collection.load()
+            
+            delete_expr = f'doc_id == "{memory_id}"'
+            collection.delete(expr=delete_expr)
+            collection.flush()
+            
+            self.logger.info(f"Deleted memory {memory_id} chunks from Milvus")
+            
+        except Exception as e:
+            self.logger.error(f"Error deleting memory from Milvus: {str(e)}")
+            # Don't raise here - we still want to delete from database

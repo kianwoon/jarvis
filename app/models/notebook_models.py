@@ -163,6 +163,7 @@ class NotebookRAGSource(BaseModel):
     document_id: str = Field(..., description="Source document ID")
     document_name: Optional[str] = Field(None, description="Source document name")
     collection: Optional[str] = Field(None, description="Milvus collection name")
+    source_type: Optional[str] = Field("document", description="Source type: 'document' or 'memory'")
 
 class NotebookRAGResponse(BaseModel):
     """Response model for notebook RAG queries."""
@@ -280,7 +281,7 @@ class NotebookChatRequest(BaseModel):
     message: str = Field(..., description="Chat message")
     conversation_id: Optional[str] = Field(None, description="Conversation ID")  
     include_context: Optional[bool] = Field(True, description="Whether to include notebook context")
-    max_sources: Optional[int] = Field(5, description="Maximum number of sources to include")
+    max_sources: Optional[int] = Field(15, description="Maximum number of sources to include")
     
     class Config:
         # Allow extra fields to be ignored instead of causing validation errors
@@ -319,12 +320,12 @@ class NotebookChatRequest(BaseModel):
     @validator('max_sources', pre=True) 
     def validate_max_sources(cls, v):
         if v is None:
-            return 5
+            return 15
         try:
             val = int(v) if not isinstance(v, int) else v
             return max(1, min(20, val))  # Clamp between 1 and 20
         except (ValueError, TypeError):
-            return 5
+            return 15
 
 class NotebookChatResponse(BaseModel):
     """Streaming response model for notebook chat."""
@@ -332,4 +333,145 @@ class NotebookChatResponse(BaseModel):
     sources: List[NotebookRAGSource] = Field(default_factory=list, description="Sources used")
     notebook_id: str = Field(..., description="Notebook ID")
     conversation_id: Optional[str] = Field(None, description="Conversation ID")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Response timestamp")
+
+# Memory Models
+
+class MemoryCreateRequest(BaseModel):
+    """Request model for creating a memory."""
+    name: str = Field(..., min_length=1, max_length=255, description="Memory name")
+    description: Optional[str] = Field(None, description="Memory description")
+    content: str = Field(..., min_length=1, description="Memory content")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Memory name cannot be empty")
+        return v.strip()
+    
+    @validator('content')
+    def validate_content(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Memory content cannot be empty")
+        return v.strip()
+
+class MemoryUpdateRequest(BaseModel):
+    """Request model for updating a memory."""
+    name: Optional[str] = Field(None, min_length=1, max_length=255, description="Updated memory name")
+    description: Optional[str] = Field(None, description="Updated description")
+    content: Optional[str] = Field(None, min_length=1, description="Updated memory content")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Updated metadata")
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if v is not None and (not v or not v.strip()):
+            raise ValueError("Memory name cannot be empty")
+        return v.strip() if v else v
+    
+    @validator('content')
+    def validate_content(cls, v):
+        if v is not None and (not v or not v.strip()):
+            raise ValueError("Memory content cannot be empty")
+        return v.strip() if v else v
+
+class MemoryResponse(BaseModel):
+    """Response model for memory operations."""
+    id: str = Field(..., description="Memory record ID")
+    notebook_id: str = Field(..., description="Parent notebook ID")
+    memory_id: str = Field(..., description="Unique memory ID")
+    name: str = Field(..., description="Memory name")
+    description: Optional[str] = Field(None, description="Memory description")
+    content: str = Field(..., description="Memory content")
+    milvus_collection: Optional[str] = Field(None, description="Milvus collection name")
+    chunk_count: int = Field(..., description="Number of chunks created")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    updated_at: datetime = Field(..., description="Last update timestamp")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+
+class MemoryListResponse(BaseModel):
+    """Response model for listing memories."""
+    memories: List[MemoryResponse] = Field(..., description="List of memories")
+    total_count: int = Field(..., description="Total number of memories")
+    page: int = Field(..., description="Current page number")
+    page_size: int = Field(..., description="Page size")
+
+# Chunk Editing Models
+
+class ContentType(str, Enum):
+    """Content type for chunk editing."""
+    DOCUMENT = "document"
+    MEMORY = "memory"
+
+class ChunkUpdateRequest(BaseModel):
+    """Request model for updating a chunk."""
+    content: str = Field(..., min_length=1, description="Updated chunk content")
+    re_embed: bool = Field(True, description="Whether to re-embed the chunk after update")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata for the edit")
+    
+    @validator('content')
+    def validate_content(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Chunk content cannot be empty")
+        return v.strip()
+
+class ChunkEditHistory(BaseModel):
+    """Model for chunk edit history."""
+    id: str = Field(..., description="Edit record ID")
+    chunk_id: str = Field(..., description="Chunk ID")
+    original_content: str = Field(..., description="Original content")
+    edited_content: str = Field(..., description="Edited content")
+    edited_by: Optional[str] = Field(None, description="User who made the edit")
+    edited_at: datetime = Field(..., description="When the edit was made")
+    re_embedded: bool = Field(..., description="Whether the chunk was re-embedded")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Edit metadata")
+
+class ChunkResponse(BaseModel):
+    """Response model for chunk operations."""
+    chunk_id: str = Field(..., description="Unique chunk ID")
+    document_id: str = Field(..., description="Parent document or memory ID")
+    content_type: ContentType = Field(..., description="Type of content (document or memory)")
+    content: str = Field(..., description="Chunk content")
+    vector: Optional[List[float]] = Field(None, description="Embedding vector")
+    metadata: Dict[str, Any] = Field(..., description="Chunk metadata")
+    edit_history: List[ChunkEditHistory] = Field(default_factory=list, description="Edit history")
+    last_edited: Optional[datetime] = Field(None, description="Last edit timestamp")
+
+class ChunkListResponse(BaseModel):
+    """Response model for listing chunks."""
+    chunks: List[ChunkResponse] = Field(..., description="List of chunks")
+    total_count: int = Field(..., description="Total number of chunks")
+    document_id: str = Field(..., description="Parent document or memory ID")
+    content_type: ContentType = Field(..., description="Content type")
+    edited_chunks_count: int = Field(..., description="Number of chunks that have been edited")
+
+class BulkChunkReEmbedRequest(BaseModel):
+    """Request model for bulk re-embedding chunks."""
+    chunk_ids: List[str] = Field(..., min_items=1, description="Chunk IDs to re-embed")
+    
+    @validator('chunk_ids')
+    def validate_chunk_ids(cls, v):
+        if not v:
+            raise ValueError("Chunk IDs cannot be empty")
+        for chunk_id in v:
+            if not chunk_id or not chunk_id.strip():
+                raise ValueError("Chunk ID cannot be empty")
+        return [chunk_id.strip() for chunk_id in v]
+
+class ChunkOperationResponse(BaseModel):
+    """Response model for chunk operations."""
+    success: bool = Field(..., description="Whether operation was successful")
+    chunk_id: str = Field(..., description="Chunk ID")
+    message: str = Field(..., description="Operation result message")
+    re_embedded: bool = Field(False, description="Whether chunk was re-embedded")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Response timestamp")
+
+class BulkChunkOperationResponse(BaseModel):
+    """Response model for bulk chunk operations."""
+    success: bool = Field(..., description="Whether overall operation was successful")
+    total_requested: int = Field(..., description="Total chunks requested")
+    successful_operations: int = Field(..., description="Number of successful operations")
+    failed_operations: int = Field(..., description="Number of failed operations")
+    operation_details: List[ChunkOperationResponse] = Field(..., description="Detailed operation results")
+    message: str = Field(..., description="Overall operation message")
     timestamp: datetime = Field(default_factory=datetime.now, description="Response timestamp")

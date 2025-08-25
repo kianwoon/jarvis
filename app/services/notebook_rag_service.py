@@ -218,19 +218,23 @@ class NotebookRAGService:
                         self.logger.error(f"[DEBUG] Embedding error traceback: {traceback.format_exc()}")
                         raise
                     
-                    # Build filter expression for document IDs
+                    # Build filter expression for document and memory IDs
                     doc_filter = None
                     if document_ids:
-                        # Create filter to include document chunks from this notebook
-                        # Document IDs in Milvus are chunked: "doc_id_pX_cY" format
-                        # Use prefix matching to find all chunks for each document
-                        if len(document_ids) == 1:
-                            # Single document - use LIKE for prefix matching
-                            doc_filter = f"doc_id like '{document_ids[0]}%'"
-                        else:
-                            # Multiple documents - use OR with LIKE for each
-                            like_conditions = [f"doc_id like '{doc_id}%'" for doc_id in document_ids]
-                            doc_filter = " or ".join(like_conditions)
+                        # Create filter to include both document chunks and memories from this notebook
+                        # Document IDs in Milvus are chunked: "doc_id_pX_cY" format - use prefix matching
+                        # Memory IDs are exact UUIDs - use exact matching
+                        conditions = []
+                        
+                        for doc_id in document_ids:
+                            # Check if this looks like a UUID (memory ID) - exact match
+                            if len(doc_id) == 36 and doc_id.count('-') == 4:
+                                conditions.append(f"doc_id == '{doc_id}'")
+                            else:
+                                # Document ID - use prefix matching for chunks
+                                conditions.append(f"doc_id like '{doc_id}%'")
+                        
+                        doc_filter = " or ".join(conditions)
                     
                     # Setup search parameters
                     search_params = {
@@ -344,8 +348,42 @@ class NotebookRAGService:
                                 else:
                                     self.logger.debug(f"[DEBUG] Including document {document_id} - matches notebook documents")
                             
-                            # Get document name from our database
-                            document_name = await self._get_document_name(db, notebook_id, document_id)
+                            # Get document name from cached results with improved memory handling
+                            cached_names = getattr(self, '_current_document_names', {})
+                            document_info = cached_names.get(document_id, {})
+                            
+                            # Enhanced name resolution for different ID formats
+                            if not document_info:
+                                # Check if this looks like a UUID (memory ID) - try exact match first
+                                if len(document_id) == 36 and document_id.count('-') == 4:
+                                    # This is likely a memory UUID, check all cached names for exact match
+                                    for cached_id, cached_info in cached_names.items():
+                                        if cached_id == document_id and cached_info.get('type') == 'memory':
+                                            document_info = cached_info
+                                            self.logger.debug(f"[MEMORY_RESOLUTION] Found exact memory match: {document_id}")
+                                            break
+                                # Try prefix matching for document chunks 
+                                elif '_' in document_id:
+                                    # For document chunks like '33997c75bf33_p0_c0', try base ID '33997c75bf33'  
+                                    base_id = document_id.split('_')[0]
+                                    document_info = cached_names.get(base_id, {})
+                                    if document_info:
+                                        self.logger.debug(f"[DOCUMENT_RESOLUTION] Found chunk base match: {base_id} for {document_id}")
+                            
+                            document_name = document_info.get('name')
+                            source_type = document_info.get('type', 'document')
+                            
+                            # CRITICAL FIX: If memory source has no name, provide fallback to prevent filtering
+                            if source_type == 'memory' and not document_name:
+                                self.logger.warning(f"[MEMORY_FIX] Memory {document_id} has no name in cached results")
+                                self.logger.warning(f"[MEMORY_FIX] Available cached names: {list(cached_names.keys())}")
+                                document_name = f"Memory ({document_id[:8]}...)"
+                            elif source_type == 'memory' and document_name:
+                                self.logger.debug(f"[MEMORY_SUCCESS] Memory {document_id} resolved to name: '{document_name}'")
+                            
+                            # Add logging for source type detection to help debug issues
+                            self.logger.debug(f"[SOURCE_TYPE_DEBUG] Document {document_id}: type='{source_type}', name='{document_name}'")
+                            
                             
                             # Robust content extraction - handle different document formats
                             content = None
@@ -393,13 +431,23 @@ class NotebookRAGService:
                                 self.logger.warning(f"[DEBUG] Empty content for document {document_id}, skipping")
                                 continue
                             
+                            # DEBUG: Log source creation details
+                            self.logger.debug(f"[SOURCE_CREATION] Creating NotebookRAGSource:")
+                            self.logger.debug(f"[SOURCE_CREATION]   document_id: {document_id}")
+                            self.logger.debug(f"[SOURCE_CREATION]   document_name: '{document_name}'") 
+                            self.logger.debug(f"[SOURCE_CREATION]   source_type: '{source_type}'")
+                            self.logger.debug(f"[SOURCE_CREATION]   score: {score}")
+                            self.logger.debug(f"[SOURCE_CREATION]   collection: {collection_name}")
+                            self.logger.debug(f"[SOURCE_CREATION]   content_length: {len(content)}")
+                            
                             source = NotebookRAGSource(
                                 content=content,
                                 metadata=doc_metadata if include_metadata else {},
                                 score=float(score),
                                 document_id=document_id,
                                 document_name=document_name,
-                                collection=collection_name
+                                collection=collection_name,
+                                source_type=source_type
                             )
                         except Exception as doc_error:
                             self.logger.error(f"[DEBUG] Error processing document result: {str(doc_error)}")
@@ -412,6 +460,11 @@ class NotebookRAGService:
                             continue
                         
                         all_sources.append(source)
+                        
+                        # DEBUG: Confirm source was added to the list
+                        self.logger.debug(f"[SOURCE_ADDED] Successfully added source to all_sources list")
+                        self.logger.debug(f"[SOURCE_ADDED] Current all_sources count: {len(all_sources)}")
+                        self.logger.debug(f"[SOURCE_ADDED] Last added source type: '{source.source_type}', name: '{source.document_name}'")
                         
                         if len(all_sources) >= top_k * 3:  # Collect more for better ranking
                             break
@@ -432,11 +485,21 @@ class NotebookRAGService:
                     self.logger.error(f"[DEBUG] Full error traceback for collection {collection_name}: {traceback.format_exc()}")
                     continue
             
-            # Sort all sources by score (lower is better for distance-based similarity)
-            all_sources.sort(key=lambda x: x.score)
+            # DEBUG: Log all sources before sorting and filtering
+            self.logger.debug(f"[FINAL_SOURCES_DEBUG] Total sources before filtering: {len(all_sources)}")
+            for idx, src in enumerate(all_sources):
+                self.logger.debug(f"[FINAL_SOURCES_DEBUG] Source {idx+1}: type='{src.source_type}', name='{src.document_name}', score={src.score}")
+            
+            # Sort all sources by score (higher is better for COSINE similarity)
+            all_sources.sort(key=lambda x: x.score, reverse=True)
             
             # Take top_k results
             top_sources = all_sources[:top_k]
+            
+            # DEBUG: Log final sources being returned
+            self.logger.debug(f"[FINAL_RESPONSE_DEBUG] Final top {top_k} sources being returned:")
+            for idx, src in enumerate(top_sources):
+                self.logger.debug(f"[FINAL_RESPONSE_DEBUG] Source {idx+1}: type='{src.source_type}', name='{src.document_name}', score={src.score}")
             
             self.logger.info(f"Successfully queried notebook {notebook_id}, found {len(top_sources)} sources")
             
@@ -484,10 +547,17 @@ class NotebookRAGService:
             Dictionary mapping collection names to document ID lists
         """
         try:
-            # Build query to get collections and document IDs
+            # Build query to get collections and document IDs from both documents and memories
             base_query = """
-                SELECT DISTINCT milvus_collection, document_id, document_name
+                SELECT DISTINCT milvus_collection, document_id, document_name, 'document' as source_type
                 FROM notebook_documents
+                WHERE notebook_id = :notebook_id 
+                AND milvus_collection IS NOT NULL
+                
+                UNION ALL
+                
+                SELECT DISTINCT milvus_collection, memory_id as document_id, name as document_name, 'memory' as source_type  
+                FROM notebook_memories
                 WHERE notebook_id = :notebook_id 
                 AND milvus_collection IS NOT NULL
             """
@@ -504,17 +574,28 @@ class NotebookRAGService:
             result = db.execute(query, params)
             rows = result.fetchall()
             
-            # Group by collection
+            # Group by collection, preserving document names
             collections_map = {}
+            document_names_map = {}  # Track document names separately
             for row in rows:
                 collection = row.milvus_collection
                 document_id = row.document_id
+                document_name = row.document_name
+                source_type = row.source_type
                 
                 if collection not in collections_map:
                     collections_map[collection] = []
                 collections_map[collection].append(document_id)
+                
+                # Store document name with source type for later use
+                document_names_map[document_id] = {
+                    'name': document_name,
+                    'type': source_type
+                }
             
             self.logger.debug(f"Found collections for notebook {notebook_id}: {list(collections_map.keys())}")
+            # Store document names map as instance variable for use in search
+            self._current_document_names = document_names_map
             return collections_map
             
         except Exception as e:
@@ -528,33 +609,50 @@ class NotebookRAGService:
         document_id: str
     ) -> Optional[str]:
         """
-        Get document name from notebook_documents table.
+        Get document or memory name from notebook_documents or notebook_memories table.
         
         Args:
             db: Database session
             notebook_id: Notebook ID
-            document_id: Document ID
+            document_id: Document ID or memory ID
             
         Returns:
-            Document name if found
+            Document/memory name if found
         """
         try:
-            query = text("""
+            # Try documents table first
+            doc_query = text("""
                 SELECT document_name
                 FROM notebook_documents
                 WHERE notebook_id = :notebook_id AND document_id = :document_id
             """)
             
-            result = db.execute(query, {
+            result = db.execute(doc_query, {
                 'notebook_id': notebook_id,
                 'document_id': document_id
             })
             
             row = result.fetchone()
-            return row.document_name if row else None
+            if row:
+                return row.document_name
+            
+            # If not found in documents, try memories table
+            memory_query = text("""
+                SELECT name
+                FROM notebook_memories
+                WHERE notebook_id = :notebook_id AND memory_id = :memory_id
+            """)
+            
+            result = db.execute(memory_query, {
+                'notebook_id': notebook_id,
+                'memory_id': document_id
+            })
+            
+            row = result.fetchone()
+            return row.name if row else None
             
         except Exception as e:
-            self.logger.error(f"Error getting document name: {str(e)}")
+            self.logger.error(f"Error getting document/memory name: {str(e)}")
             return None
     
     async def get_available_collections(

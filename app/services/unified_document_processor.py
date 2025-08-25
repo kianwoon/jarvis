@@ -380,6 +380,7 @@ class UnifiedDocumentProcessor:
                     file_hash=file_hash,
                     file_size_bytes=file_size,
                     file_type=Path(filename).suffix.lower(),
+                    content_type='document',
                     processing_mode=processing_mode,
                     milvus_collection=collection_name,
                     neo4j_graph_id=document_id,
