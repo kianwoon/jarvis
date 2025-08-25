@@ -250,8 +250,8 @@ const NotebookViewer: React.FC<NotebookViewerProps> = ({
       
       <Box sx={{ p: 3, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         {/* Header */}
-        <Box sx={{ mb: 3 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'between', mb: 2 }}>
+        <Box sx={{ mb: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'between', mb: 1 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
               <IconButton onClick={onBack} sx={{ mr: 1 }}>
                 <BackIcon />
@@ -286,15 +286,15 @@ const NotebookViewer: React.FC<NotebookViewerProps> = ({
           </Box>
 
           {/* Notebook Info */}
-          <Paper sx={{ p: 3, mb: 3 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+          <Paper sx={{ p: 2, mb: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
               <FolderIcon sx={{ fontSize: 32, color: 'primary.main', mr: 2 }} />
               <Box sx={{ flex: 1 }}>
-                <Typography variant="h4" gutterBottom>
+                <Typography variant="h4" sx={{ mb: 0.5 }}>
                   {notebook.name}
                 </Typography>
                 {notebook.description && (
-                  <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+                  <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
                     {notebook.description}
                   </Typography>
                 )}

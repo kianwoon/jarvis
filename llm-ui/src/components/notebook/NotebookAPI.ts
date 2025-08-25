@@ -345,8 +345,12 @@ class NotebookAPI {
 
   // Document management in notebooks
   async addDocumentToNotebook(notebookId: string, documentId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/${notebookId}/documents/${documentId}`, {
-      method: 'POST'
+    const response = await fetch(`${this.baseUrl}/${notebookId}/documents`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ document_id: documentId })
     });
     await this.handleResponse<void>(response);
   }

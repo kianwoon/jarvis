@@ -48,6 +48,7 @@ import {
 import NavigationBar from '../shared/NavigationBar';
 import DocumentAdminPage from '../admin/DocumentAdminPage';
 import NotebookSettings from './NotebookSettings';
+import NotebookRAGSettings from './NotebookRAGSettings';
 import { notebookAPI, Notebook, CreateNotebookRequest, UpdateNotebookRequest, getErrorMessage, formatRelativeTime } from './NotebookAPI';
 
 interface NotebookManagerProps {
@@ -403,6 +404,7 @@ const NotebookManager: React.FC<NotebookManagerProps> = ({ onNotebookSelect }) =
             <Tab label="Notebooks" />
             <Tab label="Admin Mode" />
             <Tab label="Settings" />
+            <Tab label="RAG" />
           </Tabs>
         </Box>
 
@@ -560,6 +562,11 @@ const NotebookManager: React.FC<NotebookManagerProps> = ({ onNotebookSelect }) =
         {/* Settings Tab Content */}
         {activeTab === 2 && (
           <NotebookSettings />
+        )}
+
+        {/* RAG Tab Content */}
+        {activeTab === 3 && (
+          <NotebookRAGSettings />
         )}
       </Box>
 
