@@ -954,7 +954,7 @@ function App() {
   });
 
   // Create theme based on dark mode state
-  const theme = createTheme({
+  const theme = useMemo(() => createTheme({
     palette: {
       mode: darkMode ? 'dark' : 'light',
       primary: {
@@ -965,7 +965,92 @@ function App() {
         paper: darkMode ? '#1e1e1e' : '#ffffff',
       },
     },
-  });
+    components: {
+      // Fix TextField outlined variant label positioning
+      MuiTextField: {
+        defaultProps: {
+          variant: 'outlined',
+        },
+        styleOverrides: {
+          root: {
+            '& .MuiOutlinedInput-root': {
+              '& fieldset': {
+                borderColor: darkMode ? 'rgba(255, 255, 255, 0.23)' : 'rgba(0, 0, 0, 0.23)',
+                transition: 'border-color 0.2s ease',
+              },
+              '&:hover fieldset': {
+                borderColor: darkMode ? 'rgba(255, 255, 255, 0.5)' : 'rgba(0, 0, 0, 0.5)',
+              },
+              '&.Mui-focused fieldset': {
+                borderColor: '#2196f3',
+                borderWidth: '2px',
+              },
+            },
+            '& .MuiInputLabel-root': {
+              color: darkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.6)',
+              '&.Mui-focused': {
+                color: '#2196f3',
+              },
+            },
+          },
+        },
+      },
+      // Ensure proper label behavior for outlined inputs
+      MuiOutlinedInput: {
+        styleOverrides: {
+          root: {
+            backgroundColor: 'transparent',
+            '& .MuiOutlinedInput-notchedOutline': {
+              borderColor: darkMode ? 'rgba(255, 255, 255, 0.23)' : 'rgba(0, 0, 0, 0.23)',
+            },
+            '&:hover .MuiOutlinedInput-notchedOutline': {
+              borderColor: darkMode ? 'rgba(255, 255, 255, 0.5)' : 'rgba(0, 0, 0, 0.5)',
+            },
+            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+              borderColor: '#2196f3',
+              borderWidth: '2px',
+            },
+          },
+          input: {
+            padding: '16.5px 14px',
+          },
+        },
+      },
+      // Fix label positioning and shrinking behavior
+      MuiInputLabel: {
+        styleOverrides: {
+          root: {
+            color: darkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.6)',
+            fontSize: '1rem',
+            '&.Mui-focused': {
+              color: '#2196f3',
+            },
+            '&.Mui-error': {
+              color: '#f44336',
+            },
+            // Ensure label properly shrinks and moves up for outlined variant
+            '&.MuiInputLabel-shrink': {
+              transform: 'translate(14px, -9px) scale(0.75)',
+              transformOrigin: 'top left',
+            },
+          },
+          outlined: {
+            // Proper positioning for outlined variant
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            transform: 'translate(14px, 16px) scale(1)',
+            transformOrigin: 'top left',
+            '&.MuiInputLabel-shrink': {
+              transform: 'translate(14px, -9px) scale(0.75)',
+              backgroundColor: darkMode ? '#1e1e1e' : '#ffffff',
+              padding: '0 4px',
+            },
+          },
+        },
+      },
+    },
+  }), [darkMode]);
 
   const toggleDarkMode = () => {
     const newDarkMode = !darkMode;

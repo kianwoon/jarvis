@@ -606,6 +606,45 @@
   outline-offset: 2px;
 }
 
+/* Material-UI TextField overrides for proper outlined labels */
+.jarvis-form-grid .MuiTextField-root {
+  margin-bottom: var(--jarvis-spacing-md);
+}
+
+.jarvis-form-grid .MuiOutlinedInput-root {
+  background-color: var(--jarvis-surface) !important;
+}
+
+.jarvis-form-grid .MuiInputLabel-outlined {
+  background-color: transparent;
+  padding: 0 4px;
+}
+
+.jarvis-form-grid .MuiInputLabel-outlined.MuiInputLabel-shrink {
+  background-color: var(--jarvis-surface);
+  padding: 0 4px;
+  margin-left: -4px;
+}
+
+/* Ensure proper focus indicators for Material-UI TextFields */
+.jarvis-form-grid .MuiTextField-root:focus-within {
+  outline: none;
+}
+
+.jarvis-form-grid .MuiOutlinedInput-root.Mui-focused {
+  outline: none;
+}
+
+/* Fix display property for grid layout */
+.jarvis-form-grid {
+  display: grid !important;
+}
+
+.jarvis-form-grid .MuiTextField-root {
+  width: 100%;
+  max-width: none;
+}
+
 /* RAG Cards Grid Layout */
 .rag-cards-grid {
   display: grid !important;

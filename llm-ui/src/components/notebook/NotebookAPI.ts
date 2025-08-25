@@ -316,7 +316,6 @@ class NotebookAPI {
   // Notebook-scoped chat functionality
   async startNotebookChat(notebookId: string, request: NotebookChatRequest): Promise<Response> {
     try {
-      // Try the primary chat endpoint first
       const response = await fetch(`${this.baseUrl}/${notebookId}/chat`, {
         method: 'POST',
         headers: {
@@ -324,18 +323,6 @@ class NotebookAPI {
         },
         body: JSON.stringify(request)
       });
-      
-      // If we get a 422 validation error, try the alternative endpoint
-      if (response.status === 422) {
-        console.warn('Primary chat endpoint returned 422, trying alternative endpoint...');
-        return fetch(`${this.baseUrl}/${notebookId}/chat-v2`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(request)
-        });
-      }
       
       return response;
     } catch (error) {

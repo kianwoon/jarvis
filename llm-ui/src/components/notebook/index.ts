@@ -4,6 +4,7 @@ export { default as NotebookManager } from './NotebookManager';
 export { default as NotebookViewer } from './NotebookViewer';
 export { default as NotebookDocumentList } from './NotebookDocumentList';
 export { default as NotebookChat } from './NotebookChat';
+export { default as NotebookSettings } from './NotebookSettings';
 export { default as DocumentAdmin } from './DocumentAdmin';
 export { 
   default as notebookAPI,

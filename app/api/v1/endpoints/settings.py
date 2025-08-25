@@ -13,6 +13,7 @@ from app.core.timeout_settings_cache import reload_timeout_settings
 from app.core.knowledge_graph_settings_cache import reload_knowledge_graph_settings
 from app.core.radiating_settings_cache import reload_radiating_settings
 from app.core.meta_task_settings_cache import reload_meta_task_settings
+from app.core.notebook_llm_settings_cache import reload_notebook_llm_settings
 from app.core.synthesis_prompts_cache import reload_synthesis_prompts
 from app.services.neo4j_service import test_neo4j_connection
 from typing import Any, Dict, Optional, List
@@ -32,6 +33,9 @@ router = APIRouter()
 # Pydantic models
 class CacheReloadRequest(BaseModel):
     settings: Optional[Dict[str, Any]] = None
+
+class NotebookLLMUpdate(BaseModel):
+    notebook_llm: Dict[str, Any]
 
 def deep_merge_settings(existing_settings: Dict[str, Any], new_settings: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -75,6 +79,7 @@ def _flush_redis_cache():
             'timeout_settings_cache',
             'overflow_settings_cache',
             'meta_task_settings_cache',
+            'notebook_llm_settings_cache',
             'iceberg_settings_cache',
             'langfuse_settings_cache',
             'idc_settings_cache',
@@ -195,6 +200,137 @@ def reload_llm_cache(request: Optional[CacheReloadRequest] = Body(None), db: Ses
     except Exception as e:
         logger.error(f"Failed to reload LLM cache: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reload LLM cache: {str(e)}")
+
+@router.post("/notebook-llm/cache/reload")
+def reload_notebook_llm_cache(request: Optional[CacheReloadRequest] = Body(None), db: Session = Depends(get_db)):
+    """Force reload Notebook LLM settings cache from database and clear Redis cache
+    
+    If settings are provided in the request body, they will be saved to the database first
+    before reloading the cache, ensuring the cache contains the latest form data.
+    """
+    try:
+        settings_saved = False
+        
+        # Debug: Log the received request
+        logger.info(f"Reload notebook LLM cache request received: {request}")
+        if request:
+            logger.info(f"Request settings: {request.settings}")
+        
+        # If settings are provided, save them to database first
+        if request and request.settings:
+            logger.info("Saving Notebook LLM settings to database before cache reload")
+            logger.info(f"Settings to save: {request.settings}")
+            
+            # Get existing settings for deep merge
+            settings_row = db.query(SettingsModel).filter(SettingsModel.category == 'notebook_llm').first()
+            existing_settings = settings_row.settings if settings_row else {}
+            
+            # Deep merge to preserve existing complex fields
+            merged_settings = deep_merge_settings(existing_settings, request.settings)
+            logger.info(f"Merged Notebook LLM settings keys: {list(merged_settings.keys())}")
+            
+            # Validate that critical fields are preserved
+            critical_fields = ['notebook_llm', 'thinking_mode_params', 'non_thinking_mode_params']
+            preserved_fields = [field for field in critical_fields if field in existing_settings and field in merged_settings]
+            if preserved_fields:
+                logger.info(f"Preserved critical Notebook LLM fields: {preserved_fields}")
+            
+            # Update or create settings row
+            if settings_row:
+                settings_row.settings = merged_settings
+            else:
+                logger.info("Creating new Notebook LLM settings")
+                settings_row = SettingsModel(category='notebook_llm', settings=merged_settings)
+                db.add(settings_row)
+            
+            # Commit the changes
+            db.commit()
+            db.refresh(settings_row)
+            logger.info("Notebook LLM settings saved with deep merge")
+            settings_saved = True
+        else:
+            if not request:
+                logger.info("No request body provided, proceeding with cache reload only")
+            elif not request.settings:
+                logger.info("Request provided but no settings data, proceeding with cache reload only")
+            else:
+                logger.info("Unknown case in request handling")
+        
+        # First, flush Redis cache to ensure fresh data
+        cache_flushed, flush_message = _flush_redis_cache()
+        
+        # Reload Notebook LLM settings from database
+        settings = reload_notebook_llm_settings()
+        
+        return {
+            "success": True, 
+            "message": "Notebook LLM cache reloaded successfully" + (" (settings saved first)" if settings_saved else ""),
+            "model": settings.get("notebook_llm", {}).get("model", "unknown"),
+            "cache_size": len(str(settings)),
+            "redis_cache_flushed": cache_flushed,
+            "flush_details": flush_message,
+            "settings_saved": settings_saved
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload Notebook LLM cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload Notebook LLM cache: {str(e)}")
+
+@router.put("/notebook_llm")
+def update_notebook_llm_settings(update: NotebookLLMUpdate, db: Session = Depends(get_db)):
+    """Update notebook LLM settings with deep merge and cache reload"""
+    logger.info("Updating notebook LLM settings via dedicated endpoint")
+    logger.info(f"Notebook LLM update payload: {list(update.notebook_llm.keys())}")
+    
+    try:
+        # Get existing settings for deep merge
+        settings_row = db.query(SettingsModel).filter(SettingsModel.category == 'notebook_llm').first()
+        existing_settings = settings_row.settings if settings_row else {}
+        logger.info(f"Existing Notebook LLM settings keys: {list(existing_settings.keys()) if existing_settings else 'None'}")
+        
+        # Prepare new settings with notebook_llm key
+        new_settings = {"notebook_llm": update.notebook_llm}
+        logger.info(f"New Notebook LLM settings keys: {list(new_settings.keys())}")
+        
+        # Deep merge to preserve existing complex fields
+        merged_settings = deep_merge_settings(existing_settings, new_settings)
+        logger.info(f"Merged Notebook LLM settings keys: {list(merged_settings.keys())}")
+        
+        # Validate that critical fields are preserved
+        critical_fields = ['notebook_llm', 'thinking_mode_params', 'non_thinking_mode_params']
+        preserved_fields = [field for field in critical_fields if field in existing_settings and field in merged_settings]
+        if preserved_fields:
+            logger.info(f"Preserved critical Notebook LLM fields: {preserved_fields}")
+        
+        # Update or create settings row
+        if settings_row:
+            logger.info("Updating existing notebook_llm settings")
+            settings_row.settings = merged_settings
+        else:
+            logger.info("Creating new notebook_llm settings")
+            settings_row = SettingsModel(category='notebook_llm', settings=merged_settings)
+            db.add(settings_row)
+        
+        # Commit the changes
+        db.commit()
+        db.refresh(settings_row)
+        logger.info("Notebook LLM settings saved to database successfully")
+        
+        # Reload cache to ensure consistency
+        reload_notebook_llm_settings()
+        logger.info("Notebook LLM cache reloaded successfully")
+        
+        # Return success response with updated settings
+        return {
+            "success": True,
+            "message": "Notebook LLM settings updated successfully",
+            "notebook_llm": merged_settings.get("notebook_llm", {}),
+            "cache_reloaded": True
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to update notebook LLM settings: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update notebook LLM settings: {str(e)}")
 
 @router.post("/query-classifier/cache/reload")
 def reload_query_classifier_cache():
@@ -337,6 +473,7 @@ def reload_all_caches():
         
         cache_functions = [
             ("LLM", reload_llm_settings),
+            ("Notebook LLM", reload_notebook_llm_settings),
             ("Query Classifier", reload_query_classifier_settings),
             ("Vector DB", reload_vector_db_settings),
             ("Embedding", reload_embedding_settings),
@@ -395,6 +532,9 @@ class SettingsUpdate(BaseModel):
     settings: Dict[str, Any]
     persist_to_db: Optional[bool] = False
     reload_cache: Optional[bool] = False
+
+class NotebookLLMUpdate(BaseModel):
+    notebook_llm: Dict[str, Any]
 
 @router.get("/init-mcp-tables")
 def initialize_mcp_tables(db: Session = Depends(get_db)):
@@ -705,6 +845,53 @@ def get_settings(category: str, db: Session = Depends(get_db)):
             # Fall back to database settings if YAML fails
             return {"category": category, "settings": settings_row.settings}
     
+    # Special handling for notebook_llm - use Redis cache for optimal performance
+    if category == 'notebook_llm':
+        try:
+            from app.core.notebook_llm_settings_cache import get_notebook_llm_settings
+            cached_settings = get_notebook_llm_settings()
+            notebook_settings = cached_settings.get('notebook_llm', {})
+            if notebook_settings:
+                return {"category": category, "notebook_llm": notebook_settings}
+        except Exception as e:
+            logger.error(f"Cache retrieval failed for notebook_llm settings: {e}")
+            # Fall back to database query if cache fails
+            pass
+        
+        # Fallback to database if cache fails or settings not found
+        if settings_row:
+            notebook_settings = settings_row.settings.get('notebook_llm', {})
+            if not notebook_settings:
+                # Return default settings if notebook_llm key is missing
+                notebook_settings = {
+                    "model": "llama3.1:8b",
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "max_tokens": 4096,
+                    "mode": "thinking",
+                    "streaming_enabled": True,
+                    "context_length": 128000,
+                    "model_server": "http://localhost:11434",
+                    "system_prompt": "You are a helpful assistant for Jupyter notebook interactions. Provide clear, concise responses that are suitable for notebook environments.",
+                    "repeat_penalty": 1.1
+                }
+            return {"category": category, "notebook_llm": notebook_settings}
+        else:
+            # No settings in database - return default settings
+            default_notebook_settings = {
+                "model": "llama3.1:8b",
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "max_tokens": 4096,
+                "mode": "thinking",
+                "streaming_enabled": True,
+                "context_length": 128000,
+                "model_server": "http://localhost:11434",
+                "system_prompt": "You are a helpful assistant for Jupyter notebook interactions. Provide clear, concise responses that are suitable for notebook environments.",
+                "repeat_penalty": 1.1
+            }
+            return {"category": category, "notebook_llm": default_notebook_settings}
+    
     return {"category": category, "settings": settings_row.settings}
 
 @router.put("/{category}")
@@ -784,6 +971,32 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         # Use merged settings for database save
         settings_for_db = merged_settings
         logger.info("LLM deep merge completed, will save merged data to database")
+    
+    # CRITICAL: Handle Notebook LLM deep merge BEFORE database save to prevent data loss
+    if category == 'notebook_llm':
+        logger.info("Processing Notebook LLM settings with deep merge BEFORE database save")
+        
+        # Get existing settings for deep merge
+        existing_settings = settings_row.settings if settings_row else {}
+        logger.info(f"Existing Notebook LLM settings keys: {list(existing_settings.keys()) if existing_settings else 'None'}")
+        logger.info(f"New Notebook LLM settings keys: {list(settings_for_db.keys())}")
+        
+        # Deep merge to preserve existing complex fields
+        merged_settings = deep_merge_settings(existing_settings, settings_for_db)
+        logger.info(f"Merged Notebook LLM settings keys: {list(merged_settings.keys())}")
+        
+        # Validate that critical fields are preserved
+        critical_fields = ['notebook_llm', 'thinking_mode_params', 'non_thinking_mode_params']
+        preserved_fields = [field for field in critical_fields if field in existing_settings and field in merged_settings]
+        if preserved_fields:
+            logger.info(f"Preserved critical Notebook LLM fields: {preserved_fields}")
+        
+        # Use merged settings for database save
+        settings_for_db = merged_settings
+        logger.info("Notebook LLM deep merge completed, will save merged data to database")
+    
+    # Store if this is a notebook_llm update for cache reload after DB commit
+    is_notebook_llm_update = category == 'notebook_llm'
     
     if settings_row:
         logger.info(f"Updating existing settings for {category}")
@@ -1212,6 +1425,15 @@ def update_settings(category: str, update: SettingsUpdate, db: Session = Depends
         # Reload synthesis prompts cache
         reload_synthesis_prompts()
         logger.info(f"{category} settings cache reloaded")
+    
+    # If updating notebook_llm settings, reload cache after database commit
+    if is_notebook_llm_update:
+        try:
+            reload_notebook_llm_settings()
+            logger.info("Notebook LLM settings cache reloaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to reload Notebook LLM cache after update: {e}")
+            # Don't fail the entire request if cache reload fails
     
     # Return merged settings if available (for LLM with deep merge), otherwise use database settings
     final_settings = merged_settings if merged_settings is not None else settings_row.settings

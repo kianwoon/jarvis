@@ -31,6 +31,7 @@ from app.services.notebook_service import NotebookService
 from app.services.notebook_rag_service import NotebookRAGService
 from app.services.document_admin_service import DocumentAdminService
 from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
+from app.core.notebook_llm_settings_cache import get_notebook_llm_full_config
 from app.llm.ollama import OllamaLLM
 from app.llm.base import LLMConfig
 
@@ -1384,187 +1385,6 @@ async def test_chat_validation(request: NotebookChatRequest):
         "max_sources": request.max_sources
     }
 
-@router.post("/{notebook_id}/chat-v2")
-async def notebook_chat_v2(
-    raw_request: Request,
-    notebook_id: str = Path(..., description="Notebook ID"),
-    db: Session = Depends(get_db)
-):
-    """
-    Alternative chat endpoint that handles raw JSON to avoid validation issues.
-    More flexible than the primary chat endpoint.
-    """
-    async def stream_chat_response():
-        try:
-            # Parse raw request body
-            body = await raw_request.body()
-            body_str = body.decode('utf-8')
-            logger.info(f"📨 Raw notebook chat request for {notebook_id}: {body_str}")
-            
-            import json
-            json_data = json.loads(body_str)
-            
-            # Extract and validate required fields manually
-            message = json_data.get('message', '').strip()
-            if not message:
-                yield json.dumps({
-                    "error": "Chat message is required",
-                    "notebook_id": notebook_id
-                }) + "\n"
-                return
-            
-            # Extract optional fields with defaults
-            conversation_id = json_data.get('conversation_id')
-            include_context = json_data.get('include_context', True)
-            max_sources = int(json_data.get('max_sources', 5))
-            max_sources = max(1, min(20, max_sources))  # Clamp to valid range
-            
-            logger.info(f"🔍 Parsed request: message='{message}', conversation_id='{conversation_id}', include_context={include_context}, max_sources={max_sources}")
-            
-            # Continue with the same logic as the original endpoint
-            if not message:
-                yield json.dumps({
-                    "error": "Chat request with message is required",
-                    "notebook_id": notebook_id
-                }) + "\n"
-                return
-            
-            # Verify notebook exists
-            notebook_exists = await notebook_service.notebook_exists(db=db, notebook_id=notebook_id)
-            if not notebook_exists:
-                yield json.dumps({
-                    "error": "Notebook not found",
-                    "notebook_id": notebook_id
-                }) + "\n"
-                return
-            
-            # Start by yielding initial status
-            yield json.dumps({
-                "status": "searching",
-                "message": "Searching notebook documents...",
-                "notebook_id": notebook_id,
-                "conversation_id": conversation_id
-            }) + "\n"
-            
-            # Query relevant documents using RAG service
-            rag_response = None
-            if include_context:
-                try:
-                    rag_response = await notebook_rag_service.query_notebook(
-                        db=db,
-                        notebook_id=notebook_id,
-                        query=message,
-                        top_k=max_sources,
-                        include_metadata=True
-                    )
-                    
-                    yield json.dumps({
-                        "status": "context_found",
-                        "sources_count": len(rag_response.sources),
-                        "collections_searched": rag_response.collections_searched,
-                        "notebook_id": notebook_id,
-                        "conversation_id": conversation_id
-                    }) + "\n"
-                    
-                except Exception as e:
-                    logger.warning(f"RAG query failed for notebook {notebook_id}: {str(e)}")
-                    yield json.dumps({
-                        "status": "context_warning",
-                        "message": "Could not retrieve full context, proceeding with general response",
-                        "notebook_id": notebook_id,
-                        "conversation_id": conversation_id
-                    }) + "\n"
-            
-            # Get LLM configuration
-            llm_config = get_main_llm_full_config()
-            if not llm_config:
-                yield json.dumps({
-                    "error": "LLM configuration not available",
-                    "notebook_id": notebook_id,
-                    "conversation_id": conversation_id
-                }) + "\n"
-                return
-            
-            yield json.dumps({
-                "status": "generating",
-                "message": "Generating response...",
-                "notebook_id": notebook_id,
-                "conversation_id": conversation_id
-            }) + "\n"
-            
-            # Initialize LLM with proper LLMConfig object
-            llm_config_obj = LLMConfig(
-                model_name=llm_config.get('model', 'qwen2.5:72b'),
-                temperature=float(llm_config.get('temperature', 0.7)),
-                top_p=float(llm_config.get('top_p', 0.9)),
-                max_tokens=int(llm_config.get('max_tokens', 4096))
-            )
-            llm = OllamaLLM(llm_config_obj)
-            
-            # Build context-aware prompt
-            system_prompt = "You are a helpful AI assistant for a notebook-based knowledge management system. "
-            context_info = ""
-            
-            if rag_response and rag_response.sources:
-                system_prompt += f"You have access to {len(rag_response.sources)} relevant document excerpts from this notebook. "
-                system_prompt += "Use the provided context to give accurate, detailed answers. If the context doesn't contain enough information, say so clearly."
-                
-                context_info = "\n\n--- RELEVANT CONTEXT FROM NOTEBOOK ---\n"
-                for i, source in enumerate(rag_response.sources[:max_sources], 1):
-                    context_info += f"\n[Source {i} - {source.document_name or 'Unknown Document'}]:\n"
-                    context_info += source.content[:1000] + ("..." if len(source.content) > 1000 else "")
-                    context_info += "\n"
-                context_info += "--- END CONTEXT ---\n\n"
-            else:
-                system_prompt += "No specific context was found in this notebook for this question. Provide a helpful general response and suggest ways the user might find relevant information."
-            
-            # Build the full prompt
-            full_prompt = f"{system_prompt}\n\n{context_info}User Question: {message}\n\nResponse:"
-            
-            # Generate streaming response
-            collected_response = ""
-            async for response_chunk in llm.generate_stream(full_prompt):
-                if response_chunk.text.strip():
-                    collected_response += response_chunk.text
-                    
-                    # Stream the response chunk
-                    yield json.dumps({
-                        "chunk": response_chunk.text,
-                        "notebook_id": notebook_id,
-                        "conversation_id": conversation_id
-                    }) + "\n"
-            
-            # Send final response with complete answer and sources
-            final_response = {
-                "answer": collected_response,
-                "sources": [
-                    {
-                        "document_id": source.document_id,
-                        "document_name": source.document_name,
-                        "content": source.content[:500] + ("..." if len(source.content) > 500 else ""),
-                        "score": source.score,
-                        "collection": source.collection
-                    }
-                    for source in (rag_response.sources[:max_sources] if rag_response else [])
-                ],
-                "notebook_id": notebook_id,
-                "conversation_id": conversation_id,
-                "status": "complete"
-            }
-            
-            yield json.dumps(final_response) + "\n"
-            
-            logger.info(f"Successfully completed notebook chat for {notebook_id}")
-            
-        except Exception as e:
-            logger.error(f"Notebook chat error for {notebook_id}: {str(e)}")
-            yield json.dumps({
-                "error": f"Chat error: {str(e)}",
-                "notebook_id": notebook_id,
-                "status": "error"
-            }) + "\n"
-    
-    return StreamingResponse(stream_chat_response(), media_type="application/json")
 
 @router.post("/{notebook_id}/chat")
 async def notebook_chat(
@@ -1651,11 +1471,11 @@ async def notebook_chat(
                         "conversation_id": request.conversation_id
                     }) + "\n"
             
-            # Get LLM configuration
-            llm_config = get_main_llm_full_config()
+            # Get notebook LLM configuration
+            llm_config = get_notebook_llm_full_config()
             if not llm_config:
                 yield json.dumps({
-                    "error": "LLM configuration not available",
+                    "error": "Notebook LLM configuration not available",
                     "notebook_id": notebook_id,
                     "conversation_id": request.conversation_id
                 }) + "\n"

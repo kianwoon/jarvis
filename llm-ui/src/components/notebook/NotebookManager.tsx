@@ -26,7 +26,9 @@ import {
   createTheme,
   CssBaseline,
   AppBar,
-  Toolbar
+  Toolbar,
+  Tabs,
+  Tab
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -44,6 +46,8 @@ import {
   Security as SecurityIcon
 } from '@mui/icons-material';
 import NavigationBar from '../shared/NavigationBar';
+import DocumentAdminPage from '../admin/DocumentAdminPage';
+import NotebookSettings from './NotebookSettings';
 import { notebookAPI, Notebook, CreateNotebookRequest, UpdateNotebookRequest, getErrorMessage, formatRelativeTime } from './NotebookAPI';
 
 interface NotebookManagerProps {
@@ -58,6 +62,7 @@ const NotebookManager: React.FC<NotebookManagerProps> = ({ onNotebookSelect }) =
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [retryCount, setRetryCount] = useState(0);
+  const [activeTab, setActiveTab] = useState(0);
   
   // Theme management
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -217,6 +222,10 @@ const NotebookManager: React.FC<NotebookManagerProps> = ({ onNotebookSelect }) =
     localStorage.setItem('jarvis-dark-mode', JSON.stringify(newDarkMode));
     document.body.setAttribute('data-theme', newDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
+
+  const handleTabChange = useCallback((_: React.SyntheticEvent, newValue: number) => {
+    setActiveTab(newValue);
+  }, []);
 
   const filteredNotebooks = useMemo(() => 
     (notebooks || []).filter(notebook =>
@@ -384,33 +393,22 @@ const NotebookManager: React.FC<NotebookManagerProps> = ({ onNotebookSelect }) =
       
       <Box sx={{ p: 3, flex: 1, overflow: 'auto' }}>
         {/* Header */}
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+        <Box sx={{ mb: 3 }}>
           <Typography variant="h4">Notebooks</Typography>
-          <Box sx={{ display: 'flex', gap: 2 }}>
-            <Box
-              onClick={() => window.dispatchEvent(new CustomEvent('toggleAdminMode'))}
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 1,
-                px: 2,
-                py: 1,
-                border: '2px solid',
-                borderColor: '#666',
-                borderRadius: 1,
-                backgroundColor: '#333',
-                cursor: 'pointer',
-                '&:hover': {
-                  backgroundColor: '#555',
-                  borderColor: '#888',
-                }
-              }}
-            >
-              <SecurityIcon sx={{ color: '#fff' }} />
-              <Typography sx={{ color: '#fff', fontWeight: 'bold' }}>
-                Admin Mode
-              </Typography>
-            </Box>
+        </Box>
+
+        {/* Tabs */}
+        <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+          <Tabs value={activeTab} onChange={handleTabChange} aria-label="notebook management tabs">
+            <Tab label="Notebooks" />
+            <Tab label="Admin Mode" />
+            <Tab label="Settings" />
+          </Tabs>
+        </Box>
+
+        {/* New Notebook Button - Only show on Notebooks tab */}
+        {activeTab === 0 && (
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 3 }}>
             <Button
               variant="contained"
               startIcon={createLoading ? <CircularProgress size={16} /> : <AddIcon />}
@@ -420,8 +418,11 @@ const NotebookManager: React.FC<NotebookManagerProps> = ({ onNotebookSelect }) =
               {createLoading ? 'Creating...' : 'New Notebook'}
             </Button>
           </Box>
-        </Box>
+        )}
 
+        {/* Tab Content */}
+        {activeTab === 0 && (
+          <>
         {/* Search and View Controls */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
           <TextField
@@ -547,6 +548,18 @@ const NotebookManager: React.FC<NotebookManagerProps> = ({ onNotebookSelect }) =
               </>
             )}
           </>
+        )}
+          </>
+        )}
+
+        {/* Admin Mode Tab Content */}
+        {activeTab === 1 && (
+          <DocumentAdminPage />
+        )}
+
+        {/* Settings Tab Content */}
+        {activeTab === 2 && (
+          <NotebookSettings />
         )}
       </Box>
 

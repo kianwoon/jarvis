@@ -84,6 +84,89 @@ const NotebookPage: React.FC = () => {
           },
         },
       },
+      // Fix TextField outlined variant label positioning
+      MuiTextField: {
+        defaultProps: {
+          variant: 'outlined',
+        },
+        styleOverrides: {
+          root: {
+            '& .MuiOutlinedInput-root': {
+              '& fieldset': {
+                borderColor: isDarkMode ? 'rgba(255, 255, 255, 0.23)' : 'rgba(0, 0, 0, 0.23)',
+                transition: 'border-color 0.2s ease',
+              },
+              '&:hover fieldset': {
+                borderColor: isDarkMode ? 'rgba(255, 255, 255, 0.5)' : 'rgba(0, 0, 0, 0.5)',
+              },
+              '&.Mui-focused fieldset': {
+                borderColor: '#2196f3',
+                borderWidth: '2px',
+              },
+            },
+            '& .MuiInputLabel-root': {
+              color: isDarkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.6)',
+              '&.Mui-focused': {
+                color: '#2196f3',
+              },
+            },
+          },
+        },
+      },
+      // Ensure proper label behavior for outlined inputs
+      MuiOutlinedInput: {
+        styleOverrides: {
+          root: {
+            backgroundColor: 'transparent',
+            '& .MuiOutlinedInput-notchedOutline': {
+              borderColor: isDarkMode ? 'rgba(255, 255, 255, 0.23)' : 'rgba(0, 0, 0, 0.23)',
+            },
+            '&:hover .MuiOutlinedInput-notchedOutline': {
+              borderColor: isDarkMode ? 'rgba(255, 255, 255, 0.5)' : 'rgba(0, 0, 0, 0.5)',
+            },
+            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+              borderColor: '#2196f3',
+              borderWidth: '2px',
+            },
+          },
+          input: {
+            padding: '16.5px 14px',
+          },
+        },
+      },
+      // Fix label positioning and shrinking behavior
+      MuiInputLabel: {
+        styleOverrides: {
+          root: {
+            color: isDarkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.6)',
+            fontSize: '1rem',
+            '&.Mui-focused': {
+              color: '#2196f3',
+            },
+            '&.Mui-error': {
+              color: '#f44336',
+            },
+            // Ensure label properly shrinks and moves up for outlined variant
+            '&.MuiInputLabel-shrink': {
+              transform: 'translate(14px, -9px) scale(0.75)',
+              transformOrigin: 'top left',
+            },
+          },
+          outlined: {
+            // Proper positioning for outlined variant
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            transform: 'translate(14px, 16px) scale(1)',
+            transformOrigin: 'top left',
+            '&.MuiInputLabel-shrink': {
+              transform: 'translate(14px, -9px) scale(0.75)',
+              backgroundColor: isDarkMode ? '#1e1e1e' : '#ffffff',
+              padding: '0 4px',
+            },
+          },
+        },
+      },
     },
   }), [isDarkMode]);
 
@@ -108,7 +191,7 @@ const NotebookPage: React.FC = () => {
       // Entering admin mode - show confirmation
       setAdminConfirmOpen(true);
     } else {
-      // Exiting admin mode - direct toggle
+      // Exiting admin mode
       setAdminMode(false);
       // Reset any selected states when exiting admin mode
       setSelectedNotebook(null);
@@ -136,30 +219,28 @@ const NotebookPage: React.FC = () => {
     
     window.addEventListener('toggleAdminMode', handleToggleAdminMode);
     return () => window.removeEventListener('toggleAdminMode', handleToggleAdminMode);
-  }, []);
+  }, [adminMode]);
 
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <ErrorBoundary>
-      <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-        {adminMode && (
-          <Alert severity="warning" variant="filled" sx={{ m: 2, mb: 0 }}>
-            <Typography variant="body2">
-              <strong>Admin Mode Active:</strong> You can now view and permanently delete documents across all notebooks and users. 
-              Use with caution - deletions cannot be undone.
-            </Typography>
-          </Alert>
-        )}
+        <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+          {/* Admin Mode Warning Banner */}
+          {adminMode && (
+            <Alert severity="warning" variant="filled" sx={{ m: 2, mb: 0 }}>
+              <Typography variant="body2">
+                <strong>Admin Mode Active:</strong> You can now view and permanently delete documents across all notebooks and users. 
+                Use with caution - deletions cannot be undone.
+              </Typography>
+            </Alert>
+          )}
 
-        {/* Content Area */}
-        <Box sx={{ flex: 1, overflow: 'hidden' }}>
-          {adminMode ? (
-            /* Admin Mode: Show Document Administration */
-            <DocumentAdminPage />
-          ) : (
-            /* Normal Mode: Show Notebook Interface */
-            selectedNotebook ? (
+          {/* Main Content - Conditional Rendering based on adminMode */}
+          <Box sx={{ flex: 1, overflow: 'hidden' }}>
+            {adminMode ? (
+              <DocumentAdminPage />
+            ) : selectedNotebook ? (
               <NotebookViewer
                 notebookId={selectedNotebook.id}
                 onBack={handleBack}
@@ -167,10 +248,9 @@ const NotebookPage: React.FC = () => {
               />
             ) : (
               <NotebookManager onNotebookSelect={handleNotebookSelect} />
-            )
-          )}
+            )}
+          </Box>
         </Box>
-      </Box>
 
       {/* Admin Mode Confirmation Dialog */}
       <Dialog
