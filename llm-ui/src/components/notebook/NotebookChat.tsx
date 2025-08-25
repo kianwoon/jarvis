@@ -15,14 +15,18 @@ import {
   ListItem,
   ListItemIcon,
   ListItemText,
-  Divider
+  Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Tooltip
 } from '@mui/material';
 import {
   Send as SendIcon,
   Clear as ClearIcon,
   ExpandMore as ExpandMoreIcon,
   Description as DocumentIcon,
-  Search as SearchIcon,
   Chat as ChatIcon,
   Source as SourceIcon
 } from '@mui/icons-material';
@@ -47,6 +51,8 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('');
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
+  const [showClearSuccess, setShowClearSuccess] = useState(false);
   
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -271,14 +277,24 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
     }
   };
 
-  const clearChat = async () => {
-    if (!window.confirm('Clear this notebook chat? This action cannot be undone.')) {
-      return;
-    }
-    
+  const openClearDialog = () => {
+    setClearDialogOpen(true);
+  };
+
+  const handleClearChat = () => {
     setMessages([]);
     localStorage.removeItem(storageKey);
     setError('');
+    setStatusMessage('');
+    setClearDialogOpen(false);
+    
+    // Show success message
+    setShowClearSuccess(true);
+    setTimeout(() => setShowClearSuccess(false), 3000);
+  };
+
+  const handleCancelClear = () => {
+    setClearDialogOpen(false);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -306,9 +322,16 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
           />
         </Box>
         
-        <IconButton onClick={clearChat} disabled={loading}>
-          <ClearIcon />
-        </IconButton>
+        <Tooltip title="Clear conversation history">
+          <IconButton 
+            onClick={openClearDialog} 
+            disabled={loading || messages.length === 0}
+            color="default"
+            aria-label="Clear conversation history"
+          >
+            <ClearIcon />
+          </IconButton>
+        </Tooltip>
       </Box>
 
       {/* Status Message */}
@@ -324,6 +347,17 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
           }}
         >
           {statusMessage}
+        </Alert>
+      )}
+
+      {/* Success Message */}
+      {showClearSuccess && (
+        <Alert 
+          severity="success" 
+          sx={{ mb: 1 }}
+          onClose={() => setShowClearSuccess(false)}
+        >
+          Conversation history cleared successfully
         </Alert>
       )}
 
@@ -523,6 +557,34 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
           {loading ? <CircularProgress size={24} /> : <SendIcon />}
         </Button>
       </Box>
+
+      {/* Clear Confirmation Dialog */}
+      <Dialog
+        open={clearDialogOpen}
+        onClose={handleCancelClear}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Clear Conversation History</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to clear all chat messages in this notebook conversation?
+            This action cannot be undone and will remove {messages.length} message{messages.length !== 1 ? 's' : ''} from "{notebook.name}".
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCancelClear}>
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleClearChat}
+            color="error"
+            variant="contained"
+          >
+            Clear History
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
