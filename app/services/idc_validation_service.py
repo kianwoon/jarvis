@@ -134,7 +134,6 @@ class IDCValidationService:
             "prompt": prompt,
             "stream": False,
             "options": {
-                "num_predict": max_tokens,
                 "temperature": temperature,
                 "top_k": 20,
                 "top_p": 0.9

@@ -134,7 +134,6 @@ class IDCExtractionService:
             "prompt": prompt,
             "stream": False,
             "options": {
-                "num_predict": max_tokens,
                 "temperature": self.extraction_config.get('temperature', 0.1),
                 "top_k": self.extraction_config.get('top_k', 20),
                 "top_p": self.extraction_config.get('top_p', 0.9)

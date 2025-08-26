@@ -122,8 +122,9 @@ class OllamaLLM(BaseLLM):
             "options": {
                 "temperature": self.config.temperature,
                 "top_p": self.config.top_p,
-                "num_predict": self.config.max_tokens,
                 "num_ctx": context_length,
+                "stop": ["</s>", "[/INST]", "Human:", "Assistant:", "\n\nHuman:", "\n\nAssistant:"],
+                "repeat_penalty": 1.1,
             }
         }
         
@@ -169,8 +170,9 @@ class OllamaLLM(BaseLLM):
             "options": {
                 "temperature": self.config.temperature,
                 "top_p": self.config.top_p,
-                "num_predict": self.config.max_tokens,
                 "num_ctx": context_length,
+                "stop": ["</s>", "[/INST]", "Human:", "Assistant:", "\n\nHuman:", "\n\nAssistant:"],
+                "repeat_penalty": 1.1,
             }
         }
         
@@ -185,6 +187,9 @@ class OllamaLLM(BaseLLM):
                         raise Exception(f"Ollama API error {response.status_code}: {error_text.decode()}")
                     
                     token_count = 0
+                    recent_content = []
+                    max_tokens = self.config.max_tokens if hasattr(self.config, 'max_tokens') else 4096
+                    
                     async for line in response.aiter_lines():
                         if not line.strip():
                             continue
@@ -194,12 +199,31 @@ class OllamaLLM(BaseLLM):
                             if message and "content" in message:
                                 token_count += 1
                                 content = message['content']
+                                
+                                # Check for repetitive content (circuit breaker)
+                                recent_content.append(content)
+                                if len(recent_content) > 50:  # Keep last 50 tokens
+                                    recent_content.pop(0)
+                                
+                                # Detect if we're repeating the same content
+                                if len(recent_content) >= 10:
+                                    last_10 = ' '.join(recent_content[-10:])
+                                    if last_10.count('complete') > 3 or last_10.count('final') > 3 or last_10.count('done') > 3:
+                                        logger.warning(f"[OllamaLLM] Detected repetitive content, terminating stream at token {token_count}")
+                                        break
+                                
+                                # Check token limit
+                                if token_count > max_tokens:
+                                    logger.warning(f"[OllamaLLM] Token limit {max_tokens} reached, terminating stream")
+                                    break
+                                
                                 yield LLMResponse(
                                     text=message["content"],
                                     metadata={
                                         "model": self.model_name,
                                         "streaming": True,
-                                        "role": message.get("role", "assistant")
+                                        "role": message.get("role", "assistant"),
+                                        "token_count": token_count
                                     }
                                 )
                             elif data_json.get("done", False):

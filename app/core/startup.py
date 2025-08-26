@@ -10,6 +10,13 @@ async def initialize_models():
     """Initialize ML models at startup to avoid delays during requests"""
     
     from app.core.reranker_config import RerankerConfig
+    import os
+    
+    # Set environment variables for local-only mode to prevent HuggingFace cloud calls
+    if RerankerConfig.force_local_only():
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        print("[Startup] Configured reranker for local-only mode")
     
     # Initialize Qwen3-Reranker-4B if configured
     if RerankerConfig.should_preload():

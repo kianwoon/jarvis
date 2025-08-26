@@ -38,6 +38,8 @@ from app.services.notebook_rag_service import NotebookRAGService
 from app.services.hierarchical_notebook_rag_service import get_hierarchical_notebook_rag_service
 from app.services.document_admin_service import DocumentAdminService
 from app.services.chunk_management_service import ChunkManagementService
+from app.services.ai_task_planner import ai_task_planner, TaskExecutionPlan
+from app.services.ai_verification_service import ai_verification_service
 from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
 from app.core.notebook_llm_settings_cache import get_notebook_llm_full_config
 from app.core.notebook_source_templates_cache import apply_source_templates
@@ -74,6 +76,79 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+def _should_use_intelligent_planning(query: str, intent_analysis: dict, total_available: int) -> bool:
+    """
+    Detect when to use intelligent AI planning pipeline.
+    
+    Uses query analysis to determine if the request requires intelligent
+    planning, execution, and verification for complete, accurate results.
+    
+    Args:
+        query: User query string
+        intent_analysis: Results from query intent analysis
+        total_available: Total items available in notebook
+        
+    Returns:
+        bool: True if intelligent pipeline should be used
+    """
+    query_lower = query.lower()
+    
+    # Enumeration query indicators - comprehensive listing requests
+    enumeration_indicators = [
+        'list all', 'show all', 'enumerate', 'table format', 'in table', 
+        'as table', 'table form', 'complete list', 'full list', 'every',
+        'comprehensive', 'overview of all', 'summary of all'
+    ]
+    
+    # Complex analytical indicators - requiring structured analysis
+    analytical_indicators = [
+        'analyze', 'compare', 'categorize', 'organize', 'group by',
+        'break down', 'summarize by', 'pattern', 'trend', 'relationship',
+        'correlation', 'distribution', 'statistics'
+    ]
+    
+    # Quality-critical indicators - high precision requirements
+    quality_indicators = [
+        'count', 'total', 'exactly', 'precise', 'accurate', 'complete',
+        'comprehensive', 'thorough', 'detailed', 'exhaustive'
+    ]
+    
+    # Check for enumeration queries
+    has_enumeration = any(indicator in query_lower for indicator in enumeration_indicators)
+    
+    # Check for analytical complexity
+    has_analysis = any(indicator in query_lower for indicator in analytical_indicators)
+    
+    # Check for quality requirements
+    needs_precision = any(indicator in query_lower for indicator in quality_indicators)
+    
+    # Check intent analysis results
+    wants_comprehensive = intent_analysis.get('wants_comprehensive', False)
+    query_type = intent_analysis.get('query_type', 'filtered')
+    confidence = intent_analysis.get('confidence', 0.8)
+    
+    # Use intelligent pipeline if:
+    # 1. Explicit enumeration request
+    # 2. High-complexity analytical query
+    # 3. Quality-critical requirements
+    # 4. Intent analysis indicates comprehensive need
+    # 5. Large dataset with structured requirements
+    
+    should_use = (
+        has_enumeration or
+        has_analysis or 
+        needs_precision or
+        wants_comprehensive or
+        (query_type == 'comprehensive' and confidence > 0.7) or
+        (total_available > 50 and (has_enumeration or wants_comprehensive))
+    )
+    
+    if should_use:
+        logger.info(f"[AI_PIPELINE] Intelligent planning triggered: enumeration={has_enumeration}, "
+                   f"analysis={has_analysis}, precision={needs_precision}, comprehensive={wants_comprehensive}")
+    
+    return should_use
+
 async def _analyze_query_intent(query: str) -> dict:
     """
     Analyze query intent using AI-powered QueryIntentAnalyzer for intelligent understanding.
@@ -93,8 +168,9 @@ async def _analyze_query_intent(query: str) -> dict:
     try:
         from app.services.query_intent_analyzer import analyze_query_intent
         
-        # Use AI-powered intent analysis
-        intent_result = await analyze_query_intent(query)
+        # Use AI-powered intent analysis with notebook LLM config
+        notebook_llm_config = get_notebook_llm_full_config()
+        intent_result = await analyze_query_intent(query, llm_config=notebook_llm_config)
         
         # Transform to expected format while preserving AI insights
         return {
@@ -1714,6 +1790,47 @@ async def notebook_chat(
                     intent_analysis = await notebook_rag_service._analyze_query_intent(request.message)
                     total_available = await notebook_rag_service.get_notebook_total_items(notebook_id)
                     
+                    # === INTELLIGENT AI PIPELINE: Understand → Plan → Execute → Verify → Respond ===
+                    
+                    # Step 1: Understand - Detect when to use intelligent planning
+                    should_use_intelligent_pipeline = _should_use_intelligent_planning(request.message, intent_analysis, total_available)
+                    execution_plan = None
+                    verification_result = None
+                    
+                    if should_use_intelligent_pipeline:
+                        logger.info(f"[AI_PIPELINE] Activating intelligent pipeline for complex query")
+                        
+                        yield json.dumps({
+                            "status": "ai_planning",
+                            "message": "Creating intelligent execution plan...",
+                            "notebook_id": notebook_id,
+                            "conversation_id": request.conversation_id
+                        }) + "\n"
+                        
+                        # Step 2: Plan - Create AI task plan
+                        try:
+                            execution_plan = await ai_task_planner.understand_and_plan(request.message)
+                            logger.info(f"[AI_PIPELINE] Task plan created - Strategies: {len(execution_plan.retrieval_strategies)}, "
+                                       f"Expected: {execution_plan.data_requirements.expected_count}")
+                            logger.info(f"[AI_PIPELINE] Plan details: {execution_plan.data_requirements.entities}, "
+                                       f"Format: {execution_plan.presentation.format}")
+                            
+                            yield json.dumps({
+                                "status": "ai_executing",
+                                "message": f"Executing intelligent plan ({len(execution_plan.retrieval_strategies)} strategies)...",
+                                "notebook_id": notebook_id,
+                                "conversation_id": request.conversation_id,
+                                "plan_metadata": {
+                                    "entities": execution_plan.data_requirements.entities,
+                                    "completeness": execution_plan.data_requirements.completeness,
+                                    "format": execution_plan.presentation.format
+                                }
+                            }) + "\n"
+                            
+                        except Exception as e:
+                            logger.warning(f"[AI_PIPELINE] Task planning failed, falling back to regular RAG: {str(e)}")
+                            execution_plan = None
+                    
                     should_use_progressive = await notebook_rag_service.should_use_progressive_loading(
                         query=request.message,
                         intent_analysis=intent_analysis,
@@ -1746,49 +1863,124 @@ async def notebook_chat(
                         # End the regular chat stream here since progressive handling is complete
                         return
                     
-                    # Continue with regular RAG processing for smaller datasets
-                    logger.info(f"[REGULAR_CHAT] Using standard retrieval: available={total_available}, requested={request.max_sources}")
-                    
-                    # Use standard retrieval path (comprehensive mode removed)
-                    # Check if hierarchical RAG would be beneficial
-                    hierarchical_rag_service = get_hierarchical_notebook_rag_service()
-                    context_stats = await hierarchical_rag_service.get_context_stats(notebook_id, request.message)
-                    
-                    # Use hierarchical service if optimization is needed or for complex queries
-                    if context_stats.get("optimization_needed", False) or request.max_sources > 15:
-                        logger.info(f"Using hierarchical RAG for context optimization (max_sources={request.max_sources})")
-                        rag_response = await hierarchical_rag_service.query_with_context_optimization(
-                            notebook_id=notebook_id,
-                            query=request.message,
-                            top_k=request.max_sources,
-                            include_metadata=True,
-                            db=db
-                        )
-                        
-                        # Log optimization results
-                        if rag_response.metadata:
-                            token_stats = rag_response.metadata.get('token_budget', {})
-                            logger.info(f"Hierarchical RAG used {token_stats.get('retrieval_used', 0)} tokens "
-                                      f"({token_stats.get('utilization_percent', 0)}% of budget)")
-                    else:
-                        # Use standard RAG service
-                        rag_response = await notebook_rag_service.query_notebook(
+                    # Step 3: Execute - Use intelligent plan or fall back to standard RAG
+                    if execution_plan:
+                        logger.info(f"[AI_PIPELINE] Executing intelligent plan with {len(execution_plan.retrieval_strategies)} strategies")
+                        rag_response = await notebook_rag_service.execute_intelligent_plan(
                             db=db,
                             notebook_id=notebook_id,
-                            query=request.message,
-                            top_k=request.max_sources,
+                            plan=execution_plan,
                             include_metadata=True
                         )
+                        
+                        # Step 4: Verify - Check completeness and trigger self-correction if needed
+                        yield json.dumps({
+                            "status": "ai_verifying",
+                            "message": "Verifying result completeness...",
+                            "notebook_id": notebook_id,
+                            "conversation_id": request.conversation_id
+                        }) + "\n"
+                        
+                        verification_result = await ai_verification_service.verify_completeness(
+                            results=rag_response,
+                            plan=execution_plan,
+                            notebook_id=notebook_id
+                        )
+                        
+                        logger.info(f"[AI_PIPELINE] Verification - Confidence: {verification_result.confidence:.2f}, "
+                                   f"Completeness: {verification_result.completeness_score:.2f}, "
+                                   f"Needs correction: {verification_result.needs_correction}")
+                        
+                        # Self-correction if verification indicates incompleteness
+                        if verification_result.needs_correction and verification_result.correction_strategies:
+                            logger.info(f"[AI_PIPELINE] Triggering self-correction with {len(verification_result.correction_strategies)} strategies")
+                            
+                            yield json.dumps({
+                                "status": "ai_correcting",
+                                "message": f"Self-correcting to improve completeness (confidence: {verification_result.confidence:.1%})...",
+                                "notebook_id": notebook_id,
+                                "conversation_id": request.conversation_id,
+                                "verification_metadata": {
+                                    "original_confidence": verification_result.confidence,
+                                    "correction_strategies_count": len(verification_result.correction_strategies)
+                                }
+                            }) + "\n"
+                            
+                            # Execute correction strategies
+                            correction_response = await notebook_rag_service.execute_correction_strategies(
+                                db=db,
+                                notebook_id=notebook_id,
+                                original_response=rag_response,
+                                correction_strategies=verification_result.correction_strategies
+                            )
+                            
+                            if correction_response and len(correction_response.sources) > len(rag_response.sources):
+                                logger.info(f"[AI_PIPELINE] Self-correction successful: {len(rag_response.sources)} → {len(correction_response.sources)} sources")
+                                rag_response = correction_response
+                        
+                    else:
+                        # Continue with regular RAG processing for smaller datasets
+                        logger.info(f"[REGULAR_CHAT] Using standard retrieval: available={total_available}, requested={request.max_sources}")
+                        
+                        # Use standard retrieval path (comprehensive mode removed)
+                        # Check if hierarchical RAG would be beneficial
+                        hierarchical_rag_service = get_hierarchical_notebook_rag_service()
+                        context_stats = await hierarchical_rag_service.get_context_stats(notebook_id, request.message)
+                        
+                        # Use hierarchical service if optimization is needed or for complex queries
+                        if context_stats.get("optimization_needed", False) or request.max_sources > 15:
+                            logger.info(f"Using hierarchical RAG for context optimization (max_sources={request.max_sources})")
+                            rag_response = await hierarchical_rag_service.query_with_context_optimization(
+                                notebook_id=notebook_id,
+                                query=request.message,
+                                top_k=request.max_sources,
+                                include_metadata=True,
+                                db=db
+                            )
+                            
+                            # Log optimization results
+                            if rag_response.metadata:
+                                token_stats = rag_response.metadata.get('token_budget', {})
+                                logger.info(f"Hierarchical RAG used {token_stats.get('retrieval_used', 0)} tokens "
+                                          f"({token_stats.get('utilization_percent', 0)}% of budget)")
+                        else:
+                            # Use adaptive RAG service with intelligent enumeration
+                            rag_response = await notebook_rag_service.query_notebook_adaptive(
+                                db=db,
+                                notebook_id=notebook_id,
+                                query=request.message,
+                                max_sources=request.max_sources,
+                                include_metadata=True
+                            )
                     
                     # RAG Query Execution completed
                     
-                    yield json.dumps({
+                    # Build comprehensive status with AI pipeline metadata
+                    status_data = {
                         "status": "context_found",
                         "sources_count": len(rag_response.sources),
                         "collections_searched": rag_response.collections_searched,
                         "notebook_id": notebook_id,
                         "conversation_id": request.conversation_id
-                    }) + "\n"
+                    }
+                    
+                    # Add AI pipeline metadata if available
+                    if execution_plan:
+                        status_data["ai_pipeline_metadata"] = {
+                            "used_intelligent_pipeline": True,
+                            "strategies_executed": len(execution_plan.retrieval_strategies),
+                            "data_completeness": execution_plan.data_requirements.completeness,
+                            "expected_format": execution_plan.presentation.format
+                        }
+                        
+                        if verification_result:
+                            status_data["ai_pipeline_metadata"]["verification"] = {
+                                "confidence": verification_result.confidence,
+                                "completeness_score": verification_result.completeness_score,
+                                "used_self_correction": verification_result.needs_correction
+                            }
+                    
+                    yield json.dumps(status_data) + "\n"
                     
                 except Exception as e:
                     logger.warning(f"RAG query failed for notebook {notebook_id}: {str(e)}")
@@ -1853,11 +2045,78 @@ async def notebook_chat(
                 )
                 system_prompt += source_integration_prompt
                 
+                # === INTELLIGENT AI ENHANCEMENTS: Add structured AI planning instructions ===
+                
+                # Step 5: Enhance LLM with AI planning context
+                if execution_plan:
+                    # Add AI task plan context to system prompt
+                    ai_enhancement_prompt = f"\n\nINTELLIGENT AI CONTEXT:\n"
+                    ai_enhancement_prompt += f"This query has been processed through intelligent AI planning with the following understanding:\n"
+                    ai_enhancement_prompt += f"- Required entities: {', '.join(execution_plan.data_requirements.entities)}\n"
+                    ai_enhancement_prompt += f"- Required attributes: {', '.join(execution_plan.data_requirements.attributes)}\n"
+                    ai_enhancement_prompt += f"- Completeness requirement: {execution_plan.data_requirements.completeness}\n"
+                    ai_enhancement_prompt += f"- Expected format: {execution_plan.presentation.format}\n"
+                    
+                    if execution_plan.data_requirements.expected_count:
+                        ai_enhancement_prompt += f"- Expected count: {execution_plan.data_requirements.expected_count}\n"
+                    
+                    # Add format-specific instructions
+                    if execution_plan.presentation.format == "table":
+                        ai_enhancement_prompt += f"\nFORMAT REQUIREMENT: Present results in a well-formatted table with columns: {', '.join(execution_plan.presentation.fields_to_show)}\n"
+                        
+                        if execution_plan.presentation.sorting:
+                            sort_field = execution_plan.presentation.sorting.get('field', 'default')
+                            sort_order = execution_plan.presentation.sorting.get('order', 'asc')
+                            ai_enhancement_prompt += f"Sort by {sort_field} in {sort_order} order.\n"
+                            
+                    elif execution_plan.presentation.format == "list":
+                        ai_enhancement_prompt += f"\nFORMAT REQUIREMENT: Present results as a structured list with clear organization.\n"
+                    
+                    # Add verification context if available
+                    if verification_result:
+                        ai_enhancement_prompt += f"\nQUALITY ASSURANCE:\n"
+                        ai_enhancement_prompt += f"- Confidence level: {verification_result.confidence:.1%}\n"
+                        ai_enhancement_prompt += f"- Completeness score: {verification_result.completeness_score:.1%}\n"
+                        
+                        if verification_result.needs_correction:
+                            ai_enhancement_prompt += f"- Self-correction was applied to improve completeness\n"
+                        
+                        if verification_result.quality_issues:
+                            ai_enhancement_prompt += f"- Note potential gaps: {'; '.join(verification_result.quality_issues[:2])}\n"
+                    
+                    ai_enhancement_prompt += f"\nPlease provide a response that meets these intelligent requirements and leverages the comprehensive analysis performed.\n"
+                    
+                    system_prompt += ai_enhancement_prompt
+                    logger.info(f"[AI_PIPELINE] Enhanced LLM prompt with intelligent planning context ({len(ai_enhancement_prompt)} chars)")
+                
+                # === COMPREHENSIVE ENUMERATION ENHANCEMENT ===
+                
+                # Detect comprehensive enumeration queries that require complete results
+                query_lower = request.message.lower()
+                is_comprehensive_enumeration = (
+                    ("list" in query_lower and "all" in query_lower) or
+                    ("show" in query_lower and "all" in query_lower) or
+                    ("enumerate" in query_lower) or
+                    (("table" in query_lower or "format" in query_lower) and 
+                     ("projects" in query_lower or "project" in query_lower or "work" in query_lower))
+                )
+                
+                if is_comprehensive_enumeration:
+                    source_count = len(rag_response.sources) if rag_response else 0
+                    system_prompt += f"""
+
+ENUMERATION TASK:
+Process all {source_count} sources and list every relevant item mentioned.
+Present the findings in the requested format (table, list, etc.).
+"""
+                    
+                    logger.info(f"[COMPLETENESS] Enhanced prompt for comprehensive enumeration - {source_count} sources")
+                
                 context_info = "\n\n--- RELEVANT CONTEXT FROM NOTEBOOK ---\n"
                 context_info += "The following sources contain information relevant to your question. "
                 context_info += "Please integrate information from ALL sources in your response:\n"
                 
-                for i, source in enumerate(rag_response.sources[:request.max_sources], 1):
+                for i, source in enumerate(rag_response.sources, 1):
                     # Format source name with type prefix for clarity
                     source_name = source.document_name or 'Unknown'
                     source_type_prefix = "Personal Memory" if source.source_type == "memory" else "Document"
@@ -1949,12 +2208,57 @@ async def notebook_chat(
                         "score": source.score,
                         "collection": source.collection
                     }
-                    for source in (rag_response.sources[:request.max_sources] if rag_response else [])
+                    for source in (rag_response.sources if rag_response else [])
                 ],
                 "notebook_id": notebook_id,
                 "conversation_id": request.conversation_id,
                 "status": "complete"
             }
+            
+            # === INTELLIGENT AI PIPELINE: Include comprehensive metadata in response ===
+            
+            # Add AI pipeline metadata to final response for transparency and debugging
+            if execution_plan:
+                final_response["ai_pipeline_metadata"] = {
+                    "used_intelligent_pipeline": True,
+                    "pipeline_version": "1.0",
+                    "task_plan": {
+                        "entities": execution_plan.data_requirements.entities,
+                        "attributes": execution_plan.data_requirements.attributes,
+                        "completeness_requirement": execution_plan.data_requirements.completeness,
+                        "expected_count": execution_plan.data_requirements.expected_count,
+                        "format": execution_plan.presentation.format,
+                        "fields_shown": execution_plan.presentation.fields_to_show,
+                        "sorting": execution_plan.presentation.sorting,
+                        "strategies_executed": len(execution_plan.retrieval_strategies)
+                    }
+                }
+                
+                # Add verification results if available
+                if verification_result:
+                    final_response["ai_pipeline_metadata"]["verification"] = {
+                        "confidence": verification_result.confidence,
+                        "completeness_score": verification_result.completeness_score,
+                        "needs_correction": verification_result.needs_correction,
+                        "result_count": verification_result.result_count,
+                        "unique_sources": verification_result.unique_sources,
+                        "diversity_score": verification_result.diversity_score,
+                        "expected_vs_actual": verification_result.expected_vs_actual,
+                        "used_self_correction": verification_result.needs_correction,
+                        "quality_issues": verification_result.quality_issues[:3] if verification_result.quality_issues else [],
+                        "reasoning": verification_result.reasoning[:200] + "..." if len(verification_result.reasoning) > 200 else verification_result.reasoning
+                    }
+                
+                logger.info(f"[AI_PIPELINE] Complete intelligent pipeline executed successfully - "
+                           f"Plan: {len(execution_plan.retrieval_strategies)} strategies, "
+                           f"Verification: {verification_result.confidence:.1%} confidence" if verification_result else "No verification")
+            else:
+                # Mark as using traditional RAG approach
+                final_response["ai_pipeline_metadata"] = {
+                    "used_intelligent_pipeline": False,
+                    "pipeline_version": "traditional_rag",
+                    "fallback_reason": "Query did not meet intelligent pipeline criteria"
+                }
             
             # Include structured project data in response if available
             if rag_response and hasattr(rag_response, 'extracted_projects') and rag_response.extracted_projects:

@@ -12,6 +12,22 @@ import numpy as np
 from dataclasses import dataclass
 import os
 
+# Initialize environment variables for local-only mode if configured
+def _initialize_local_mode():
+    """Initialize local-only mode based on configuration"""
+    try:
+        from app.core.reranker_config import RerankerConfig
+        if RerankerConfig.force_local_only():
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            print("[QwenReranker] Module initialization: Enforcing offline mode - local files only")
+    except ImportError:
+        # Configuration not available during import, will be set in constructor
+        pass
+
+# Initialize local mode on module import
+_initialize_local_mode()
+
 
 @dataclass
 class RerankResult:
@@ -35,6 +51,13 @@ class QwenReranker:
             model_path: Path to the model files. If None, uses the default HuggingFace cache
             device: Device to run the model on. If None, auto-detects (cuda if available)
         """
+        
+        # Enforce local-only mode based on configuration
+        from app.core.reranker_config import RerankerConfig
+        if RerankerConfig.force_local_only():
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            print("[QwenReranker] Enforcing offline mode - local files only")
         # Set device
         if device is None:
             # Check for available accelerators
@@ -50,8 +73,8 @@ class QwenReranker:
         
         # Set model path
         if model_path is None:
-            # Check environment variable first, then use default paths for different environments
-            model_path = os.environ.get("QWEN_RERANKER_MODEL_PATH")
+            # Use configured path from RerankerConfig
+            model_path = RerankerConfig.get_model_path()
             
             if model_path is None:
                 # Try different common paths (Docker vs local) - prioritize 0.6B model
@@ -199,6 +222,10 @@ class QwenReranker:
     def _load_from_hub_sequence_classification(self, torch_dtype):
         """Load model from HuggingFace Hub as sequence classification"""
         from transformers import AutoConfig
+        from app.core.reranker_config import RerankerConfig
+        
+        # Check if we should force local-only mode
+        force_local_only = RerankerConfig.force_local_only()
         
         # Try 0.6B model first, then fallback to 4B
         model_names = ["Qwen/Qwen3-Reranker-0.6B", "Qwen/Qwen3-Reranker-4B"]
@@ -210,7 +237,8 @@ class QwenReranker:
                 # Load config from hub and configure for sequence classification
                 config = AutoConfig.from_pretrained(
                     model_name,
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    local_files_only=force_local_only
                 )
                 config.num_labels = 1
                 config.problem_type = "single_label_classification"
@@ -222,7 +250,8 @@ class QwenReranker:
                     trust_remote_code=True,
                     torch_dtype=torch_dtype,
                     ignore_mismatched_sizes=True,
-                    low_cpu_mem_usage=True
+                    low_cpu_mem_usage=True,
+                    local_files_only=force_local_only
                 )
                 self.use_causal_lm = False
                 print(f"[QwenReranker] Successfully loaded {model_name}")
@@ -236,6 +265,10 @@ class QwenReranker:
     def _load_from_hub_causal_lm(self, torch_dtype):
         """Load model from HuggingFace Hub as causal LM"""
         from transformers import AutoModelForCausalLM
+        from app.core.reranker_config import RerankerConfig
+        
+        # Check if we should force local-only mode
+        force_local_only = RerankerConfig.force_local_only()
         
         # Try 0.6B model first, then fallback to 4B
         model_names = ["Qwen/Qwen3-Reranker-0.6B", "Qwen/Qwen3-Reranker-4B"]
@@ -248,7 +281,8 @@ class QwenReranker:
                     model_name,
                     trust_remote_code=True,
                     torch_dtype=torch_dtype,
-                    low_cpu_mem_usage=True
+                    low_cpu_mem_usage=True,
+                    local_files_only=force_local_only
                 )
                 self.use_causal_lm = True
                 print(f"[QwenReranker] Successfully loaded {model_name} as CausalLM")
@@ -310,6 +344,12 @@ class QwenReranker:
         """Docker-safe tokenizer loading that avoids ModelWrapper issues"""
         tokenizer_names = ["Qwen/Qwen3-Reranker-0.6B", "Qwen/Qwen3-Reranker-4B"]
         
+        # Check if we should force local-only mode
+        from app.core.reranker_config import RerankerConfig
+        force_local_only = RerankerConfig.force_local_only()
+        
+        print(f"[QwenReranker] Local-only mode: {force_local_only}")
+        
         for tokenizer_name in tokenizer_names:
             try:
                 print(f"[QwenReranker] Attempting Docker-safe tokenizer loading: {tokenizer_name}")
@@ -320,7 +360,7 @@ class QwenReranker:
                     trust_remote_code=True,
                     use_fast=False,  # Use slow tokenizer to avoid issues
                     use_auth_token=False,
-                    local_files_only=False
+                    local_files_only=force_local_only
                 )
                 
                 print(f"[QwenReranker] Successfully loaded tokenizer with Docker-safe method: {tokenizer_name}")
@@ -339,7 +379,7 @@ class QwenReranker:
                         tokenizer_name,
                         use_fast=False,
                         trust_remote_code=False,  # Disable trust_remote_code
-                        local_files_only=False
+                        local_files_only=force_local_only
                     )
                     
                     print(f"[QwenReranker] Successfully loaded basic tokenizer: {tokenizer_name}")

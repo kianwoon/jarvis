@@ -1,5 +1,8 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from app.core.db import get_db
 from app.langchain.multi_agent_system_simple import MultiAgentSystem
 from app.langchain.enhanced_query_classifier import EnhancedQueryClassifier, QueryType
 from app.core.langfuse_integration import get_tracer
@@ -8,6 +11,7 @@ from app.core.temp_document_manager import TempDocumentManager
 from app.langchain.hybrid_rag_orchestrator import HybridRAGOrchestrator
 from app.core.simple_conversation_manager import conversation_manager
 from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
+from app.core.redis_client import get_redis_client
 from fastapi.responses import StreamingResponse
 import json as json_module  # Import with alias to avoid scope issues
 from typing import Optional, List, Dict, Any
@@ -3043,11 +3047,82 @@ async def update_temp_document_preferences(
         logger.error(f"Failed to update preferences: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete("/conversation/{conversation_id}")
-async def clear_conversation_history(conversation_id: str):
-    """Clear conversation history from Redis for a specific conversation ID."""
+async def _get_notebook_id_from_conversation(db: Session, conversation_id: str) -> Optional[str]:
+    """Get notebook_id associated with a conversation_id from database."""
     try:
+        query = text("""
+            SELECT notebook_id 
+            FROM notebook_conversations 
+            WHERE conversation_id = :conversation_id
+            LIMIT 1
+        """)
+        result = db.execute(query, {"conversation_id": conversation_id})
+        row = result.fetchone()
+        return row.notebook_id if row else None
+    except Exception as e:
+        logger.warning(f"Failed to get notebook_id for conversation {conversation_id}: {e}")
+        return None
+
+async def _clear_notebook_caches(notebook_id: str, conversation_id: str):
+    """Clear notebook-related Redis caches when conversation is deleted."""
+    try:
+        redis_client = get_redis_client()
+        if not redis_client:
+            logger.warning("Redis client not available for cache cleanup")
+            return
+        
+        # Cache patterns to clear based on notebook_id
+        cache_patterns = [
+            f"notebook_content_count:{notebook_id}:*",
+            f"task_plan_{notebook_id}_*",
+            f"llm_settings_notebook_{notebook_id}",
+            f"notebook_rag_cache:{notebook_id}:*",
+            f"notebook_sources:{notebook_id}:*"
+        ]
+        
+        cleared_keys = 0
+        for pattern in cache_patterns:
+            try:
+                # Use SCAN to find keys matching pattern
+                keys = []
+                cursor = 0
+                while True:
+                    cursor, batch = redis_client.scan(cursor=cursor, match=pattern, count=100)
+                    keys.extend(batch)
+                    if cursor == 0:
+                        break
+                
+                # Delete found keys
+                if keys:
+                    redis_client.delete(*keys)
+                    cleared_keys += len(keys)
+                    logger.debug(f"Cleared {len(keys)} keys matching pattern: {pattern}")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to clear cache pattern {pattern}: {e}")
+        
+        if cleared_keys > 0:
+            logger.info(f"Successfully cleared {cleared_keys} notebook cache entries for conversation {conversation_id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to clear notebook caches for conversation {conversation_id}: {e}")
+        # Don't raise - cache cleanup failure shouldn't break conversation deletion
+
+@router.delete("/conversation/{conversation_id}")
+async def clear_conversation_history(conversation_id: str, db: Session = Depends(get_db)):
+    """Clear conversation history from Redis for a specific conversation ID and cleanup associated caches."""
+    try:
+        # First clear the conversation history
         await conversation_manager.clear_conversation(conversation_id)
+        
+        # Get notebook_id associated with this conversation for cache cleanup
+        notebook_id = await _get_notebook_id_from_conversation(db, conversation_id)
+        
+        if notebook_id:
+            # Clear notebook-related Redis caches
+            await _clear_notebook_caches(notebook_id, conversation_id)
+            logger.info(f"Cleared notebook caches for notebook {notebook_id} after conversation {conversation_id} deletion")
+        
         return {"success": True, "message": f"Conversation {conversation_id} cleared successfully"}
     except Exception as e:
         logger.error(f"Failed to clear conversation {conversation_id}: {str(e)}")

@@ -7,8 +7,7 @@ import logging
 import traceback
 import time
 import hashlib
-# TODO: Remove after completing migration to intelligent query analysis
-# import re  # No longer needed - replaced with AI-powered intent analysis
+import re  # Needed for project extraction patterns
 from typing import List, Dict, Any, Optional, Union, AsyncGenerator
 from datetime import datetime
 
@@ -18,6 +17,7 @@ from sqlalchemy import text
 from app.models.notebook_models import (
     NotebookRAGResponse, NotebookRAGSource, ProjectData
 )
+from app.services.ai_task_planner import TaskExecutionPlan, RetrievalStrategy, ai_task_planner
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.notebook_llm_settings_cache import get_notebook_llm_settings
@@ -438,6 +438,39 @@ class NotebookRAGService:
             enumeration_target = intent_analysis.get("enumeration_target")
             
             self.logger.info(f"[ADAPTIVE_QUERY] Intent analysis - comprehensive: {wants_comprehensive}, quantity: {quantity_intent}, confidence: {confidence:.2f}, enumeration: {enumeration_mode}, target: {enumeration_target}")
+            
+            # Step 1.2: Check if query should use intelligent task planning
+            # Use intelligent planning for complex queries that would benefit from multi-strategy retrieval
+            should_use_intelligent_planning = (
+                wants_comprehensive or 
+                quantity_intent == "all" or 
+                confidence < 0.7 or  # Low confidence suggests complex intent
+                enumeration_mode or
+                len(query.split()) > 8  # Complex multi-part queries
+            )
+            
+            if should_use_intelligent_planning:
+                self.logger.info(f"[ADAPTIVE_QUERY] Using intelligent task planning for complex query")
+                try:
+                    # Create AI task plan for this query
+                    execution_plan = await ai_task_planner.understand_and_plan(query)
+                    self.logger.info(f"[ADAPTIVE_QUERY] Generated plan: {execution_plan.intent_type} with {len(execution_plan.retrieval_strategies)} strategies")
+                    
+                    # Execute the intelligent plan
+                    result = await self.execute_intelligent_plan(
+                        db=db,
+                        notebook_id=notebook_id,
+                        plan=execution_plan,
+                        include_metadata=include_metadata,
+                        collection_filter=collection_filter
+                    )
+                    
+                    self.logger.info(f"[ADAPTIVE_QUERY] Intelligent plan executed: {len(result.sources)} sources returned")
+                    return result
+                    
+                except Exception as e:
+                    self.logger.warning(f"[ADAPTIVE_QUERY] Intelligent planning failed, falling back to traditional approach: {str(e)}")
+                    # Continue with traditional approach below
             
             # Step 1.5: Route to enumeration method if enumeration mode is detected
             if enumeration_mode:
@@ -1572,6 +1605,10 @@ class NotebookRAGService:
             
             self.logger.info(f"Successfully queried notebook {notebook_id}, found {len(top_sources)} sources")
             
+            # Set extracted_projects to None - rely on LLM's natural language understanding
+            # instead of broken regex-based extraction that generates garbage data
+            extracted_projects = None
+            
             return NotebookRAGResponse(
                 notebook_id=notebook_id,
                 query=query,
@@ -1579,7 +1616,7 @@ class NotebookRAGService:
                 total_sources=len(all_sources),
                 queried_documents=len(set(source.document_id for source in all_sources)),
                 collections_searched=list(collections_searched),
-                extracted_projects=None
+                extracted_projects=extracted_projects
             )
             
         except Exception as e:
@@ -3119,6 +3156,230 @@ class NotebookRAGService:
             except Exception as fallback_error:
                 self.logger.error(f"[MULTI_STAGE] Fallback also failed: {str(fallback_error)}")
                 raise
+
+    async def execute_intelligent_plan(
+        self,
+        db: Session,
+        notebook_id: str,
+        plan: TaskExecutionPlan,
+        include_metadata: bool = True,
+        collection_filter: Optional[List[str]] = None
+    ) -> NotebookRAGResponse:
+        """
+        Execute an AI-generated task plan with multi-strategy retrieval.
+        
+        This method implements intelligent retrieval execution by:
+        1. Running multiple retrieval strategies from the plan
+        2. Combining results intelligently with deduplication
+        3. Returning comprehensive results with metadata
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID to query
+            plan: TaskExecutionPlan containing strategies and requirements
+            include_metadata: Whether to include metadata in results
+            collection_filter: Optional filter for specific collections
+            
+        Returns:
+            Comprehensive RAG query results from multiple strategies
+        """
+        try:
+            self.logger.info(f"[INTELLIGENT_PLAN] Executing plan with {len(plan.retrieval_strategies)} strategies for notebook {notebook_id}")
+            
+            # Execute all retrieval strategies concurrently
+            strategy_results = []
+            for i, strategy in enumerate(plan.retrieval_strategies):
+                self.logger.info(f"[INTELLIGENT_PLAN] Executing strategy {i+1}: {strategy.description}")
+                
+                try:
+                    result = await self._execute_retrieval_strategy(
+                        db=db,
+                        notebook_id=notebook_id,
+                        strategy=strategy,
+                        include_metadata=include_metadata,
+                        collection_filter=collection_filter
+                    )
+                    strategy_results.append({
+                        'strategy': strategy,
+                        'result': result,
+                        'strategy_index': i
+                    })
+                    self.logger.info(f"[INTELLIGENT_PLAN] Strategy {i+1} returned {len(result.sources)} sources")
+                    
+                except Exception as e:
+                    self.logger.warning(f"[INTELLIGENT_PLAN] Strategy {i+1} failed: {str(e)}")
+                    # Continue with other strategies
+                    continue
+            
+            if not strategy_results:
+                self.logger.warning(f"[INTELLIGENT_PLAN] All strategies failed, returning empty result")
+                return NotebookRAGResponse(
+                    notebook_id=notebook_id,
+                    query="list_all_projects",
+                    sources=[],
+                    total_sources=0,
+                    queried_documents=0,
+                    collections_searched=[]
+                )
+            
+            # Combine results intelligently
+            combined_result = self._combine_strategy_results(strategy_results, plan)
+            
+            # Plan execution metadata would be stored elsewhere if needed
+            # combined_result has all required fields already
+            
+            self.logger.info(f"[INTELLIGENT_PLAN] Combined result: {len(combined_result.sources)} sources from {len(strategy_results)} successful strategies")
+            return combined_result
+            
+        except Exception as e:
+            self.logger.error(f"[INTELLIGENT_PLAN] Plan execution failed: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            raise
+
+    async def _execute_retrieval_strategy(
+        self,
+        db: Session,
+        notebook_id: str,
+        strategy: RetrievalStrategy,
+        include_metadata: bool = True,
+        collection_filter: Optional[List[str]] = None
+    ) -> NotebookRAGResponse:
+        """
+        Execute a single retrieval strategy.
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID to query
+            strategy: RetrievalStrategy to execute
+            include_metadata: Whether to include metadata
+            collection_filter: Optional filter for specific collections
+            
+        Returns:
+            Raw results from this strategy
+        """
+        try:
+            # Use the existing query_notebook method with strategy parameters
+            result = await self.query_notebook(
+                db=db,
+                notebook_id=notebook_id,
+                query=strategy.query,
+                top_k=strategy.max_chunks,
+                include_metadata=include_metadata,
+                collection_filter=collection_filter
+            )
+            
+            # Filter results based on strategy threshold if needed
+            if strategy.threshold > 0:
+                filtered_sources = []
+                for source in result.sources:
+                    # Assume score is stored in metadata or use a default scoring
+                    score = source.metadata.get('score', 1.0) if source.metadata else 1.0
+                    if score >= strategy.threshold:
+                        filtered_sources.append(source)
+                
+                result.sources = filtered_sources
+                result.total_sources = len(filtered_sources)
+            
+            # Strategy metadata would be stored elsewhere if needed
+            # result already contains all required fields
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"[STRATEGY_EXEC] Failed to execute strategy '{strategy.description}': {str(e)}")
+            raise
+
+    def _combine_strategy_results(
+        self,
+        strategy_results: List[Dict[str, Any]],
+        plan: TaskExecutionPlan
+    ) -> NotebookRAGResponse:
+        """
+        Combine results from multiple strategies intelligently.
+        
+        This method:
+        1. Deduplicates based on content similarity
+        2. Preserves diversity of sources
+        3. Respects the plan's verification rules
+        
+        Args:
+            strategy_results: List of results from different strategies
+            plan: Original execution plan with requirements
+            
+        Returns:
+            Combined and deduplicated results
+        """
+        try:
+            all_sources = []
+            seen_contents = set()
+            
+            # Collect all sources with deduplication
+            for strategy_data in strategy_results:
+                result = strategy_data['result']
+                strategy = strategy_data['strategy']
+                strategy_index = strategy_data['strategy_index']
+                
+                for source in result.sources:
+                    # Create content hash for deduplication
+                    content_hash = hashlib.md5(source.content.encode()).hexdigest()
+                    
+                    if plan.verification.check_for_duplicates:
+                        if content_hash in seen_contents:
+                            continue
+                        seen_contents.add(content_hash)
+                    
+                    # Add strategy source info to metadata
+                    if source.metadata is None:
+                        source.metadata = {}
+                    
+                    source.metadata.update({
+                        'source_strategy_index': strategy_index,
+                        'source_strategy_description': strategy.description,
+                        'source_strategy_query': strategy.query
+                    })
+                    
+                    all_sources.append(source)
+            
+            # Sort sources by relevance/score if available
+            try:
+                all_sources.sort(key=lambda x: x.metadata.get('score', 0.0) if x.metadata else 0.0, reverse=True)
+            except:
+                # If sorting fails, keep original order
+                pass
+            
+            # Apply verification rules
+            if len(all_sources) < plan.verification.min_expected_results:
+                self.logger.warning(f"[COMBINE_RESULTS] Got {len(all_sources)} sources, expected minimum {plan.verification.min_expected_results}")
+            
+            # Limit results if needed (preserve top results)
+            max_results = 500  # Reasonable limit
+            if len(all_sources) > max_results:
+                all_sources = all_sources[:max_results]
+                self.logger.info(f"[COMBINE_RESULTS] Limited results to {max_results} sources")
+            
+            return NotebookRAGResponse(
+                sources=all_sources,
+                total_sources=len(all_sources),
+                notebook_id=strategy_results[0]['result'].notebook_id,
+                query=strategy_results[0]['result'].query,
+                queried_documents=sum(sr['result'].queried_documents for sr in strategy_results),
+                collections_searched=list(set(col for sr in strategy_results for col in sr['result'].collections_searched))
+            )
+            
+        except Exception as e:
+            self.logger.error(f"[COMBINE_RESULTS] Failed to combine results: {str(e)}")
+            # Return the first successful result as fallback
+            if strategy_results:
+                return strategy_results[0]['result']
+            else:
+                return NotebookRAGResponse(
+                    notebook_id="unknown",
+                    query="unknown",
+                    sources=[],
+                    total_sources=0,
+                    queried_documents=0,
+                    collections_searched=[]
+                )
 
     async def health_check(self) -> Dict[str, Any]:
         """

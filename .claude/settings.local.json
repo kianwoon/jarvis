@@ -101,7 +101,8 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -U postgres -d llm_platform -c \"\\dt\")",
       "Bash(PGPASSWORD=postgres psql -h localhost -U postgres -d llm_platform -c \"\\d settings\")",
       "Bash(psql -c 'SELECT *;')",
-      "Bash(PGPASSWORD=postgres psql:*)"
+      "Bash(PGPASSWORD=postgres psql:*)",
+      "Read(//Users/kianwoonwong/.cache/huggingface/hub/models--Qwen--Qwen3-Reranker-0.6B/**)"
     ],
     "deny": [
       "Bash(chown:*)",

@@ -137,10 +137,15 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
     let assistantMessage: NotebookChatMessage | undefined;
 
     try {
+      // Smart source detection to prevent truncation for comprehensive queries
+      const isComprehensiveQuery = /\b(list|all|projects|show|display|entire|complete|full)\b/i.test(currentInput);
+      const maxSources = isComprehensiveQuery ? 100 : 50;
+      
       const response = await notebookAPI.startNotebookChat(notebook.id, {
         message: currentInput,
         conversation_id: conversationId,
-        include_context: true
+        include_context: true,
+        max_sources: maxSources
       });
 
       if (!response.ok) {

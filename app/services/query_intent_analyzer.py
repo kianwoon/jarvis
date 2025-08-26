@@ -92,26 +92,28 @@ class QueryIntentAnalyzer:
             for key in expired_keys:
                 del _intent_cache[key]
     
-    async def _make_llm_call(self, prompt: str, timeout: int = 30) -> str:
+    async def _make_llm_call(self, prompt: str, timeout: int = 30, custom_config: Optional[Dict] = None) -> str:
         """Make an LLM API call using the configured settings"""
-        if not self.llm_config:
+        # Use custom config if provided, otherwise fall back to instance config
+        config = custom_config or self.llm_config
+        if not config:
             self._load_llm_config()
+            config = self.llm_config
         
         try:
             # Prepare the request payload following the pattern from the codebase
             payload = {
-                "model": self.llm_config.get("model", "llama3.1:8b"),
+                "model": config.get("model", "llama3.1:8b"),
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
                 "stream": False,
                 "options": {
-                    "temperature": self.llm_config.get("temperature", 0.1),
-                    "num_predict": self.llm_config.get("max_tokens", 1000)
+                    "temperature": config.get("temperature", 0.1)
                 }
             }
             
-            base_url = self.llm_config.get("base_url", "http://localhost:11434")
+            base_url = config.get("base_url") or config.get("model_server", "http://localhost:11434")
             endpoint = f"{base_url}/api/chat"
             
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -150,13 +152,14 @@ class QueryIntentAnalyzer:
             logger.error(f"Failed to parse JSON from LLM response: {e}")
             return {}
     
-    async def analyze_intent(self, query: str, llm_service=None) -> Dict[str, Any]:
+    async def analyze_intent(self, query: str, llm_service=None, llm_config: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Use LLM to understand true user intent and query characteristics.
         
         Args:
             query: The user's query string
             llm_service: Legacy parameter for compatibility (ignored)
+            llm_config: Optional LLM configuration to override default
             
         Returns:
             dict: {
@@ -223,7 +226,7 @@ JSON:
 """
         
         try:
-            response = await self._make_llm_call(prompt, timeout=20)
+            response = await self._make_llm_call(prompt, timeout=20, custom_config=llm_config)
             parsed_result = self._parse_json_from_response(response)
             
             if not parsed_result:
@@ -459,9 +462,9 @@ JSON:
 # Global instance for easy import
 query_intent_analyzer = QueryIntentAnalyzer()
 
-async def analyze_query_intent(query: str, llm_service=None) -> Dict[str, Any]:
+async def analyze_query_intent(query: str, llm_service=None, llm_config: Optional[Dict] = None) -> Dict[str, Any]:
     """Convenience function for query intent analysis"""
-    return await query_intent_analyzer.analyze_intent(query, llm_service)
+    return await query_intent_analyzer.analyze_intent(query, llm_service, llm_config)
 
 async def wants_comprehensive_results(query: str, context: Optional[Dict] = None) -> Dict[str, Any]:
     """Convenience function for comprehensive results analysis"""
