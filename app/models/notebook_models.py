@@ -165,6 +165,16 @@ class NotebookRAGSource(BaseModel):
     collection: Optional[str] = Field(None, description="Milvus collection name")
     source_type: Optional[str] = Field("document", description="Source type: 'document' or 'memory'")
 
+class ProjectData(BaseModel):
+    """Structured project data extracted from content."""
+    name: str = Field(..., description="Project name")
+    company: Optional[str] = Field(None, description="Company name (N/A if not found)")
+    year: Optional[str] = Field(None, description="Project year or year range (N/A if not found)")
+    description: str = Field(..., description="Project description")
+    source_chunk_id: Optional[str] = Field(None, description="Source chunk ID where project was found")
+    confidence_score: float = Field(0.0, description="Extraction confidence score (0.0-1.0)")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional extracted metadata")
+
 class NotebookRAGResponse(BaseModel):
     """Response model for notebook RAG queries."""
     notebook_id: str = Field(..., description="Notebook ID")
@@ -173,6 +183,7 @@ class NotebookRAGResponse(BaseModel):
     total_sources: int = Field(..., description="Total number of sources found")
     queried_documents: int = Field(..., description="Number of documents queried")
     collections_searched: List[str] = Field(..., description="Collections that were searched")
+    extracted_projects: Optional[List[ProjectData]] = Field(None, description="Extracted structured project data")
 
 class NotebookDocumentBulkResponse(BaseModel):
     """Response model for bulk document operations."""

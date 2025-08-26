@@ -3,7 +3,7 @@ FastAPI router for Notebook management endpoints.
 Provides CRUD operations and RAG functionality for notebooks.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Path, UploadFile, File, Request
+from fastapi import APIRouter, HTTPException, Depends, Query, Path, UploadFile, File, Request, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, DatabaseError
@@ -14,6 +14,7 @@ import uuid
 import os
 import hashlib
 import json
+import re
 from datetime import datetime
 
 from app.core.db import get_db, KnowledgeGraphDocument
@@ -34,6 +35,7 @@ from app.models.notebook_models import (
 from pydantic import BaseModel
 from app.services.notebook_service import NotebookService
 from app.services.notebook_rag_service import NotebookRAGService
+from app.services.hierarchical_notebook_rag_service import get_hierarchical_notebook_rag_service
 from app.services.document_admin_service import DocumentAdminService
 from app.services.chunk_management_service import ChunkManagementService
 from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
@@ -71,6 +73,172 @@ from app.core.collection_registry_cache import get_collection_config
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+async def _analyze_query_intent(query: str) -> dict:
+    """
+    Analyze query intent using AI-powered QueryIntentAnalyzer for intelligent understanding.
+    
+    Provides comprehensive intent analysis including:
+    - Query type detection (comprehensive, filtered, specific)
+    - Quantity intent analysis (all, limited, few, single)
+    - Confidence scoring and semantic understanding
+    - Context-aware categorization
+    
+    Args:
+        query: The user query string
+        
+    Returns:
+        dict: Query analysis results with intent classification and confidence
+    """
+    try:
+        from app.services.query_intent_analyzer import analyze_query_intent
+        
+        # Use AI-powered intent analysis
+        intent_result = await analyze_query_intent(query)
+        
+        # Transform to expected format while preserving AI insights
+        return {
+            "wants_comprehensive": intent_result.get('quantity_intent') == 'all' or intent_result.get('scope') == 'comprehensive',
+            "confidence": intent_result.get('confidence', 0.8),
+            "query_type": intent_result.get('scope', 'filtered'),
+            "quantity_intent": intent_result.get('quantity_intent', 'limited'),
+            "user_type": intent_result.get('user_type', 'casual'),
+            "completeness_preference": intent_result.get('completeness_preference', 'balanced'),
+            "context": intent_result.get('context', {}),
+            "reasoning": intent_result.get('reasoning', 'AI semantic analysis'),
+            "ai_powered": True
+        }
+        
+    except Exception as e:
+        logger.warning(f"AI intent analysis failed, using semantic fallback: {str(e)}")
+        # Intelligent fallback based on query characteristics
+        query_lower = query.lower()
+        
+        # Semantic indicators for comprehensive queries
+        comprehensive_indicators = (
+            any(word in query_lower for word in ['all', 'every', 'complete', 'comprehensive', 'overview', 'summary']) or
+            len(query.split()) > 8 or  # Complex queries often want comprehensive results
+            any(phrase in query_lower for phrase in ['give me', 'show me', 'list all', 'find everything'])
+        )
+        
+        return {
+            "wants_comprehensive": comprehensive_indicators,
+            "confidence": 0.7,  # Moderate confidence for semantic fallback
+            "query_type": "comprehensive" if comprehensive_indicators else "filtered",
+            "quantity_intent": "all" if comprehensive_indicators else "limited",
+            "fallback_reason": str(e),
+            "ai_powered": False
+        }
+
+async def _optimize_max_sources_for_intent(query: str, current_max_sources: int, notebook_id: str, rag_service) -> int:
+    """
+    Intelligently optimize max_sources based on AI intent analysis and dynamic content counting.
+    
+    Uses QueryIntentAnalyzer for sophisticated optimization strategies based on:
+    - AI-powered query intent and scope analysis
+    - Actual available content in the notebook
+    - User preferences for comprehensive vs targeted results
+    - Dynamic content-aware calculations (no hardcoded limits)
+    
+    Args:
+        query: The user query string
+        current_max_sources: Current max_sources value
+        notebook_id: Notebook ID for content counting
+        rag_service: RAG service instance for dynamic counting
+        
+    Returns:
+        Intelligently optimized max_sources value based on intent and available content
+    """
+    try:
+        # Get AI-powered intent analysis first
+        intent_analysis = await _analyze_query_intent(query)
+        wants_comprehensive = intent_analysis.get("wants_comprehensive", False)
+        quantity_intent = intent_analysis.get("quantity_intent", "limited")
+        confidence = intent_analysis.get("confidence", 0.5)
+        
+        # Get actual content count for this notebook
+        try:
+            total_available = await rag_service.get_actual_content_count(notebook_id)
+            
+            # Check if counting returned 0 but we should be conservative
+            if total_available == 0:
+                # Check for comprehensive queries or listing requests that likely have content
+                listing_keywords = ["list", "all", "show", "find", "get", "projects", "documents", "memories", "everything"]
+                has_listing_intent = any(keyword in query.lower() for keyword in listing_keywords)
+                
+                if wants_comprehensive or quantity_intent == "all" or has_listing_intent:
+                    logger.warning(f"[ADAPTIVE_RETRIEVAL] Content count returned 0 for query '{query}' that suggests content exists - using conservative fallback")
+                    total_available = max(current_max_sources * 3, 200)  # Conservative estimate for comprehensive queries
+                else:
+                    logger.warning(f"[ADAPTIVE_RETRIEVAL] Content count returned 0 for specific query '{query}' - using modest fallback")
+                    total_available = max(current_max_sources, 50)  # Modest fallback for specific queries
+                
+        except Exception as count_error:
+            logger.warning(f"Could not get content count, using fallback: {count_error}")
+            # For comprehensive queries, be more conservative when counting fails
+            if wants_comprehensive:
+                total_available = max(current_max_sources * 3, 200)  # Conservative estimate for comprehensive
+            else:
+                total_available = max(current_max_sources * 2, 100)  # Standard fallback
+        user_type = intent_analysis.get("user_type", "casual")
+        
+        logger.info(f"[ADAPTIVE_RETRIEVAL] Intent analysis - comprehensive: {wants_comprehensive}, quantity: {quantity_intent}, confidence: {confidence:.2f}, user_type: {user_type}")
+        
+        # Calculate optimized limit based on intent and available content
+        if wants_comprehensive and quantity_intent == "all":
+            # User wants everything - provide all available content up to reasonable limits
+            if total_available <= 100:
+                optimized_limit = total_available  # Give them everything
+            elif total_available <= 500:
+                optimized_limit = min(total_available, int(total_available * 0.9))  # 90% of available
+            else:
+                optimized_limit = min(500, int(total_available * 0.7))  # Cap at 500 but use 70% of available
+            
+            logger.info(f"[ADAPTIVE_RETRIEVAL] Comprehensive query detected: providing {optimized_limit} sources from {total_available} available")
+            
+        elif quantity_intent == "limited" or user_type == "researcher":
+            # Moderate coverage - balance comprehensiveness with manageability
+            if total_available <= 50:
+                optimized_limit = total_available  # Use everything if limited content
+            elif total_available <= 200:
+                optimized_limit = min(int(total_available * 0.5), 100)  # 50% up to 100
+            else:
+                optimized_limit = min(150, int(total_available * 0.3))  # 30% up to 150
+                
+        elif quantity_intent in ["few", "single"]:
+            # Targeted results - focus on relevance
+            optimized_limit = min(current_max_sources, 25)  # Keep it focused
+            
+        else:
+            # Default case - moderate scaling based on available content
+            if total_available <= 30:
+                optimized_limit = total_available
+            else:
+                base_multiplier = 2 if confidence > 0.8 else 1.5
+                optimized_limit = min(int(current_max_sources * base_multiplier), int(total_available * 0.4))
+        
+        # Apply confidence-based adjustments
+        if confidence < 0.6:
+            # Lower confidence - be more conservative
+            optimized_limit = min(optimized_limit, int(optimized_limit * 0.8))
+        elif confidence > 0.9:
+            # High confidence - can be more aggressive
+            optimized_limit = min(optimized_limit * 1.2, total_available)
+        
+        # Ensure minimum viable limit
+        optimized_limit = max(optimized_limit, 5)
+        
+        # Log the optimization decision
+        if optimized_limit != current_max_sources:
+            logger.info(f"[ADAPTIVE_RETRIEVAL] Optimized max_sources from {current_max_sources} to {optimized_limit} (total available: {total_available})")
+            logger.info(f"[ADAPTIVE_RETRIEVAL] Reasoning: {intent_analysis.get('reasoning', 'AI optimization')}")
+        
+        return int(optimized_limit)
+        
+    except Exception as e:
+        logger.error(f"[ADAPTIVE_RETRIEVAL] Optimization failed: {str(e)}")
+        # Fallback to modest scaling based on current value
+        return min(current_max_sources * 2, 100)
 
 # Initialize services
 notebook_service = NotebookService()
@@ -548,6 +716,84 @@ async def query_notebook(
     except Exception as e:
         logger.error(f"Unexpected error querying notebook: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{notebook_id}/query-optimized", response_model=NotebookRAGResponse)
+async def notebook_rag_query_optimized(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    request: NotebookRAGRequest = Body(..., description="RAG query request"),
+    db: Session = Depends(get_db)
+):
+    """
+    Enhanced RAG query with hierarchical retrieval and context optimization.
+    Uses Google NotebookLM-like strategies to manage context window efficiently.
+    """
+    try:
+        logger.info(f"Optimized RAG query for notebook {notebook_id}: '{request.query[:100]}...'")
+        
+        # Verify notebook exists
+        notebook_exists = await notebook_service.notebook_exists(db=db, notebook_id=notebook_id)
+        if not notebook_exists:
+            raise HTTPException(status_code=404, detail="Notebook not found")
+        
+        # Use hierarchical RAG service
+        hierarchical_rag_service = get_hierarchical_notebook_rag_service()
+        result = await hierarchical_rag_service.query_with_context_optimization(
+            notebook_id=notebook_id,
+            query=request.query,
+            top_k=request.top_k,
+            include_metadata=request.include_metadata,
+            collection_filter=request.collection_filter,
+            db=db
+        )
+
+        logger.info(f"Optimized RAG query completed: {len(result.sources)} sources, strategy: {result.metadata.get('strategy', 'unknown')}")
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error during optimized notebook RAG query: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/{notebook_id}/context-stats")
+async def get_notebook_context_stats(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    query: str = Query(..., description="Sample query to analyze"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get context usage statistics for notebook RAG queries.
+    Helps understand token usage and optimization opportunities.
+    """
+    try:
+        # Verify notebook exists
+        notebook_exists = await notebook_service.notebook_exists(db=db, notebook_id=notebook_id)
+        if not notebook_exists:
+            raise HTTPException(status_code=404, detail="Notebook not found")
+        
+        # Get context statistics
+        hierarchical_rag_service = get_hierarchical_notebook_rag_service()
+        stats = await hierarchical_rag_service.get_context_stats(notebook_id, query)
+        
+        return {
+            "notebook_id": notebook_id,
+            "query_sample": query[:100] + "..." if len(query) > 100 else query,
+            "context_analysis": stats,
+            "recommendations": {
+                "use_hierarchical": stats.get("optimization_needed", False),
+                "recommended_max_chunks": stats.get("recommended_max_chunks", 10),
+                "current_efficiency": "low" if stats.get("would_exceed_budget", False) else "good"
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting context stats: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @router.post("/{notebook_id}/conversations", response_model=NotebookConversationResponse, status_code=201)
 async def start_notebook_conversation(
@@ -1418,6 +1664,15 @@ async def notebook_chat(
     Raises:
         HTTPException: If notebook not found or chat fails
     """
+    # Intelligently analyze query intent and optimize max_sources
+    original_max_sources = request.max_sources
+    optimized_max_sources = await _optimize_max_sources_for_intent(request.message, request.max_sources, notebook_id, notebook_rag_service)
+    
+    # Update the request if optimization was applied
+    if optimized_max_sources != original_max_sources:
+        request.max_sources = optimized_max_sources
+        logger.info(f"[INTENT_OPTIMIZATION] Intelligent analysis adjusted max_sources from {original_max_sources} to {optimized_max_sources}")
+    
     logger.info(f"📨 Notebook chat request received for {notebook_id}")
     logger.info(f"🔍 Request details: message='{request.message}', conversation_id='{request.conversation_id}', include_context={request.include_context}, max_sources={request.max_sources}")
     
@@ -1453,27 +1708,79 @@ async def notebook_chat(
             # Query relevant documents using RAG service
             rag_response = None
             # DEBUG: Context inclusion check
-            logger.debug(f"[CONTEXT_CHECK_DEBUG] include_context = {request.include_context}")
             if request.include_context:
                 try:
-                    rag_response = await notebook_rag_service.query_notebook(
-                        db=db,
-                        notebook_id=notebook_id,
+                    # Check if progressive loading would be beneficial for large datasets
+                    intent_analysis = await notebook_rag_service._analyze_query_intent(request.message)
+                    total_available = await notebook_rag_service.get_notebook_total_items(notebook_id)
+                    
+                    should_use_progressive = await notebook_rag_service.should_use_progressive_loading(
                         query=request.message,
-                        top_k=request.max_sources,
-                        include_metadata=True
+                        intent_analysis=intent_analysis,
+                        total_available=total_available,
+                        max_sources=request.max_sources
                     )
                     
-                    # DEBUG: RAG Query Execution Results
-                    logger.debug(f"[RAG_QUERY_DEBUG] RAG query executed for: '{request.message}'")
-                    logger.debug(f"[RAG_QUERY_DEBUG] Notebook ID: {notebook_id}, Top K: {request.max_sources}")
-                    if rag_response:
-                        logger.debug(f"[RAG_QUERY_DEBUG] RAG response received with {len(rag_response.sources)} sources")
-                        logger.debug(f"[RAG_QUERY_DEBUG] Collections searched: {rag_response.collections_searched}")
-                        for idx, src in enumerate(rag_response.sources):
-                            logger.debug(f"[RAG_QUERY_DEBUG] Source {idx+1}: type='{src.source_type}', name='{src.document_name}', content_len={len(src.content)}")
+                    if should_use_progressive:
+                        logger.info(f"[REGULAR_CHAT_PROGRESSIVE] Redirecting to progressive loading due to large dataset: "
+                                   f"available={total_available}, requested={request.max_sources}")
+                        
+                        # Stream a message about switching to progressive mode
+                        yield json.dumps({
+                            "status": "switching_to_progressive",
+                            "message": f"Large dataset detected ({total_available} items). Switching to progressive loading for better performance...",
+                            "notebook_id": notebook_id,
+                            "conversation_id": request.conversation_id,
+                            "progressive_loading_recommended": True
+                        }) + "\n"
+                        
+                        # Use progressive streaming instead
+                        async for progress_chunk in stream_progressive_notebook_chat(
+                            notebook_id=notebook_id,
+                            query=request.message,
+                            intent_analysis=intent_analysis,
+                            rag_service=notebook_rag_service
+                        ):
+                            yield progress_chunk
+                        
+                        # End the regular chat stream here since progressive handling is complete
+                        return
+                    
+                    # Continue with regular RAG processing for smaller datasets
+                    logger.info(f"[REGULAR_CHAT] Using standard retrieval: available={total_available}, requested={request.max_sources}")
+                    
+                    # Use standard retrieval path (comprehensive mode removed)
+                    # Check if hierarchical RAG would be beneficial
+                    hierarchical_rag_service = get_hierarchical_notebook_rag_service()
+                    context_stats = await hierarchical_rag_service.get_context_stats(notebook_id, request.message)
+                    
+                    # Use hierarchical service if optimization is needed or for complex queries
+                    if context_stats.get("optimization_needed", False) or request.max_sources > 15:
+                        logger.info(f"Using hierarchical RAG for context optimization (max_sources={request.max_sources})")
+                        rag_response = await hierarchical_rag_service.query_with_context_optimization(
+                            notebook_id=notebook_id,
+                            query=request.message,
+                            top_k=request.max_sources,
+                            include_metadata=True,
+                            db=db
+                        )
+                        
+                        # Log optimization results
+                        if rag_response.metadata:
+                            token_stats = rag_response.metadata.get('token_budget', {})
+                            logger.info(f"Hierarchical RAG used {token_stats.get('retrieval_used', 0)} tokens "
+                                      f"({token_stats.get('utilization_percent', 0)}% of budget)")
                     else:
-                        logger.debug(f"[RAG_QUERY_DEBUG] No RAG response received")
+                        # Use standard RAG service
+                        rag_response = await notebook_rag_service.query_notebook(
+                            db=db,
+                            notebook_id=notebook_id,
+                            query=request.message,
+                            top_k=request.max_sources,
+                            include_metadata=True
+                        )
+                    
+                    # RAG Query Execution completed
                     
                     yield json.dumps({
                         "status": "context_found",
@@ -1491,9 +1798,6 @@ async def notebook_chat(
                         "notebook_id": notebook_id,
                         "conversation_id": request.conversation_id
                     }) + "\n"
-            else:
-                # DEBUG: Context not included case
-                logger.debug(f"[CONTEXT_CHECK_DEBUG] Context not included - proceeding without RAG search")
             
             # Get notebook LLM configuration
             llm_config_full = get_notebook_llm_full_config()
@@ -1537,13 +1841,6 @@ async def notebook_chat(
             context_info = ""
             
             if rag_response and rag_response.sources:
-                # DEBUG: RAG Response Analysis
-                logger.debug(f"[RAG_DEBUG] RAG response has {len(rag_response.sources)} sources")
-                for idx, src in enumerate(rag_response.sources):
-                    logger.debug(f"[RAG_DEBUG] Source {idx+1}: name='{src.document_name}', type='{src.source_type}', content_len={len(src.content)}")
-                    if src.source_type == "memory":
-                        logger.debug(f"[RAG_DEBUG] Memory source content preview: '{src.content[:100]}...'")
-                
                 # Count different source types for better prompt customization
                 document_count = sum(1 for src in rag_response.sources if src.source_type != "memory")
                 memory_count = sum(1 for src in rag_response.sources if src.source_type == "memory")
@@ -1566,8 +1863,6 @@ async def notebook_chat(
                     source_type_prefix = "Personal Memory" if source.source_type == "memory" else "Document"
                     
                     # DEBUG: Context Building Process
-                    logger.debug(f"[CONTEXT_DEBUG] Processing source {i}: {source_type_prefix}: {source_name}")
-                    logger.debug(f"[CONTEXT_DEBUG] Source content preview: {source.content[:100]}...")
                     
                     context_info += f"\n[Source {i} - {source_type_prefix}: {source_name}]:\n"
                     context_info += source.content[:1000] + ("..." if len(source.content) > 1000 else "")
@@ -1575,23 +1870,46 @@ async def notebook_chat(
                 
                 context_info += "--- END CONTEXT ---\n\n"
                 
+                # Enhanced prompt with structured project data for enumeration queries
+                if hasattr(rag_response, 'extracted_projects') and rag_response.extracted_projects:
+                    # Detect if this is an enumeration/listing query that could benefit from structured data
+                    query_lower = request.message.lower()
+                    enumeration_indicators = ['list all', 'show all', 'enumerate', 'table format', 'in table', 'as table', 'table form']
+                    project_indicators = ['project', 'projects', 'work', 'experience']
+                    
+                    is_enumeration_query = (
+                        any(indicator in query_lower for indicator in enumeration_indicators) and 
+                        any(indicator in query_lower for indicator in project_indicators)
+                    )
+                    
+                    if is_enumeration_query:
+                        project_count = len(rag_response.extracted_projects)
+                        logger.info(f"[STRUCTURED_RESPONSE] Injecting {project_count} structured projects into prompt for enumeration query")
+                        
+                        # Add structured project data to context
+                        context_info += "--- STRUCTURED PROJECT DATA ---\n"
+                        context_info += f"IMPORTANT: Here are ALL {project_count} projects extracted from the notebook content. "
+                        context_info += "You MUST include every single project listed below, even if some fields show 'N/A':\n\n"
+                        
+                        for i, project in enumerate(rag_response.extracted_projects, 1):
+                            context_info += f"Project {i}:\n"
+                            context_info += f"  Name: {project.name}\n"
+                            context_info += f"  Company: {project.company}\n"
+                            context_info += f"  Year: {project.year}\n"
+                            context_info += f"  Description: {project.description[:200]}{'...' if len(project.description) > 200 else ''}\n\n"
+                        
+                        context_info += "--- END STRUCTURED DATA ---\n\n"
+                        
+                        # Add explicit formatting instructions to system prompt
+                        if any(table_word in query_lower for table_word in ['table', 'format']):
+                            system_prompt += f" CRITICAL INSTRUCTION: The user has requested table format. You must create a table that includes ALL {project_count} projects listed above. Do not exclude any projects due to missing information - use 'N/A' for missing fields. Ensure your table shows exactly {project_count} rows of projects."
+                        else:
+                            system_prompt += f" CRITICAL INSTRUCTION: You must mention ALL {project_count} projects listed above. Do not exclude any projects due to missing information. Include every project even if some details are marked as 'N/A'."
+                
                 # DEBUG: Final Context Analysis
-                logger.debug(f"[CONTEXT_DEBUG] Final context length: {len(context_info)} chars")
-                logger.debug(f"[CONTEXT_DEBUG] Context preview: {context_info[:200]}...")
                 
                 # DEBUG: Check if memory content is in final context
-                if "Memory" in context_info:
-                    logger.debug(f"[CONTEXT_DEBUG] Memory content found in final context")
-                else:
-                    logger.debug(f"[CONTEXT_DEBUG] WARNING: No memory content found in final context")
             else:
-                # DEBUG: No RAG Response Case
-                logger.debug(f"[RAG_DEBUG] No RAG response or no sources found")
-                if rag_response:
-                    logger.debug(f"[RAG_DEBUG] RAG response exists but no sources: {len(rag_response.sources) if rag_response.sources else 0}")
-                else:
-                    logger.debug(f"[RAG_DEBUG] No RAG response at all")
-                
                 system_prompt += "No specific context was found in this notebook for this question. Provide a helpful general response and suggest ways the user might find relevant information."
             
             # Build the full prompt
@@ -1638,6 +1956,20 @@ async def notebook_chat(
                 "status": "complete"
             }
             
+            # Include structured project data in response if available
+            if rag_response and hasattr(rag_response, 'extracted_projects') and rag_response.extracted_projects:
+                final_response["extracted_projects"] = [
+                    {
+                        "name": project.name,
+                        "company": project.company,
+                        "year": project.year,
+                        "description": project.description,
+                        "confidence_score": project.confidence_score
+                    }
+                    for project in rag_response.extracted_projects
+                ]
+                final_response["extracted_projects_count"] = len(rag_response.extracted_projects)
+            
             # DEBUG: Final Response Analysis
             logger.debug(f"[RESPONSE_DEBUG] Generated response length: {len(collected_response)} chars")
             logger.debug(f"[RESPONSE_DEBUG] Response preview: {collected_response[:200]}...")
@@ -1648,6 +1980,27 @@ async def notebook_chat(
                 logger.debug(f"[RESPONSE_DEBUG] Response contains employment-related content")
             else:
                 logger.debug(f"[RESPONSE_DEBUG] Response does NOT contain employment-related content")
+            
+            # DEBUG: Validate structured project data usage
+            if rag_response and hasattr(rag_response, 'extracted_projects') and rag_response.extracted_projects:
+                extracted_count = len(rag_response.extracted_projects)
+                query_lower = request.message.lower()
+                
+                # Count project mentions in response for validation
+                project_mentions = collected_response.lower().count('project')
+                table_format_requested = any(table_word in query_lower for table_word in ['table', 'format'])
+                
+                logger.info(f"[PROJECT_VALIDATION] Query: '{request.message[:50]}...'")
+                logger.info(f"[PROJECT_VALIDATION] Extracted projects: {extracted_count}")
+                logger.info(f"[PROJECT_VALIDATION] Project mentions in response: {project_mentions}")
+                logger.info(f"[PROJECT_VALIDATION] Table format requested: {table_format_requested}")
+                
+                # Warn if significantly fewer projects mentioned than extracted
+                if table_format_requested and project_mentions < extracted_count * 0.8:
+                    logger.warning(f"[PROJECT_VALIDATION] Potential project loss: {extracted_count} extracted but only {project_mentions} mentions in response")
+                    
+            else:
+                logger.debug(f"[PROJECT_VALIDATION] No extracted projects available for validation")
             
             yield json.dumps(final_response) + "\n"
             
@@ -1663,6 +2016,288 @@ async def notebook_chat(
             }) + "\n"
     
     return StreamingResponse(stream_chat_response(), media_type="application/json")
+
+
+async def stream_progressive_notebook_chat(
+    notebook_id: str,
+    query: str,
+    intent_analysis: dict,
+    rag_service: NotebookRAGService
+):
+    """
+    Handle progressive streaming for large result sets.
+    
+    Streams initial results quickly, then continues with background loading
+    and provides progress updates to frontend.
+    
+    Args:
+        notebook_id: Notebook ID
+        query: User query string
+        intent_analysis: Query intent analysis results
+        rag_service: RAG service instance
+        
+    Yields:
+        JSON chunks with progressive results and progress updates
+    """
+    try:
+        logger.info(f"[PROGRESSIVE_CHAT] Starting progressive streaming for notebook {notebook_id}")
+        logger.info(f"[PROGRESSIVE_CHAT] Query: '{query[:100]}...', comprehensive: {intent_analysis.get('wants_comprehensive', False)}")
+        
+        # Get total available content for progress tracking
+        total_available = await rag_service.get_notebook_total_items(notebook_id)
+        max_sources = intent_analysis.get("estimated_sources_needed", 500)  # From intent analysis
+        
+        # Determine if progressive loading is beneficial
+        should_use_progressive = await rag_service.should_use_progressive_loading(
+            query=query,
+            intent_analysis=intent_analysis,
+            total_available=total_available,
+            max_sources=max_sources
+        )
+        
+        if not should_use_progressive:
+            logger.info(f"[PROGRESSIVE_CHAT] Progressive loading not beneficial, using standard retrieval")
+            # Fall back to standard adaptive retrieval
+            from app.core.db import SessionLocal
+            db = SessionLocal()
+            try:
+                # Use standard adaptive retrieval
+                response = await rag_service.query_notebook_adaptive(
+                    db=db,
+                    notebook_id=notebook_id,
+                    query=query,
+                    max_sources=max_sources,
+                    include_metadata=True
+                )
+                
+                # Send as single complete response
+                yield json.dumps({
+                    "stage": "complete",
+                    "sources": [
+                        {
+                            "document_id": source.document_id,
+                            "document_name": source.document_name,
+                            "content": source.content[:1000] + ("..." if len(source.content) > 1000 else ""),
+                            "score": source.score,
+                            "collection": source.collection,
+                            "source_type": source.source_type
+                        }
+                        for source in response.sources
+                    ],
+                    "total_sources": response.total_sources,
+                    "progress_percent": 100.0,
+                    "more_available": False,
+                    "progressive_loading_used": False,
+                    "notebook_id": notebook_id
+                }) + "\n"
+            finally:
+                db.close()
+            return
+        
+        # Use multi-stage retrieval for large datasets
+        stage_count = 0
+        total_retrieved = 0
+        all_sources = []
+        
+        logger.info(f"[PROGRESSIVE_CHAT] Using progressive loading: max_sources={max_sources}, available={total_available}")
+        
+        # Stream each stage of retrieval
+        async for stage_response in rag_service.multi_stage_retrieval(
+            notebook_id=notebook_id,
+            query=query,
+            intent_analysis=intent_analysis,
+            total_available=total_available,
+            max_sources=max_sources
+        ):
+            stage_count += 1
+            stage_sources = stage_response.sources
+            all_sources.extend(stage_sources)
+            total_retrieved += len(stage_sources)
+            
+            # Get stage metadata
+            stage_metadata = stage_response.metadata.get("multi_stage", {})
+            is_initial_stage = stage_metadata.get("stage") == "initial"
+            progress_percent = stage_metadata.get("progress_percent", 0)
+            more_available = stage_metadata.get("more_available", False)
+            
+            logger.info(f"[PROGRESSIVE_CHAT] Stage {stage_count}: {len(stage_sources)} sources, "
+                       f"total: {total_retrieved}, progress: {progress_percent}%")
+            
+            # Stream stage results
+            stage_data = {
+                "stage": "initial" if is_initial_stage else "progressive",
+                "stage_number": stage_count,
+                "sources": [
+                    {
+                        "document_id": source.document_id,
+                        "document_name": source.document_name,
+                        "content": source.content[:1000] + ("..." if len(source.content) > 1000 else ""),
+                        "score": source.score,
+                        "collection": source.collection,
+                        "source_type": source.source_type
+                    }
+                    for source in stage_sources
+                ],
+                "batch_size": len(stage_sources),
+                "total_retrieved_so_far": total_retrieved,
+                "progress_percent": progress_percent,
+                "more_available": more_available,
+                "progressive_loading_used": True,
+                "notebook_id": notebook_id
+            }
+            
+            # Add timing information for initial stage
+            if is_initial_stage:
+                stage_data["initial_response_time"] = "2-3 seconds"
+                stage_data["message"] = "Quick initial results - more loading in background"
+            
+            yield json.dumps(stage_data) + "\n"
+            
+            # Add small delay between stages for better UX
+            if not is_initial_stage:
+                import asyncio
+                await asyncio.sleep(0.1)
+        
+        # Send completion signal
+        yield json.dumps({
+            "stage": "complete",
+            "total_stages": stage_count,
+            "final_source_count": total_retrieved,
+            "progress_percent": 100.0,
+            "more_available": False,
+            "progressive_loading_used": True,
+            "notebook_id": notebook_id,
+            "message": f"Progressive loading complete: retrieved {total_retrieved} sources in {stage_count} stages"
+        }) + "\n"
+        
+        logger.info(f"[PROGRESSIVE_CHAT] Completed progressive streaming: {total_retrieved} sources in {stage_count} stages")
+        
+    except Exception as e:
+        logger.error(f"[PROGRESSIVE_CHAT] Error in progressive streaming: {str(e)}")
+        yield json.dumps({
+            "stage": "error",
+            "error": str(e),
+            "progressive_loading_used": True,
+            "notebook_id": notebook_id
+        }) + "\n"
+
+
+@router.post("/{notebook_id}/chat-progressive")
+async def notebook_chat_progressive(
+    request: NotebookChatRequest,
+    notebook_id: str = Path(..., description="Notebook ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Progressive notebook chat with multi-stage retrieval for large datasets.
+    
+    This endpoint provides:
+    - Quick initial results (50-100 items) within 2-3 seconds
+    - Progressive loading of additional results in background
+    - Real-time progress updates
+    - Optimized performance for very large notebooks (500+ items)
+    
+    Args:
+        request: Chat request with message and configuration
+        notebook_id: Target notebook ID
+        db: Database session
+        
+    Returns:
+        Streaming response with progressive results
+    """
+    # Initialize services
+    notebook_service = NotebookService(db)
+    notebook_rag_service = NotebookRAGService()
+    
+    # Apply intelligent intent-based optimization
+    original_max_sources = request.max_sources
+    optimized_max_sources = await _optimize_max_sources_for_intent(
+        request.message, request.max_sources, notebook_id, notebook_rag_service
+    )
+    
+    if optimized_max_sources != original_max_sources:
+        request.max_sources = optimized_max_sources
+        logger.info(f"[PROGRESSIVE_INTENT] Optimized max_sources from {original_max_sources} to {optimized_max_sources}")
+    
+    async def progressive_chat_stream():
+        try:
+            logger.info(f"[PROGRESSIVE_ENDPOINT] Starting progressive chat for {notebook_id}: {request.message[:50]}...")
+            
+            if not request or not request.message:
+                yield json.dumps({
+                    "error": "Chat request with message is required",
+                    "notebook_id": notebook_id
+                }) + "\n"
+                return
+            
+            # Verify notebook exists
+            notebook_exists = await notebook_service.notebook_exists(db=db, notebook_id=notebook_id)
+            if not notebook_exists:
+                yield json.dumps({
+                    "error": "Notebook not found",
+                    "notebook_id": notebook_id
+                }) + "\n"
+                return
+            
+            # Analyze query intent for progressive loading decision
+            intent_analysis = await notebook_rag_service._analyze_query_intent(request.message)
+            intent_analysis["estimated_sources_needed"] = request.max_sources
+            
+            logger.info(f"[PROGRESSIVE_ENDPOINT] Intent analysis: comprehensive={intent_analysis.get('wants_comprehensive', False)}, "
+                       f"quantity={intent_analysis.get('quantity_intent', 'limited')}")
+            
+            # Send initial status
+            yield json.dumps({
+                "status": "analyzing",
+                "message": "Analyzing query and determining retrieval strategy...",
+                "notebook_id": notebook_id,
+                "conversation_id": request.conversation_id,
+                "intent_analysis": {
+                    "wants_comprehensive": intent_analysis.get("wants_comprehensive", False),
+                    "quantity_intent": intent_analysis.get("quantity_intent", "limited"),
+                    "confidence": intent_analysis.get("confidence", 0.5)
+                }
+            }) + "\n"
+            
+            if request.include_context:
+                # Stream progressive retrieval results
+                yield json.dumps({
+                    "status": "retrieving",
+                    "message": "Starting progressive document retrieval...",
+                    "notebook_id": notebook_id,
+                    "conversation_id": request.conversation_id
+                }) + "\n"
+                
+                # Use progressive streaming function
+                async for progress_chunk in stream_progressive_notebook_chat(
+                    notebook_id=notebook_id,
+                    query=request.message,
+                    intent_analysis=intent_analysis,
+                    rag_service=notebook_rag_service
+                ):
+                    yield progress_chunk
+            
+            # After retrieval is complete, send final status
+            yield json.dumps({
+                "status": "complete",
+                "message": "Progressive retrieval complete",
+                "notebook_id": notebook_id,
+                "conversation_id": request.conversation_id
+            }) + "\n"
+            
+            logger.info(f"[PROGRESSIVE_ENDPOINT] Successfully completed progressive chat for {notebook_id}")
+            
+        except Exception as e:
+            logger.error(f"[PROGRESSIVE_ENDPOINT] Progressive chat error for {notebook_id}: {str(e)}")
+            yield json.dumps({
+                "error": f"Progressive chat error: {str(e)}",
+                "notebook_id": notebook_id,
+                "conversation_id": request.conversation_id if request else None,
+                "status": "error"
+            }) + "\n"
+    
+    return StreamingResponse(progressive_chat_stream(), media_type="application/json")
+
 
 # Memory Management Endpoints
 
