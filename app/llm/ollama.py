@@ -8,6 +8,40 @@ from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_conf
 
 logger = logging.getLogger(__name__)
 
+# Shared HTTP client pool for connection reuse across all OllamaLLM instances
+_shared_http_client = None
+_client_lock = None
+
+async def _get_shared_http_client():
+    """Get or create shared HTTP client for connection pooling"""
+    global _shared_http_client, _client_lock
+    import asyncio
+    
+    if _client_lock is None:
+        _client_lock = asyncio.Lock()
+    
+    async with _client_lock:
+        if _shared_http_client is None:
+            # Create shared client with connection pooling
+            limits = httpx.Limits(max_keepalive_connections=20, max_connections=100)
+            _shared_http_client = httpx.AsyncClient(limits=limits)
+            logger.debug("[OllamaLLM] Created shared HTTP client pool")
+        return _shared_http_client
+
+async def _cleanup_shared_http_client():
+    """Clean up shared HTTP client - should be called on app shutdown"""
+    global _shared_http_client, _client_lock
+    import asyncio
+    
+    if _client_lock is None:
+        _client_lock = asyncio.Lock()
+    
+    async with _client_lock:
+        if _shared_http_client:
+            await _shared_http_client.aclose()
+            _shared_http_client = None
+            logger.debug("[OllamaLLM] Cleaned up shared HTTP client pool")
+
 class OllamaLLM(BaseLLM):
     def __init__(self, config: LLMConfig, base_url: str = None):
         super().__init__(config)
@@ -129,26 +163,29 @@ class OllamaLLM(BaseLLM):
         }
         
         
-        # Use centralized timeout configuration
+        # Use centralized timeout configuration, allow override via kwargs
         from app.core.timeout_settings_cache import get_timeout_value
-        http_timeout = get_timeout_value("api_network", "http_request_timeout", 30)
+        http_timeout = kwargs.get("timeout", get_timeout_value("api_network", "http_request_timeout", 300))
         
+        # Use shared HTTP client for connection pooling
+        client = await _get_shared_http_client()
+        # Update client timeout for this request
+        client.timeout = httpx.Timeout(http_timeout)
         
-        async with httpx.AsyncClient(timeout=http_timeout) as client:
-            response = await client.post(f"{self.base_url}/api/chat", json=payload)
-            response.raise_for_status()
-            
-            data = response.json()
-            # Chat endpoint returns message object
-            message = data.get("message", {})
-            return LLMResponse(
-                text=message.get("content", ""),
-                metadata={
-                    "model": self.model_name,
-                    "done": data.get("done", True),
-                    "role": message.get("role", "assistant")
-                }
-            )
+        response = await client.post(f"{self.base_url}/api/chat", json=payload)
+        response.raise_for_status()
+        
+        data = response.json()
+        # Chat endpoint returns message object
+        message = data.get("message", {})
+        return LLMResponse(
+            text=message.get("content", ""),
+            metadata={
+                "model": self.model_name,
+                "done": data.get("done", True),
+                "role": message.get("role", "assistant")
+            }
+        )
     
     async def chat_stream(self, prompt: Union[str, List[Dict[str, str]]], **kwargs) -> AsyncGenerator[LLMResponse, None]:
         """Streaming chat completion using Ollama's /api/chat endpoint."""
@@ -179,9 +216,13 @@ class OllamaLLM(BaseLLM):
         
         try:
             from app.core.timeout_settings_cache import get_timeout_value
-            timeout = get_timeout_value("llm_ai", "llm_streaming_timeout", 120)
-            async with httpx.AsyncClient(timeout=float(timeout)) as client:
-                async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
+            timeout = kwargs.get("timeout", get_timeout_value("llm_ai", "llm_streaming_timeout", 300))
+            
+            # Use shared HTTP client for connection pooling
+            client = await _get_shared_http_client()
+            client.timeout = httpx.Timeout(float(timeout))
+            
+            async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
                     if response.status_code != 200:
                         error_text = await response.aread()
                         raise Exception(f"Ollama API error {response.status_code}: {error_text.decode()}")

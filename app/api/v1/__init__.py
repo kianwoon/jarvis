@@ -24,6 +24,7 @@ from app.api.v1.endpoints import idc
 from app.api.v1.endpoints import radiating
 from app.api.v1.endpoints import meta_task
 from app.api.v1.endpoints import notebooks
+# from app.api.v1.endpoints import duplicate_monitoring  # Commented out to keep system simple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -235,3 +236,9 @@ api_router.include_router(
     prefix="/notebooks",
     tags=["notebooks"]
 )
+
+# api_router.include_router(
+#     duplicate_monitoring.router,
+#     prefix="/monitoring",
+#     tags=["monitoring", "duplicates", "performance"]
+# )  # Commented out to keep system simple

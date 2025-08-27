@@ -105,6 +105,16 @@ DEFAULT_TIMEOUT_SETTINGS = {
         "parallel_task_timeout": 45              # Timeout for individual parallel tasks
     },
     
+    # Notebook processing timeouts
+    "notebook_processing": {
+        "intelligent_plan_timeout": 180,      # Timeout for AI planning phase (3x base)
+        "extraction_batch_timeout": 90,       # Timeout for individual extraction batches
+        "notebook_rag_timeout": 120,          # Timeout for notebook RAG operations
+        "plan_generation_timeout": 150,       # Timeout for plan generation
+        "verification_timeout": 60,           # Timeout for verification steps
+        "notebook_upload_timeout": 300        # Timeout for notebook upload processing
+    },
+    
     # Session & cache timeouts (in seconds)
     "session_cache": {
         "redis_ttl_seconds": 3600,
@@ -472,3 +482,32 @@ def get_radiating_max_retries() -> int:
 def get_radiating_retry_delay() -> int:
     """Get base retry delay for radiating coverage"""
     return get_radiating_timeout("retry_base_delay", 2)
+
+# Notebook processing convenience functions
+def get_notebook_timeout(setting_key: str, default: int = 60) -> int:
+    """Get notebook processing specific timeout"""
+    return get_timeout_value("notebook_processing", setting_key, default)
+
+def get_intelligent_plan_timeout() -> int:
+    """Get intelligent plan execution timeout"""
+    return get_notebook_timeout("intelligent_plan_timeout", 180)
+
+def get_extraction_batch_timeout() -> int:
+    """Get extraction batch timeout"""
+    return get_notebook_timeout("extraction_batch_timeout", 90)
+
+def get_notebook_rag_timeout() -> int:
+    """Get notebook RAG timeout"""
+    return get_notebook_timeout("notebook_rag_timeout", 120)
+
+def get_plan_generation_timeout() -> int:
+    """Get plan generation timeout"""
+    return get_notebook_timeout("plan_generation_timeout", 150)
+
+def get_verification_timeout() -> int:
+    """Get verification timeout"""
+    return get_notebook_timeout("verification_timeout", 60)
+
+def get_notebook_upload_timeout() -> int:
+    """Get notebook upload timeout"""
+    return get_notebook_timeout("notebook_upload_timeout", 300)

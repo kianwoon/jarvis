@@ -35,6 +35,29 @@ class DocumentSummarizationService:
             length_function=len,
             separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""]
         )
+        # LLM instance cache to prevent wasteful creation
+        self._llm_cache = {}
+        self._cache_lock = asyncio.Lock()
+    
+    async def _get_cached_llm(self, llm_config_obj: LLMConfig) -> OllamaLLM:
+        """Get cached LLM instance to avoid creating multiple instances."""
+        # Create hash from config object attributes
+        config_dict = {
+            'model_name': llm_config_obj.model_name,
+            'temperature': llm_config_obj.temperature,
+            'top_p': llm_config_obj.top_p,
+            'max_tokens': llm_config_obj.max_tokens
+        }
+        config_hash = hashlib.md5(str(config_dict).encode()).hexdigest()
+        
+        async with self._cache_lock:
+            if config_hash not in self._llm_cache:
+                logger.debug(f"[SUMMARIZATION_LLM_CACHE] Creating cached instance {config_hash[:8]}")
+                self._llm_cache[config_hash] = OllamaLLM(llm_config_obj)
+            else:
+                logger.debug(f"[SUMMARIZATION_LLM_CACHE] Reusing cached instance {config_hash[:8]}")
+            
+            return self._llm_cache[config_hash]
         
     async def create_document_summary(
         self,
@@ -124,7 +147,8 @@ class DocumentSummarizationService:
                 top_p=0.9,
                 max_tokens=max_length
             )
-            llm = OllamaLLM(llm_config_obj)
+            # Use cached LLM instance to prevent wasteful instance creation
+            llm = await self._get_cached_llm(llm_config_obj)
             
             prompt = f"""Create a concise summary of the following text. Focus on the main topics, key points, and important information. Keep it under {max_length} words.
 
@@ -133,9 +157,9 @@ Text to summarize:
 
 Summary:"""
             
-            response = await llm.agenerate([prompt])
-            if response and hasattr(response, 'generations') and response.generations:
-                summary = response.generations[0][0].text.strip()
+            response = await llm.generate(prompt)
+            if response and hasattr(response, 'text'):
+                summary = response.text.strip()
                 return summary if summary else content[:max_length * 4]
             
             return content[:max_length * 4]
@@ -173,7 +197,8 @@ Summary:"""
                     top_p=0.9,
                     max_tokens=100  # Short summaries for each chunk
                 )
-                llm = OllamaLLM(llm_config_obj)
+                # Use cached LLM instance to prevent wasteful instance creation
+            llm = await self._get_cached_llm(llm_config_obj)
                 
                 # Summarize up to 5 chunks to avoid overwhelming context
                 for i, chunk in enumerate(chunks[:5]):
@@ -184,9 +209,9 @@ Summary:"""
 Summary:"""
                     
                     try:
-                        response = await llm.agenerate([prompt])
-                        if response and hasattr(response, 'generations') and response.generations:
-                            summary = response.generations[0][0].text.strip()
+                        response = await llm.generate(prompt)
+                        if response and hasattr(response, 'text'):
+                            summary = response.text.strip()
                             if summary:
                                 chunk_summaries.append(summary)
                         else:
@@ -210,9 +235,9 @@ Summary:"""
 
 Final Summary:"""
                         
-                        response = await llm.agenerate([final_prompt])
-                        if response and hasattr(response, 'generations') and response.generations:
-                            final_summary = response.generations[0][0].text.strip()
+                        response = await llm.generate(final_prompt)
+                        if response and hasattr(response, 'text'):
+                            final_summary = response.text.strip()
                             if final_summary:
                                 return final_summary
                     

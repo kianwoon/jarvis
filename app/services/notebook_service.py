@@ -1264,6 +1264,93 @@ class NotebookService:
             self.logger.error(f"Error deleting memory: {str(e)}")
             raise
     
+    def _apply_entity_aware_chunking(self, text_splitter, content: str) -> List[str]:
+        """
+        Apply entity-aware chunking to preserve project information integrity.
+        
+        This method enhances the standard text splitting by identifying potential
+        entity boundaries (projects, companies, experiences) and adjusting chunk
+        boundaries to preserve complete information.
+        
+        Args:
+            text_splitter: Pre-configured RecursiveCharacterTextSplitter
+            content: Text content to chunk
+            
+        Returns:
+            List of chunks with preserved entity integrity
+        """
+        import re
+        
+        # Keywords that indicate project/entity content
+        entity_keywords = [
+            'project', 'developed', 'implemented', 'built', 'led', 'managed',
+            'created', 'designed', 'architected', 'maintained', 'deployed',
+            'experience', 'role', 'position', 'company', 'organization'
+        ]
+        
+        # Get initial chunks from standard splitter
+        initial_chunks = text_splitter.split_text(content)
+        
+        if len(initial_chunks) <= 1:
+            return initial_chunks
+            
+        enhanced_chunks = []
+        
+        for i, chunk in enumerate(initial_chunks):
+            # Check if this chunk seems to end in the middle of an entity
+            if i < len(initial_chunks) - 1:  # Not the last chunk
+                next_chunk = initial_chunks[i + 1]
+                
+                # Look for entity keywords near the end of current chunk
+                chunk_end = chunk[-200:].lower() if len(chunk) > 200 else chunk.lower()
+                next_chunk_start = next_chunk[:200].lower() if len(next_chunk) > 200 else next_chunk.lower()
+                
+                # Check if we might have split an entity description
+                has_entity_at_end = any(keyword in chunk_end for keyword in entity_keywords)
+                has_continuation = any(keyword in next_chunk_start for keyword in entity_keywords)
+                
+                # Look for year patterns that might indicate date ranges
+                year_pattern = r'(19|20)\d{2}'
+                has_year_at_end = bool(re.search(year_pattern, chunk_end))
+                next_starts_with_dash = next_chunk_start.strip().startswith('-')
+                
+                # If we detect a likely entity split, try to merge intelligently
+                if (has_entity_at_end and has_continuation) or (has_year_at_end and next_starts_with_dash):
+                    # Find a better split point by looking for sentence boundaries
+                    combined = chunk + " " + next_chunk
+                    
+                    # Try to find a natural break point in the combined text
+                    sentences = re.split(r'[.!?]\s+', combined)
+                    
+                    if len(sentences) > 1:
+                        # Find the midpoint and choose the closest sentence boundary
+                        target_length = len(chunk)
+                        current_length = 0
+                        best_split = len(sentences) // 2
+                        
+                        for idx, sentence in enumerate(sentences[:-1]):  # Exclude last incomplete sentence
+                            current_length += len(sentence) + 2  # +2 for punctuation and space
+                            if current_length >= target_length * 0.8:  # Allow some flexibility
+                                best_split = idx + 1
+                                break
+                        
+                        # Rebuild chunks with better split
+                        if best_split > 0 and best_split < len(sentences):
+                            chunk1 = '. '.join(sentences[:best_split]) + '.'
+                            chunk2 = '. '.join(sentences[best_split:])
+                            
+                            # Ensure chunks don't exceed size limits
+                            if len(chunk1) <= text_splitter._chunk_size * 1.2:  # Allow 20% flexibility
+                                enhanced_chunks.append(chunk1)
+                                # Update the next chunk for next iteration
+                                initial_chunks[i + 1] = chunk2
+                                continue
+                
+            # Use original chunk if no intelligent splitting was applied
+            enhanced_chunks.append(chunk)
+        
+        return enhanced_chunks
+    
     async def _process_memory_content(
         self,
         db: Session,
@@ -1290,6 +1377,7 @@ class NotebookService:
             from app.core.embedding_settings_cache import get_embedding_settings
             from app.core.vector_db_settings_cache import get_vector_db_settings
             from app.core.collection_registry_cache import get_collection_config
+            from app.core.timeout_settings_cache import get_http_timeout
             from pymilvus import connections, Collection, utility
             import requests
             import hashlib
@@ -1322,14 +1410,17 @@ class NotebookService:
             if not collection_config:
                 raise ValueError(f"Collection '{target_collection}' not found. Please initialize it first.")
             
-            # Split content into chunks
+            # GENERAL PURPOSE: Intelligent chunking based on content structure
+            # Use larger chunks to preserve entity integrity (projects, companies, etc.)
             text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200,
-                length_function=len
+                chunk_size=3000,  # Increased to preserve complete project descriptions
+                chunk_overlap=600,  # Increased overlap to ensure no entity fragmentation
+                length_function=len,
+                separators=["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""]  # Enhanced hierarchy prioritizing sentence boundaries
             )
             
-            chunks = text_splitter.split_text(content)
+            # Apply entity-aware chunking to preserve project information integrity
+            chunks = self._apply_entity_aware_chunking(text_splitter, content)
             
             # Generate embeddings
             endpoint = embedding_settings.get('embedding_endpoint')
@@ -1339,7 +1430,7 @@ class NotebookService:
             embeddings = []
             for chunk in chunks:
                 payload = {"texts": [chunk.lower().strip()]}
-                response = requests.post(endpoint, json=payload, timeout=30)
+                response = requests.post(endpoint, json=payload, timeout=get_http_timeout())
                 response.raise_for_status()
                 embedding_data = response.json()["embeddings"][0]
                 embeddings.append(embedding_data)

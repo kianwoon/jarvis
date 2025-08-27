@@ -102,7 +102,8 @@
       "Bash(PGPASSWORD=postgres psql -h localhost -U postgres -d llm_platform -c \"\\d settings\")",
       "Bash(psql -c 'SELECT *;')",
       "Bash(PGPASSWORD=postgres psql:*)",
-      "Read(//Users/kianwoonwong/.cache/huggingface/hub/models--Qwen--Qwen3-Reranker-0.6B/**)"
+      "Read(//Users/kianwoonwong/.cache/huggingface/hub/models--Qwen--Qwen3-Reranker-0.6B/**)",
+      "Bash(sed:*)"
     ],
     "deny": [
       "Bash(chown:*)",
@@ -179,6 +180,14 @@
           {
             "type": "command",
             "command": "say 'Task completed' && osascript -e 'display notification \"Task completed\" with title \"Claude Code\" sound name \"Submarine\"'"
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/kianwoonwong/claude_cleanup.py"
+          },
+          {
+            "type": "command",
+            "command": "echo 'Reminder: Read CLAUDE.local.md if present' && if [ -f CLAUDE.local.md ]; then echo 'CLAUDE.local.md found in current directory'; fi"
           }
         ]
       }
@@ -221,6 +230,10 @@
           {
             "type": "command",
             "command": "echo 'Claude Code ready' && say 'Claude ready'"
+          },
+          {
+            "type": "command",
+            "command": "echo 'Reminder: Read CLAUDE.local.md if present' && if [ -f CLAUDE.local.md ]; then echo 'CLAUDE.local.md found in current directory'; fi"
           }
         ]
       }

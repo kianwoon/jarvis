@@ -227,8 +227,10 @@ class ConversationContextManager:
                     ts = datetime.fromisoformat(msg['timestamp'])
                     time_ago = self._format_time_ago(ts)
                     line = f"{line} ({time_ago})"
-                except:
-                    pass
+                except (ValueError, TypeError, AttributeError) as e:
+                    logger.debug(f"Failed to format timestamp for line: {e}")
+                except Exception as e:
+                    logger.warning(f"Unexpected error formatting timestamp: {type(e).__name__}: {e}")
             
             formatted_lines.append(line)
         
@@ -326,8 +328,14 @@ def get_smart_conversation_history(
                 history_json = redis_client.lrange(redis_key, 0, -1)
                 if history_json:
                     conversation_history = [json.loads(msg) for msg in history_json]
-        except:
-            # Fallback to memory cache
+        except ConnectionError as e:
+            logger.warning(f"Redis connection failed for conversation {conversation_id}: {e}")
+            conversation_history = _conversation_cache.get(conversation_id, [])
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode conversation history from Redis for {conversation_id}: {e}")
+            conversation_history = _conversation_cache.get(conversation_id, [])
+        except Exception as e:
+            logger.error(f"Unexpected error loading conversation history for {conversation_id}: {type(e).__name__}: {e}")
             conversation_history = _conversation_cache.get(conversation_id, [])
     
     # Check if we should include history at all

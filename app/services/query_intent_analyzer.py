@@ -16,6 +16,9 @@ from datetime import datetime, timedelta
 import httpx
 
 from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
+# from app.services.request_execution_state_tracker import (
+#     check_operation_completed, mark_operation_completed, get_operation_result
+# )  # Removed - causing Redis async/sync errors
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +163,7 @@ class QueryIntentAnalyzer:
             query: The user's query string
             llm_service: Legacy parameter for compatibility (ignored)
             llm_config: Optional LLM configuration to override default
+            request_id: Optional request ID for execution state tracking
             
         Returns:
             dict: {
@@ -170,15 +174,18 @@ class QueryIntentAnalyzer:
                 'user_type': 'researcher|casual|specific',
                 'urgency': 'high|medium|low',
                 'completeness_preference': 'thorough|balanced|quick',
-                'enumeration_mode': bool,
-                'enumeration_target': str|None
+                'analysis_mode': bool,
+                'analysis_target': str|None
             }
         """
+        # Removed execution state tracking to fix Redis async/sync errors
+        
         cache_key = self._get_cache_key(query)
         
         # Check cache first
         cached_result = self._get_cached_result(cache_key)
         if cached_result:
+            # Removed execution state tracking to fix Redis async/sync errors
             return cached_result
         
         # Prepare comprehensive intent analysis prompt
@@ -201,8 +208,8 @@ Analyze the query and return ONLY a JSON object with this exact structure:
     "user_type": "researcher|casual|specific",
     "urgency": "high|medium|low",
     "completeness_preference": "thorough|balanced|quick",
-    "enumeration_mode": true|false,
-    "enumeration_target": "detected_object_type|null",
+    "analysis_mode": true|false,
+    "analysis_target": "detected_object_type|null",
     "reasoning": "brief explanation of analysis"
 }}
 
@@ -213,12 +220,12 @@ Guidelines for analysis:
 - user_type: "researcher" for deep analysis, "casual" for general interest, "specific" for targeted task
 - urgency: based on language indicating time pressure or immediacy
 - completeness_preference: "thorough" for detailed results, "balanced" for moderate detail, "quick" for brief answers
-- enumeration_mode: true if user wants exhaustive listing/enumeration (like "list all projects", "show all companies", "find all clients"), false for semantic/similarity-based search
-- enumeration_target: the object type being enumerated (e.g., "projects", "companies", "clients", "documents") or null if not enumeration
+- analysis_mode: true if user wants comprehensive analysis/summary (like "analyze all projects", "summarize data", "compare options"), false for simple retrieval
+- analysis_target: the object type being analyzed (e.g., "projects", "companies", "clients", "documents") or null if not analysis
 
 CRITICAL: Distinguish between:
-- ENUMERATION: "list all projects", "show all companies", "get all clients" → comprehensive retrieval needed, enumeration_mode=true
-- SEMANTIC SEARCH: "tell me about machine learning projects", "find AI companies" → similarity-based retrieval OK, enumeration_mode=false
+- ANALYSIS: "analyze all projects", "summarize companies", "compare clients" → comprehensive analysis needed, analysis_mode=true
+- SIMPLE SEARCH: "tell me about machine learning projects", "find AI companies" → basic retrieval OK, analysis_mode=false
 
 Focus on semantic understanding of what the user really wants, not surface-level keywords.
 
@@ -240,7 +247,9 @@ JSON:
             # Cache the result
             self._cache_result(cache_key, result)
             
-            logger.info(f"Intent analysis complete: scope={result['scope']}, quantity={result['quantity_intent']}, confidence={result['confidence']}, enumeration={result['enumeration_mode']}, target={result['enumeration_target']}")
+            # Removed execution state tracking to fix Redis async/sync errors
+            
+            logger.info(f"Intent analysis complete: scope={result['scope']}, quantity={result['quantity_intent']}, confidence={result['confidence']}, analysis={result['analysis_mode']}, target={result['analysis_target']}")
             return result
             
         except Exception as e:
@@ -257,29 +266,29 @@ JSON:
         specific_indicators = any(word in query_lower for word in ['specific', 'exact', 'particular', 'precise'])
         broad_indicators = any(word in query_lower for word in ['overview', 'summary', 'general', 'broad', 'comprehensive'])
         
-        # Enumeration detection patterns
-        enumeration_patterns = [
-            ('list all', 'list'), ('show all', 'show'), ('get all', 'get'), ('find all', 'find'),
-            ('display all', 'display'), ('retrieve all', 'retrieve'), ('give me all', 'give'),
-            ('list every', 'list'), ('show every', 'show'), ('all the', 'all')
+        # Analysis detection patterns
+        analysis_patterns = [
+            ('analyze', 'analyze'), ('summarize', 'summarize'), ('compare', 'compare'), ('review', 'review'),
+            ('assess', 'assess'), ('evaluate', 'evaluate'), ('examine', 'examine'),
+            ('breakdown', 'breakdown'), ('table', 'table'), ('format', 'format')
         ]
         
-        enumeration_mode = False
-        enumeration_target = None
+        analysis_mode = False
+        analysis_target = None
         
-        for pattern, _ in enumeration_patterns:
+        for pattern, _ in analysis_patterns:
             if pattern in query_lower:
-                enumeration_mode = True
+                analysis_mode = True
                 # Try to detect the target object type
                 words = query_lower.split()
                 for i, word in enumerate(words):
                     if word in ['projects', 'companies', 'clients', 'documents', 'files', 'reports', 'tasks']:
-                        enumeration_target = word
+                        analysis_target = word
                         break
-                    elif word == 'all' and i + 1 < len(words):
+                    elif word in ['all', 'the'] and i + 1 < len(words):
                         next_word = words[i + 1]
                         if next_word in ['projects', 'companies', 'clients', 'documents', 'files', 'reports', 'tasks']:
-                            enumeration_target = next_word
+                            analysis_target = next_word
                             break
                 break
         
@@ -287,7 +296,7 @@ JSON:
             'scope': 'comprehensive' if comprehensive_indicators or broad_indicators 
                     else 'specific' if specific_indicators 
                     else 'filtered',
-            'quantity_intent': 'all' if comprehensive_indicators or enumeration_mode else 'limited',
+            'quantity_intent': 'all' if comprehensive_indicators or analysis_mode else 'limited',
             'confidence': 0.6,  # Moderate confidence for fallback
             'context': {
                 'domain': 'general',
@@ -297,8 +306,8 @@ JSON:
             'user_type': 'casual',
             'urgency': 'medium',
             'completeness_preference': 'balanced',
-            'enumeration_mode': enumeration_mode,
-            'enumeration_target': enumeration_target,
+            'analysis_mode': analysis_mode,
+            'analysis_target': analysis_target,
             'reasoning': 'Fallback analysis due to LLM unavailability'
         }
     
@@ -313,8 +322,8 @@ JSON:
             'user_type': parsed_result.get('user_type', 'casual'),
             'urgency': parsed_result.get('urgency', 'medium'),
             'completeness_preference': parsed_result.get('completeness_preference', 'balanced'),
-            'enumeration_mode': bool(parsed_result.get('enumeration_mode', False)),
-            'enumeration_target': parsed_result.get('enumeration_target'),
+            'analysis_mode': bool(parsed_result.get('analysis_mode', False)),
+            'analysis_target': parsed_result.get('analysis_target'),
             'reasoning': parsed_result.get('reasoning', 'AI semantic analysis')
         }
         
@@ -331,13 +340,13 @@ JSON:
         if not isinstance(result['context'], dict):
             result['context'] = {}
         
-        # Clean enumeration_target - ensure it's a string or None
-        if result['enumeration_target'] is not None and not isinstance(result['enumeration_target'], str):
-            result['enumeration_target'] = None
+        # Clean analysis_target - ensure it's a string or None
+        if result['analysis_target'] is not None and not isinstance(result['analysis_target'], str):
+            result['analysis_target'] = None
         
-        # If enumeration_target is an empty string or "null", set to None
-        if result['enumeration_target'] in ['', 'null', 'None']:
-            result['enumeration_target'] = None
+        # If analysis_target is an empty string or "null", set to None
+        if result['analysis_target'] in ['', 'null', 'None']:
+            result['analysis_target'] = None
             
         return result
     

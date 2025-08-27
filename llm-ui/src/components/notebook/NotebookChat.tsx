@@ -165,9 +165,15 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
 
       setMessages(prev => [...prev, assistantMessage]);
 
+      let hasStreamedContent = false;
+      let finalAssistantMessage = { ...assistantMessage };
+
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          console.log('🏁 Stream completed. Final message content length:', finalAssistantMessage.content.length);
+          break;
+        }
 
         const chunk = new TextDecoder().decode(value);
         const lines = chunk.split('\n');
@@ -198,30 +204,36 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
               // Clear status message when actual content starts
               setStatusMessage('');
               const tokenText = data.token || data.chunk;
-              assistantMessage.content += tokenText;
+              finalAssistantMessage.content += tokenText;
+              hasStreamedContent = true;
               if (data.metadata) {
-                assistantMessage.metadata = data.metadata;
+                finalAssistantMessage.metadata = data.metadata;
               }
+              // Update the message with the latest content immediately
               setMessages(prev => 
                 prev.map(msg => 
-                  msg.id === assistantMessage.id ? assistantMessage : msg
+                  msg.id === finalAssistantMessage.id ? { ...finalAssistantMessage } : msg
                 )
               );
             } else if (data.answer) {
-              assistantMessage.content = data.answer;
-              assistantMessage.metadata = data.metadata;
+              // Complete response received - use this as the final content
+              finalAssistantMessage.content = data.answer;
+              finalAssistantMessage.metadata = data.metadata;
+              hasStreamedContent = true;
               
               if (data.sources || data.context_documents || data.retrieved_docs || data.documents) {
                 const sources = data.sources || data.context_documents || data.retrieved_docs || data.documents;
-                assistantMessage.context = sources.map((doc: any) => ({
+                finalAssistantMessage.context = sources.map((doc: any) => ({
                   content: doc.content || doc.text || '',
                   source: doc.source || doc.document_name || doc.metadata?.source || 'Unknown',
                   score: doc.relevance_score || doc.score
                 }));
               }
+              
+              // Update the message with final content and break
               setMessages(prev => 
                 prev.map(msg => 
-                  msg.id === assistantMessage.id ? assistantMessage : msg
+                  msg.id === finalAssistantMessage.id ? { ...finalAssistantMessage } : msg
                 )
               );
               break;
@@ -233,14 +245,27 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
         }
       }
       
-      // If we have partial content from streaming but never got a final response, keep it
-      if (assistantMessage && assistantMessage.content.trim()) {
-        console.log('💾 Preserving partial streaming response:', assistantMessage.content.length, 'characters');
-        setMessages(prev => 
-          prev.map(msg => 
-            msg.id === assistantMessage.id ? assistantMessage : msg
-          )
-        );
+      // Final preservation step - ensure the message is saved with all content
+      if (hasStreamedContent && finalAssistantMessage.content.trim()) {
+        console.log('✅ Final preservation of streamed response:', finalAssistantMessage.content.length, 'characters');
+        // Use functional update to ensure we get the latest state and properly preserve content
+        setMessages(prev => {
+          const updatedMessages = prev.map(msg => 
+            msg.id === finalAssistantMessage.id ? { ...finalAssistantMessage } : msg
+          );
+          console.log('📝 Final message state update completed');
+          return updatedMessages;
+        });
+        
+        // Also save to localStorage immediately to prevent any loss
+        setTimeout(() => {
+          const currentMessages = JSON.parse(localStorage.getItem(storageKey) || '[]');
+          const updatedStorageMessages = currentMessages.map((msg: any) => 
+            msg.id === finalAssistantMessage.id ? finalAssistantMessage : msg
+          );
+          localStorage.setItem(storageKey, JSON.stringify(updatedStorageMessages));
+          console.log('💾 Streamed message preserved to localStorage');
+        }, 10);
       }
       
     } catch (error) {
@@ -278,7 +303,8 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
       clearTimeout(loadingTimeout);
       clearTimeout(emergencyTimeout);
       setLoading(false);
-      setStatusMessage('');
+      // Don't clear status message immediately to avoid interfering with final content
+      setTimeout(() => setStatusMessage(''), 100);
     }
   };
 

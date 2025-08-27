@@ -59,731 +59,102 @@ class RAGResponse(BaseModel):
 
 @router.post("/rag")
 async def rag_endpoint(request: RAGRequest):
-    # Initialize execution tracking to prevent duplicate MCP calls
-    request._rag_knowledge_search_executed = False
-    request._rag_documents = None
+    """SIMPLE RAG: Query -> Get Documents -> LLM -> Response. NO complex processing."""
     
-    # Initialize Langfuse tracing
-    tracer = get_tracer()
-    trace = None
-    generation = None
-    
-    # Get model name from LLM settings for proper tracing
-    llm_settings = get_llm_settings()
-    main_llm_config = get_main_llm_full_config(llm_settings)
-    model_name = main_llm_config.get("model", "unknown")
-    
-    if not tracer._initialized:
-        tracer.initialize()
-    
-    # Initialize rag_span outside conditional to ensure it's always defined
-    rag_span = None
-    
-    if tracer.is_enabled():
-        trace = tracer.create_trace(
-            name="rag-workflow",
-            input=request.question,
-            metadata={
-                "endpoint": "/api/v1/langchain/rag",
-                "conversation_id": request.conversation_id,
-                "thinking": request.thinking,
-                "collections": request.collections,
-                "collection_strategy": request.collection_strategy,
-                "use_langgraph": request.use_langgraph,
-                "model": model_name
-            }
-        )
-        
-        # Create RAG execution span for proper hierarchy
-        if trace:
-            rag_span = tracer.create_span(
-                trace,
-                name="rag-execution",
-                metadata={
-                    "operation": "rag_search_and_generation",
-                    "thinking": request.thinking,
-                    "collections": request.collections,
-                    "collection_strategy": request.collection_strategy,
-                    "use_langgraph": request.use_langgraph,
-                    "model": model_name
-                }
-            )
-        
-        # Create generation within the RAG span for detailed observability
-        if rag_span:
-            generation = tracer.create_generation_with_usage(
-                trace=trace,
-                name="rag-generation",
-                model=model_name,
-                input_text=request.question,
-                parent_span=rag_span,
-                metadata={
-                    "thinking": request.thinking,
-                    "collections": request.collections,
-                    "collection_strategy": request.collection_strategy,
-                    "use_langgraph": request.use_langgraph,
-                    "model": model_name,
-                    "endpoint": "rag"
-                }
-            )
-    
-    # Use session_id as conversation_id if conversation_id is not provided
     conversation_id = request.conversation_id or request.session_id
-    
-    # Unified function to prevent duplicate rag_knowledge_search executions
-    async def execute_rag_search_once(enhanced_question, trace_span=None):
-        """Execute rag_knowledge_search only once per request to prevent duplicates"""
-        if request._rag_knowledge_search_executed:
-            logger.info(f"[EXECUTION TRACKER] SKIPPING duplicate rag_knowledge_search call - already executed")
-            print(f"[EXECUTION TRACKER] SKIPPING duplicate rag_knowledge_search call - already executed")
-            return request._rag_documents
-        
-        # Mark as executed to prevent future calls
-        request._rag_knowledge_search_executed = True
-        logger.info(f"[EXECUTION TRACKER] EXECUTION #1: Direct MCP call to rag_knowledge_search (unified)")
-        print(f"[EXECUTION TRACKER] EXECUTION #1: Direct MCP call to rag_knowledge_search (unified)")
-        
-        # Prepare parameters for rag_knowledge_search tool
-        from app.core.rag_settings_cache import get_document_retrieval_settings
-        doc_settings = get_document_retrieval_settings()
-        max_docs = doc_settings.get('max_documents_mcp', 8)
-        
-        tool_parameters = {
-            "query": request.question,  # Use original question for document search, not conversation history
-            "include_content": True,
-            "max_documents": max_docs
-        }
-        
-        # Add collections if specified
-        if request.collections:
-            tool_parameters["collections"] = request.collections
-        
-        
-        # Execute rag_knowledge_search tool
-        from app.langchain.service import call_mcp_tool
-        rag_tool_result = call_mcp_tool(
-            tool_name="rag_knowledge_search",
-            parameters=tool_parameters,
-            trace=trace_span or trace
-        )
-        
-        # Extract documents from tool result
-        extracted_documents = []
-        if isinstance(rag_tool_result, dict):
-            result_data = rag_tool_result
-            if 'result' in result_data and isinstance(result_data['result'], dict):
-                rag_result = result_data['result']
-                if 'documents' in rag_result:
-                    extracted_documents.extend(rag_result['documents'])
-        
-        # Cache the result for future use in this request
-        request._rag_documents = extracted_documents
-        logger.info(f"[EXECUTION TRACKER] Unified search found {len(extracted_documents)} documents")
-        
-        return extracted_documents
     
     # Check for single agent mode (@agent feature)
     if request.selected_agent:
         logger.info(f"🎯 SINGLE AGENT MODE: {request.selected_agent} - Bypassing classification")
-        # Handle single agent query directly
-        return handle_single_agent_query(request, request.selected_agent, trace, rag_span)
+        return handle_single_agent_query(request, request.selected_agent, None, None)
     
     # Check for radiating mode
     if request.use_radiating:
         logger.info(f"🌟 RADIATING MODE ACTIVATED - Bypassing classification")
-        # Handle radiating query directly
-        return handle_radiating_query(request, trace, rag_span)
-    
-    # Check if we should bypass classification for hybrid RAG mode
-    if request.use_hybrid_rag and conversation_id:
-        logger.info(f"[HYBRID RAG] Bypassing classification for hybrid RAG mode")
-        # Skip classification and go directly to RAG handling
-        request.skip_classification = True
-    
-    # Classify the query unless explicitly skipped
-    routing = None
-    if not request.skip_classification:
-        # Get classification thresholds from settings
-        classifier_settings = get_query_classifier_settings()
-        tool_threshold = classifier_settings.get('direct_execution_threshold', 0.55)
-        llm_threshold = classifier_settings.get('llm_direct_threshold', 0.8)
-        multi_agent_threshold = classifier_settings.get('multi_agent_threshold', 0.6)
-        
-        routing = await query_classifier.get_routing_recommendation(request.question, trace=trace)
-        logger.info(f"Query routing: {routing['primary_type']} (confidence: {routing['confidence']:.2f})")
-        
-        # Handle based on classification (using enhanced classifier types)
-        primary_type = routing['primary_type']
-        is_hybrid = routing.get('is_hybrid', False)
-        confidence = routing['confidence']
-        
-        
-        # Check for hybrid queries that need multiple handlers
-        if is_hybrid:
-            # Handle hybrid queries (TOOL_RAG, TOOL_LLM, RAG_LLM, TOOL_RAG_LLM)
-            return handle_hybrid_query(request, routing)
-        elif primary_type == QueryType.TOOL.value and confidence >= tool_threshold:
-            # CRITICAL FIX: Check if the "tool" is actually rag_knowledge_search
-            # If so, route to RAG synthesis instead of tool calling to prevent 
-            # showing <tool>rag_knowledge_search(...) instead of synthesized content
-            suggested_tools = routing.get('suggested_tools', [])
-            if not suggested_tools and 'routing' in routing:
-                suggested_tools = routing['routing'].get('suggested_tools', [])
-            
-            is_rag_query = any(
-                tool in ['rag_knowledge_search', 'knowledge_search', 'document_search'] 
-                for tool in suggested_tools
-            )
-            
-            if is_rag_query:
-                # Route to RAG synthesis path instead of tool calling
-                # This prevents showing <tool>rag_knowledge_search(...) and ensures proper synthesis
-                # Fall through to RAG path below
-                pass
-            else:
-                # Direct tool execution for confident classifications
-                # Use the suggested tool from classification instead of planning
-                return handle_direct_tool_query(request, routing, trace=trace)
-        elif primary_type == QueryType.LLM.value and confidence > llm_threshold:
-            # Route to direct LLM only if high confidence
-            return handle_direct_llm_query(request, routing)
-        elif primary_type == QueryType.MULTI_AGENT.value and confidence > multi_agent_threshold:
-            # Route to multi-agent system
-            return handle_multi_agent_query(request, routing)
-        else:
-            pass
-        # Fall through to RAG for RAG_SEARCH or low confidence cases
+        return handle_radiating_query(request, None, None)
     
     async def stream():
         try:
-            chunk_count = 0
-            
-            # Store user message in conversation history
+            # SIMPLE RAG: Just save user message and get documents
             if conversation_id:
-                await conversation_manager.add_message(
-                    conversation_id=conversation_id,
-                    role="user",
-                    content=request.question
-                )
+                await conversation_manager.add_message(conversation_id, "user", request.question)
             
-            # Retrieve conversation history and enhance question with context
-            enhanced_question = request.question
-            if conversation_id and not request.skip_classification:
-                # Get last 3 exchanges (6 messages: 3 user + 3 assistant)
-                history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
-                if history:
-                    # Format history for LLM context
-                    enhanced_question = conversation_manager.format_history_for_prompt(history, request.question)
-                    logger.info(f"[CONVERSATION] Retrieved {len(history)} messages for conversation {conversation_id}")
+            # STEP 1: Get documents directly - NO batching, NO extraction, NO verification
+            yield json_module.dumps({"type": "status", "message": "Searching documents..."}) + "\n"
             
-            # Add classification metadata to first chunk if available
-            if not request.skip_classification and routing:
-                classification_chunk = json_module.dumps({
-                    "type": "classification",
-                    "routing": routing,
-                    "handler": "rag"
-                }) + "\n"
-                yield classification_chunk
-                
-            
-            # Map enhanced classifier types to simple optimization types
-            simple_query_type = None
-            
-            # Force RAG type when using hybrid RAG mode
-            if request.use_hybrid_rag:
-                simple_query_type = "RAG"
-            elif routing:
-                enhanced_type = routing['primary_type']
-                
-                # CRITICAL FIX: Check if this was a TOOL query that we detected as RAG
-                # If so, override the mapping to ensure proper RAG synthesis
-                suggested_tools = routing.get('suggested_tools', [])
-                if not suggested_tools and 'routing' in routing:
-                    suggested_tools = routing['routing'].get('suggested_tools', [])
-                
-                is_rag_query = any(
-                    tool in ['rag_knowledge_search', 'knowledge_search', 'document_search'] 
-                    for tool in suggested_tools
-                )
-                
-                type_mapping = {
-                    "rag": "RAG",
-                    "tool": "RAG" if is_rag_query else "TOOLS",  # Map tool->RAG for knowledge queries
-                    "llm": "LLM",
-                    "code": "LLM",
-                    "multi_agent": "RAG",
-                    "tool_rag": "TOOLS",
-                    "tool_llm": "TOOLS", 
-                    "rag_llm": "RAG",
-                    "tool_rag_llm": "TOOLS"
+            from app.langchain.service import call_mcp_tool
+            rag_result = call_mcp_tool(
+                tool_name="rag_knowledge_search",
+                parameters={
+                    "query": request.question,
+                    "include_content": True,
+                    "max_documents": 5,
+                    "collections": request.collections
                 }
-                simple_query_type = type_mapping.get(enhanced_type, "LLM")
+            )
             
-            # Handle hybrid RAG mode or traditional temp document integration
-            # enhanced_question already set above with conversation context
-            hybrid_context = None
+            documents = []
+            if isinstance(rag_result, dict) and 'result' in rag_result:
+                result_data = rag_result['result']
+                if 'documents' in result_data:
+                    documents = result_data['documents']
             
-            if conversation_id and request.use_hybrid_rag:
-                try:
-                    logger.info(f"[HYBRID RAG] Using hybrid mode with strategy: {request.hybrid_strategy}")
-                    
-                    # Use hybrid orchestrator for intelligent result fusion
-                    hybrid_result = await hybrid_rag_orchestrator.query(
-                        query=request.question,
-                        conversation_id=conversation_id,
-                        strategy=request.hybrid_strategy,
-                        fallback_to_persistent=request.fallback_to_persistent,
-                        temp_results_weight=request.temp_results_weight,
-                        top_k=5
-                    )
-                    
-                    if hybrid_result and hybrid_result.final_sources:
-                        # Build enhanced context from hybrid results
-                        context_parts = []
-                        for source in hybrid_result.final_sources[:5]:  # Top 5 results
-                            content = source.get('content', '')
-                            filename = source.get('filename', 'Unknown document')
-                            context_parts.append(f"From {filename}:\n{content}")
-                        
-                        temp_doc_context = "\n\n=== TEMPORARY DOCUMENTS ===\n" + "\n\n".join(context_parts) + "\n=== END TEMPORARY DOCUMENTS ===\n\n"
-                        
-                        # Enhance the question with hybrid context
-                        enhanced_question = f"""Context from uploaded documents:
-{temp_doc_context}
-
-User question: {request.question}
-
-Please answer the user's question using the information from the uploaded documents above, along with any other relevant knowledge."""
-                        
-                        hybrid_context = {
-                            'sources': hybrid_result.final_sources,
-                            'strategy_used': hybrid_result.strategy_used,
-                            'sources_queried': hybrid_result.sources_queried,
-                            'fusion_metadata': hybrid_result.fusion_metadata
-                        }
-                        logger.info(f"[HYBRID RAG] Enhanced question with {len(hybrid_result.final_sources)} hybrid sources")
-                    else:
-                        logger.info(f"[HYBRID RAG] No hybrid results found")
-                        
-                except Exception as e:
-                    logger.warning(f"Hybrid RAG failed, falling back to traditional mode: {e}")
-                    import traceback
-                    logger.warning(f"Full traceback: {traceback.format_exc()}")
+            if not documents:
+                yield json_module.dumps({"answer": "I couldn't find relevant information.", "source": "RAG"}) + "\n"
+                return
+                
+            # STEP 2: Build simple context - NO complex templates, NO formatting from DB
+            context = "\n\n".join([
+                f"Document: {doc.get('source', 'Unknown')}\n{doc.get('content', '')}" 
+                for doc in documents
+            ])
             
-            elif conversation_id and (request.include_temp_docs is not False):
-                # Traditional temp document integration (backward compatibility)
-                try:
-                    
-                    # First check if any temp docs exist for this conversation
-                    all_docs = await temp_doc_manager.get_conversation_documents(conversation_id)
-                    
-                    for doc in all_docs:
-                        pass
-                    
-                    # Query temp documents if they exist
-                    temp_results = await temp_doc_manager.query_conversation_documents(
-                        conversation_id=conversation_id,
-                        query=request.question,
-                        include_all=False,  # Only active documents
-                        top_k=5
-                    )
-                    
-                    
-                    if temp_results:
-                        logger.info(f"Found {len(temp_results)} temporary document results")
-                        temp_context_parts = []
-                        for result in temp_results:
-                            filename = result.get('filename', 'Unknown document')
-                            content = result.get('content', '')
-                            temp_context_parts.append(f"From {filename}:\n{content}")
-                        
-                        temp_doc_context = "\n\n=== TEMPORARY DOCUMENTS ===\n" + "\n\n".join(temp_context_parts) + "\n=== END TEMPORARY DOCUMENTS ===\n\n"
-                        
-                        # Enhance the question with temp document context
-                        enhanced_question = f"""Context from uploaded documents:
-{temp_doc_context}
-
-User question: {request.question}
-
-Please answer the user's question using the information from the uploaded documents above, along with any other relevant knowledge."""
-                        
-                    else:
-                        pass
-                        
-                except Exception as e:
-                    logger.warning(f"Failed to get temporary document context: {e}")
-                    import traceback
-                    logger.warning(f"Full traceback: {traceback.format_exc()}")
+            # STEP 3: Simple prompt - NO complex synthesis, NO conversation history
+            prompt = f"Based on this context, answer the question:\n\nContext:\n{context}\n\nQuestion: {request.question}\n\nAnswer:"
             
-            # Use unified RAG search to prevent duplicate executions
-            try:
-                yield json_module.dumps({
-                    "type": "status", 
-                    "message": "Searching knowledge base..."
-                }) + "\n"
-                
-                # Execute rag_knowledge_search once using unified function
-                extracted_documents = await execute_rag_search_once(enhanced_question, rag_span or trace)
-                
-                
-                if extracted_documents:
-                    yield json_module.dumps({
-                        "type": "status", 
-                        "message": f"Found {len(extracted_documents)} relevant documents, generating response..."
-                    }) + "\n"
-                    
-                    # Build synthesis prompt (similar to tool path approach)
-                    # Extract document content for context
-                    document_contexts = []
-                    for doc in extracted_documents:
-                        content = doc.get('content', '')
-                        # Try multiple ways to get file information from MCP response
-                        file_info = (
-                            doc.get('file') or 
-                            doc.get('filename') or 
-                            doc.get('source') or 
-                            doc.get('metadata', {}).get('source') or
-                            doc.get('metadata', {}).get('file') or
-                            'Unknown source'
-                        )
-                        # Get formatting template from database
-                        from app.core.prompt_settings_cache import get_formatting_templates
-                        formatting_templates = get_formatting_templates()
-                        doc_template = formatting_templates.get(
-                            'document_context',
-                            "**📄 {file_info}:**\n{content}"  # Fallback
-                        )
-                        document_contexts.append(doc_template.format(
-                            file_info=file_info,
-                            content=content
-                        ))
-                    
-                    documents_text = "\n\n".join(document_contexts)
-                    
-                    # Get synthesis prompt template from database settings
-                    from app.core.prompt_settings_cache import get_synthesis_prompts
-                    synthesis_templates = get_synthesis_prompts()
-                    
-                    # Use the knowledge_base_synthesis template from database
-                    synthesis_prompt_template = synthesis_templates.get(
-                        'knowledge_base_synthesis',
-                        # Fallback template if not in database
-                        "Answer based on:\n{enhanced_question}\n\nContext:\n{documents_text}"
-                    )
-                    
-                    # Apply the template with actual values
-                    synthesis_prompt = synthesis_prompt_template.format(
-                        enhanced_question=enhanced_question,
-                        documents_text=documents_text
-                    )
-
-                    # Generate response using LLM synthesis (skip RAG search)
-                    from app.langchain.service import rag_answer
-                    
-                    # Use rag_answer in direct synthesis mode (skip tool planning)
-                    # Pass the original enhanced_question (which already has conversation history)
-                    # and include the documents in hybrid_context
-                    synthesis_context = {
-                        "sources": extracted_documents,
-                        "strategy": "unified_search",
-                        "pre_formatted_context": documents_text
-                    }
-                    
-                    rag_stream = await rag_answer(
-                        enhanced_question,  # Use enhanced_question to maintain conversation context
-                        thinking=request.thinking, 
-                        stream=True,
-                        conversation_id=conversation_id,
-                        use_langgraph=False,  # Disable langgraph to prevent tool planning
-                        collections=None,  # Don't search again, use provided context
-                        collection_strategy="all",  # Use available collections but we won't search
-                        query_type="SYNTHESIS",  # Custom type to skip tool planning
-                        trace=rag_span or trace,
-                        hybrid_context=synthesis_context  # Pass document context via hybrid_context
-                    )
-                    
-                    
-                    # Track complete response for final message
-                    complete_response = ""
-                    
-                    try:
-                        # Stream the synthesis results
-                        async for chunk in rag_stream:
-                            try:
-                                if chunk:  # Only yield non-empty chunks
-                                    chunk_count += 1
-                                    yield chunk
-                                    
-                                    # Parse chunk to accumulate complete response
-                                    try:
-                                        chunk_data = json_module.loads(chunk.strip())
-                                        if "token" in chunk_data:
-                                            complete_response += chunk_data["token"]
-                                        elif "answer" in chunk_data:
-                                            # Some responses send complete answer
-                                            complete_response = chunk_data["answer"]
-                                    except:
-                                        pass  # Not a JSON chunk
-                                    
-                                    # Add small delay to ensure streaming
-                                    import asyncio
-                                    await asyncio.sleep(0)
-                            except GeneratorExit:
-                                # Client disconnected, log and stop gracefully
-                                print(f"[INFO] Client disconnected after {chunk_count} chunks")
-                                break
-                            except Exception as chunk_error:
-                                print(f"[ERROR] Error yielding chunk {chunk_count}: {chunk_error}")
-                                # Try to yield error message, but don't fail the whole stream
-                                try:
-                                    yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
-                                except:
-                                    break  # If we can't even send error, client is likely gone
-                    finally:
-                        # ALWAYS send completion event with documents for UI accordion, even if streaming was interrupted
-                        if extracted_documents:
-                            # Format documents for frontend
-                            formatted_docs = []
-                            for doc in extracted_documents:
-                                formatted_doc = {
-                                    "content": doc.get('content', ''),
-                                    "source": (
-                                        doc.get('file') or 
-                                        doc.get('filename') or 
-                                        doc.get('source') or 
-                                        doc.get('metadata', {}).get('source') or
-                                        doc.get('metadata', {}).get('file') or
-                                        'Unknown source'
-                                    ),
-                                    "relevance_score": doc.get('score', 0.0)
-                                }
-                                formatted_docs.append(formatted_doc)
-                            
-                            # Send completion event matching frontend expectations
-                            yield json_module.dumps({
-                                "answer": complete_response,
-                                "source": "RAG",
-                                "conversation_id": conversation_id,
-                                "documents": formatted_docs
-                            }) + "\n"
-                else:
-                    # No documents found, provide a fallback response
-                    yield json_module.dumps({
-                        "type": "status", 
-                        "message": "No relevant documents found, providing general response..."
-                    }) + "\n"
-                    
-                    # Fallback to direct LLM response
-                    fallback_prompt = f"I couldn't find specific information in the knowledge base for: {request.question}\n\nPlease provide a helpful response based on general knowledge."
-                    
-                    from app.langchain.service import rag_answer
-                    rag_stream = await rag_answer(
-                        fallback_prompt,
-                        thinking=request.thinking, 
-                        stream=True,
-                        conversation_id=conversation_id,
-                        use_langgraph=request.use_langgraph,
-                        collections=None,
-                        collection_strategy="skip",
-                        query_type="LLM",
-                        trace=rag_span or trace,
-                        hybrid_context=hybrid_context
-                    )
-                    
-                    async for chunk in rag_stream:
-                        try:
-                            if chunk:
-                                chunk_count += 1
-                                yield chunk
-                                import asyncio
-                                await asyncio.sleep(0)
-                        except GeneratorExit:
-                            print(f"[INFO] Client disconnected after {chunk_count} chunks")
-                            break
-                        except Exception as chunk_error:
-                            print(f"[ERROR] Error yielding chunk {chunk_count}: {chunk_error}")
-                            try:
-                                yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
-                            except:
-                                break
-                                
-            except Exception as tool_error:
-                print(f"[ERROR] RAG tool execution failed: {tool_error}")
-                # Fallback to original rag_answer approach if tool fails
-                yield json_module.dumps({
-                    "type": "status", 
-                    "message": "Tool execution failed, falling back to direct search..."
-                }) + "\n"
-                
-                from app.langchain.service import rag_answer
-                rag_stream = await rag_answer(
-                    enhanced_question, 
-                    thinking=request.thinking, 
-                    stream=True,
-                    conversation_id=conversation_id,
-                    use_langgraph=request.use_langgraph,
-                    collections=request.collections,
-                    collection_strategy=request.collection_strategy,
-                    query_type=simple_query_type,
-                    trace=rag_span or trace,
-                    hybrid_context=hybrid_context
-                )
-                
-                async for chunk in rag_stream:
-                    try:
-                        if chunk:
-                            chunk_count += 1
-                            yield chunk
-                            import asyncio
-                            await asyncio.sleep(0)
-                    except GeneratorExit:
-                        print(f"[INFO] Client disconnected after {chunk_count} chunks")
-                        break
-                    except Exception as chunk_error:
-                        print(f"[ERROR] Error yielding chunk {chunk_count}: {chunk_error}")
-                        try:
-                            yield json_module.dumps({"error": f"Chunk error: {str(chunk_error)}"}) + "\n"
-                        except:
-                            break
-        except (ConnectionError, BrokenPipeError) as conn_error:
-            print(f"[INFO] Connection lost during RAG processing: {conn_error}")
-            # Client disconnected, don't try to send anything
-        except Exception as e:
-            print(f"[ERROR] RAG endpoint error: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                yield json_module.dumps({"error": f"RAG processing failed: {str(e)}"}) + "\n"
-            except:
-                # If we can't send the error, client is likely disconnected
-                print(f"[ERROR] Could not send error response, client likely disconnected")
-    
-    
-    # Create a wrapper to capture the output for Langfuse tracing
-    async def stream_with_tracing():
-        collected_output = ""
-        final_answer = ""
-        source_info = ""
+            # STEP 4: Get LLM response directly - NO rag_answer, NO complex routing
+            yield json_module.dumps({"type": "status", "message": "Generating response..."}) + "\n"
+            
+            from app.core.llm_settings_cache import get_llm_settings, get_main_llm_full_config
+            llm_settings = get_llm_settings()
+            llm_config = get_main_llm_full_config(llm_settings)
+            
+            from app.llm.ollama import OllamaLLM
+            llm = OllamaLLM(
+                base_url=llm_config.get("base_url", "http://host.docker.internal:11434"),
+                model=llm_config.get("model", "llama3.1:8b")
+            )
+            
+            # STEP 5: Stream response directly
+            complete_answer = ""
+            async for response in llm.generate_stream(prompt):
+                if response.text:
+                    complete_answer += response.text
+                    yield json_module.dumps({"token": response.text}) + "\n"
+            
+            # STEP 6: Save response and send completion - SIMPLE
+            if conversation_id and complete_answer:
+                await conversation_manager.add_message(conversation_id, "assistant", complete_answer)
+            
+            # Format documents for UI
+            formatted_docs = [{
+                "content": doc.get('content', ''),
+                "source": doc.get('source', 'Unknown'),
+                "relevance_score": doc.get('score', 0.0)
+            } for doc in documents]
+            
+            yield json_module.dumps({
+                "answer": complete_answer,
+                "source": "RAG",
+                "conversation_id": conversation_id,
+                "documents": formatted_docs
+            }) + "\n"
         
-        try:
-            async for chunk in stream():
-                # Collect the streamed data
-                if chunk and chunk.strip():
-                    collected_output += chunk
-                    # logger.info(f"[TRACE DEBUG] Chunk received: {chunk[:200]}...")  # Commented out to reduce log noise
-                    
-                    # Try to extract the final answer from the response chunks
-                    if '"answer"' in chunk:
-                        try:
-                            chunk_data = json_module.loads(chunk.strip())
-                            if "answer" in chunk_data:
-                                final_answer = chunk_data["answer"]
-                                # logger.info(f"[TRACE DEBUG] Extracted final answer: {final_answer[:100]}...")  # Commented out
-                                if final_answer:
-                                    pass  # logger.info(f"[TRACE DEBUG] Final answer: {final_answer[:100]}...")  # Commented out
-                            if "source" in chunk_data:
-                                source_info = chunk_data["source"]
-                        except Exception as e:
-                            pass  # Continue streaming even if parsing fails
-                
-                yield chunk
-            
-            # Save assistant response to conversation history
-            if conversation_id and final_answer:
-                await conversation_manager.add_message(
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=final_answer,
-                    metadata={"source": source_info or "rag-chat"}
-                )
-                logger.info(f"[CONVERSATION] Saved assistant response to conversation {conversation_id}")
-            
-            # Update Langfuse generation and trace with the final output
-            if tracer.is_enabled():
-                try:
-                    # Ensure we have meaningful output for the generation
-                    generation_output = final_answer if final_answer else "Response generated successfully"
-                    
-                    # Estimate token usage for cost tracking
-                    usage = tracer.estimate_token_usage(request.question, generation_output)
-                    
-                    # End the generation with results including usage
-                    if generation:
-                        generation.end(
-                            output=generation_output,
-                            usage=usage,
-                            metadata={
-                                "response_length": len(final_answer) if final_answer else len(collected_output),
-                                "source": source_info or "rag-chat",
-                                "streaming": True,
-                                "has_answer": bool(final_answer),
-                                "conversation_id": conversation_id,
-                                "output_captured": bool(final_answer),
-                                "model": model_name,
-                                "input_length": len(request.question),
-                                "output_length": len(generation_output),
-                                "estimated_tokens": usage
-                            }
-                        )
-                    
-                    # Update trace with final result
-                    if trace:
-                        trace.update(
-                            output=final_answer if final_answer else collected_output[:500],
-                            metadata={
-                                "success": True,
-                                "source": source_info,
-                                "response_length": len(final_answer) if final_answer else len(collected_output),
-                                "streaming": True,
-                                "conversation_id": conversation_id
-                            }
-                        )
-                    
-                    tracer.flush()
-                except Exception as e:
-                    print(f"[WARNING] Failed to update Langfuse trace/generation: {e}")
-            
-            # Note: workflow_span is only for multi-agent mode, not standard RAG
-                    
         except Exception as e:
-            # Update generation and trace with error
-            if tracer.is_enabled():
-                try:
-                    # Estimate usage even for errors
-                    error_output = f"Error: {str(e)}"
-                    usage = tracer.estimate_token_usage(request.question, error_output)
-                    
-                    # End generation with error
-                    if generation:
-                        generation.end(
-                            output=error_output,
-                            usage=usage,
-                            metadata={
-                                "success": False,
-                                "error": str(e),
-                                "conversation_id": conversation_id,
-                                "model": model_name,
-                                "estimated_tokens": usage
-                            }
-                        )
-                    
-                    # Update trace with error
-                    if trace:
-                        trace.update(
-                            output=f"Error: {str(e)}",
-                            metadata={
-                                "success": False,
-                                "error": str(e),
-                                "conversation_id": conversation_id
-                            }
-                        )
-                    
-                    tracer.flush()
-                except:
-                    pass  # Don't fail the request if tracing fails
-            raise
+            logger.error(f"Simple RAG error: {e}")
+            yield json_module.dumps({"error": f"RAG failed: {str(e)}"}) + "\n"
     
-    return StreamingResponse(stream_with_tracing(), media_type="application/json")
+    return StreamingResponse(stream(), media_type="application/json")
 
 class MultiAgentRequest(BaseModel):
     question: str
@@ -1298,6 +669,93 @@ async def cleanup_generation_session(session_id: str):
             "timestamp": datetime.now().isoformat()
         }
 
+def _detect_comprehensive_query(message: str) -> bool:
+    """
+    Detect queries that require comprehensive data coverage rather than cached context.
+    
+    These queries need fresh Milvus retrieval to ensure complete results rather than
+    potentially incomplete cached conversation context.
+    
+    Args:
+        message: The user's query message
+        
+    Returns:
+        bool: True if this is a comprehensive query requiring fresh data retrieval
+    """
+    import re
+    
+    # Patterns that indicate comprehensive queries requiring fresh data
+    comprehensive_patterns = [
+        # "find all X from all Y" patterns
+        r'(?:find|get|show|list)\s+(?:all|everything|every)\s+\w+\s+from\s+(?:all|every)',
+        
+        # "all/complete/full" modifiers for broad coverage
+        r'(?:all|complete|full|comprehensive)\s+(?:list|overview|summary)',
+        
+        # "find/show all/every X" patterns
+        r'(?:find|show)\s+(?:all|every|each)\s+\w+(?:\s+and\s+\w+)*',
+        
+        # "from all sources" patterns
+        r'from\s+(?:all|every)\s+source',
+        
+        # Explicit comprehensive search terms
+        r'(?:complete|comprehensive|full)\s+(?:retrieval|search|query)',
+        
+        # "everything about" patterns
+        r'(?:everything|anything)\s+about',
+        
+        # "any/all instances of" patterns
+        r'(?:any|all)\s+instances?\s+of',
+        
+        # "total/entire collection" patterns
+        r'(?:total|entire)\s+(?:collection|dataset|repository)',
+        
+        # "show everything from" patterns
+        r'show\s+everything\s+from',
+        
+        # "all X in the system/database" patterns
+        r'all\s+\w+\s+in\s+the\s+(?:system|database|platform|application)'
+    ]
+    
+    # Check if message matches any comprehensive query pattern
+    message_lower = message.lower()
+    for pattern in comprehensive_patterns:
+        if re.search(pattern, message_lower):
+            return True
+    
+    return False
+
+def _log_routing_decision(message: str, is_comprehensive: bool, is_current_data: bool, conversation_id: str, handler_name: str):
+    """
+    Log comprehensive routing decision details for debugging.
+    
+    Args:
+        message: The user's query message
+        is_comprehensive: Whether this was detected as a comprehensive query
+        is_current_data: Whether this was detected as a current data query  
+        conversation_id: The conversation ID if available
+        handler_name: Name of the handler (DIRECT, HYBRID, RADIATING)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Truncate message for logging to avoid spam
+    truncated_message = message[:100] + "..." if len(message) > 100 else message
+    
+    logger.info(f"[{handler_name} ROUTING] Query: '{truncated_message}'")
+    logger.info(f"[{handler_name} ROUTING] Comprehensive query: {is_comprehensive}")
+    logger.info(f"[{handler_name} ROUTING] Current data query: {is_current_data}")
+    logger.info(f"[{handler_name} ROUTING] Has conversation ID: {bool(conversation_id)}")
+    
+    if is_comprehensive:
+        logger.info(f"[{handler_name} ROUTING] → BYPASSING conversation context for fresh data retrieval")
+    elif is_current_data:
+        logger.info(f"[{handler_name} ROUTING] → BYPASSING conversation context to avoid contamination")
+    elif conversation_id:
+        logger.info(f"[{handler_name} ROUTING] → USING conversation context")
+    else:
+        logger.info(f"[{handler_name} ROUTING] → NO CONTEXT (no conversation ID)")
+
 async def decide_tools_with_llm(query: str, available_tools: Dict, agent_name: str, llm_config: Dict) -> List[tuple]:
     """
     Use LLM to intelligently decide which tools to use based on the query.
@@ -1710,10 +1168,27 @@ def handle_radiating_query(request: RAGRequest, trace=None, rag_span=None):
             
             # Get conversation history if available
             conversation_history = ""
-            if conversation_id:
+            
+            # Check if this is a comprehensive query requiring fresh data retrieval
+            is_comprehensive_query = _detect_comprehensive_query(request.question)
+            logger.info(f"[RADIATING HANDLER] Is comprehensive query: {is_comprehensive_query}")
+            
+            # Log routing decision for debugging
+            _log_routing_decision(
+                message=request.question,
+                is_comprehensive=is_comprehensive_query,
+                is_current_data=False,  # Radiating handler doesn't check for current data queries
+                conversation_id=conversation_id,
+                handler_name="RADIATING"
+            )
+            
+            if conversation_id and not is_comprehensive_query:
                 history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
                 if history:
                     conversation_history = conversation_manager.format_history_for_prompt(history, request.question)
+                    logger.info(f"[RADIATING HANDLER] Enhanced question with conversation context")
+            elif is_comprehensive_query:
+                logger.info(f"[RADIATING HANDLER] Skipping conversation history for comprehensive query to ensure complete data retrieval")
             
             # Extract radiating configuration
             radiating_config = request.radiating_config or {}
@@ -2077,11 +1552,25 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
             tools_for_current_data = ['get_datetime', 'get_current_time', 'current_time', 'datetime', 'now']  
             is_current_data_query = any(tool in suggested_tools for tool in tools_for_current_data)
             
+            # Check if this is a comprehensive query requiring fresh data retrieval
+            is_comprehensive_query = _detect_comprehensive_query(request.question)
+            
             logger.info(f"[DIRECT HANDLER] Tools for current data: {tools_for_current_data}")
             logger.info(f"[DIRECT HANDLER] Is current data query: {is_current_data_query}")
+            logger.info(f"[DIRECT HANDLER] Is comprehensive query: {is_comprehensive_query}")
+            
+            # Log routing decision for debugging
+            _log_routing_decision(
+                message=request.question,
+                is_comprehensive=is_comprehensive_query,
+                is_current_data=is_current_data_query,
+                conversation_id=conversation_id,
+                handler_name="DIRECT"
+            )
             
             # Retrieve conversation history and enhance question with context
-            if conversation_id and not is_current_data_query:
+            # Skip context for current data queries AND comprehensive queries to ensure fresh/complete results
+            if conversation_id and not is_current_data_query and not is_comprehensive_query:
                 # Get last 3 exchanges (6 messages: 3 user + 3 assistant)
                 history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
                 if history:
@@ -2091,6 +1580,9 @@ def handle_direct_tool_query(request: RAGRequest, routing: Dict, trace=None):
                     logger.info(f"[DIRECT HANDLER] Enhanced question with conversation context")
             elif is_current_data_query:
                 logger.info(f"[DIRECT HANDLER] Skipping conversation history for current data query to avoid contamination")
+                # enhanced_question already set to request.question above
+            elif is_comprehensive_query:
+                logger.info(f"[DIRECT HANDLER] Skipping conversation history for comprehensive query to ensure complete data retrieval")
                 # enhanced_question already set to request.question above
             else:
                 logger.info(f"[DIRECT HANDLER] No conversation ID, using original question")
@@ -2761,13 +2253,29 @@ def handle_hybrid_query(request: RAGRequest, routing: Dict):
             
             # Retrieve conversation history and enhance question with context
             enhanced_question = request.question
-            if conversation_id:
+            
+            # Check if this is a comprehensive query requiring fresh data retrieval
+            is_comprehensive_query = _detect_comprehensive_query(request.question)
+            logger.info(f"[HYBRID HANDLER] Is comprehensive query: {is_comprehensive_query}")
+            
+            # Log routing decision for debugging
+            _log_routing_decision(
+                message=request.question,
+                is_comprehensive=is_comprehensive_query,
+                is_current_data=False,  # Hybrid handler doesn't check for current data queries
+                conversation_id=conversation_id,
+                handler_name="HYBRID"
+            )
+            
+            if conversation_id and not is_comprehensive_query:
                 # Get last 3 exchanges (6 messages: 3 user + 3 assistant)
                 history = await conversation_manager.get_conversation_history(conversation_id, limit=6)
                 if history:
                     # Format history for LLM context
                     enhanced_question = conversation_manager.format_history_for_prompt(history, request.question)
                     logger.info(f"[HYBRID HANDLER] Enhanced question with conversation context")
+            elif is_comprehensive_query:
+                logger.info(f"[HYBRID HANDLER] Skipping conversation history for comprehensive query to ensure complete data retrieval")
             
             # Send classification info
             yield json_module.dumps({

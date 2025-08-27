@@ -10,6 +10,8 @@ import hashlib
 import re  # Needed for project extraction patterns
 from typing import List, Dict, Any, Optional, Union, AsyncGenerator
 from datetime import datetime
+from dataclasses import dataclass
+from enum import Enum
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -18,17 +20,43 @@ from app.models.notebook_models import (
     NotebookRAGResponse, NotebookRAGSource, ProjectData
 )
 from app.services.ai_task_planner import TaskExecutionPlan, RetrievalStrategy, ai_task_planner
+# from app.services.request_execution_state_tracker import (
+#     check_operation_completed, mark_operation_completed, get_operation_result, ExecutionPhase
+# )  # Removed - causing Redis async/sync errors
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.notebook_llm_settings_cache import get_notebook_llm_settings
 from app.core.timeout_settings_cache import get_list_cache_ttl
 from app.core.redis_client import get_redis_client
-from app.api.v1.endpoints.document import HTTPEmbeddingFunction
+from app.core.http_embedding_function import HTTPEmbeddingFunction
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from pymilvus import connections, Collection, utility
+from app.core.notebook_llm_settings_cache import get_notebook_llm_full_config
+from app.llm.ollama import OllamaLLM
+from app.llm.base import LLMConfig
+import json
+import asyncio
 
 logger = logging.getLogger(__name__)
 
+
+class RetrievalIntensity(Enum):
+    """Retrieval intensity levels for intelligent query processing."""
+    MINIMAL = "minimal"      # Simple lookups: 5-10 sources, single strategy
+    BALANCED = "balanced"    # Standard queries: 20 sources, 1-2 strategies  
+    COMPREHENSIVE = "comprehensive"  # Complex analysis: 50+ sources, all strategies
+
+
+@dataclass
+class RetrievalPlan:
+    """Plan for intelligent retrieval execution based on query complexity."""
+    intensity: RetrievalIntensity
+    max_sources: int
+    use_multiple_strategies: bool
+    use_full_scan: bool
+    reasoning: str
+    
+    
 class NotebookRAGService:
     """
     Service for RAG queries against notebook documents using existing vector infrastructure.
@@ -40,6 +68,119 @@ class NotebookRAGService:
         self._embedding_settings = None
         self._embedding_function = None
         self._milvus_client = None
+        
+        # Performance optimization: Cache LLM instances and configs
+        self._cached_llm = None
+        self._cached_llm_config_full = None
+        self._cached_llm_config_hash = None
+        self._llm_cache_lock = asyncio.Lock()
+        
+        # Configuration cache to prevent repeated Redis calls
+        self._cached_notebook_settings = None
+        self._settings_cache_lock = asyncio.Lock()
+    
+    async def _get_cached_notebook_settings(self) -> dict:
+        """Get cached notebook settings to prevent repeated Redis calls."""
+        async with self._settings_cache_lock:
+            if self._cached_notebook_settings is None:
+                self._cached_notebook_settings = get_notebook_llm_settings()
+                self.logger.debug("[SETTINGS_CACHE] Cached notebook settings to prevent repeated Redis calls")
+            return self._cached_notebook_settings
+    
+    async def _get_cached_llm(self) -> Optional[OllamaLLM]:
+        """
+        Get cached LLM instance with configuration validation.
+        Creates new instance only if config changed or none exists.
+        Eliminates redundant Redis calls and LLM instantiations.
+        """
+        async with self._llm_cache_lock:
+            try:
+                # Return existing cached instance if we have one (skip config check during operation)
+                if self._cached_llm and self._cached_llm_config_full:
+                    return self._cached_llm
+                
+                # Only fetch config when no cache exists
+                llm_config_full = get_notebook_llm_full_config()
+                if not llm_config_full:
+                    self.logger.warning("[LLM_CACHE] No notebook LLM config available")
+                    return None
+                
+                # Create config hash for cache invalidation
+                config_str = json.dumps(llm_config_full, sort_keys=True)
+                config_hash = hashlib.md5(config_str.encode()).hexdigest()
+                
+                # Config changed or no cache - create new instance
+                llm_config = llm_config_full.get('notebook_llm', {})
+                if not llm_config:
+                    self.logger.warning("[LLM_CACHE] Notebook LLM config not properly structured")
+                    return None
+                
+                llm_config_obj = LLMConfig(
+                    model_name=llm_config['model'],
+                    temperature=float(llm_config['temperature']),
+                    top_p=float(llm_config['top_p']),
+                    max_tokens=int(llm_config['max_tokens'])
+                )
+                
+                # Create new cached instance
+                self._cached_llm = OllamaLLM(llm_config_obj)
+                self._cached_llm_config_full = llm_config_full
+                self._cached_llm_config_hash = config_hash
+                
+                self.logger.debug(f"[LLM_CACHE] Created new cached LLM instance with model={llm_config['model']}")
+                return self._cached_llm
+                
+            except Exception as e:
+                self.logger.error(f"[LLM_CACHE] Error getting cached LLM: {str(e)}")
+                # Clear broken cache
+                self._cached_llm = None
+                self._cached_llm_config_full = None
+                self._cached_llm_config_hash = None
+                return None
+    
+    def _clear_llm_cache(self):
+        """Clear LLM cache - useful for testing or config changes"""
+        self._cached_llm = None
+        self._cached_llm_config_full = None
+        self._cached_llm_config_hash = None
+        self.logger.debug("[LLM_CACHE] Cleared LLM cache")
+    
+    async def _get_query_embedding(self, query: str, embedding_function: Any) -> List[float]:
+        """
+        Get query embedding.
+        
+        Args:
+            query: Query string to embed
+            embedding_function: Embedding function instance
+            
+        Returns:
+            Query embedding vector
+        """
+        # Generate embedding
+        try:
+            if hasattr(embedding_function, 'embed_query'):
+                # Check if it's async
+                if asyncio.iscoroutinefunction(embedding_function.embed_query):
+                    query_embedding = await embedding_function.embed_query(query)
+                else:
+                    query_embedding = embedding_function.embed_query(query)
+            elif hasattr(embedding_function, 'encode'):
+                # Check if it's async
+                if asyncio.iscoroutinefunction(embedding_function.encode):
+                    query_embedding = (await embedding_function.encode([query]))[0].tolist()
+                else:
+                    query_embedding = embedding_function.encode([query])[0].tolist()
+            else:
+                raise Exception(f"Unsupported embedding function type: {type(embedding_function)}")
+            
+            if not isinstance(query_embedding, list):
+                query_embedding = query_embedding.tolist()
+            
+            return query_embedding
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate query embedding: {e}")
+            raise
     
     async def _analyze_query_intent(self, query: str) -> dict:
         """
@@ -117,6 +258,75 @@ class NotebookRAGService:
                 "ai_powered": False,
                 "reasoning": "Enhanced semantic fallback analysis"
             }
+    
+    async def plan_retrieval_strategy(self, message: str, intent: str) -> RetrievalPlan:
+        """
+        Phase 3: Intelligently plan retrieval approach based on query complexity.
+        Following: Understand → Think → Plan → Do paradigm
+        
+        Determines HOW to retrieve when retrieval IS needed, choosing between:
+        - MINIMAL: Simple lookups (5-10 sources, single strategy, fast)
+        - BALANCED: Standard queries (20 sources, moderate strategies)  
+        - COMPREHENSIVE: Complex analysis (50+ sources, full pipeline)
+        
+        Args:
+            message: User query string
+            intent: Intent classification result
+            
+        Returns:
+            RetrievalPlan with optimal retrieval approach
+        """
+        message_lower = message.lower()
+        
+        # UNDERSTAND: Analyze query characteristics
+        is_simple_lookup = (
+            len(message.split()) <= 8 and
+            any(word in message_lower for word in ['what is', 'tell me about', 'describe', 'explain'])
+        )
+        
+        
+        is_complex_analysis = any(word in message_lower for word in ['analyze', 'compare', 'relationship', 'pattern'])
+        
+        # THINK: Determine optimal approach based on complexity
+        if is_simple_lookup:
+            # PLAN: Minimal retrieval for simple questions
+            return RetrievalPlan(
+                intensity=RetrievalIntensity.MINIMAL,
+                max_sources=8,
+                use_multiple_strategies=False,
+                use_full_scan=False,
+                reasoning="Simple lookup query detected - using minimal retrieval for fast response"
+            )
+        
+        elif is_complex_analysis:
+            # PLAN: Comprehensive retrieval for complex analysis
+            return RetrievalPlan(
+                intensity=RetrievalIntensity.COMPREHENSIVE,
+                max_sources=50,
+                use_multiple_strategies=True,
+                use_full_scan=True,
+                reasoning="Complex analysis query detected - using comprehensive retrieval for complete results"
+            )
+        
+        elif is_complex_analysis:
+            # PLAN: Comprehensive retrieval for analysis
+            return RetrievalPlan(
+                intensity=RetrievalIntensity.COMPREHENSIVE,
+                max_sources=40,
+                use_multiple_strategies=True,
+                use_full_scan=False,
+                reasoning="Complex analysis query - using comprehensive retrieval with limited scan"
+            )
+        
+        else:
+            # PLAN: Balanced approach for general queries
+            return RetrievalPlan(
+                intensity=RetrievalIntensity.BALANCED,
+                max_sources=20,
+                use_multiple_strategies=True,
+                use_full_scan=False,
+                reasoning="General query - using balanced retrieval approach"
+            )
     
     def _get_vector_settings(self) -> Dict[str, Any]:
         """Get vector database settings with caching."""
@@ -202,6 +412,88 @@ class NotebookRAGService:
                 "password": vector_config.get('password', ''),
                 "alias": "notebook_rag_fallback"
             }
+    
+    async def _perform_full_collection_scan(
+        self,
+        collection,
+        doc_filter: str = None,
+        limit: int = 10000,
+        output_fields: List[str] = None
+    ) -> List[dict]:
+        """
+        Perform full collection scan without similarity search filtering.
+        
+        This method bypasses semantic similarity by using collection.query() instead of
+        collection.search(), ensuring ALL chunks are retrieved regardless of semantic
+        similarity to the query. Essential for comprehensive analysis queries like
+        "list all projects" that need to include older content (2000-2008) that may
+        not match semantically.
+        
+        Args:
+            collection: Milvus collection instance
+            doc_filter: Optional document filter expression
+            limit: Maximum number of results to return
+            output_fields: Fields to include in results
+            
+        Returns:
+            List of document chunks sorted by document recency
+        """
+        try:
+            if output_fields is None:
+                output_fields = ["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
+            
+            self.logger.info(f"[FULL_COLLECTION_SCAN] Performing full collection scan with filter: {doc_filter[:100] if doc_filter else 'None'}")
+            
+            # Use collection.query() with empty expression to get ALL documents
+            # This bypasses similarity search limitations completely
+            query_results = collection.query(
+                expr=doc_filter if doc_filter else "",
+                output_fields=output_fields,
+                limit=limit
+            )
+            
+            # Convert query results to consistent format
+            scan_results = []
+            for result in query_results:
+                # Convert to format matching similarity search results
+                scan_result = {
+                    'content': result.get('content', ''),
+                    'metadata': {
+                        'doc_id': result.get('doc_id', ''),
+                        'source': result.get('source', ''),
+                        'page': result.get('page', 0),
+                        'doc_type': result.get('doc_type', ''),
+                        'uploaded_at': result.get('uploaded_at', ''),
+                        'section': result.get('section', ''),
+                        'author': result.get('author', ''),
+                        'hash': result.get('hash', '')
+                    },
+                    'score': 1.0  # Uniform score since no similarity ranking
+                }
+                scan_results.append(scan_result)
+            
+            # Sort by document recency instead of similarity scores
+            # Parse uploaded_at for proper date sorting
+            def parse_upload_date(item):
+                try:
+                    uploaded_at = item['metadata'].get('uploaded_at', '')
+                    if uploaded_at:
+                        from datetime import datetime
+                        return datetime.fromisoformat(uploaded_at.replace('Z', '+00:00'))
+                except (ValueError, TypeError, AttributeError) as e:
+                    self.logger.debug(f"[SCAN_DATE_PARSE] Could not parse upload date for document: {uploaded_at}, error: {e}")
+                except Exception as e:
+                    self.logger.warning(f"[SCAN_DATE_PARSE] Unexpected error parsing upload date: {type(e).__name__}: {e}")
+                return datetime.min  # Fallback for items without dates
+            
+            scan_results.sort(key=parse_upload_date, reverse=True)  # Newer first
+            
+            self.logger.info(f"[FULL_COLLECTION_SCAN] Retrieved {len(scan_results)} documents via full collection scan")
+            return scan_results
+            
+        except Exception as e:
+            self.logger.error(f"[FULL_COLLECTION_SCAN] Error performing full collection scan: {str(e)}")
+            return []
     
     async def get_actual_content_count(
         self, 
@@ -345,8 +637,8 @@ class NotebookRAGService:
                     # Clean up connection
                     try:
                         connections.disconnect(alias=connection_args['alias'] + "_count")
-                    except:
-                        pass
+                    except Exception as cleanup_err:
+                        self.logger.debug(f"[COUNT_CLEANUP] Failed to disconnect from {collection_name}: {cleanup_err}")
                         
                 except Exception as collection_err:
                     self.logger.warning(f"[COUNT] Error counting collection {collection_name}: {str(collection_err)}")
@@ -356,8 +648,8 @@ class NotebookRAGService:
                         self.logger.warning(f"[COUNT] Collection {collection_name} had {len(document_ids)} document IDs to filter")
                         if document_ids:
                             self.logger.warning(f"[COUNT] Sample document IDs: {document_ids[:3]}")
-                    except:
-                        pass
+                    except Exception as debug_err:
+                        self.logger.debug(f"[COUNT] Failed to log debug info for {collection_name}: {debug_err}")
                     # Continue with other collections
                     continue
             
@@ -404,7 +696,8 @@ class NotebookRAGService:
         query: str,
         max_sources: Optional[int] = None,
         include_metadata: bool = True,
-        collection_filter: Optional[List[str]] = None
+        collection_filter: Optional[List[str]] = None,
+        force_simple_retrieval: bool = False
     ) -> NotebookRAGResponse:
         """
         Perform adaptive RAG query with AI-powered intent analysis and dynamic limit optimization.
@@ -422,6 +715,7 @@ class NotebookRAGService:
             max_sources: Optional hint for maximum sources (will be optimized)
             include_metadata: Whether to include metadata
             collection_filter: Optional filter for specific collections
+            force_simple_retrieval: If True, skip intelligent planning and use simple RAG only
             
         Returns:
             RAG query results with adaptive optimization applied
@@ -429,28 +723,33 @@ class NotebookRAGService:
         try:
             self.logger.info(f"[ADAPTIVE_QUERY] Starting adaptive query for notebook {notebook_id}: '{query[:50]}...'")
             
+            # Removed execution state tracking to fix Redis async/sync errors
+            
             # Step 1: Analyze query intent using AI
             intent_analysis = await self._analyze_query_intent(query)
             wants_comprehensive = intent_analysis.get("wants_comprehensive", False)
             quantity_intent = intent_analysis.get("quantity_intent", "limited")
             confidence = intent_analysis.get("confidence", 0.5)
-            enumeration_mode = intent_analysis.get("enumeration_mode", False)
-            enumeration_target = intent_analysis.get("enumeration_target")
             
-            self.logger.info(f"[ADAPTIVE_QUERY] Intent analysis - comprehensive: {wants_comprehensive}, quantity: {quantity_intent}, confidence: {confidence:.2f}, enumeration: {enumeration_mode}, target: {enumeration_target}")
+            self.logger.info(f"[ADAPTIVE_QUERY] Intent analysis - comprehensive: {wants_comprehensive}, quantity: {quantity_intent}, confidence: {confidence:.2f}")
             
             # Step 1.2: Check if query should use intelligent task planning
             # Use intelligent planning for complex queries that would benefit from multi-strategy retrieval
+            # Skip if force_simple_retrieval is True (e.g., when called as timeout fallback)
             should_use_intelligent_planning = (
-                wants_comprehensive or 
-                quantity_intent == "all" or 
-                confidence < 0.7 or  # Low confidence suggests complex intent
-                enumeration_mode or
-                len(query.split()) > 8  # Complex multi-part queries
+                not force_simple_retrieval and (
+                    wants_comprehensive or 
+                    quantity_intent == "all" or 
+                    confidence < 0.7 or  # Low confidence suggests complex intent
+                    len(query.split()) > 8  # Complex multi-part queries
+                )
             )
             
             if should_use_intelligent_planning:
                 self.logger.info(f"[ADAPTIVE_QUERY] Using intelligent task planning for complex query")
+                
+                # Removed execution state tracking to fix Redis async/sync errors
+                
                 try:
                     # Create AI task plan for this query
                     execution_plan = await ai_task_planner.understand_and_plan(query)
@@ -472,18 +771,6 @@ class NotebookRAGService:
                     self.logger.warning(f"[ADAPTIVE_QUERY] Intelligent planning failed, falling back to traditional approach: {str(e)}")
                     # Continue with traditional approach below
             
-            # Step 1.5: Route to enumeration method if enumeration mode is detected
-            if enumeration_mode:
-                self.logger.info(f"[ADAPTIVE_QUERY] Routing to enumeration retrieval for comprehensive listing")
-                return await self.query_notebook_enumeration(
-                    db=db,
-                    notebook_id=notebook_id,
-                    query=query,
-                    enumeration_target=enumeration_target,
-                    max_sources=max_sources,
-                    include_metadata=include_metadata,
-                    collection_filter=collection_filter
-                )
             
             # Step 2: Get actual content count for dynamic limit calculation
             total_available = await self.get_actual_content_count(notebook_id, query)
@@ -493,7 +780,7 @@ class NotebookRAGService:
             if max_sources is None:
                 max_sources = 10  # Default starting point
             
-            if wants_comprehensive and quantity_intent == "all":
+            if (wants_comprehensive and quantity_intent == "all") or (intent_analysis.get('scope') == 'comprehensive' and intent_analysis.get('quantity') == 'all'):
                 # User wants comprehensive results - provide all available content up to reasonable limits
                 if total_available <= 50:
                     adaptive_limit = total_available  # Give them everything for small notebooks
@@ -505,6 +792,7 @@ class NotebookRAGService:
                     adaptive_limit = min(500, int(total_available * 0.6))  # 60% capped at 500
                 
                 self.logger.info(f"[ADAPTIVE_QUERY] Comprehensive query: providing {adaptive_limit} sources from {total_available} available")
+                self.logger.info(f"[DEBUG_LIMIT] wants_comprehensive={wants_comprehensive}, quantity_intent={quantity_intent}, adaptive_limit={adaptive_limit}, max_sources={max_sources}, top_k={top_k}")
                 
             elif quantity_intent == "limited" or intent_analysis.get("user_type") == "researcher":
                 # Moderate coverage for researchers or limited queries
@@ -517,7 +805,11 @@ class NotebookRAGService:
                     
             elif quantity_intent in ["few", "single"]:
                 # Focused results for specific queries
-                adaptive_limit = min(max_sources, 20, total_available)
+                # But don't limit comprehensive scope queries even if quantity is "few"
+                if intent_analysis.get('query_type') == 'comprehensive':
+                    adaptive_limit = min(max_sources, total_available)
+                else:
+                    adaptive_limit = min(max_sources, 20, total_available)
                 
             else:
                 # Balanced approach for general queries
@@ -668,525 +960,6 @@ class NotebookRAGService:
     # REMOVED: query_notebook_comprehensive method - caused degraded results
     # Rolled back to restore previous working system with rich project details
 
-    async def query_notebook_enumeration(
-        self,
-        db: Session,
-        notebook_id: str,
-        query: str,
-        enumeration_target: str = None,
-        max_sources: Optional[int] = None,
-        include_metadata: bool = True,
-        collection_filter: Optional[List[str]] = None
-    ) -> NotebookRAGResponse:
-        """
-        Perform enumeration-focused retrieval for queries requiring comprehensive listing.
-        
-        This method uses a different strategy than semantic similarity search:
-        1. Uses multiple broad search terms to ensure recall over precision
-        2. Retrieves larger initial batches to capture all relevant items
-        3. Combines results from multiple query variations
-        4. Focuses on completeness rather than semantic relevance scoring
-        
-        Designed for queries like "list all projects" or "show all companies" where
-        the user wants exhaustive results regardless of specific query wording.
-        
-        Args:
-            db: Database session
-            notebook_id: Notebook ID to query
-            query: Original search query
-            enumeration_target: Type of items being enumerated (e.g., "projects", "companies")
-            max_sources: Maximum sources to return (defaults to larger values for enumeration)
-            include_metadata: Whether to include metadata
-            collection_filter: Optional filter for specific collections
-            
-        Returns:
-            RAG query results optimized for enumeration completeness
-        """
-        try:
-            self.logger.info(f"[ENUMERATION] Starting enumeration query for notebook {notebook_id}: '{query[:50]}...', target: {enumeration_target}")
-            
-            # Get available content count for enumeration planning
-            total_available = await self.get_actual_content_count(notebook_id, query)
-            
-            # Set enumeration-friendly defaults
-            if max_sources is None:
-                # For enumeration, default to capturing more content
-                if total_available <= 100:
-                    max_sources = total_available  # Get everything for small notebooks
-                elif total_available <= 300:
-                    max_sources = min(int(total_available * 0.9), 250)  # 90% for medium
-                else:
-                    max_sources = min(int(total_available * 0.8), 400)  # 80% for large, capped
-            
-            self.logger.info(f"[ENUMERATION] Enumeration limit: {max_sources} from {total_available} available")
-            
-            # Generate multiple query variations for comprehensive coverage
-            query_variations = await self._generate_enumeration_queries(query, enumeration_target)
-            self.logger.info(f"[ENUMERATION] Generated {len(query_variations)} query variations")
-            
-            # Collect results from all query variations
-            all_enumeration_sources = []
-            seen_document_ids = set()
-            
-            # Get notebook collections once
-            collections_info = await self._get_notebook_collections(db, notebook_id, collection_filter)
-            if not collections_info:
-                self.logger.warning(f"[ENUMERATION] No collections found for notebook {notebook_id}")
-                return NotebookRAGResponse(
-                    notebook_id=notebook_id,
-                    query=query,
-                    sources=[],
-                    total_sources=0,
-                    queried_documents=0,
-                    collections_searched=[],
-                    extracted_projects=None
-                )
-            
-            collections_searched = set()
-            embedding_function = self._get_embedding_function()
-            connection_args = self._get_milvus_connection_args()
-            
-            # Execute each query variation
-            for i, variant_query in enumerate(query_variations):
-                try:
-                    self.logger.debug(f"[ENUMERATION] Executing variant {i+1}/{len(query_variations)}: '{variant_query[:30]}...'")
-                    
-                    # Use larger retrieval limits for enumeration to ensure coverage
-                    variant_limit = min(max_sources * 2, 500)  # Allow 2x limit per variant, capped
-                    
-                    # Query each collection for this variant
-                    for collection_name, document_ids in collections_info.items():
-                        try:
-                            # Connect to Milvus
-                            connections.connect(
-                                alias=connection_args['alias'] + f"_enum_{i}",
-                                uri=connection_args.get('uri'),
-                                token=connection_args.get('token', ''),
-                                host=connection_args.get('host'),
-                                port=connection_args.get('port')
-                            )
-                            
-                            collection = Collection(collection_name, using=connection_args['alias'] + f"_enum_{i}")
-                            collection.load()
-                            
-                            # Get query embedding
-                            if hasattr(embedding_function, 'embed_query'):
-                                variant_embedding = embedding_function.embed_query(variant_query)
-                            elif hasattr(embedding_function, 'encode'):
-                                variant_embedding = embedding_function.encode([variant_query])[0].tolist()
-                            else:
-                                raise Exception(f"Unsupported embedding function type: {type(embedding_function)}")
-                            
-                            if not isinstance(variant_embedding, list):
-                                variant_embedding = variant_embedding.tolist()
-                            
-                            # Build document filter
-                            doc_filter = None
-                            if document_ids:
-                                conditions = []
-                                for doc_id in document_ids:
-                                    if len(doc_id) == 36 and doc_id.count('-') == 4:
-                                        conditions.append(f"doc_id == '{doc_id}'")
-                                    else:
-                                        conditions.append(f"doc_id like '{doc_id}%'")
-                                doc_filter = " or ".join(conditions)
-                            
-                            # Execute search with enumeration-friendly parameters
-                            search_params = {
-                                "metric_type": "COSINE",
-                                "params": {"nprobe": 16}  # Higher nprobe for better recall in enumeration
-                            }
-                            
-                            variant_results = collection.search(
-                                data=[variant_embedding],
-                                anns_field="vector",
-                                param=search_params,
-                                limit=variant_limit,
-                                expr=doc_filter,
-                                output_fields=["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
-                            )
-                            
-                            # Process variant results
-                            for hits in variant_results:
-                                for hit in hits:
-                                    doc_id = hit.entity.get('doc_id', '')
-                                    
-                                    # Skip if we've already seen this document
-                                    if doc_id in seen_document_ids:
-                                        continue
-                                    
-                                    # Extract content and metadata
-                                    content = hit.entity.get('content', '')
-                                    if not content:
-                                        continue
-                                    
-                                    metadata = {
-                                        'doc_id': doc_id,
-                                        'source': hit.entity.get('source', ''),
-                                        'page': hit.entity.get('page', 0),
-                                        'doc_type': hit.entity.get('doc_type', ''),
-                                        'uploaded_at': hit.entity.get('uploaded_at', ''),
-                                        'section': hit.entity.get('section', ''),
-                                        'author': hit.entity.get('author', ''),
-                                        'hash': hit.entity.get('hash', '')
-                                    }
-                                    
-                                    # Get document name
-                                    cached_names = getattr(self, '_current_document_names', {})
-                                    document_info = cached_names.get(doc_id, {})
-                                    if not document_info and '_' in doc_id:
-                                        base_id = doc_id.split('_')[0]
-                                        document_info = cached_names.get(base_id, {})
-                                    
-                                    document_name = document_info.get('name')
-                                    source_type = document_info.get('type', 'document')
-                                    
-                                    # Create source with enumeration context
-                                    source = NotebookRAGSource(
-                                        content=content,
-                                        metadata=metadata if include_metadata else {},
-                                        score=float(hit.score),
-                                        document_id=doc_id,
-                                        document_name=document_name,
-                                        collection=collection_name,
-                                        source_type=source_type
-                                    )
-                                    
-                                    all_enumeration_sources.append(source)
-                                    seen_document_ids.add(doc_id)
-                                    
-                                    # Break if we have enough results
-                                    if len(all_enumeration_sources) >= max_sources * 3:  # Allow 3x for deduplication
-                                        break
-                                
-                                if len(all_enumeration_sources) >= max_sources * 3:
-                                    break
-                            
-                            collections_searched.add(collection_name)
-                            
-                            # Clean up connection
-                            try:
-                                connections.disconnect(alias=connection_args['alias'] + f"_enum_{i}")
-                            except:
-                                pass
-                                
-                        except Exception as collection_err:
-                            self.logger.warning(f"[ENUMERATION] Error in collection {collection_name}, variant {i}: {str(collection_err)}")
-                            continue
-                            
-                except Exception as variant_err:
-                    self.logger.warning(f"[ENUMERATION] Error in variant {i}: {str(variant_err)}")
-                    continue
-                    
-                # Break if we have enough results across all variants
-                if len(all_enumeration_sources) >= max_sources * 2:
-                    break
-            
-            # Sort by score and apply enhanced deduplication
-            all_enumeration_sources.sort(key=lambda x: x.score, reverse=True)
-            
-            # Enhanced deduplication with overlap detection and document-aware filtering
-            final_sources = []
-            seen_content_hashes = set()
-            seen_doc_chunks = {}  # doc_id -> set of content snippets
-            
-            import hashlib
-            
-            for source in all_enumeration_sources:
-                # Multi-level deduplication approach
-                
-                # 1. Exact content hash (first 200 chars)
-                content_hash = hashlib.md5(source.content[:200].encode()).hexdigest()
-                if content_hash in seen_content_hashes:
-                    continue
-                
-                # 2. Document-aware chunk overlap detection
-                doc_id = getattr(source, 'doc_id', source.metadata.get('doc_id', ''))
-                if doc_id:
-                    # Create content signature for overlap detection (middle portion)
-                    content_signature = source.content[50:150].strip() if len(source.content) > 200 else source.content.strip()
-                    
-                    if doc_id in seen_doc_chunks:
-                        # Check for significant overlap with existing chunks from same document
-                        is_overlapping = False
-                        for existing_signature in seen_doc_chunks[doc_id]:
-                            # Calculate similarity based on common words
-                            existing_words = set(existing_signature.lower().split())
-                            current_words = set(content_signature.lower().split())
-                            
-                            if len(existing_words) > 0 and len(current_words) > 0:
-                                overlap_ratio = len(existing_words & current_words) / len(existing_words | current_words)
-                                if overlap_ratio > 0.6:  # 60% overlap threshold
-                                    is_overlapping = True
-                                    break
-                        
-                        if is_overlapping:
-                            continue
-                        
-                        seen_doc_chunks[doc_id].add(content_signature)
-                    else:
-                        seen_doc_chunks[doc_id] = {content_signature}
-                
-                # 3. Content diversity check - ensure we get varied content types
-                content_words = set(source.content.lower().split()[:20])  # First 20 words
-                is_diverse = True
-                
-                # Check against recent sources for diversity
-                if len(final_sources) >= 3:
-                    recent_sources = final_sources[-3:]  # Check last 3 sources
-                    for recent in recent_sources:
-                        recent_words = set(recent.content.lower().split()[:20])
-                        if len(content_words & recent_words) / max(len(content_words), len(recent_words), 1) > 0.8:
-                            is_diverse = False
-                            break
-                
-                if not is_diverse:
-                    continue
-                
-                # Source passes all deduplication checks
-                final_sources.append(source)
-                seen_content_hashes.add(content_hash)
-                    
-                if len(final_sources) >= max_sources:
-                    break
-            
-            # Retrieval validation and logging
-            unique_docs = len(seen_doc_chunks)
-            avg_chunks_per_doc = len(final_sources) / max(unique_docs, 1)
-            
-            self.logger.info(f"[ENUMERATION] Enumeration complete: {len(final_sources)} final sources from {len(all_enumeration_sources)} candidates")
-            self.logger.info(f"[ENUMERATION] Retrieved from {unique_docs} unique documents (avg {avg_chunks_per_doc:.1f} chunks/doc)")
-            
-            # Log retrieval diversity for validation
-            if final_sources:
-                source_types = {}
-                for source in final_sources:
-                    source_type = source.metadata.get('source', 'unknown')[:20]  # First 20 chars of source
-                    source_types[source_type] = source_types.get(source_type, 0) + 1
-                
-                self.logger.info(f"[ENUMERATION] Content diversity: {len(source_types)} different source types found")
-            
-            # Extract structured project data if this appears to be a project-related query
-            extracted_projects = None
-            if any(term in query.lower() for term in ['project', 'projects', 'work', 'experience', 'portfolio', 'built', 'developed', 'created']):
-                self.logger.info("[ENUMERATION] Detected project-related query, extracting structured data")
-                extracted_projects = await self.extract_project_data(final_sources)
-                self.logger.info(f"[ENUMERATION] Extracted {len(extracted_projects) if extracted_projects else 0} structured projects")
-            
-            return NotebookRAGResponse(
-                notebook_id=notebook_id,
-                query=query,
-                sources=final_sources,
-                total_sources=len(all_enumeration_sources),
-                queried_documents=len(seen_document_ids),
-                collections_searched=list(collections_searched),
-                extracted_projects=extracted_projects,
-                metadata={
-                    "enumeration_mode": True,
-                    "enumeration_target": enumeration_target,
-                    "query_variations": len(query_variations),
-                    "deduplication_applied": True,
-                    "original_candidates": len(all_enumeration_sources),
-                    "unique_documents_retrieved": unique_docs,
-                    "avg_chunks_per_document": round(avg_chunks_per_doc, 2),
-                    "content_diversity_score": len(source_types) if final_sources else 0,
-                    "deduplication_removed": len(all_enumeration_sources) - len(final_sources),
-                    "retrieval_coverage": "comprehensive",
-                    "structured_extraction_applied": extracted_projects is not None,
-                    "extracted_projects_count": len(extracted_projects) if extracted_projects else 0
-                }
-            )
-            
-        except Exception as e:
-            self.logger.error(f"[ENUMERATION] Error in enumeration query: {str(e)}")
-            # Fallback to regular adaptive query
-            self.logger.info(f"[ENUMERATION] Falling back to adaptive query")
-            return await self.query_notebook_adaptive(
-                db=db,
-                notebook_id=notebook_id,
-                query=query,
-                max_sources=max_sources,
-                include_metadata=include_metadata,
-                collection_filter=collection_filter
-            )
-
-    async def _generate_enumeration_queries(self, original_query: str, enumeration_target: str = None) -> List[str]:
-        """
-        Generate multiple query variations for enumeration to ensure comprehensive coverage.
-        Enhanced to capture ALL projects regardless of terminology used.
-        
-        Args:
-            original_query: The original user query
-            enumeration_target: The type of items being enumerated
-            
-        Returns:
-            List of query variations to run
-        """
-        query_variations = [original_query]  # Always include original
-        
-        # Comprehensive base terms for maximum coverage
-        project_terms = [
-            # Core project terms
-            "project", "projects", "initiative", "initiatives", "solution", "solutions",
-            "platform", "platforms", "system", "systems", "application", "applications", 
-            "app", "apps", "framework", "frameworks", "tool", "tools",
-            
-            # Action-based terms (what was done)
-            "developed", "built", "implemented", "created", "designed", "architected",
-            "delivered", "led", "managed", "worked", "launched", "deployed",
-            
-            # Context terms
-            "client", "company", "business", "enterprise", "startup", "organization",
-            "work", "development", "deliverables", "portfolio", "experience",
-            
-            # Industry-specific terms
-            "mobile", "web", "digital", "AI", "analytics", "data", "cloud",
-            "software", "product", "technology", "tech"
-        ]
-        
-        # Semantic variations for different project descriptions
-        semantic_variations = {
-            "projects": ["initiatives", "solutions", "work", "development", "deliverables", "systems", "applications"],
-            "developed": ["built", "created", "implemented", "designed", "architected", "delivered"],
-            "system": ["platform", "solution", "application", "framework", "tool"],
-            "client": ["company", "business", "organization", "enterprise", "customer"]
-        }
-        
-        # Add target-specific comprehensive terms
-        if enumeration_target:
-            target_lower = enumeration_target.lower()
-            if "project" in target_lower:
-                project_terms.extend([
-                    "portfolio", "case study", "example", "implementation", "deployment",
-                    "prototype", "MVP", "product", "service", "integration", "migration"
-                ])
-            elif "company" in target_lower or "client" in target_lower:
-                project_terms.extend([
-                    "firm", "corporation", "startup", "agency", "consultancy",
-                    "partner", "customer", "account", "engagement"
-                ])
-        
-        # Generate comprehensive query combinations
-        # 1. High-impact combinations (2-3 terms that work well together)
-        high_impact_combos = [
-            "project developed",
-            "solution built",
-            "system implemented", 
-            "application created",
-            "platform designed",
-            "client work",
-            "business solution",
-            "technology project",
-            "software development",
-            "digital platform",
-            "enterprise system",
-            "mobile application"
-        ]
-        
-        # 2. Single high-value terms for maximum breadth
-        high_value_singles = [
-            "project", "solution", "system", "application", "platform",
-            "developed", "built", "implemented", "created", "designed",
-            "client", "business", "work", "technology", "software"
-        ]
-        
-        # 3. Context-aware queries
-        context_queries = [
-            "worked on", "responsible for", "led development",
-            "delivered solution", "built system", "created application"
-        ]
-        
-        # 4. Industry and domain queries
-        domain_queries = [
-            "mobile app", "web platform", "data system", "AI solution",
-            "cloud platform", "enterprise software", "digital tool"
-        ]
-        
-        # Combine all variations with smart prioritization
-        query_variations.extend(high_impact_combos)
-        query_variations.extend(high_value_singles[:8])  # Top 8 singles
-        query_variations.extend(context_queries[:4])     # Top 4 context
-        query_variations.extend(domain_queries[:4])      # Top 4 domain
-        
-        # Add semantic variations of the original query
-        original_words = original_query.lower().split()
-        for word in original_words:
-            if word in semantic_variations:
-                for variation in semantic_variations[word][:2]:  # Top 2 variations per word
-                    varied_query = original_query.lower().replace(word, variation)
-                    if varied_query != original_query.lower():
-                        query_variations.append(varied_query)
-        
-        # Remove duplicates while preserving order and relevance
-        seen = set()
-        deduplicated = []
-        for q in query_variations:
-            q_clean = q.strip().lower()
-            if q_clean not in seen and q_clean and len(q_clean) > 1:
-                deduplicated.append(q.strip())
-                seen.add(q_clean)
-        
-        # Log query generation for validation
-        self.logger.info(f"[ENUMERATION] Generated {len(deduplicated)} unique query variations from {len(query_variations)} candidates")
-        
-        # Validate coverage quality of generated queries
-        final_queries = deduplicated[:12]  # Increased from 8 to 12 for better coverage
-        coverage_analysis = self._validate_query_coverage(final_queries)
-        
-        self.logger.info(f"[ENUMERATION] Query coverage analysis: {coverage_analysis['overall_coverage_percentage']}% overall ({coverage_analysis['coverage_quality']})")
-        
-        # Log any coverage gaps for improvement
-        for category, stats in coverage_analysis['category_coverage'].items():
-            if stats['percentage'] < 70:  # Log categories with less than 70% coverage
-                self.logger.warning(f"[ENUMERATION] Low coverage in {category}: {stats['percentage']:.1f}% (missing: {stats['missing'][:3]})")
-        
-        return final_queries
-
-    def _validate_query_coverage(self, queries: List[str]) -> dict:
-        """
-        Validate that generated queries provide comprehensive coverage for different project types.
-        
-        Args:
-            queries: List of generated queries
-            
-        Returns:
-            Dictionary with coverage analysis
-        """
-        coverage_categories = {
-            "action_verbs": ["developed", "built", "implemented", "created", "designed", "delivered", "led"],
-            "project_types": ["project", "solution", "system", "application", "platform", "tool"],
-            "contexts": ["client", "business", "work", "company", "enterprise"],
-            "industries": ["mobile", "web", "digital", "AI", "cloud", "software", "data"],
-            "outcomes": ["launched", "deployed", "delivered", "completed", "managed"]
-        }
-        
-        coverage_scores = {}
-        for category, terms in coverage_categories.items():
-            covered_terms = set()
-            for query in queries:
-                query_lower = query.lower()
-                for term in terms:
-                    if term in query_lower:
-                        covered_terms.add(term)
-            
-            coverage_scores[category] = {
-                "covered": len(covered_terms),
-                "total": len(terms),
-                "percentage": (len(covered_terms) / len(terms)) * 100,
-                "missing": [term for term in terms if term not in covered_terms]
-            }
-        
-        # Overall coverage score
-        total_covered = sum(score["covered"] for score in coverage_scores.values())
-        total_possible = sum(score["total"] for score in coverage_scores.values())
-        overall_coverage = (total_covered / total_possible) * 100
-        
-        return {
-            "overall_coverage_percentage": round(overall_coverage, 1),
-            "category_coverage": coverage_scores,
-            "total_queries": len(queries),
-            "coverage_quality": "excellent" if overall_coverage > 80 else "good" if overall_coverage > 60 else "needs_improvement"
-        }
 
     async def query_notebook(
         self,
@@ -1257,17 +1030,9 @@ class NotebookRAGService:
                         self.logger.error(f"[DEBUG] Milvus connection traceback: {traceback.format_exc()}")
                         raise
                     
-                    # Get query embedding
+                    # Get query embedding with execution state tracking
                     try:
-                        if hasattr(embedding_function, 'embed_query'):
-                            query_embedding = embedding_function.embed_query(query)
-                        elif hasattr(embedding_function, 'encode'):
-                            query_embedding = embedding_function.encode([query])[0].tolist()
-                        else:
-                            raise Exception(f"Unsupported embedding function type: {type(embedding_function)}")
-                        
-                        if not isinstance(query_embedding, list):
-                            query_embedding = query_embedding.tolist()
+                        query_embedding = await self._get_query_embedding(query, embedding_function)
                         
                         # Generated embedding successfully
                     except Exception as embed_err:
@@ -1301,7 +1066,7 @@ class NotebookRAGService:
                     
                     # Get configurable retrieval limits with dynamic content-aware defaults
                     try:
-                        notebook_settings = get_notebook_llm_settings()
+                        notebook_settings = await self._get_cached_notebook_settings()
                         base_max_retrieval_chunks = notebook_settings.get('notebook_llm', {}).get('max_retrieval_chunks', None)
                         retrieval_multiplier = notebook_settings.get('notebook_llm', {}).get('retrieval_multiplier', 3)
                         # Document-aware retrieval settings
@@ -1324,16 +1089,13 @@ class NotebookRAGService:
                         # Dynamic calculation based on available content
                         try:
                             total_notebook_items = await self.get_actual_content_count(notebook_id)
-                            if total_notebook_items <= 100:
-                                max_retrieval_chunks = total_notebook_items  # Use all for small notebooks
-                            elif total_notebook_items <= 300:
-                                max_retrieval_chunks = min(int(total_notebook_items * 0.8), total_notebook_items)  # 80%
-                            else:
-                                max_retrieval_chunks = min(int(total_notebook_items * 0.6), 500)  # 60% capped at 500
+                            # GENERAL PURPOSE: Always use all available items when user wants completeness
+                            max_retrieval_chunks = total_notebook_items
                             
                         except Exception as count_err:
                             self.logger.warning(f"Could not get content count for dynamic limits: {count_err}")
-                            max_retrieval_chunks = 150  # Conservative fallback that's not hardcoded to specific use case
+                            # GENERAL PURPOSE: If we can't count, retrieve without limits
+                            max_retrieval_chunks = 10000  # High limit to ensure no artificial constraint
                     else:
                         max_retrieval_chunks = base_max_retrieval_chunks
                     
@@ -1356,18 +1118,14 @@ class NotebookRAGService:
                         # Scale max_chunks based on actual available content (no hardcoded caps)
                         try:
                             total_available = await self.get_actual_content_count(notebook_id)
-                            if total_available <= 200:
-                                max_retrieval_chunks = total_available  # Use all available for small collections
-                            elif total_available <= 600:
-                                max_retrieval_chunks = min(int(total_available * 0.9), total_available)  # 90% for medium collections
-                            else:
-                                max_retrieval_chunks = min(int(total_available * 0.7), 1000)  # 70% for large collections, capped at 1000
+                            # GENERAL PURPOSE: For comprehensive queries, use ALL available items regardless of size
+                            max_retrieval_chunks = total_available
                                 
                             self.logger.info(f"[COMPREHENSIVE_QUERY] Intelligent analysis detected comprehensive query: '{query[:100]}...' - Enhanced retrieval limits based on {total_available} available items: multiplier {original_multiplier}→{retrieval_multiplier}, max_chunks {original_max_chunks}→{max_retrieval_chunks}")
                         except Exception as count_err:
-                            # Fallback scaling if counting fails
-                            max_retrieval_chunks = max(max_retrieval_chunks * 2, original_max_chunks * 3)
-                            self.logger.warning(f"Could not get content count for comprehensive scaling, using fallback: {max_retrieval_chunks}")
+                            # GENERAL PURPOSE: If we can't count, remove all limits for comprehensive queries
+                            max_retrieval_chunks = 10000  # High limit to ensure completeness
+                            self.logger.warning(f"Could not get content count for comprehensive scaling, removing limits: {max_retrieval_chunks}")
                     
                     limit = min(top_k * retrieval_multiplier, max_retrieval_chunks)
                     
@@ -1379,43 +1137,85 @@ class NotebookRAGService:
                         expr = ""
                     
                     try:
-                        # Use direct pymilvus Collection.search() method
-                        search_results = collection.search(
-                            data=[query_embedding],
-                            anns_field="vector",
-                            param=search_params,
-                            limit=limit,
-                            expr=doc_filter,
-                            output_fields=["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
+                        # Check if this is a comprehensive query that should bypass similarity search
+                        quantity_intent = intent_analysis.get("quantity_intent", "limited")
+                        should_use_full_scan = (
+                            quantity_intent == "all" and 
+                            is_comprehensive_query and
+                            intent_analysis.get("confidence", 0.0) > 0.7
                         )
                         
-                        # Convert initial results to our format
-                        initial_results = []
-                        for hits in search_results:
-                            for hit in hits:
-                                # Extract fields from Milvus result
-                                content = hit.entity.get('content', '')
-                                metadata = {
-                                    'doc_id': hit.entity.get('doc_id', ''),
-                                    'source': hit.entity.get('source', ''),
-                                    'page': hit.entity.get('page', 0),
-                                    'doc_type': hit.entity.get('doc_type', ''),
-                                    'uploaded_at': hit.entity.get('uploaded_at', ''),
-                                    'section': hit.entity.get('section', ''),
-                                    'author': hit.entity.get('author', ''),
-                                    'hash': hit.entity.get('hash', '')
-                                }
-                                
-                                # Create a document-like object that matches our processing logic
-                                doc = {
-                                    'page_content': content,
-                                    'metadata': metadata
-                                }
-                                
-                                initial_results.append((doc, hit.score))
+                        if should_use_full_scan:
+                            # Use full collection scan to bypass similarity limitations
+                            self.logger.info(f"[FULL_COLLECTION_SCAN] Detected comprehensive query - bypassing similarity search for complete results")
+                            # For comprehensive queries, remove limit to get ALL available documents
+                            comprehensive_limit = max(limit, max_retrieval_chunks, 100)  # Ensure we get comprehensive results
+                            self.logger.info(f"[FULL_COLLECTION_SCAN] Using comprehensive limit: {comprehensive_limit} (original: {limit})")
+                            initial_results = await self._perform_full_collection_scan(
+                                collection=collection,
+                                doc_filter=doc_filter,
+                                limit=comprehensive_limit,
+                                output_fields=["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
+                            )
+                            self.logger.info(f"[BOTTLENECK_DEBUG] After full collection scan: {len(initial_results)} initial_results")
+                        else:
+                            # Use standard similarity search
+                            search_results = collection.search(
+                                data=[query_embedding],
+                                anns_field="vector",
+                                param=search_params,
+                                limit=limit,
+                                expr=doc_filter,
+                                output_fields=["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
+                            )
+                            
+                            # Convert similarity search results to our format
+                            initial_results = []
+                            for hits in search_results:
+                                for hit in hits:
+                                    # Extract fields from Milvus result
+                                    content = hit.entity.get('content', '')
+                                    metadata = {
+                                        'doc_id': hit.entity.get('doc_id', ''),
+                                        'source': hit.entity.get('source', ''),
+                                        'page': hit.entity.get('page', 0),
+                                        'doc_type': hit.entity.get('doc_type', ''),
+                                        'uploaded_at': hit.entity.get('uploaded_at', ''),
+                                        'section': hit.entity.get('section', ''),
+                                        'author': hit.entity.get('author', ''),
+                                        'hash': hit.entity.get('hash', '')
+                                    }
+                                    
+                                    # Create a document-like object that matches our processing logic
+                                    doc = {
+                                        'page_content': content,
+                                        'metadata': metadata
+                                    }
+                                    
+                                    initial_results.append((doc, hit.score))
+                        
+                        # Convert full collection scan results to processing format if needed
+                        if should_use_full_scan and initial_results:
+                            # Convert full scan results to the expected format (doc, score) tuples
+                            converted_results = []
+                            for result in initial_results:
+                                if isinstance(result, dict) and 'content' in result:
+                                    # Convert from full scan format to processing format
+                                    doc = {
+                                        'page_content': result['content'],
+                                        'metadata': result['metadata']
+                                    }
+                                    score = result.get('score', 1.0)
+                                    converted_results.append((doc, score))
+                                else:
+                                    # Already in correct format
+                                    converted_results.append(result)
+                            initial_results = converted_results
+                            self.logger.info(f"[BOTTLENECK_DEBUG] After conversion: {len(initial_results)} initial_results")
                         
                         # Apply document-aware retrieval logic
                         if enable_document_aware_retrieval and initial_results:
+                            self.logger.info(f"[BOTTLENECK_DEBUG] Before document-aware: {len(initial_results)} initial_results")
                             # Determine if this is a listing/comprehensive query for document-aware processing
                             is_listing_query = intent_analysis.get("quantity_intent") == "all" and is_comprehensive_query
                             
@@ -1569,7 +1369,7 @@ class NotebookRAGService:
                         
                         # Use configurable multiplier for source collection
                         try:
-                            notebook_settings = get_notebook_llm_settings()
+                            notebook_settings = await self._get_cached_notebook_settings()
                             collection_multiplier = notebook_settings.get('notebook_llm', {}).get('collection_multiplier', 4)
                         except Exception:
                             collection_multiplier = 4  # Default for comprehensive collection
@@ -1582,8 +1382,8 @@ class NotebookRAGService:
                     # Clean up connection for this collection
                     try:
                         connections.disconnect(alias=connection_args['alias'])
-                    except:
-                        pass  # Ignore cleanup errors
+                    except Exception as cleanup_err:
+                        self.logger.debug(f"[QUERY_CLEANUP] Failed to disconnect from {collection_name}: {cleanup_err}")
                     
                 except Exception as e:
                     self.logger.error(f"[DEBUG] Error querying collection {collection_name}: {str(e)}")
@@ -1598,16 +1398,34 @@ class NotebookRAGService:
             # Sort all sources by score (higher is better for COSINE similarity)
             all_sources.sort(key=lambda x: x.score, reverse=True)
             
-            # Take top_k results
-            top_sources = all_sources[:top_k]
+            # For comprehensive queries, don't limit to top_k to preserve all retrieved data
+            if is_comprehensive_query and intent_analysis.get('query_type') == 'comprehensive':
+                top_sources = all_sources  # Use all retrieved sources
+                self.logger.info(f"[COMPREHENSIVE_QUERY] Using all {len(all_sources)} sources (bypassing top_k={top_k} limit)")
+            else:
+                # Take top_k results for regular queries
+                top_sources = all_sources[:top_k]
             
             # Return final sources
             
+            # Removed execution state tracking to fix Redis async/sync errors
+            
             self.logger.info(f"Successfully queried notebook {notebook_id}, found {len(top_sources)} sources")
             
-            # Set extracted_projects to None - rely on LLM's natural language understanding
-            # instead of broken regex-based extraction that generates garbage data
+            # Extract structured professional data for comprehensive queries using AI detection
             extracted_projects = None
+            should_extract = await self._should_extract_structured_data(query, top_sources)
+            if should_extract:
+                self.logger.info(f"[STRUCTURED_EXTRACTION] Detected comprehensive query: '{query[:50]}...', extracting structured professional data")
+                
+                # Removed execution state tracking to fix Redis async/sync errors
+                
+                try:
+                    extracted_projects = await self.extract_project_data(top_sources)
+                    self.logger.info(f"[STRUCTURED_EXTRACTION] Successfully extracted {len(extracted_projects) if extracted_projects else 0} structured activities")
+                except Exception as e:
+                    self.logger.error(f"[STRUCTURED_EXTRACTION] Extraction failed: {str(e)}")
+                    extracted_projects = None
             
             return NotebookRAGResponse(
                 notebook_id=notebook_id,
@@ -1624,7 +1442,6 @@ class NotebookRAGService:
             self.logger.error(f"Error type: {type(e).__name__}")
             if isinstance(e, KeyError):
                 self.logger.error(f"KeyError details - missing key: {str(e)}")
-                import traceback
                 self.logger.error(f"Full traceback: {traceback.format_exc()}")
             # Return empty result instead of raising
             return NotebookRAGResponse(
@@ -1687,10 +1504,12 @@ class NotebookRAGService:
             if not initial_results:
                 return initial_results
             
+            self.logger.info(f"[DOCUMENT_AWARE_DEBUG] Starting with {len(initial_results)} initial_results, max_retrieval_chunks={max_retrieval_chunks}, is_listing_query={is_listing_query}")
+            
             
             # Load memory prioritization settings
             try:
-                notebook_settings = get_notebook_llm_settings()
+                notebook_settings = await self._get_cached_notebook_settings()
                 prioritize_memory_sources = notebook_settings.get('notebook_llm', {}).get('prioritize_memory_sources', True)
                 memory_score_boost = notebook_settings.get('notebook_llm', {}).get('memory_score_boost', 0.2)
                 include_all_memory_chunks = notebook_settings.get('notebook_llm', {}).get('include_all_memory_chunks', True)
@@ -1702,8 +1521,8 @@ class NotebookRAGService:
             
             # For comprehensive queries, adjust memory consolidation based on intent analysis
             if is_listing_query:
-                include_all_memory_chunks = False
-                self.logger.info(f"[COMPREHENSIVE_QUERY] Intelligent analysis detected comprehensive query: '{query[:100]}...' - Adjusting memory consolidation to preserve individual item visibility")
+                include_all_memory_chunks = True  # Comprehensive queries need ALL memory chunks for completeness
+                self.logger.info(f"[COMPREHENSIVE_QUERY] Intelligent analysis detected comprehensive query: '{query[:100]}...' - Enabling full memory consolidation to capture all available data")
             
             
             # Step 1: Separate memory sources from document sources
@@ -1716,6 +1535,8 @@ class NotebookRAGService:
                 else:
                     document_chunks.append((doc, score))
             
+            self.logger.info(f"[DOCUMENT_AWARE_DEBUG] Separated: {len(memory_chunks)} memory_chunks, {len(document_chunks)} document_chunks")
+            
             
             enhanced_results = []
             processed_chunk_ids = set()
@@ -1723,41 +1544,31 @@ class NotebookRAGService:
             # Step 2: Process memory sources first (if prioritization enabled)
             if prioritize_memory_sources and memory_chunks:
                 
-                # Group memory chunks by document ID
-                memory_by_document = defaultdict(list)
-                for doc, score in memory_chunks:
-                    doc_id = doc.get('metadata', {}).get('doc_id', '')
-                    base_doc_id = self._extract_base_document_id(doc_id)
-                    memory_by_document[base_doc_id].append((doc, score, doc_id))
-                
-                # Process each memory document
-                for base_doc_id, memory_doc_chunks in memory_by_document.items():
+                if include_all_memory_chunks:
+                    # For comprehensive queries: Add ALL memory chunks directly without document grouping
+                    # Memory chunks have unique UUIDs, so document grouping treats each as separate "document"
+                    self.logger.info(f"[COMPREHENSIVE_MEMORY] Processing all {len(memory_chunks)} memory chunks directly for comprehensive query")
+                    for doc, score in memory_chunks:
+                        # Use unique identifier instead of shared doc_id to avoid deduplication
+                        chunk_uuid = doc.get('id', '') or doc.get('metadata', {}).get('chunk_id', '') or f"mem_{len(enhanced_results)}"
+                        if chunk_uuid not in processed_chunk_ids:
+                            boosted_score = min(score + memory_score_boost, 1.0)
+                            enhanced_results.append((doc, boosted_score))
+                            processed_chunk_ids.add(chunk_uuid)
+                            self.logger.debug(f"[COMPREHENSIVE_MEMORY] Added memory chunk {chunk_uuid} with score {boosted_score}")
+                        else:
+                            self.logger.debug(f"[COMPREHENSIVE_MEMORY] Skipped duplicate memory chunk {chunk_uuid}")
+                else:
+                    # Group memory chunks by document ID for selective processing
+                    memory_by_document = defaultdict(list)
+                    for doc, score in memory_chunks:
+                        doc_id = doc.get('metadata', {}).get('doc_id', '')
+                        base_doc_id = self._extract_base_document_id(doc_id)
+                        memory_by_document[base_doc_id].append((doc, score, doc_id))
                     
-                    if include_all_memory_chunks:
-                        # Retrieve ALL chunks from this memory document for completeness
-                        try:
-                            all_memory_chunks = await self._retrieve_complete_document_chunks(
-                                collection, base_doc_id, query_embedding, search_params, doc_filter, max_retrieval_chunks
-                            )
-                            
-                            # Add all memory chunks with score boost
-                            for chunk_doc, chunk_score in all_memory_chunks:
-                                chunk_id = chunk_doc.get('metadata', {}).get('doc_id', '')
-                                if chunk_id not in processed_chunk_ids:
-                                    # Boost memory chunk score
-                                    boosted_score = min(chunk_score + memory_score_boost, 1.0)
-                                    enhanced_results.append((chunk_doc, boosted_score))
-                                    processed_chunk_ids.add(chunk_id)
-                        except Exception as e:
-                            self.logger.warning(f"Could not retrieve complete memory document {base_doc_id}: {e}")
-                            # Fallback to just the matching chunks
-                            for doc, score, doc_id in memory_doc_chunks:
-                                if doc_id not in processed_chunk_ids:
-                                    boosted_score = min(score + memory_score_boost, 1.0)
-                                    enhanced_results.append((doc, boosted_score))
-                                    processed_chunk_ids.add(doc_id)
-                    else:
-                        # For comprehensive queries: Just add the matching memory chunks with boost to preserve granularity
+                    # Process each memory document selectively
+                    for base_doc_id, memory_doc_chunks in memory_by_document.items():
+                        # For non-comprehensive queries: Just add the matching memory chunks with boost to preserve granularity
                         for doc, score, doc_id in memory_doc_chunks:
                             if doc_id not in processed_chunk_ids:
                                 boosted_score = min(score + memory_score_boost, 1.0)
@@ -1767,6 +1578,7 @@ class NotebookRAGService:
             
             # Step 3: Process document sources (if space remaining)
             remaining_capacity = max_retrieval_chunks - len(enhanced_results)
+            self.logger.info(f"[DOCUMENT_AWARE_DEBUG] After memory processing: {len(enhanced_results)} enhanced_results, remaining_capacity={remaining_capacity}, document_chunks={len(document_chunks)}")
             if remaining_capacity > 0 and document_chunks:
                 
                 # Group document chunks by document
@@ -1839,7 +1651,14 @@ class NotebookRAGService:
             
             # Sort by relevance score (memories will naturally rank higher due to score boost)
             enhanced_results.sort(key=lambda x: x[1], reverse=True)
-            final_results = enhanced_results[:max_retrieval_chunks]
+            self.logger.info(f"[DOCUMENT_AWARE_DEBUG] Before final limiting: {len(enhanced_results)} enhanced_results")
+            
+            # For comprehensive/listing queries, don't limit results to preserve all data
+            if is_listing_query:
+                final_results = enhanced_results  # Keep all results for comprehensive queries
+                self.logger.info(f"[DOCUMENT_AWARE] Comprehensive query: preserved all {len(enhanced_results)} results (bypassing max_retrieval_chunks={max_retrieval_chunks})")
+            else:
+                final_results = enhanced_results[:max_retrieval_chunks]
             
             # Debug: Log final ranking to verify memory prioritization
             memory_count = sum(1 for doc, score in final_results if self._is_memory_source(doc))
@@ -2073,164 +1892,737 @@ class NotebookRAGService:
 
     async def extract_project_data(self, sources: List[NotebookRAGSource]) -> List[ProjectData]:
         """
-        Extract structured project data from retrieved chunks.
+        Extract structured professional activity data from retrieved chunks.
         
-        This method parses chunks to identify project information and extract
-        structured data including name, company, years, and description.
-        Missing metadata is marked as "N/A" rather than excluding projects.
+        This method parses chunks to identify ANY professional information and extract
+        structured data including name, organization, years, and description.
+        Works for projects, jobs, achievements, activities, or any professional entity.
+        Missing metadata is marked as "Not specified" rather than excluding items.
         
         Args:
-            sources: List of RAG sources containing project information
+            sources: List of RAG sources containing professional information
             
         Returns:
-            List of structured project data with completed metadata
+            List of structured professional activity data with completed metadata
         """
         try:
             import re
             self.logger.info(f"[PROJECT_EXTRACTION] Starting extraction from {len(sources)} sources")
             
-            # Initialize project collection
-            raw_projects = []
+            # Initialize professional activity collection
+            raw_activities = []
             
-            # Extract projects from each source
-            for source in sources:
-                projects_in_source = await self._extract_projects_from_content(source)
-                raw_projects.extend(projects_in_source)
+            # Extract professional activities from sources (batch processing for efficiency)
+            raw_activities = await self._extract_projects_from_sources_batch(sources)
             
-            self.logger.info(f"[PROJECT_EXTRACTION] Found {len(raw_projects)} raw projects")
+            self.logger.info(f"[STRUCTURED_EXTRACTION] Found {len(raw_activities)} raw professional activities")
             
             # Complete missing metadata using cross-referencing
-            completed_projects = await self._complete_project_metadata(raw_projects, sources)
+            completed_activities = await self._complete_project_metadata(raw_activities, sources)
             
-            # Deduplicate and merge similar projects
-            final_projects = await self._deduplicate_and_merge_projects(completed_projects)
+            # Deduplicate and merge similar activities
+            final_activities = await self._deduplicate_and_merge_projects(completed_activities)
             
-            self.logger.info(f"[PROJECT_EXTRACTION] Final extraction: {len(final_projects)} unique projects")
-            return final_projects
+            # Sort activities chronologically by start year
+            if final_activities:
+                final_activities = self._sort_projects_chronologically(final_activities)
+                self.logger.info(f"[STRUCTURED_EXTRACTION] Activities sorted chronologically (default behavior)")
+            
+            self.logger.info(f"[STRUCTURED_EXTRACTION] Final extraction: {len(final_activities)} unique professional activities")
+            return final_activities
             
         except Exception as e:
-            self.logger.error(f"[PROJECT_EXTRACTION] Error in project extraction: {str(e)}")
+            self.logger.error(f"[STRUCTURED_EXTRACTION] Error in professional activity extraction: {str(e)}")
+            return []
+
+    def _sort_projects_chronologically(self, projects: List[ProjectData]) -> List[ProjectData]:
+        """
+        Sort projects chronologically by start year.
+        
+        Args:
+            projects: List of projects to sort
+            
+        Returns:
+            List of projects sorted by start year (earliest first)
+        """
+        def extract_start_year(project):
+            try:
+                year_str = project.year
+                if not year_str or year_str == "N/A" or year_str.strip() == "":
+                    return 9999  # Put N/A years at the end
+                
+                # Extract first year from ranges like "2020-2021", "2020 – 2021", "2020-22", etc.
+                import re
+                year_match = re.search(r'(\d{4})', str(year_str))
+                if year_match:
+                    return int(year_match.group(1))
+                    
+                # Handle 2-digit years like "20-21" (assume 20xx)
+                two_digit_match = re.search(r'(\d{2})-', str(year_str))
+                if two_digit_match:
+                    two_digit = int(two_digit_match.group(1))
+                    # Assume 20xx for years 00-99
+                    return 2000 + two_digit
+                    
+                return 9999  # Unrecognized format goes to end
+            except (AttributeError, ValueError, TypeError):
+                return 9999
+        
+        try:
+            sorted_projects = sorted(projects, key=extract_start_year)
+            self.logger.info(f"[PROJECT_SORTING] Sorted {len(projects)} projects chronologically")
+            return sorted_projects
+        except Exception as e:
+            self.logger.warning(f"[PROJECT_SORTING] Error sorting projects: {str(e)}, returning original order")
+            return projects
+
+    async def _extract_projects_from_sources_batch(self, sources: List[NotebookRAGSource]) -> List[ProjectData]:
+        """
+        Batch process multiple sources for professional activity extraction.
+        Uses single LLM instance and batched content processing for optimal performance.
+        
+        Args:
+            sources: List of RAG sources to process
+            
+        Returns:
+            List of all professional activities found across all sources
+        """
+        if not sources:
+            return []
+            
+        try:
+            # Removed execution state tracking to fix Redis async/sync errors
+            
+            self.logger.debug(f"[BATCH_EXTRACTION] Processing {len(sources)} sources in batch")
+            
+            # Process all sources in single batch - no loop needed
+            self.logger.debug(f"[BATCH_EXTRACTION] Processing all {len(sources)} sources in single call")
+            
+            # Create combined content for AI analysis
+            combined_content = ""
+            source_boundaries = []  # Track where each source starts/ends
+            current_pos = 0
+            
+            for idx, source in enumerate(sources):
+                content = source.content
+                source_start = current_pos
+                combined_content += f"\n--- SOURCE {idx + 1} START ---\n{content}\n--- SOURCE {idx + 1} END ---\n"
+                current_pos = len(combined_content)
+                source_boundaries.append((source_start, current_pos, source))
+            
+            # Process all sources with single AI call
+            all_activities = await self._extract_projects_from_batch_content(combined_content, sources)
+            
+            self.logger.info(f"[BATCH_EXTRACTION] Total extraction: {len(all_activities)} activities from {len(sources)} sources")
+            
+            # Removed execution state tracking to fix Redis async/sync errors
+                
+            return all_activities
+            
+        except Exception as e:
+            self.logger.error(f"[BATCH_EXTRACTION] Error in batch processing: {str(e)}")
+            # Fallback to individual processing
+            self.logger.info("[BATCH_EXTRACTION] Falling back to individual source processing")
+            return await self._extract_projects_from_sources_individual(sources)
+
+    async def _extract_projects_from_sources_individual(self, sources: List[NotebookRAGSource]) -> List[ProjectData]:
+        """Fallback individual processing method"""
+        all_activities = []
+        for source in sources:
+            activities_in_source = await self._extract_projects_from_content(source)
+            all_activities.extend(activities_in_source)
+        return all_activities
+
+    async def _extract_projects_from_batch_content(self, combined_content: str, sources: List[NotebookRAGSource]) -> List[ProjectData]:
+        """
+        Extract activities from combined batch content using cached LLM.
+        Processes multiple sources in a single AI call for maximum efficiency.
+        """
+        try:
+            # Check cache first (using combined content hash)
+            cache_key = await self._get_extraction_cache_key(combined_content)
+            cached_activities = await self._get_cached_ai_extraction(cache_key)
+            if cached_activities is not None:
+                self.logger.debug(f"[BATCH_AI] Using cached batch extraction with {len(cached_activities)} activities")
+                return cached_activities
+
+            # Get cached LLM instance
+            llm = await self._get_cached_llm()
+            if not llm:
+                self.logger.warning("[BATCH_AI] No notebook LLM available for batch extraction")
+                return []
+
+            # Create batch extraction prompt
+            prompt = await self._build_batch_project_extraction_prompt(combined_content, len(sources))
+            
+            # Single AI call for the entire batch with extended timeout for large batch processing
+            response = await llm.generate(prompt, timeout=300)  # 5 minutes for batch processing
+            ai_response = response.text
+            
+            # Parse AI response into ProjectData objects
+            batch_activities = await self._parse_batch_ai_extraction_response(ai_response, sources)
+            
+            # Cache the results
+            await self._cache_ai_extraction(cache_key, batch_activities)
+            
+            self.logger.debug(f"[BATCH_AI] Batch AI extraction found {len(batch_activities)} activities")
+            return batch_activities
+            
+        except Exception as e:
+            self.logger.error(f"[BATCH_AI] Error in batch AI extraction: {str(e)}")
+            self.logger.error(f"[BATCH_AI] Full traceback: {traceback.format_exc()}")
+            return []
+
+    async def _build_batch_project_extraction_prompt(self, combined_content: str, source_count: int) -> str:
+        """Build optimized prompt for comprehensive extraction without truncation"""
+        # FIXED: Remove 16k truncation limit to process all content
+        return f"""
+Extract professional activities, projects, work experiences, and accomplishments from the following {source_count} document sources.
+
+{combined_content}
+
+Instructions:
+- Extract ALL professional activities across ALL sources - DO NOT MISS ANY
+- Include work projects, research, publications, presentations, awards, leadership roles
+- For each activity, provide: name, description, company/organization, time period
+- Return as JSON array: [{{"name": "...", "description": "...", "company": "...", "year": "..."}}]
+- If information is missing, use "Not specified"
+- Focus on substantial professional accomplishments and experiences
+- IMPORTANT: Process the entire content, not just the beginning
+
+Return ONLY the JSON array, no other text.
+"""
+
+    async def _parse_batch_ai_extraction_response(self, ai_response: str, sources: List[NotebookRAGSource]) -> List[ProjectData]:
+        """Parse batch AI response into ProjectData objects"""
+        try:
+            # Reuse existing parsing logic but handle batch format
+            # For simplicity, create a dummy source for batch processing
+            dummy_source = sources[0] if sources else NotebookRAGSource(
+                content="", similarity_score=0.0, document_id="batch", chunk_index=0
+            )
+            
+            return await self._parse_ai_extraction_response(ai_response, dummy_source)
+            
+        except Exception as e:
+            self.logger.error(f"[BATCH_PARSE] Error parsing batch AI response: {str(e)}")
             return []
 
     async def _extract_projects_from_content(self, source: NotebookRAGSource) -> List[ProjectData]:
         """
-        Extract project information from a single content source using patterns and NLP.
+        Extract professional activity information from a single content source using hybrid approach (minimal structure + AI).
         
         Args:
-            source: RAG source to extract projects from
+            source: RAG source to extract professional activities from
             
         Returns:
-            List of projects found in the content
+            List of professional activities found in the content
+        """
+        try:
+            content = source.content
+            activities = []
+            
+            # Always use AI-first approach with minimal structure detection as fallback
+            ai_activities = await self._extract_projects_with_ai(source)
+            
+            if ai_activities and len(ai_activities) >= 2:
+                # AI found good results, use them
+                activities = ai_activities
+                self.logger.debug(f"[STRUCTURED_EXTRACTION] AI extraction found {len(ai_activities)} activities")
+            else:
+                # AI didn't find much, try minimal structural patterns as fallback
+                self.logger.info(f"[STRUCTURED_EXTRACTION] AI found only {len(ai_activities)} activities, trying minimal structure fallback")
+                structure_activities = await self._extract_projects_with_regex(source)
+                
+                # Merge AI and structure results
+                activities = await self._merge_and_deduplicate_projects(ai_activities, structure_activities)
+                self.logger.debug(f"[STRUCTURED_EXTRACTION] After AI+structure merge: {len(activities)} activities")
+            
+            return activities
+            
+        except Exception as e:
+            self.logger.error(f"[STRUCTURED_EXTRACTION] Error extracting from content: {str(e)}")
+            return []
+    
+    async def _extract_projects_with_regex(self, source: NotebookRAGSource) -> List[ProjectData]:
+        """
+        Minimal structure-based extraction with universal patterns only.
+        Most extraction work is now delegated to AI for generalization.
         """
         try:
             import re
             content = source.content
             projects = []
             
-            # Common project indicators and patterns
-            project_patterns = [
-                # Direct project mentions
-                r'(?:project|initiative|program|solution|implementation|development|system|platform|application|tool|service|product)[\s\-:]+([^.\n]{10,100})',
-                # Work descriptions that indicate projects
-                r'(?:built|developed|created|implemented|designed|architected|delivered|deployed|launched)[\s\-:]+([^.\n]{10,100})',
-                # Led/managed project patterns
-                r'(?:led|managed|oversaw|directed|coordinated)[\s\-:]+([^.\n]{10,150})',
-                # Experience with specific technologies/solutions
-                r'(?:worked on|involved in|contributed to|participated in)[\s\-:]+([^.\n]{10,100})'
+            # MINIMAL universal structure patterns only - no specific terminology
+            # These patterns focus on document structure, not content-specific terms
+            universal_patterns = [
+                # Bullet points or numbered lists (universal structure)
+                r'[•\-*]\s*([^\n]{15,200})',
+                # Sentences with years (universal temporal indicators) 
+                r'([^.!?\n]{20,200}(?:19|20)\d{2}[^.!?\n]{0,100})',
+                # Capitalized phrases (universal proper noun structure)
+                r'\b([A-Z][^.!?\n]{20,150})',
             ]
             
-            # Company name patterns
-            company_patterns = [
-                r'(?:at|for|with|@)\s+([A-Z][a-zA-Z\s&\.]{2,30}(?:Inc|LLC|Corp|Ltd|Company|Group|Solutions|Technologies|Systems|Consulting)?)',
-                r'([A-Z][a-zA-Z\s&\.]{2,30}(?:Inc|LLC|Corp|Ltd|Company|Group|Solutions|Technologies|Systems|Consulting))',
-                r'(?:Company|Organization|Employer|Client):\s*([A-Z][a-zA-Z\s&\.]{2,40})'
-            ]
-            
-            # Year patterns - flexible to capture various formats
-            year_patterns = [
-                r'(?:19|20)\d{2}(?:\s*[-–]\s*(?:19|20)\d{2}|\s*[-–]\s*present)?',
-                r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(?:19|20)\d{2}(?:\s*[-–]\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(?:19|20)\d{2}|\s*[-–]\s*present)?',
-                r'\b(?:19|20)\d{2}\b'
-            ]
-            
-            # Extract potential projects
-            for pattern in project_patterns:
-                matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+            # Process each pattern with minimal filtering
+            for pattern in universal_patterns:
+                matches = re.finditer(pattern, content, re.DOTALL)
                 for match in matches:
-                    project_desc = match.group(1).strip()
+                    text_fragment = match.group(1).strip()
                     
-                    # Clean up the description
-                    project_desc = re.sub(r'[\r\n]+', ' ', project_desc)
-                    project_desc = re.sub(r'\s+', ' ', project_desc).strip()
+                    # Universal cleanup (structure-based, not content-specific)
+                    text_fragment = re.sub(r'[\r\n]+', ' ', text_fragment)
+                    text_fragment = re.sub(r'\s+', ' ', text_fragment).strip()
                     
-                    if len(project_desc) < 10:  # Skip very short matches
+                    # Only filter by length - no content assumptions
+                    if len(text_fragment) < 15 or len(text_fragment) > 300:
                         continue
                     
-                    # Extract project name from description (first few words)
-                    name_match = re.match(r'^([^,;.!?]{5,50})', project_desc)
-                    project_name = name_match.group(1).strip() if name_match else project_desc[:50]
-                    
-                    # Try to find company in surrounding context
-                    context_start = max(0, match.start() - 200)
-                    context_end = min(len(content), match.end() + 200)
+                    # Extract context for AI analysis
+                    context_start = max(0, match.start() - 300)
+                    context_end = min(len(content), match.end() + 300)
                     context = content[context_start:context_end]
                     
-                    company = await self._extract_company_from_context(context, company_patterns)
-                    year = await self._extract_year_from_context(context, year_patterns)
-                    
+                    # Create minimal project with AI-friendly metadata
                     project = ProjectData(
-                        name=project_name,
-                        company=company if company else "N/A",
-                        year=year if year else "N/A",
-                        description=project_desc,
+                        name=text_fragment[:100],  # Use fragment as name candidate
+                        company="TBD",  # Let AI determine
+                        year="TBD",     # Let AI determine
+                        description=text_fragment,
                         source_chunk_id=source.metadata.get('chunk_id'),
-                        confidence_score=0.7,  # Base confidence
+                        confidence_score=0.3,  # Low confidence - needs AI refinement
                         metadata={
                             'source_document': source.document_name,
-                            'extraction_pattern': pattern[:20] + "...",
-                            'context_length': len(context)
+                            'extraction_method': 'minimal_structure',
+                            'context': context[:500],  # Provide context for AI
+                            'requires_ai_processing': True
                         }
                     )
                     
                     projects.append(project)
             
-            self.logger.debug(f"[PROJECT_EXTRACTION] Extracted {len(projects)} projects from source")
+            self.logger.debug(f"[MINIMAL_EXTRACTION] Found {len(projects)} structural candidates for AI processing")
             return projects
             
         except Exception as e:
-            self.logger.error(f"[PROJECT_EXTRACTION] Error extracting from content: {str(e)}")
+            self.logger.error(f"[PROJECT_EXTRACTION] Error in minimal extraction: {str(e)}")
             return []
-
-    async def _extract_company_from_context(self, context: str, company_patterns: List[str]) -> Optional[str]:
-        """Extract company name from context using patterns."""
+    
+    async def _extract_projects_with_ai(self, source: NotebookRAGSource) -> List[ProjectData]:
+        """
+        Extract projects using AI-powered analysis when regex patterns fail.
+        """
         try:
-            import re
-            for pattern in company_patterns:
-                matches = re.finditer(pattern, context, re.IGNORECASE)
-                for match in matches:
-                    company = match.group(1).strip()
-                    # Clean up company name
-                    company = re.sub(r'\s+', ' ', company).strip()
-                    if len(company) >= 3 and not company.lower() in ['the', 'and', 'with', 'for']:
-                        return company
-            return None
-        except Exception:
-            return None
+            content = source.content
+            
+            # Check cache first
+            cache_key = await self._get_extraction_cache_key(content)
+            cached_projects = await self._get_cached_ai_extraction(cache_key)
+            if cached_projects is not None:
+                self.logger.debug(f"[PROJECT_EXTRACTION] Using cached AI extraction with {len(cached_projects)} projects")
+                return cached_projects
+            
+            # Get cached LLM instance (eliminates redundant config fetches and instantiations)
+            llm = await self._get_cached_llm()
+            if not llm:
+                self.logger.warning("[PROJECT_EXTRACTION] No notebook LLM available for AI extraction")
+                return []
+            
+            # Create extraction prompt
+            prompt = await self._build_project_extraction_prompt(content)
+            
+            # Get AI response
+            response = await llm.generate(prompt)
+            ai_response = response.text
+            
+            # Parse AI response into ProjectData objects
+            ai_projects = await self._parse_ai_extraction_response(ai_response, source)
+            
+            # Cache the results
+            await self._cache_ai_extraction(cache_key, ai_projects)
+            
+            self.logger.debug(f"[PROJECT_EXTRACTION] AI extraction found {len(ai_projects)} projects")
+            return ai_projects
+            
+        except Exception as e:
+            self.logger.error(f"[PROJECT_EXTRACTION] Error in AI extraction: {str(e)}")
+            return []
+    
+    async def _build_project_extraction_prompt(self, content: str) -> str:
+        """
+        Build intelligent prompt for general-purpose entity extraction.
+        Now handles any type of professional activity, not just "projects".
+        """
+        # Truncate content if too long to avoid token limits
+        max_content_length = 4000
+        if len(content) > max_content_length:
+            content = content[:max_content_length] + "..."
+        
+        prompt = f"""
+Analyze the following text and identify ALL professional activities, work experiences, achievements, and notable activities mentioned. Be comprehensive and identify any structured professional information regardless of format or language.
 
-    async def _extract_year_from_context(self, context: str, year_patterns: List[str]) -> Optional[str]:
-        """Extract year information from context using patterns."""
+Extrract ANY type of professional activity including but not limited to:
+- Work projects, assignments, initiatives, implementations
+- Employment positions, roles, responsibilities
+- Business ventures, startups, companies founded or managed
+- Consulting work, freelance projects, contract work
+- Research activities, academic work, publications
+- Products built, systems developed, solutions delivered
+- Leadership roles, team management, mentoring
+- Training provided, courses taught, presentations given
+- Awards, certifications, achievements, recognitions
+- Volunteer work with professional relevance
+- Personal projects with career impact
+- Any organized professional activity with measurable outcomes
+
+For each activity found, provide:
+- name: Clear, descriptive name of the activity (extract from context, don't assume format)
+- company: Organization, employer, client, or context where this occurred
+- year: Time period when this occurred (extract any temporal information available)
+- description: What was accomplished, built, achieved, or delivered
+- confidence: Your confidence in this extraction (0.0-1.0)
+
+IMPORTANT GUIDELINES:
+- Extract information AS-IS from the text, don't impose format assumptions
+- Work with ANY language, culture, or professional context
+- Identify activities even if they don't use standard business terminology  
+- Don't require specific keywords like "project" or "developed"
+- Extract from any document type (resume, bio, portfolio, narrative, etc.)
+- Include activities that show professional growth or skill demonstration
+
+Return ONLY a valid JSON array with this exact structure:
+[
+  {{
+    "name": "Activity Name",
+    "company": "Organization/Context", 
+    "year": "Time Period",
+    "description": "What was accomplished or delivered",
+    "confidence": 0.9
+  }}
+]
+
+Text to analyze:
+{content}
+"""
+        return prompt
+    
+    async def _parse_ai_extraction_response(self, response: str, source: NotebookRAGSource) -> List[ProjectData]:
+        """
+        Parse AI response into ProjectData objects.
+        """
         try:
-            import re
-            for pattern in year_patterns:
-                matches = re.finditer(pattern, context, re.IGNORECASE)
-                for match in matches:
-                    year = match.group(0).strip()
-                    # Validate year is reasonable
-                    if re.search(r'(?:19|20)\d{2}', year):
-                        return year
-            return None
+            # Clean response - extract JSON from response
+            response = response.strip()
+            
+            # Find JSON array in response
+            start_idx = response.find('[')
+            end_idx = response.rfind(']')
+            
+            if start_idx == -1 or end_idx == -1:
+                self.logger.warning("[PROJECT_EXTRACTION] No JSON array found in AI response")
+                return []
+            
+            json_str = response[start_idx:end_idx + 1]
+            
+            # Parse JSON
+            try:
+                projects_data = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                self.logger.error(f"[PROJECT_EXTRACTION] JSON decode error: {str(e)}")
+                return []
+            
+            if not isinstance(projects_data, list):
+                self.logger.warning("[PROJECT_EXTRACTION] AI response is not a list")
+                return []
+            
+            projects = []
+            for item in projects_data:
+                if not isinstance(item, dict):
+                    continue
+                
+                # Validate required fields
+                if not all(key in item for key in ['name', 'company', 'year', 'description']):
+                    continue
+                
+                # Create ProjectData object
+                project = ProjectData(
+                    name=str(item['name'])[:100],  # Limit length
+                    company=str(item['company'])[:100],
+                    year=str(item['year'])[:50],
+                    description=str(item['description'])[:500],
+                    source_chunk_id=source.metadata.get('chunk_id'),
+                    confidence_score=float(item.get('confidence', 0.8)),
+                    metadata={
+                        'source_document': source.document_name,
+                        'extraction_method': 'ai',
+                        'ai_confidence': float(item.get('confidence', 0.8))
+                    }
+                )
+                projects.append(project)
+            
+            return projects
+            
+        except Exception as e:
+            self.logger.error(f"[PROJECT_EXTRACTION] Error parsing AI response: {str(e)}")
+            return []
+    
+    async def _merge_and_deduplicate_projects(self, regex_projects: List[ProjectData], ai_projects: List[ProjectData]) -> List[ProjectData]:
+        """
+        Merge and deduplicate projects from regex and AI extraction.
+        """
+        try:
+            # Start with AI projects (higher confidence for completeness)
+            merged_projects = list(ai_projects)
+            
+            # Add unique regex projects
+            for regex_project in regex_projects:
+                is_duplicate = False
+                
+                for existing_project in merged_projects:
+                    # Check for duplicates using name similarity
+                    if self._are_projects_similar(regex_project.name, existing_project.name):
+                        is_duplicate = True
+                        break
+                
+                if not is_duplicate:
+                    merged_projects.append(regex_project)
+            
+            self.logger.debug(f"[PROJECT_EXTRACTION] Merged {len(ai_projects)} AI + {len(regex_projects)} regex = {len(merged_projects)} unique projects")
+            return merged_projects
+            
+        except Exception as e:
+            self.logger.error(f"[PROJECT_EXTRACTION] Error merging projects: {str(e)}")
+            return regex_projects  # Fallback to regex results
+    
+    def _are_projects_similar(self, name1: str, name2: str) -> bool:
+        """
+        Check if two project names are similar enough to be considered duplicates.
+        """
+        try:
+            # Normalize names for comparison
+            norm1 = re.sub(r'[^a-zA-Z0-9\s]', '', name1.lower()).strip()
+            norm2 = re.sub(r'[^a-zA-Z0-9\s]', '', name2.lower()).strip()
+            
+            # Check exact match
+            if norm1 == norm2:
+                return True
+            
+            # Check if one is contained in the other (with length threshold)
+            if len(norm1) > 5 and len(norm2) > 5:
+                if norm1 in norm2 or norm2 in norm1:
+                    return True
+            
+            # Simple word overlap check
+            words1 = set(norm1.split())
+            words2 = set(norm2.split())
+            
+            if len(words1) > 0 and len(words2) > 0:
+                overlap = len(words1.intersection(words2))
+                total_unique = len(words1.union(words2))
+                similarity = overlap / total_unique if total_unique > 0 else 0
+                
+                return similarity > 0.6  # 60% word overlap threshold
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"[PROJECT_EXTRACTION] Error comparing project names: {str(e)}")
+            return False
+    
+    async def _get_extraction_cache_key(self, content: str) -> str:
+        """
+        Generate cache key based on content hash.
+        """
+        try:
+            content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+            return f"project_extraction:{content_hash}"
         except Exception:
+            # Fallback to timestamp-based key
+            return f"project_extraction:{int(time.time())}"
+    
+    async def _get_cached_ai_extraction(self, cache_key: str) -> Optional[List[ProjectData]]:
+        """
+        Get cached AI extraction results.
+        """
+        try:
+            redis_client = get_redis_client()
+            if not redis_client:
+                return None
+            
+            cached_data = redis_client.get(cache_key)
+            if not cached_data:
+                return None
+            
+            # Parse cached JSON - handle bytes if necessary
+            if isinstance(cached_data, bytes):
+                cached_data = cached_data.decode('utf-8')
+            projects_data = json.loads(cached_data)
+            projects = []
+            
+            for item in projects_data:
+                project = ProjectData(
+                    name=item['name'],
+                    company=item['company'],
+                    year=item['year'],
+                    description=item['description'],
+                    source_chunk_id=item.get('source_chunk_id'),
+                    confidence_score=float(item['confidence_score']),
+                    metadata=item.get('metadata', {})
+                )
+                projects.append(project)
+            
+            return projects
+            
+        except Exception as e:
+            self.logger.error(f"[PROJECT_EXTRACTION] Error getting cached extraction: {str(e)}")
             return None
+    
+    async def _cache_ai_extraction(self, cache_key: str, projects: List[ProjectData]) -> None:
+        """
+        Cache AI extraction results.
+        """
+        try:
+            redis_client = get_redis_client()
+            if not redis_client:
+                return
+            
+            # Convert projects to JSON-serializable format
+            projects_data = []
+            for project in projects:
+                project_dict = {
+                    'name': project.name,
+                    'company': project.company,
+                    'year': project.year,
+                    'description': project.description,
+                    'source_chunk_id': project.source_chunk_id,
+                    'confidence_score': project.confidence_score,
+                    'metadata': project.metadata
+                }
+                projects_data.append(project_dict)
+            
+            # Cache with reasonable TTL (2 hours)
+            cache_ttl = 7200
+            redis_client.setex(cache_key, cache_ttl, json.dumps(projects_data))
+            
+            self.logger.debug(f"[PROJECT_EXTRACTION] Cached {len(projects)} projects with key: {cache_key}")
+            
+        except Exception as e:
+            self.logger.error(f"[PROJECT_EXTRACTION] Error caching extraction: {str(e)}")
+
+    async def _extract_metadata_with_ai(self, context: str, entity_name: str) -> dict:
+        """Extract metadata using AI instead of hardcoded patterns."""
+        try:
+            # Use AI to extract company and year information
+            prompt = f"""
+Analyze this text and extract metadata for the professional activity: "{entity_name}"
+
+Text: {context[:1000]}
+
+Return ONLY a JSON object with:
+{{
+  "company": "Organization/employer/client name or 'Not specified'",
+  "year": "Time period or 'Not specified'"
+}}
+"""
+            
+            # Get cached LLM instance for metadata extraction
+            try:
+                llm = await self._get_cached_llm()
+                if llm:
+                    response = await llm.generate(prompt)
+                    
+                    # Parse AI response
+                    response_text = response.text.strip()
+                    start_idx = response_text.find('{')
+                    end_idx = response_text.rfind('}')
+                    
+                    if start_idx != -1 and end_idx != -1:
+                        json_str = response_text[start_idx:end_idx + 1]
+                        metadata = json.loads(json_str)
+                        return {
+                            'company': metadata.get('company', 'Not specified'),
+                            'year': metadata.get('year', 'Not specified')
+                        }
+            except Exception as e:
+                self.logger.debug(f"[AI_METADATA] AI extraction failed: {str(e)}")
+            
+            # Fallback to "Not specified" instead of hardcoded patterns
+            return {'company': 'Not specified', 'year': 'Not specified'}
+            
+        except Exception as e:
+            self.logger.error(f"[AI_METADATA] Error in AI metadata extraction: {str(e)}")
+            return {'company': 'Not specified', 'year': 'Not specified'}
+    
+    async def _should_extract_structured_data(self, query: str, sources: List[NotebookRAGSource]) -> bool:
+        """
+        Use AI to determine if query requires structured professional data extraction.
+        Replaces hardcoded keyword matching with intelligent analysis.
+        """
+        try:
+            # Quick heuristic checks first (universal patterns)
+            if len(query.strip()) < 3:
+                return False
+            
+            # Check if sources contain structured professional information
+            has_professional_content = False
+            for source in sources[:3]:  # Sample first few sources
+                content_sample = source.content[:500].lower()
+                # Look for universal professional indicators (not language-specific)
+                if any(indicator in content_sample for indicator in [
+                    '20', '19',  # Years (universal)
+                    '\n-', '\n•', '\n*',  # Lists (universal structure)
+                    ':', ';'  # Structured text indicators
+                ]):
+                    has_professional_content = True
+                    break
+            
+            if not has_professional_content:
+                return False
+            
+            # Use AI for intelligent query analysis with cached LLM
+            try:
+                llm = await self._get_cached_llm()
+                if llm:
+                    prompt = f"""
+Analyze this query and determine if it's asking for comprehensive professional information that would benefit from structured extraction.
+
+Query: "{query}"
+
+Return ONLY "true" if the query is:
+- Asking for lists, summaries, or comprehensive information
+- Requesting professional background, experience, or activities
+- Wanting to know about accomplishments, work history, or capabilities
+- Seeking structured information rather than specific details
+
+Return ONLY "false" if the query is:
+- Asking for specific details about one particular thing
+- A narrow technical question
+- Looking for definitions or explanations
+
+Return only: true or false
+"""
+                    response = await llm.generate(prompt)
+                    result = response.text.strip().lower()
+                    return result == 'true'
+                        
+            except Exception as e:
+                self.logger.debug(f"[QUERY_ANALYSIS] AI analysis failed: {str(e)}")
+            
+            # Fallback to conservative approach - only extract for obviously comprehensive queries
+            query_lower = query.lower()
+            comprehensive_indicators = [
+                'list', 'all', 'summary', 'overview', 'tell me about',
+                'what', 'who', 'where', 'when', 'how many',
+                'background', 'experience', 'history',
+                'can you', 'please', 'show me'
+            ]
+            
+            return any(indicator in query_lower for indicator in comprehensive_indicators)
+            
+        except Exception as e:
+            self.logger.error(f"[QUERY_ANALYSIS] Error in query analysis: {str(e)}")
+            return False  # Conservative fallback
 
     async def _complete_project_metadata(self, projects: List[ProjectData], sources: List[NotebookRAGSource]) -> List[ProjectData]:
         """
@@ -2249,34 +2641,25 @@ class NotebookRAGService:
             for project in projects:
                 updated_project = project.copy()
                 
-                # If company or year is missing, try to find it in related chunks
-                if project.company == "N/A" or project.year == "N/A":
+                # If company or year is missing, try to find it in related chunks using AI
+                if project.company in ["N/A", "TBD"] or project.year in ["N/A", "TBD"]:
                     # Look for the project name or similar description in other sources
                     for source in sources:
                         if await self._is_related_content(project.name, project.description, source.content):
-                            # Try to extract missing metadata from this related source
-                            if project.company == "N/A":
-                                company_patterns = [
-                                    r'(?:at|for|with|@)\s+([A-Z][a-zA-Z\s&\.]{2,30}(?:Inc|LLC|Corp|Ltd|Company|Group|Solutions|Technologies|Systems|Consulting)?)',
-                                    r'([A-Z][a-zA-Z\s&\.]{2,30}(?:Inc|LLC|Corp|Ltd|Company|Group|Solutions|Technologies|Systems|Consulting))',
-                                ]
-                                company = await self._extract_company_from_context(source.content, company_patterns)
-                                if company:
-                                    updated_project.company = company
-                                    updated_project.confidence_score += 0.1
+                            # Use AI to extract missing metadata from related source
+                            metadata = await self._extract_metadata_with_ai(source.content, project.name)
                             
-                            if project.year == "N/A":
-                                year_patterns = [
-                                    r'(?:19|20)\d{2}(?:\s*[-–]\s*(?:19|20)\d{2}|\s*[-–]\s*present)?',
-                                    r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(?:19|20)\d{2}(?:\s*[-–]\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(?:19|20)\d{2}|\s*[-–]\s*present)?'
-                                ]
-                                year = await self._extract_year_from_context(source.content, year_patterns)
-                                if year:
-                                    updated_project.year = year
-                                    updated_project.confidence_score += 0.1
+                            if project.company in ["N/A", "TBD"] and metadata.get('company') != 'Not specified':
+                                updated_project.company = metadata['company']
+                                updated_project.confidence_score += 0.1
+                            
+                            if project.year in ["N/A", "TBD"] and metadata.get('year') != 'Not specified':
+                                updated_project.year = metadata['year']
+                                updated_project.confidence_score += 0.1
                             
                             # Break if we found both
-                            if updated_project.company != "N/A" and updated_project.year != "N/A":
+                            if (updated_project.company not in ["N/A", "TBD"] and 
+                                updated_project.year not in ["N/A", "TBD"]):
                                 break
                 
                 completed.append(updated_project)
@@ -2703,8 +3086,8 @@ class NotebookRAGService:
             # Clean up test connection
             try:
                 connections.disconnect(alias=connection_args['alias'] + "_test")
-            except:
-                pass  # Ignore cleanup errors
+            except Exception as cleanup_err:
+                self.logger.debug(f"[TEST_CLEANUP] Failed to disconnect test connection for {collection_name}: {cleanup_err}")
             
             return {
                 'success': True,
@@ -2829,6 +3212,171 @@ class NotebookRAGService:
             self.logger.error(f"[PROGRESSIVE_LOADING] Error determining if progressive loading needed: {str(e)}")
             return False
 
+    async def execute_minimal_retrieval(self, message: str, notebook_id: str, db: Session) -> NotebookRAGResponse:
+        """
+        Execute minimal retrieval for simple lookups.
+        Fast, focused retrieval using single strategy with limited sources.
+        """
+        self.logger.info(f"[MINIMAL_RETRIEVAL] Executing fast retrieval for simple lookup")
+        
+        try:
+            # Use simplified retrieval with limited scope
+            sources = await self._execute_single_strategy_retrieval(
+                notebook_id=notebook_id,
+                query=message,
+                max_sources=8,
+                threshold=0.3
+            )
+            
+            self.logger.info(f"[MINIMAL_RETRIEVAL] Retrieved {len(sources)} sources")
+            
+            return NotebookRAGResponse(
+                notebook_id=notebook_id,
+                query=message,
+                sources=sources,
+                total_sources=len(sources),
+                queried_documents=1,  # Minimal scan
+                collections_searched=["notebook_chunks"]
+            )
+            
+        except Exception as e:
+            self.logger.error(f"[MINIMAL_RETRIEVAL] Error in minimal retrieval: {str(e)}")
+            raise
+
+    async def execute_balanced_retrieval(self, message: str, notebook_id: str, db: Session) -> NotebookRAGResponse:
+        """
+        Execute balanced retrieval for standard queries.
+        Moderate resource usage with good result quality.
+        """
+        self.logger.info(f"[BALANCED_RETRIEVAL] Executing balanced retrieval")
+        
+        try:
+            # Use moderate scope retrieval
+            sources = await self._execute_dual_strategy_retrieval(
+                notebook_id=notebook_id,
+                query=message,
+                max_sources=20,
+                threshold=0.3
+            )
+            
+            self.logger.info(f"[BALANCED_RETRIEVAL] Retrieved {len(sources)} sources")
+            
+            return NotebookRAGResponse(
+                notebook_id=notebook_id,
+                query=message,
+                sources=sources,
+                total_sources=len(sources),
+                queried_documents=min(5, len(sources)),  # Moderate scan
+                collections_searched=["notebook_chunks"]
+            )
+            
+        except Exception as e:
+            self.logger.error(f"[BALANCED_RETRIEVAL] Error in balanced retrieval: {str(e)}")
+            raise
+
+    async def execute_comprehensive_retrieval(self, message: str, notebook_id: str, db: Session, max_sources: int = 50) -> NotebookRAGResponse:
+        """
+        Execute comprehensive retrieval for complex analysis queries.
+        Uses existing full pipeline with all strategies and extensive scanning.
+        """
+        self.logger.info(f"[COMPREHENSIVE_RETRIEVAL] Executing full comprehensive retrieval")
+        
+        try:
+            # Use existing comprehensive approach - delegate to multi_stage_retrieval
+            intent_analysis = await self._analyze_query_intent(message)
+            
+            # Get total available documents for progressive loading decision
+            total_available = await self._get_total_available_documents(notebook_id)
+            
+            # Use generator to get the final comprehensive result
+            final_response = None
+            async for response in self.multi_stage_retrieval(
+                notebook_id=notebook_id,
+                query=message,
+                intent_analysis=intent_analysis,
+                total_available=total_available,
+                max_sources=max_sources
+            ):
+                final_response = response  # Keep the latest/final response
+                
+            return final_response
+            
+        except Exception as e:
+            self.logger.error(f"[COMPREHENSIVE_RETRIEVAL] Error in comprehensive retrieval: {str(e)}")
+            raise
+
+    async def _execute_single_strategy_retrieval(self, notebook_id: str, query: str, max_sources: int, threshold: float) -> List[NotebookRAGSource]:
+        """Execute single strategy retrieval for minimal approach."""
+        try:
+            # Simplified single-strategy retrieval
+            vector_settings = self._get_vector_settings()
+            embedding_function = self._get_embedding_function()
+            
+            # Get embedding with execution state tracking  
+            query_embedding = await self._get_query_embedding(query, embedding_function)
+            
+            # Simple Milvus search with single strategy
+            collection_name = f"notebook_{notebook_id}_chunks"
+            collection = Collection(collection_name)
+            
+            search_results = collection.search(
+                data=[query_embedding],
+                anns_field="vector",
+                param={"metric_type": "COSINE", "params": {"nprobe": 10}},
+                limit=max_sources,
+                expr=f'score >= {threshold}'
+            )
+            
+            sources = []
+            for hit in search_results[0]:
+                if hit.score >= threshold:
+                    sources.append(NotebookRAGSource(
+                        content=hit.entity.get('content', ''),
+                        metadata=hit.entity.get('metadata', {}),
+                        score=hit.score,
+                        document_id=hit.entity.get('document_id', ''),
+                        document_name=hit.entity.get('document_name', ''),
+                        collection=collection_name
+                    ))
+            
+            return sources
+            
+        except Exception as e:
+            self.logger.error(f"[SINGLE_STRATEGY] Error: {str(e)}")
+            return []
+
+    async def _execute_dual_strategy_retrieval(self, notebook_id: str, query: str, max_sources: int, threshold: float) -> List[NotebookRAGSource]:
+        """Execute dual strategy retrieval for balanced approach."""
+        try:
+            # Execute two complementary retrieval strategies
+            strategy1_sources = await self._execute_single_strategy_retrieval(
+                notebook_id, query, max_sources // 2, threshold
+            )
+            
+            # Second strategy with slightly different parameters
+            strategy2_sources = await self._execute_single_strategy_retrieval(
+                notebook_id, f"{query} project work", max_sources // 2, threshold + 0.05
+            )
+            
+            # Combine and deduplicate
+            all_sources = strategy1_sources + strategy2_sources
+            seen_content = set()
+            unique_sources = []
+            
+            for source in all_sources:
+                content_key = source.content[:100]  # Use first 100 chars as key
+                if content_key not in seen_content:
+                    seen_content.add(content_key)
+                    unique_sources.append(source)
+            
+            # Limit to max_sources and sort by score
+            unique_sources.sort(key=lambda x: x.score, reverse=True)
+            return unique_sources[:max_sources]
+            
+        except Exception as e:
+            self.logger.error(f"[DUAL_STRATEGY] Error: {str(e)}")
+            return []
+
     async def multi_stage_retrieval(
         self,
         notebook_id: str,
@@ -2892,41 +3440,21 @@ class NotebookRAGService:
             from app.core.db import SessionLocal
             db = SessionLocal()
             try:
-                # Check for enumeration mode or high-confidence comprehensive queries that need deterministic results
+                # Check for high-confidence comprehensive queries that need deterministic results
                 wants_comprehensive = intent_analysis.get("wants_comprehensive", False)
                 confidence = intent_analysis.get("confidence", 0)
-                enumeration_mode = intent_analysis.get("enumeration_mode", False)
-                enumeration_target = intent_analysis.get("enumeration_target")
                 
-                # Route to enumeration mode for enumeration queries
-                if enumeration_mode:
-                    self.logger.info(f"[MULTI_STAGE_ENUMERATION] Using enumeration mode for comprehensive listing")
-                    initial_response = await self.query_notebook_enumeration(
+                # Route to comprehensive mode for high-confidence comprehensive queries
+                if wants_comprehensive and confidence > 0.8:
+                    self.logger.info(f"[MULTI_STAGE_COMPREHENSIVE] Using deterministic comprehensive mode (confidence: {confidence:.2f})")
+                    
+                    initial_response = await self.query_notebook_adaptive(
                         db=db,
                         notebook_id=notebook_id,
                         query=query,
-                        enumeration_target=enumeration_target,
                         max_sources=initial_batch_size,
                         include_metadata=True,
                         collection_filter=collection_filter
-                    )
-                # Route to comprehensive mode for high-confidence comprehensive queries
-                elif wants_comprehensive and confidence > 0.8:
-                    self.logger.info(f"[MULTI_STAGE_COMPREHENSIVE] Using deterministic comprehensive mode (confidence: {confidence:.2f})")
-                    
-                    # Determine content type from query
-                    query_lower = query.lower()
-                    if any(keyword in query_lower for keyword in ['project', 'company', 'companies', 'business', 'startup', 'firm', 'organization']):
-                        content_type = "projects"
-                    else:
-                        content_type = "general"
-                    
-                    initial_response = await self.query_notebook_comprehensive(
-                        db=db,
-                        notebook_id=notebook_id,
-                        query=query,
-                        content_type=content_type,
-                        include_metadata=True
                     )
                     
                     self.logger.info(f"[MULTI_STAGE_COMPREHENSIVE] Retrieved {len(initial_response.sources)} sources deterministically")
@@ -3002,19 +3530,7 @@ class NotebookRAGService:
                             expanded_batch_size = min(retrieved_so_far + batch_size + 20, total_available)
                             
                             # Use same mode as initial response for consistency
-                            if enumeration_mode:
-                                # For enumeration mode, we already got all results in stage 1
-                                # No need for additional batches - return empty to exit loop
-                                batch_response = NotebookRAGResponse(
-                                    notebook_id=notebook_id,
-                                    query=query,
-                                    sources=[],
-                                    total_sources=0,
-                                    queried_documents=0,
-                                    collections_searched=[]
-                                )
-                                self.logger.info(f"[MULTI_STAGE_ENUMERATION] All enumeration results retrieved in stage 1, skipping additional batches")
-                            elif wants_comprehensive and confidence > 0.8:
+                            if wants_comprehensive and confidence > 0.8:
                                 # For comprehensive mode, we already got all results in stage 1
                                 # No need for additional batches - return empty to exit loop
                                 batch_response = NotebookRAGResponse(
@@ -3258,12 +3774,29 @@ class NotebookRAGService:
             Raw results from this strategy
         """
         try:
+            # Check if this is a comprehensive query and override max_chunks if needed
+            intent_analysis = await self._analyze_query_intent(strategy.query)
+            is_comprehensive = (intent_analysis.get('query_type') == 'comprehensive' and 
+                               intent_analysis.get('quantity_intent') == 'all')
+            self.logger.info(f"[COMPREHENSIVE_STRATEGY_DEBUG] Intent: query_type={intent_analysis.get('query_type')}, quantity_intent={intent_analysis.get('quantity_intent')}, is_comprehensive={is_comprehensive}")
+            
+            # For comprehensive queries, override strategy max_chunks to ensure all data is retrieved
+            effective_top_k = strategy.max_chunks
+            if is_comprehensive:
+                try:
+                    total_available = await self.get_actual_content_count(notebook_id)
+                    effective_top_k = min(total_available, 100)  # Use all available, capped at reasonable limit
+                    self.logger.info(f"[COMPREHENSIVE_STRATEGY] Override strategy max_chunks from {strategy.max_chunks} to {effective_top_k} for comprehensive query")
+                except Exception as e:
+                    effective_top_k = 100  # Fallback to high limit
+                    self.logger.warning(f"Could not get content count for strategy override: {e}")
+            
             # Use the existing query_notebook method with strategy parameters
             result = await self.query_notebook(
                 db=db,
                 notebook_id=notebook_id,
                 query=strategy.query,
-                top_k=strategy.max_chunks,
+                top_k=effective_top_k,
                 include_metadata=include_metadata,
                 collection_filter=collection_filter
             )
@@ -3343,9 +3876,10 @@ class NotebookRAGService:
             # Sort sources by relevance/score if available
             try:
                 all_sources.sort(key=lambda x: x.metadata.get('score', 0.0) if x.metadata else 0.0, reverse=True)
-            except:
-                # If sorting fails, keep original order
-                pass
+            except (TypeError, AttributeError, KeyError) as e:
+                self.logger.warning(f"[COMBINE_RESULTS] Failed to sort sources by score: {e}, keeping original order")
+            except Exception as e:
+                self.logger.error(f"[COMBINE_RESULTS] Unexpected error sorting sources: {type(e).__name__}: {e}")
             
             # Apply verification rules
             if len(all_sources) < plan.verification.min_expected_results:
@@ -3357,13 +3891,29 @@ class NotebookRAGService:
                 all_sources = all_sources[:max_results]
                 self.logger.info(f"[COMBINE_RESULTS] Limited results to {max_results} sources")
             
+            # Combine extracted projects from all strategies
+            all_extracted_projects = []
+            for sr in strategy_results:
+                if hasattr(sr['result'], 'extracted_projects') and sr['result'].extracted_projects:
+                    all_extracted_projects.extend(sr['result'].extracted_projects)
+            
+            # Deduplicate projects by name and company
+            unique_projects = {}
+            for project in all_extracted_projects:
+                key = f"{project.name}:{project.company}"
+                if key not in unique_projects:
+                    unique_projects[key] = project
+            
+            combined_extracted_projects = list(unique_projects.values()) if unique_projects else None
+            
             return NotebookRAGResponse(
                 sources=all_sources,
                 total_sources=len(all_sources),
                 notebook_id=strategy_results[0]['result'].notebook_id,
                 query=strategy_results[0]['result'].query,
                 queried_documents=sum(sr['result'].queried_documents for sr in strategy_results),
-                collections_searched=list(set(col for sr in strategy_results for col in sr['result'].collections_searched))
+                collections_searched=list(set(col for sr in strategy_results for col in sr['result'].collections_searched)),
+                extracted_projects=combined_extracted_projects
             )
             
         except Exception as e:
@@ -3380,6 +3930,104 @@ class NotebookRAGService:
                     queried_documents=0,
                     collections_searched=[]
                 )
+
+    async def execute_correction_strategies(
+        self,
+        db: Session,
+        notebook_id: str,
+        original_response: NotebookRAGResponse,
+        correction_strategies: List
+    ) -> NotebookRAGResponse:
+        """
+        Execute correction strategies to improve incomplete results.
+        Called by verification loop when initial results are insufficient.
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID to query
+            original_response: Original RAG response that needs improvement
+            correction_strategies: List of RetrievalStrategy objects with correction approaches
+            
+        Returns:
+            NotebookRAGResponse with improved results, or original response if correction fails
+        """
+        try:
+            self.logger.info(f"[CORRECTION] Executing {len(correction_strategies)} correction strategies for notebook {notebook_id}")
+            
+            if not correction_strategies:
+                self.logger.warning("[CORRECTION] No correction strategies provided, returning original response")
+                return original_response
+            
+            # Track all sources found during correction
+            correction_sources = []
+            seen_document_ids = set()
+            
+            # Keep track of original sources to avoid duplicates
+            original_document_ids = {source.document_id for source in original_response.sources}
+            
+            # Execute each correction strategy
+            for i, strategy in enumerate(correction_strategies):
+                try:
+                    self.logger.info(f"[CORRECTION] Executing strategy {i+1}/{len(correction_strategies)}: {strategy.description}")
+                    
+                    # Execute the strategy using the existing query_notebook method with strategy parameters
+                    strategy_response = await self.query_notebook(
+                        db=db,
+                        notebook_id=notebook_id,
+                        query=strategy.query,
+                        top_k=strategy.max_chunks,
+                        include_metadata=True
+                    )
+                    
+                    if strategy_response and strategy_response.sources:
+                        self.logger.info(f"[CORRECTION] Strategy {i+1} found {len(strategy_response.sources)} sources")
+                        
+                        # Filter sources by threshold and avoid duplicates
+                        for source in strategy_response.sources:
+                            # Apply threshold filter
+                            if source.score >= strategy.threshold:
+                                # Avoid duplicates with original response and within correction results
+                                if (source.document_id not in original_document_ids and 
+                                    source.document_id not in seen_document_ids):
+                                    correction_sources.append(source)
+                                    seen_document_ids.add(source.document_id)
+                    else:
+                        self.logger.info(f"[CORRECTION] Strategy {i+1} found no sources")
+                        
+                except Exception as e:
+                    self.logger.error(f"[CORRECTION] Strategy {i+1} failed: {str(e)}")
+                    continue
+            
+            # Combine original and correction sources
+            if correction_sources:
+                # Sort correction sources by score (descending)
+                correction_sources.sort(key=lambda x: x.score, reverse=True)
+                
+                # Combine with original sources
+                combined_sources = list(original_response.sources) + correction_sources
+                
+                # Sort combined results by score
+                combined_sources.sort(key=lambda x: x.score, reverse=True)
+                
+                self.logger.info(f"[CORRECTION] Successfully improved results: {len(original_response.sources)} → {len(combined_sources)} total sources")
+                
+                # Return improved response
+                return NotebookRAGResponse(
+                    notebook_id=notebook_id,
+                    query=original_response.query,
+                    sources=combined_sources,
+                    total_sources=len(combined_sources),
+                    queried_documents=original_response.queried_documents + len(seen_document_ids),
+                    collections_searched=getattr(original_response, 'collections_searched', [])
+                )
+            else:
+                self.logger.warning("[CORRECTION] No additional sources found through correction strategies")
+                return original_response
+                
+        except Exception as e:
+            self.logger.error(f"[CORRECTION] Failed to execute correction strategies: {str(e)}")
+            # Return original response as fallback
+            return original_response
 
     async def health_check(self) -> Dict[str, Any]:
         """
@@ -3436,3 +4084,748 @@ class NotebookRAGService:
                 'overall_status': 'error',
                 'error': str(e)
             }
+
+
+class ConversationContextManager:
+    """
+    Manages conversation context and caches retrieval results to avoid repeated queries.
+    Implements Phase 2 of intelligent message handling with Redis-based caching.
+    """
+    
+    def __init__(self):
+        """Initialize ConversationContextManager with Redis client."""
+        self.logger = logging.getLogger(__name__)
+        self.context_ttl = 3600  # 1 hour cache TTL for conversation intelligence
+        self.redis_client = None
+        
+    def _get_redis_client(self):
+        """Get Redis client using existing infrastructure."""
+        if self.redis_client is None:
+            self.redis_client = get_redis_client(decode_responses=True)
+        return self.redis_client
+        
+    def _get_cache_key(self, conversation_id: str) -> str:
+        """Generate consistent cache key for conversation context."""
+        return f"conversation_context:{conversation_id}"
+        
+    def _get_metadata_key(self, conversation_id: str) -> str:
+        """Generate cache key for conversation metadata."""
+        return f"conversation_meta:{conversation_id}"
+    
+    async def cache_retrieval_context(self, conversation_id: str, context: Dict[str, Any]) -> bool:
+        """
+        Cache retrieval results and context for reuse in follow-up questions.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            context: Dictionary containing retrieval context with keys:
+                - sources: List of retrieved sources
+                - query: Original query that triggered retrieval
+                - extracted_entities: Extracted entities/projects from query
+                - timestamp: When retrieval was performed
+                - metadata: Additional retrieval metadata
+        
+        Returns:
+            bool: True if caching succeeded, False otherwise
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                self.logger.warning("Redis not available, skipping context caching")
+                return False
+            
+            # Prepare cache data with timestamp
+            cache_data = {
+                **context,
+                'cached_at': datetime.now().isoformat(),
+                'cache_ttl': self.context_ttl
+            }
+            
+            # Store in Redis with TTL
+            cache_key = self._get_cache_key(conversation_id)
+            redis_client.setex(
+                cache_key,
+                self.context_ttl,
+                json.dumps(cache_data, default=str)
+            )
+            
+            # Store metadata separately for quick checks
+            metadata = {
+                'query': context.get('query', '')[:100],  # Truncated query for metadata
+                'source_count': len(context.get('sources', [])),
+                'cached_at': cache_data['cached_at'],
+                'has_context': True
+            }
+            
+            metadata_key = self._get_metadata_key(conversation_id)
+            redis_client.setex(
+                metadata_key,
+                self.context_ttl,
+                json.dumps(metadata)
+            )
+            
+            self.logger.info(f"[CACHE] Cached context for conversation {conversation_id}: "
+                           f"{len(context.get('sources', []))} sources, TTL={self.context_ttl}s")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"[CACHE] Failed to cache retrieval context: {str(e)}")
+            return False
+    
+    async def get_cached_context(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cached context if still valid.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            
+        Returns:
+            Cached context dictionary or None if not found/expired
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return None
+                
+            cache_key = self._get_cache_key(conversation_id)
+            cached_data = redis_client.get(cache_key)
+            
+            if cached_data:
+                # Handle both bytes and string responses from Redis
+                if isinstance(cached_data, bytes):
+                    cached_data = cached_data.decode('utf-8')
+                
+                context = json.loads(cached_data)
+                self.logger.info(f"[CACHE] Retrieved cached context for conversation {conversation_id}: "
+                               f"{len(context.get('sources', []))} sources")
+                return context
+                
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"[CACHE] Failed to retrieve cached context: {str(e)}")
+            return None
+    
+    async def has_recent_context(self, conversation_id: str, max_age_minutes: int = 5) -> bool:
+        """
+        Check if we have recent retrieval context within the specified time window.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            max_age_minutes: Maximum age in minutes to consider "recent"
+            
+        Returns:
+            bool: True if recent context exists, False otherwise
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return False
+                
+            # Check metadata first (lighter operation)
+            metadata_key = self._get_metadata_key(conversation_id)
+            metadata_json = redis_client.get(metadata_key)
+            
+            if not metadata_json:
+                return False
+                
+            # Handle both bytes and string responses from Redis
+            if isinstance(metadata_json, bytes):
+                metadata_json = metadata_json.decode('utf-8')
+                
+            metadata = json.loads(metadata_json)
+            cached_at_str = metadata.get('cached_at')
+            
+            if not cached_at_str:
+                return False
+                
+            cached_at = datetime.fromisoformat(cached_at_str)
+            age_minutes = (datetime.now() - cached_at).total_seconds() / 60
+            
+            has_recent = age_minutes <= max_age_minutes
+            
+            if has_recent:
+                self.logger.info(f"[CACHE] Found recent context for conversation {conversation_id}: "
+                               f"{age_minutes:.1f} minutes old, {metadata.get('source_count', 0)} sources")
+            
+            return has_recent
+            
+        except Exception as e:
+            self.logger.error(f"[CACHE] Failed to check recent context: {str(e)}")
+            return False
+    
+    async def invalidate_context(self, conversation_id: str) -> bool:
+        """
+        Clear cached context (for new topics or explicit invalidation).
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            
+        Returns:
+            bool: True if invalidation succeeded, False otherwise
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return False
+                
+            cache_key = self._get_cache_key(conversation_id)
+            metadata_key = self._get_metadata_key(conversation_id)
+            
+            # Delete both context and metadata
+            deleted_count = redis_client.delete(cache_key, metadata_key)
+            
+            self.logger.info(f"[CACHE] Invalidated context for conversation {conversation_id}: "
+                           f"{deleted_count} keys deleted")
+            return deleted_count > 0
+            
+        except Exception as e:
+            self.logger.error(f"[CACHE] Failed to invalidate context: {str(e)}")
+            return False
+            
+    async def get_cache_stats(self, conversation_id: str) -> Dict[str, Any]:
+        """
+        Get cache statistics for monitoring and debugging.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            
+        Returns:
+            Dictionary with cache statistics
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return {'status': 'redis_unavailable'}
+                
+            metadata_key = self._get_metadata_key(conversation_id)
+            metadata_json = redis_client.get(metadata_key)
+            
+            if not metadata_json:
+                return {
+                    'status': 'no_cache',
+                    'conversation_id': conversation_id,
+                    'has_context': False
+                }
+                
+            # Handle both bytes and string responses from Redis
+            if isinstance(metadata_json, bytes):
+                metadata_json = metadata_json.decode('utf-8')
+                
+            metadata = json.loads(metadata_json)
+            
+            # Calculate TTL
+            cache_key = self._get_cache_key(conversation_id)
+            ttl_seconds = redis_client.ttl(cache_key)
+            
+            return {
+                'status': 'cached',
+                'conversation_id': conversation_id,
+                'source_count': metadata.get('source_count', 0),
+                'cached_at': metadata.get('cached_at'),
+                'ttl_seconds': ttl_seconds,
+                'query_preview': metadata.get('query', '')[:50]
+            }
+            
+        except Exception as e:
+            self.logger.error(f"[CACHE] Failed to get cache stats: {str(e)}")
+            return {'status': 'error', 'error': str(e)}
+    
+    async def store_conversation_response(self, conversation_id: str, user_message: str, ai_response: str, sources: List[Dict] = None) -> bool:
+        """
+        Store the conversation response for LLM-driven conversation intelligence.
+        
+        This allows the LLM to see what it previously said and make intelligent decisions
+        about whether to retrieve new data or work with existing context.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            user_message: The user's message
+            ai_response: The AI's complete response
+            sources: Optional sources used in the response
+            
+        Returns:
+            bool: True if storage succeeded, False otherwise
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                self.logger.warning("Redis not available, skipping conversation response storage")
+                return False
+            
+            # Prepare conversation response data
+            response_data = {
+                'user_message': user_message,
+                'ai_response': ai_response,
+                'sources_count': len(sources) if sources else 0,
+                'timestamp': datetime.now().isoformat(),
+                'ttl': self.context_ttl
+            }
+            
+            # Store with shortened response for memory efficiency if too long
+            if len(ai_response) > 2000:
+                response_data['ai_response_full'] = ai_response
+                response_data['ai_response'] = ai_response[:2000] + "... [truncated]"
+            
+            # Store in Redis with TTL
+            response_key = f"conversation_response:{conversation_id}"
+            redis_client.setex(
+                response_key,
+                self.context_ttl,
+                json.dumps(response_data, default=str)
+            )
+            
+            self.logger.info(f"[CONVERSATION_MEMORY] Stored response for conversation {conversation_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"[CONVERSATION_MEMORY] Failed to store conversation response: {str(e)}")
+            return False
+    
+    async def get_conversation_context(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the last conversation exchange for LLM context.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            
+        Returns:
+            Dictionary with last conversation context or None if not found
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return None
+                
+            response_key = f"conversation_response:{conversation_id}"
+            response_data = redis_client.get(response_key)
+            
+            if response_data:
+                # Handle both bytes and string responses from Redis
+                if isinstance(response_data, bytes):
+                    response_data = response_data.decode('utf-8')
+                
+                context = json.loads(response_data)
+                self.logger.info(f"[CONVERSATION_MEMORY] Retrieved conversation context for {conversation_id}")
+                return context
+                
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"[CONVERSATION_MEMORY] Failed to retrieve conversation context: {str(e)}")
+            return None
+
+
+class IntelligentRoutingMetrics:
+    """
+    Comprehensive metrics collection system for intelligent routing decisions.
+    
+    Tracks efficiency and performance of the intelligent message handling system:
+    - Routing decisions and their frequency
+    - Cache effectiveness and hit rates  
+    - Retrieval planning optimization
+    - Performance timings by operation type
+    - Resource savings and efficiency gains
+    """
+    
+    def __init__(self):
+        """Initialize metrics collector with Redis client."""
+        self.logger = logging.getLogger(__name__)
+        self.redis_client = None
+        self.metrics_ttl = 86400  # 24 hours storage
+        
+    def _get_redis_client(self):
+        """Get Redis client using existing infrastructure."""
+        if self.redis_client is None:
+            self.redis_client = get_redis_client(decode_responses=True)
+        return self.redis_client
+    
+    async def log_routing_decision(self, conversation_id: str, decision_data: Dict[str, Any]) -> bool:
+        """
+        Log routing decision with context for efficiency analysis.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            decision_data: Dictionary containing decision details
+            
+        Returns:
+            bool: True if logged successfully
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return False
+                
+            # Create timestamped decision entry
+            decision_entry = {
+                **decision_data,
+                'conversation_id': conversation_id,
+                'timestamp': datetime.now().isoformat(),
+                'date_hour': datetime.now().strftime('%Y-%m-%d-%H')  # For hourly aggregation
+            }
+            
+            # Store individual decision
+            decision_key = f"routing_decision:{conversation_id}:{int(time.time()*1000)}"
+            redis_client.setex(decision_key, self.metrics_ttl, json.dumps(decision_entry))
+            
+            # Update hourly aggregation counters
+            hour_key = f"routing_stats:{decision_entry['date_hour']}"
+            routing_type = decision_data.get('routing_decision', 'unknown')
+            
+            # Increment counters for this hour
+            redis_client.hincrby(hour_key, f"total_messages", 1)
+            redis_client.hincrby(hour_key, f"routing_{routing_type}", 1)
+            redis_client.expire(hour_key, self.metrics_ttl)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"[METRICS] Failed to log routing decision: {str(e)}")
+            return False
+    
+    async def log_cache_event(self, conversation_id: str, event_type: str, hit: bool, time_saved: float = 0) -> bool:
+        """
+        Log cache hit/miss events with timing data.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            event_type: Type of cache event ('context_reference', 'retrieval_cache', etc.)
+            hit: True if cache hit, False if miss
+            time_saved: Estimated time saved in seconds (for hits)
+            
+        Returns:
+            bool: True if logged successfully
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return False
+                
+            # Create cache event entry
+            cache_entry = {
+                'conversation_id': conversation_id,
+                'event_type': event_type,
+                'hit': hit,
+                'time_saved': time_saved if hit else 0,
+                'timestamp': datetime.now().isoformat(),
+                'date_hour': datetime.now().strftime('%Y-%m-%d-%H')
+            }
+            
+            # Store individual cache event
+            cache_key = f"cache_event:{conversation_id}:{int(time.time()*1000)}"
+            redis_client.setex(cache_key, self.metrics_ttl, json.dumps(cache_entry))
+            
+            # Update hourly cache statistics
+            hour_key = f"cache_stats:{cache_entry['date_hour']}"
+            redis_client.hincrby(hour_key, "total_cache_attempts", 1)
+            
+            if hit:
+                redis_client.hincrby(hour_key, "cache_hits", 1)
+                if time_saved > 0:
+                    # Track time savings (stored as milliseconds for precision)
+                    redis_client.hincrbyfloat(hour_key, "total_time_saved", time_saved)
+            else:
+                redis_client.hincrby(hour_key, "cache_misses", 1)
+                
+            redis_client.expire(hour_key, self.metrics_ttl)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"[METRICS] Failed to log cache event: {str(e)}")
+            return False
+    
+    async def log_retrieval_plan(self, conversation_id: str, plan: RetrievalPlan, execution_time: float) -> bool:
+        """
+        Log retrieval planning decisions and execution timing.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            plan: RetrievalPlan instance with intensity and strategy details
+            execution_time: Time taken to execute the plan in seconds
+            
+        Returns:
+            bool: True if logged successfully
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return False
+                
+            # Create retrieval plan entry
+            plan_entry = {
+                'conversation_id': conversation_id,
+                'intensity': plan.intensity.value,
+                'max_sources': plan.max_sources,
+                'use_multiple_strategies': plan.use_multiple_strategies,
+                'reasoning': plan.reasoning[:200],  # Truncate for storage
+                'execution_time': execution_time,
+                'timestamp': datetime.now().isoformat(),
+                'date_hour': datetime.now().strftime('%Y-%m-%d-%H')
+            }
+            
+            # Store individual plan execution
+            plan_key = f"retrieval_plan:{conversation_id}:{int(time.time()*1000)}"
+            redis_client.setex(plan_key, self.metrics_ttl, json.dumps(plan_entry))
+            
+            # Update hourly retrieval statistics  
+            hour_key = f"retrieval_stats:{plan_entry['date_hour']}"
+            intensity = plan.intensity.value
+            
+            redis_client.hincrby(hour_key, "total_retrievals", 1)
+            redis_client.hincrby(hour_key, f"intensity_{intensity}", 1)
+            redis_client.hincrbyfloat(hour_key, f"total_time_{intensity}", execution_time)
+            redis_client.hincrbyfloat(hour_key, "total_execution_time", execution_time)
+            redis_client.expire(hour_key, self.metrics_ttl)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"[METRICS] Failed to log retrieval plan: {str(e)}")
+            return False
+    
+    async def log_performance_timing(self, operation_type: str, conversation_id: str, execution_time: float, metadata: Optional[Dict] = None) -> bool:
+        """
+        Log performance timing for different operation types.
+        
+        Args:
+            operation_type: Type of operation ('simple_response', 'cached_response', etc.)
+            conversation_id: Unique conversation identifier
+            execution_time: Time taken in seconds
+            metadata: Optional additional metadata
+            
+        Returns:
+            bool: True if logged successfully
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return False
+                
+            # Create timing entry
+            timing_entry = {
+                'operation_type': operation_type,
+                'conversation_id': conversation_id,
+                'execution_time': execution_time,
+                'metadata': metadata or {},
+                'timestamp': datetime.now().isoformat(),
+                'date_hour': datetime.now().strftime('%Y-%m-%d-%H')
+            }
+            
+            # Store individual timing
+            timing_key = f"performance:{conversation_id}:{int(time.time()*1000)}"
+            redis_client.setex(timing_key, self.metrics_ttl, json.dumps(timing_entry))
+            
+            # Update hourly performance statistics
+            hour_key = f"performance_stats:{timing_entry['date_hour']}"
+            redis_client.hincrby(hour_key, f"count_{operation_type}", 1)
+            redis_client.hincrbyfloat(hour_key, f"total_time_{operation_type}", execution_time)
+            redis_client.expire(hour_key, self.metrics_ttl)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"[METRICS] Failed to log performance timing: {str(e)}")
+            return False
+    
+    async def get_efficiency_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """
+        Get comprehensive efficiency summary for the past N hours.
+        
+        Args:
+            hours: Number of hours to analyze (default 24)
+            
+        Returns:
+            Dict with routing efficiency, cache effectiveness, and performance metrics
+        """
+        try:
+            redis_client = self._get_redis_client()
+            if not redis_client:
+                return {'status': 'redis_unavailable'}
+            
+            # Calculate time range
+            now = datetime.now()
+            hour_keys = []
+            
+            for i in range(hours):
+                hour_time = now - timedelta(hours=i)
+                hour_key = hour_time.strftime('%Y-%m-%d-%H')
+                hour_keys.append(hour_key)
+            
+            # Aggregate routing statistics
+            routing_stats = {}
+            cache_stats = {}
+            retrieval_stats = {}
+            performance_stats = {}
+            
+            for hour_key in hour_keys:
+                # Get routing data
+                routing_data = redis_client.hgetall(f"routing_stats:{hour_key}")
+                for key, value in routing_data.items():
+                    routing_stats[key] = routing_stats.get(key, 0) + int(value)
+                
+                # Get cache data
+                cache_data = redis_client.hgetall(f"cache_stats:{hour_key}")
+                for key, value in cache_data.items():
+                    if key == 'total_time_saved':
+                        cache_stats[key] = cache_stats.get(key, 0) + float(value)
+                    else:
+                        cache_stats[key] = cache_stats.get(key, 0) + int(value)
+                
+                # Get retrieval data
+                retrieval_data = redis_client.hgetall(f"retrieval_stats:{hour_key}")
+                for key, value in retrieval_data.items():
+                    if 'time' in key:
+                        retrieval_stats[key] = retrieval_stats.get(key, 0) + float(value)
+                    else:
+                        retrieval_stats[key] = retrieval_stats.get(key, 0) + int(value)
+                
+                # Get performance data
+                perf_data = redis_client.hgetall(f"performance_stats:{hour_key}")
+                for key, value in perf_data.items():
+                    if 'time' in key:
+                        performance_stats[key] = performance_stats.get(key, 0) + float(value)
+                    else:
+                        performance_stats[key] = performance_stats.get(key, 0) + int(value)
+            
+            # Calculate derived metrics
+            total_messages = routing_stats.get('total_messages', 0)
+            if total_messages == 0:
+                return {'status': 'no_data', 'period_hours': hours}
+            
+            # Routing efficiency calculation
+            simple_responses = routing_stats.get('routing_simple_response', 0) + routing_stats.get('routing_simple_response_for_greeting', 0) + routing_stats.get('routing_simple_response_for_acknowledgment', 0)
+            cached_responses = routing_stats.get('routing_cached_response', 0) + routing_stats.get('routing_cached_context_reuse', 0)
+            efficiency_saves = simple_responses + cached_responses
+            efficiency_rate = (efficiency_saves / total_messages * 100) if total_messages > 0 else 0
+            
+            # Cache effectiveness
+            total_cache_attempts = cache_stats.get('total_cache_attempts', 0)
+            cache_hits = cache_stats.get('cache_hits', 0)
+            cache_hit_rate = (cache_hits / total_cache_attempts * 100) if total_cache_attempts > 0 else 0
+            avg_time_saved = (cache_stats.get('total_time_saved', 0) / cache_hits) if cache_hits > 0 else 0
+            
+            # Performance comparison
+            def safe_avg(total_time, count):
+                return (total_time / count) if count > 0 else 0
+                
+            simple_avg = safe_avg(performance_stats.get('total_time_simple_response', 0), performance_stats.get('count_simple_response', 1))
+            cached_avg = safe_avg(performance_stats.get('total_time_cached_response', 0), performance_stats.get('count_cached_response', 1))
+            minimal_avg = safe_avg(retrieval_stats.get('total_time_minimal', 0), retrieval_stats.get('intensity_minimal', 1))
+            comprehensive_avg = safe_avg(retrieval_stats.get('total_time_comprehensive', 0), retrieval_stats.get('intensity_comprehensive', 1))
+            
+            # Calculate overall speedup
+            baseline_time = comprehensive_avg if comprehensive_avg > 0 else 5.0  # Fallback baseline
+            actual_avg_time = (performance_stats.get('total_time_simple_response', 0) + 
+                             performance_stats.get('total_time_cached_response', 0) + 
+                             retrieval_stats.get('total_execution_time', 0)) / max(total_messages, 1)
+            speedup = ((baseline_time - actual_avg_time) / baseline_time * 100) if baseline_time > 0 else 0
+            
+            return {
+                'status': 'success',
+                'period_hours': hours,
+                'total_messages_analyzed': total_messages,
+                'routing_efficiency': {
+                    'total_messages': total_messages,
+                    'simple_responses': simple_responses,
+                    'cached_responses': cached_responses, 
+                    'retrieval_required': total_messages - efficiency_saves,
+                    'efficiency_rate': f"{efficiency_rate:.1f}%",
+                    'messages_saved_from_expensive_ops': efficiency_saves
+                },
+                'cache_effectiveness': {
+                    'total_attempts': total_cache_attempts,
+                    'hits': cache_hits,
+                    'misses': cache_stats.get('cache_misses', 0),
+                    'hit_rate': f"{cache_hit_rate:.1f}%",
+                    'avg_time_saved_per_hit': f"{avg_time_saved:.2f}s",
+                    'total_time_saved': f"{cache_stats.get('total_time_saved', 0):.1f}s"
+                },
+                'retrieval_distribution': {
+                    'minimal': retrieval_stats.get('intensity_minimal', 0),
+                    'balanced': retrieval_stats.get('intensity_balanced', 0), 
+                    'comprehensive': retrieval_stats.get('intensity_comprehensive', 0),
+                    'total_retrievals': retrieval_stats.get('total_retrievals', 0)
+                },
+                'performance_impact': {
+                    'avg_simple_response_time': f"{simple_avg:.2f}s",
+                    'avg_cached_response_time': f"{cached_avg:.2f}s",
+                    'avg_minimal_retrieval_time': f"{minimal_avg:.2f}s", 
+                    'avg_comprehensive_retrieval_time': f"{comprehensive_avg:.2f}s",
+                    'overall_speedup': f"{max(speedup, 0):.1f}%"
+                },
+                'resource_savings': {
+                    'avoided_database_queries': efficiency_saves,
+                    'avoided_vector_searches': efficiency_saves,
+                    'estimated_compute_savings': f"{efficiency_rate * 0.8:.1f}%"  # Conservative estimate
+                },
+                'generated_at': now.isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"[METRICS] Failed to get efficiency summary: {str(e)}")
+            return {'status': 'error', 'error': str(e)}
+
+
+# Performance timing decorator
+def track_execution_time(operation_type: str):
+    """
+    Decorator to track operation execution time for metrics collection.
+    
+    Args:
+        operation_type: Type of operation being tracked ('simple_response', 'cached_response', etc.)
+    """
+    from functools import wraps
+    import time
+    
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            start_time = time.time()
+            try:
+                result = await func(*args, **kwargs)
+                execution_time = time.time() - start_time
+                
+                # Log timing data
+                logger.info(f"[PERFORMANCE] {operation_type} completed in {execution_time:.3f}s")
+                
+                # Add timing to response metadata if it's a dictionary with metadata
+                if isinstance(result, dict) and 'metadata' in result:
+                    if 'performance' not in result['metadata']:
+                        result['metadata']['performance'] = {}
+                    result['metadata']['performance']['execution_time'] = execution_time
+                    result['metadata']['performance']['operation_type'] = operation_type
+                
+                # Extract conversation_id for metrics logging
+                conversation_id = None
+                if isinstance(result, dict):
+                    conversation_id = result.get('conversation_id')
+                elif len(args) > 0 and hasattr(args[0], 'get'):
+                    conversation_id = args[0].get('conversation_id')
+                
+                # Log performance timing to metrics
+                if conversation_id:
+                    try:
+                        metrics = IntelligentRoutingMetrics()
+                        await metrics.log_performance_timing(
+                            operation_type=operation_type,
+                            conversation_id=conversation_id,
+                            execution_time=execution_time
+                        )
+                    except Exception as metrics_err:
+                        logger.warning(f"[METRICS] Failed to log timing: {str(metrics_err)}")
+                
+                return result
+                
+            except Exception as e:
+                execution_time = time.time() - start_time
+                logger.error(f"[PERFORMANCE] {operation_type} failed after {execution_time:.3f}s: {str(e)}")
+                raise
+        return wrapper
+    return decorator
+
+
+# Initialize service instances
+notebook_rag_service = NotebookRAGService()
+conversation_context_manager = ConversationContextManager()
+intelligent_routing_metrics = IntelligentRoutingMetrics()
