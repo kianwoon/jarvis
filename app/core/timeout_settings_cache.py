@@ -107,12 +107,18 @@ DEFAULT_TIMEOUT_SETTINGS = {
     
     # Notebook processing timeouts
     "notebook_processing": {
-        "intelligent_plan_timeout": 180,      # Timeout for AI planning phase (3x base)
+        "intelligent_plan_timeout": 360,      # Increased from 180s for comprehensive queries (50+ sources)
+        "vector_retrieval_timeout": 30,       # New: Vector database retrieval timeout
+        "extraction_timeout": 90,             # New: Separate from plan timeout for extraction phase
         "extraction_batch_timeout": 90,       # Timeout for individual extraction batches
-        "notebook_rag_timeout": 120,          # Timeout for notebook RAG operations
+        "notebook_rag_timeout": 180,          # Increased from 120s for larger datasets
         "plan_generation_timeout": 150,       # Timeout for plan generation
         "verification_timeout": 60,           # Timeout for verification steps
-        "notebook_upload_timeout": 300        # Timeout for notebook upload processing
+        "notebook_upload_timeout": 300,       # Timeout for notebook upload processing
+        "dynamic_timeout_base": 180,          # Base timeout for dynamic calculations
+        "dynamic_timeout_per_source": 10,     # Additional seconds per source for comprehensive queries
+        "dynamic_timeout_max": 600,           # Maximum timeout cap to prevent indefinite waits
+        "chunk_processing_timeout": 120       # Per-chunk processing timeout for large datasets
     },
     
     # Session & cache timeouts (in seconds)
@@ -492,13 +498,21 @@ def get_intelligent_plan_timeout() -> int:
     """Get intelligent plan execution timeout - increased for comprehensive queries"""
     return get_notebook_timeout("intelligent_plan_timeout", 360)
 
+def get_vector_retrieval_timeout() -> int:
+    """Get vector database retrieval timeout"""
+    return get_notebook_timeout("vector_retrieval_timeout", 30)
+
+def get_extraction_timeout() -> int:
+    """Get extraction phase timeout - separate from plan timeout"""
+    return get_notebook_timeout("extraction_timeout", 90)
+
 def get_extraction_batch_timeout() -> int:
     """Get extraction batch timeout"""
     return get_notebook_timeout("extraction_batch_timeout", 90)
 
 def get_notebook_rag_timeout() -> int:
-    """Get notebook RAG timeout"""
-    return get_notebook_timeout("notebook_rag_timeout", 120)
+    """Get notebook RAG timeout - increased for larger datasets"""
+    return get_notebook_timeout("notebook_rag_timeout", 180)
 
 def get_plan_generation_timeout() -> int:
     """Get plan generation timeout"""
@@ -511,3 +525,33 @@ def get_verification_timeout() -> int:
 def get_notebook_upload_timeout() -> int:
     """Get notebook upload timeout"""
     return get_notebook_timeout("notebook_upload_timeout", 300)
+
+def get_dynamic_timeout_base() -> int:
+    """Get base timeout for dynamic calculations"""
+    return get_notebook_timeout("dynamic_timeout_base", 180)
+
+def get_dynamic_timeout_per_source() -> int:
+    """Get additional seconds per source for comprehensive queries"""
+    return get_notebook_timeout("dynamic_timeout_per_source", 10)
+
+def get_dynamic_timeout_max() -> int:
+    """Get maximum timeout cap to prevent indefinite waits"""
+    return get_notebook_timeout("dynamic_timeout_max", 600)
+
+def get_chunk_processing_timeout() -> int:
+    """Get per-chunk processing timeout for large datasets"""
+    return get_notebook_timeout("chunk_processing_timeout", 120)
+
+def calculate_dynamic_timeout(source_count: int) -> int:
+    """Calculate dynamic timeout based on source count with configurable parameters"""
+    base = get_dynamic_timeout_base()
+    per_source = get_dynamic_timeout_per_source()
+    max_timeout = get_dynamic_timeout_max()
+    
+    calculated = base + (source_count * per_source)
+    final_timeout = min(calculated, max_timeout)
+    
+    # Log the calculation for monitoring
+    logger.debug(f"Dynamic timeout calculation: {source_count} sources -> {base} + ({source_count} * {per_source}) = {calculated}, capped at {final_timeout}")
+    
+    return final_timeout

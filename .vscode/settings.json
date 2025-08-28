@@ -6,6 +6,8 @@
     "editor.minimap.sectionHeaderFontSize": 10,
     "scm.inputFontSize": 10,
     "markdown.preview.fontSize": 10,
-    "editor.cursorStyle": "underline-thin",
-    "editor.cursorSmoothCaretAnimation": "on"
+    "editor.cursorStyle": "line-thin",
+    "editor.cursorSmoothCaretAnimation": "on",
+    "editor.cursorSurroundingLines": 1,
+    "editor.cursorWidth": 1
 }

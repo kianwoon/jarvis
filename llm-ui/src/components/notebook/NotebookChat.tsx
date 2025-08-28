@@ -223,6 +223,7 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
               // Clear status message when actual content starts
               setStatusMessage('');
               const tokenText = data.token || data.chunk;
+              console.log('🔄 Streaming chunk received. Length:', tokenText.length, 'Total so far:', finalAssistantMessage.content.length);
               finalAssistantMessage.content += tokenText;
               hasStreamedContent = true;
               if (data.metadata) {
@@ -239,8 +240,16 @@ const NotebookChat: React.FC<NotebookChatProps> = ({
                 )
               );
             } else if (data.answer) {
-              // Complete response received - use this as the final content
-              finalAssistantMessage.content = data.answer;
+              // Complete response received - append to existing streamed content if any
+              if (finalAssistantMessage.content.trim()) {
+                // If we already have streamed content, append the answer
+                console.log('📝 Appending answer to existing streamed content. Current length:', finalAssistantMessage.content.length);
+                finalAssistantMessage.content += data.answer;
+              } else {
+                // If no streamed content, use answer as the complete content
+                console.log('📝 Using answer as complete content (no prior streaming)');
+                finalAssistantMessage.content = data.answer;
+              }
               finalAssistantMessage.metadata = data.metadata;
               hasStreamedContent = true;
               

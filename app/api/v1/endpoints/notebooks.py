@@ -48,6 +48,7 @@ from app.services.chunk_management_service import ChunkManagementService
 from app.services.ai_task_planner import ai_task_planner, TaskExecutionPlan
 from app.services.ai_verification_service import ai_verification_service
 from app.services.cache_bypass_detector import cache_bypass_detector
+from app.services.progressive_response_service import progressive_response_service
 # from app.services.request_execution_state_tracker import (
 #     create_request_state, get_request_state, ExecutionPhase
 # )  # Removed - causing Redis async/sync errors
@@ -1901,18 +1902,43 @@ async def upload_file_to_notebook(
             os.remove(temp_path) if os.path.exists(temp_path) else None
             raise HTTPException(status_code=400, detail=f"Failed to load file: {str(e)}")
         
-        # 4. Text splitting
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,
-            chunk_overlap=200,
-            separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""],
-            length_function=len,
-            is_separator_regex=False
-        )
+        # 4. Text splitting with defensive error handling
+        try:
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1500,
+                chunk_overlap=200,
+                separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""],
+                length_function=len,
+                is_separator_regex=False
+            )
+        except Exception as splitter_error:
+            logger.error(f"❌ Error creating text splitter: {splitter_error}", exc_info=True)
+            # Fallback to basic splitter
+            try:
+                splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=1500,
+                    chunk_overlap=200,
+                    length_function=len
+                )
+                logger.warning("⚠️ Using basic text splitter configuration as fallback")
+            except Exception as basic_splitter_error:
+                logger.error(f"❌ Basic splitter also failed: {basic_splitter_error}")
+                os.remove(temp_path) if os.path.exists(temp_path) else None
+                raise HTTPException(status_code=500, detail="Text splitter initialization failed")
         
-        chunks = splitter.split_documents(docs)
-        total_chunks = len(chunks)
-        logger.info(f"✅ Created {total_chunks} chunks")
+        # Safe document chunking with error handling
+        try:
+            chunks = splitter.split_documents(docs)
+            total_chunks = len(chunks)
+            if total_chunks == 0:
+                logger.warning("⚠️ No chunks were created from documents")
+                os.remove(temp_path) if os.path.exists(temp_path) else None
+                raise HTTPException(status_code=400, detail="Document could not be chunked - possibly empty or invalid format")
+            logger.info(f"✅ Created {total_chunks} chunks")
+        except Exception as chunk_error:
+            logger.error(f"❌ Error during document chunking: {chunk_error}", exc_info=True)
+            os.remove(temp_path) if os.path.exists(temp_path) else None
+            raise HTTPException(status_code=500, detail=f"Document chunking failed: {str(chunk_error)}")
         
         # 5. Generate file ID and metadata
         with open(temp_path, "rb") as f:
@@ -3279,6 +3305,43 @@ async def notebook_chat(
                     
                     yield json.dumps(status_data) + "\n"
                     
+                    # === PROGRESSIVE RESPONSE FOR LARGE DATASETS ===
+                    # Debug logging
+                    if hasattr(rag_response, 'extracted_projects'):
+                        project_count = len(rag_response.extracted_projects) if rag_response.extracted_projects else 0
+                        logger.info(f"[PROGRESSIVE_DEBUG] rag_response.extracted_projects exists: count={project_count}")
+                        if rag_response.extracted_projects:
+                            # Log first project sample for debugging
+                            first_project = rag_response.extracted_projects[0]
+                            logger.info(f"[PROGRESSIVE_DEBUG] First project sample: {first_project.name} at {first_project.company} ({first_project.year})")
+                            logger.info(f"[PROGRESSIVE_DEBUG] Project type: {type(first_project)}")
+                        else:
+                            logger.warning(f"[PROGRESSIVE_DEBUG] extracted_projects exists but is empty/None: {rag_response.extracted_projects}")
+                    else:
+                        logger.info(f"[PROGRESSIVE_DEBUG] rag_response has no extracted_projects attribute")
+                    
+                    if (hasattr(rag_response, 'extracted_projects') and 
+                        rag_response.extracted_projects and
+                        len(rag_response.extracted_projects) > 20):
+                        
+                        logger.info(f"[PROGRESSIVE_RESPONSE] Using progressive streaming for {len(rag_response.extracted_projects)} projects")
+                        
+                        try:
+                            # Stream progressive response in user's requested format
+                            async for chunk in progressive_response_service.generate_progressive_stream(
+                                data=rag_response.extracted_projects,
+                                query=request.message,
+                                notebook_id=notebook_id,
+                                conversation_id=request.conversation_id
+                            ):
+                                yield chunk + "\n"
+                            return  # Exit early - bypass LLM processing
+                            
+                        except Exception as prog_error:
+                            logger.error(f"[PROGRESSIVE_RESPONSE] Error in progressive streaming: {str(prog_error)}")
+                            logger.info(f"[PROGRESSIVE_RESPONSE] Falling back to LLM processing for {len(rag_response.extracted_projects)} projects")
+                            # Continue to LLM processing as fallback
+                    
                 except Exception as e:
                     logger.warning(f"RAG query failed for notebook {notebook_id}: {str(e)}")
                     yield json.dumps({
@@ -3421,7 +3484,16 @@ Present the findings in the requested format (table, list, etc.).
                     # DEBUG: Context Building Process
                     
                     context_info += f"\n[Source {i} - {source_type_prefix}: {source_name}]:\n"
-                    context_info += source.content[:1000] + ("..." if len(source.content) > 1000 else "")
+                    
+                    # CRITICAL FIX: Don't truncate structured/memory sources, increase limit for regular sources
+                    if source.source_type == "memory" or "structured" in source_type_prefix.lower():
+                        # Include FULL content for memory/structured sources to prevent data loss
+                        context_info += source.content
+                        logger.debug(f"[CONTEXT_FIX] Included full content ({len(source.content)} chars) for {source_type_prefix}")
+                    else:
+                        # Increase limit for regular document sources (from 1000 to 2000)
+                        context_info += source.content[:2000] + ("..." if len(source.content) > 2000 else "")
+                    
                     context_info += "\n"
                 
                 context_info += "--- END CONTEXT ---\n\n"
@@ -3458,9 +3530,18 @@ Present the findings in the requested format (table, list, etc.).
                         
                         # Add explicit formatting instructions to system prompt
                         if any(table_word in query_lower for table_word in ['table', 'format']):
-                            system_prompt += f" CRITICAL INSTRUCTION: The user has requested table format. You must create a table that includes ALL {project_count} projects listed above. Do not exclude any projects due to missing information - use 'N/A' for missing fields. Ensure your table shows exactly {project_count} rows of projects."
+                            system_prompt += f" CRITICAL INSTRUCTION: The user has requested table format. You MUST create a table that includes ALL {project_count} projects listed above. Do not exclude any projects due to missing information - use 'N/A' for missing fields. Ensure your table shows exactly {project_count} rows of projects. COUNT VERIFICATION: Your response must contain exactly {project_count} project entries."
                         else:
-                            system_prompt += f" CRITICAL INSTRUCTION: You must mention ALL {project_count} projects listed above. Do not exclude any projects due to missing information. Include every project even if some details are marked as 'N/A'."
+                            system_prompt += f" CRITICAL INSTRUCTION: You MUST mention ALL {project_count} projects listed above. Do not exclude any projects due to missing information. Include every project even if some details are marked as 'N/A'. COUNT VERIFICATION: Your response must reference exactly {project_count} distinct projects."
+                        
+                        # Add project count validation to prompt
+                        context_info += f"\n=== PROJECT COUNT VALIDATION ===\n"
+                        context_info += f"MANDATORY: Your response MUST include all {project_count} projects listed above.\n"
+                        context_info += f"Validation check: Count the projects in your response - it must equal {project_count}.\n"
+                        context_info += f"Do not summarize, skip, or omit any projects even if information is incomplete.\n"
+                        context_info += f"=== END VALIDATION ===\n\n"
+                        
+                        logger.info(f"[DATA_LOSS_FIX] Enhanced prompt with {project_count} projects and count validation")
                 
                 # DEBUG: Final Context Analysis
                 
@@ -3471,8 +3552,30 @@ Present the findings in the requested format (table, list, etc.).
             # Build the full prompt
             full_prompt = f"{system_prompt}\n\n{context_info}User Question: {request.message}\n\nResponse:"
             
+            # PROMPT SIZE OPTIMIZATION: Handle extremely large prompts
+            original_prompt_length = len(full_prompt)
+            max_prompt_size = 80000  # 80KB limit for reliable processing
+            
+            if original_prompt_length > max_prompt_size:
+                logger.warning(f"[PROMPT_OPTIMIZATION] Prompt too large ({original_prompt_length} chars), optimizing...")
+                
+                # Truncate context while preserving structure
+                truncated_context_info = ""
+                lines = context_info.split("\n")
+                current_size = len(system_prompt) + len(request.message) + 100  # Buffer
+                
+                for line in lines:
+                    if current_size + len(line) > max_prompt_size:
+                        truncated_context_info += "\n[... context truncated for optimal processing ...]\n"
+                        break
+                    truncated_context_info += line + "\n"
+                    current_size += len(line)
+                
+                full_prompt = f"{system_prompt}\n\n{truncated_context_info}User Question: {request.message}\n\nResponse:"
+                logger.info(f"[PROMPT_OPTIMIZATION] Optimized prompt: {original_prompt_length} → {len(full_prompt)} chars")
+            
             # DEBUG: LLM Prompt Construction
-            logger.debug(f"[PROMPT_DEBUG] Full prompt length: {len(full_prompt)} chars")
+            logger.debug(f"[PROMPT_DEBUG] Full prompt length: {len(full_prompt)} chars (original: {original_prompt_length})")
             logger.debug(f"[PROMPT_DEBUG] Prompt preview: {full_prompt[:300]}...")
             
             # DEBUG: Verify memory context reaches LLM
@@ -3484,7 +3587,7 @@ Present the findings in the requested format (table, list, etc.).
             # FAILSAFE: Direct table generation for structured queries
             if (hasattr(rag_response, 'extracted_projects') and 
                 rag_response.extracted_projects and 
-                len(rag_response.extracted_projects) > 10 and
+                len(rag_response.extracted_projects) > 5 and
                 any(word in request.message.lower() for word in ['table', 'list all', 'counter'])):
                 
                 logger.info(f"[DIRECT_TABLE] Generating direct table for {len(rag_response.extracted_projects)} projects")
@@ -3513,8 +3616,8 @@ Present the findings in the requested format (table, list, etc.).
                     # Generate streaming response via LLM with timeout
                     collected_response = ""
                     try:
-                        async with asyncio.timeout(300.0):  # 5 minute timeout for LLM generation
-                            async for response_chunk in llm.generate_stream(full_prompt):
+                        async with asyncio.timeout(480.0):  # 8 minute timeout for large prompt generation
+                            async for response_chunk in llm.generate_stream(full_prompt, task_type="final_response_generation"):
                                 if response_chunk.text.strip():
                                     collected_response += response_chunk.text
                                     

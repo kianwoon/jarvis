@@ -165,12 +165,38 @@ class OllamaLLM(BaseLLM):
         
         # Use centralized timeout configuration, allow override via kwargs
         from app.core.timeout_settings_cache import get_timeout_value
-        http_timeout = kwargs.get("timeout", get_timeout_value("api_network", "http_request_timeout", 300))
+        base_timeout = kwargs.get("timeout", get_timeout_value("api_network", "http_request_timeout", 300))
+        
+        # For extraction tasks, use much longer timeout due to large model processing time
+        task_type = kwargs.get("task_type", "")
+        is_extraction_task = "extract" in str(task_type).lower() or "batch" in str(task_type).lower()
+        
+        if is_extraction_task:
+            # Extraction tasks need much more time with 30B parameter model
+            min_timeout = 150.0  # 2.5 minutes minimum for extraction
+            buffer = 30.0        # 30 second buffer
+        else:
+            # Regular tasks can use shorter timeouts
+            min_timeout = 30.0   # 30 seconds minimum
+            buffer = 10.0        # 10 second buffer
+        
+        # Calculate final HTTP timeout with appropriate buffer
+        http_timeout = max(min_timeout, float(base_timeout) + buffer)
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"[TIMEOUT_CONFIG] Task: {task_type}, Base: {base_timeout}s, HTTP: {http_timeout}s, Extraction: {is_extraction_task}")
         
         # Use shared HTTP client for connection pooling
         client = await _get_shared_http_client()
-        # Update client timeout for this request
-        client.timeout = httpx.Timeout(http_timeout)
+        
+        # Configure comprehensive timeout with separate limits for each phase
+        client.timeout = httpx.Timeout(
+            connect=10.0,         # Connection establishment timeout
+            read=http_timeout,    # Read timeout (main extraction timeout)
+            write=30.0,           # Write timeout for request sending
+            pool=10.0             # Connection pool timeout
+        )
         
         response = await client.post(f"{self.base_url}/api/chat", json=payload)
         response.raise_for_status()
@@ -216,11 +242,34 @@ class OllamaLLM(BaseLLM):
         
         try:
             from app.core.timeout_settings_cache import get_timeout_value
-            timeout = kwargs.get("timeout", get_timeout_value("llm_ai", "llm_streaming_timeout", 300))
+            base_timeout = kwargs.get("timeout", get_timeout_value("llm_ai", "llm_streaming_timeout", 300))
+            
+            # For streaming, extraction tasks need longer timeouts
+            task_type = kwargs.get("task_type", "")
+            is_extraction_task = "extract" in str(task_type).lower() or "batch" in str(task_type).lower()
+            
+            if is_extraction_task:
+                # Streaming extraction tasks need extended timeouts
+                min_timeout = 180.0  # 3 minutes minimum for streaming extraction
+                buffer = 30.0        # 30 second buffer
+            else:
+                # Regular streaming tasks
+                min_timeout = 60.0   # 1 minute minimum
+                buffer = 10.0        # 10 second buffer
+            
+            # Calculate streaming timeout with buffer
+            http_timeout = max(min_timeout, float(base_timeout) + buffer)
             
             # Use shared HTTP client for connection pooling
             client = await _get_shared_http_client()
-            client.timeout = httpx.Timeout(float(timeout))
+            
+            # Configure comprehensive timeout for streaming with longer read timeout
+            client.timeout = httpx.Timeout(
+                connect=10.0,         # Connection establishment timeout
+                read=http_timeout,    # Extended read timeout for streaming
+                write=30.0,           # Write timeout for request sending
+                pool=10.0             # Connection pool timeout
+            )
             
             async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
                     if response.status_code != 200:

@@ -1461,8 +1461,9 @@ class NotebookService:
                             chunk1 = '. '.join(sentences[:best_split]) + '.'
                             chunk2 = '. '.join(sentences[best_split:])
                             
-                            # Ensure chunks don't exceed size limits
-                            if len(chunk1) <= text_splitter._chunk_size * 1.2:  # Allow 20% flexibility
+                            # Ensure chunks don't exceed size limits - defensive chunk size access
+                            chunk_size_limit = self._get_safe_chunk_size(text_splitter, 3000)
+                            if len(chunk1) <= chunk_size_limit * 1.2:  # Allow 20% flexibility
                                 enhanced_chunks.append(chunk1)
                                 # Update the next chunk for next iteration
                                 initial_chunks[i + 1] = chunk2
@@ -1472,6 +1473,122 @@ class NotebookService:
             enhanced_chunks.append(chunk)
         
         return enhanced_chunks
+    
+    def _get_safe_chunk_size(self, text_splitter, default_size: int = 3000) -> int:
+        """
+        Safely get chunk size from text splitter with defensive fallback.
+        
+        Args:
+            text_splitter: The text splitter instance
+            default_size: Fallback chunk size if attribute access fails
+            
+        Returns:
+            int: The chunk size to use
+        """
+        try:
+            # Try multiple attribute names that might exist
+            if hasattr(text_splitter, 'chunk_size'):
+                return getattr(text_splitter, 'chunk_size', default_size)
+            elif hasattr(text_splitter, '_chunk_size'):
+                return getattr(text_splitter, '_chunk_size', default_size)
+            else:
+                logger.warning(f"[DEFENSIVE_CODING] Text splitter has no chunk_size attribute, using default: {default_size}")
+                return default_size
+        except Exception as e:
+            logger.error(f"[DEFENSIVE_CODING] Error accessing chunk size: {e}, using default: {default_size}")
+            return default_size
+    
+    def _create_safe_text_splitter(self, chunk_size: int = 3000, chunk_overlap: int = 600):
+        """
+        Create text splitter with circuit breaker pattern and fallback.
+        
+        Args:
+            chunk_size: Target chunk size
+            chunk_overlap: Chunk overlap size
+            
+        Returns:
+            Text splitter instance or fallback simple splitter
+        """
+        try:
+            from langchain.text_splitter import RecursiveCharacterTextSplitter
+            
+            # Validate parameters
+            if chunk_size <= 0:
+                logger.warning(f"[DEFENSIVE_CODING] Invalid chunk_size {chunk_size}, using default 3000")
+                chunk_size = 3000
+                
+            if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+                logger.warning(f"[DEFENSIVE_CODING] Invalid chunk_overlap {chunk_overlap}, using 20% of chunk_size")
+                chunk_overlap = int(chunk_size * 0.2)
+            
+            # Attempt to create with enhanced separators
+            try:
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    length_function=len,
+                    separators=["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""]
+                )
+                logger.debug(f"[DEFENSIVE_CODING] Successfully created text splitter: {chunk_size}/{chunk_overlap}")
+                return text_splitter
+                
+            except Exception as separator_error:
+                logger.warning(f"[DEFENSIVE_CODING] Enhanced separator creation failed: {separator_error}, using basic config")
+                # Fallback to basic configuration
+                return RecursiveCharacterTextSplitter(
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    length_function=len
+                )
+                
+        except ImportError as import_error:
+            logger.error(f"[DEFENSIVE_CODING] Failed to import RecursiveCharacterTextSplitter: {import_error}")
+            # Return a simple fallback splitter
+            return self._create_fallback_splitter(chunk_size)
+            
+        except Exception as e:
+            logger.error(f"[DEFENSIVE_CODING] Text splitter creation failed: {e}, using fallback")
+            return self._create_fallback_splitter(chunk_size)
+    
+    def _create_fallback_splitter(self, chunk_size: int):
+        """
+        Create a simple fallback text splitter when RecursiveCharacterTextSplitter fails.
+        
+        Args:
+            chunk_size: Target chunk size
+            
+        Returns:
+            Simple text splitter with basic functionality
+        """
+        class FallbackTextSplitter:
+            def __init__(self, chunk_size: int):
+                self.chunk_size = chunk_size
+                self._chunk_size = chunk_size  # For backward compatibility
+                
+            def split_text(self, text: str) -> list:
+                """Simple text splitting fallback"""
+                if len(text) <= self.chunk_size:
+                    return [text]
+                    
+                chunks = []
+                start = 0
+                while start < len(text):
+                    end = min(start + self.chunk_size, len(text))
+                    # Try to break at sentence boundary
+                    if end < len(text):
+                        last_period = text.rfind('.', start, end)
+                        if last_period > start + self.chunk_size // 2:  # At least half chunk before period
+                            end = last_period + 1
+                    
+                    chunk = text[start:end].strip()
+                    if chunk:
+                        chunks.append(chunk)
+                    start = end
+                    
+                return chunks
+        
+        logger.warning(f"[DEFENSIVE_CODING] Using fallback text splitter with chunk_size: {chunk_size}")
+        return FallbackTextSplitter(chunk_size)
     
     async def _process_memory_content(
         self,
@@ -1532,13 +1649,11 @@ class NotebookService:
             if not collection_config:
                 raise ValueError(f"Collection '{target_collection}' not found. Please initialize it first.")
             
-            # GENERAL PURPOSE: Intelligent chunking based on content structure
+            # GENERAL PURPOSE: Intelligent chunking based on content structure with defensive initialization
             # Use larger chunks to preserve entity integrity (projects, companies, etc.)
-            text_splitter = RecursiveCharacterTextSplitter(
+            text_splitter = self._create_safe_text_splitter(
                 chunk_size=3000,  # Increased to preserve complete project descriptions
                 chunk_overlap=600,  # Increased overlap to ensure no entity fragmentation
-                length_function=len,
-                separators=["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " ", ""]  # Enhanced hierarchy prioritizing sentence boundaries
             )
             
             # Apply entity-aware chunking to preserve project information integrity

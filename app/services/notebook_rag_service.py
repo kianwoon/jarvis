@@ -26,7 +26,13 @@ from app.services.ai_task_planner import TaskExecutionPlan, RetrievalStrategy, a
 from app.core.vector_db_settings_cache import get_vector_db_settings
 from app.core.embedding_settings_cache import get_embedding_settings
 from app.core.notebook_llm_settings_cache import get_notebook_llm_settings
-from app.core.timeout_settings_cache import get_list_cache_ttl
+from app.core.timeout_settings_cache import (
+    get_list_cache_ttl, 
+    get_notebook_rag_timeout,
+    get_extraction_timeout,
+    get_chunk_processing_timeout,
+    calculate_dynamic_timeout
+)
 from app.core.redis_client import get_redis_client
 from app.core.http_embedding_function import HTTPEmbeddingFunction
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -73,6 +79,9 @@ class NotebookRAGService:
         self._cached_llm = None
         self._cached_llm_config_full = None
         self._cached_llm_config_hash = None
+        
+        # Timeout tracking for adaptive chunking
+        self._recent_timeouts = []  # Track recent timeout events for adaptive chunking
         self._llm_cache_lock = asyncio.Lock()
         
         # Configuration cache to prevent repeated Redis calls
@@ -131,7 +140,8 @@ class NotebookRAGService:
                 return self._cached_llm
                 
             except Exception as e:
-                self.logger.error(f"[LLM_CACHE] Error getting cached LLM: {str(e)}")
+                self.logger.error(f"[LLM_CACHE] Error getting cached LLM: {str(e)}", exc_info=True)
+                self.logger.error(f"[LLM_CACHE] Context - model: {llm_config.get('model', 'unknown')}, endpoint: {llm_config.get('endpoint', 'unknown')}")
                 # Clear broken cache
                 self._cached_llm = None
                 self._cached_llm_config_full = None
@@ -402,7 +412,8 @@ class NotebookRAGService:
             }
             
         except Exception as e:
-            self.logger.error(f"Failed to get Milvus connection args: {str(e)}")
+            self.logger.error(f"Failed to get Milvus connection args: {str(e)}", exc_info=True)
+            self.logger.error(f"[MILVUS_CONNECTION] Context - uri attempted: {uri if 'uri' in locals() else 'not_set'}, token present: {'token' in locals()}")
             # Fallback to legacy format for backwards compatibility
             vector_config = self._get_vector_settings()
             return {
@@ -720,6 +731,11 @@ class NotebookRAGService:
         Returns:
             RAG query results with adaptive optimization applied
         """
+        # Parameter validation guards
+        validation_error = self._validate_query_parameters(db, notebook_id, query, max_sources, collection_filter)
+        if validation_error:
+            return validation_error
+            
         try:
             self.logger.info(f"[ADAPTIVE_QUERY] Starting adaptive query for notebook {notebook_id}: '{query[:50]}...'")
             
@@ -869,17 +885,146 @@ class NotebookRAGService:
             return result
             
         except Exception as e:
-            self.logger.error(f"[ADAPTIVE_QUERY] Adaptive query failed: {str(e)}")
-            # Fallback to standard query with conservative limits
-            # Conservative fallback based on typical query needs
-            fallback_limit = min(max_sources or 10, 30)
-            return await self.query_notebook(
-                db=db,
-                notebook_id=notebook_id,
-                query=query,
-                top_k=fallback_limit,
-                include_metadata=include_metadata,
-                collection_filter=collection_filter
+            self.logger.error(f"[ADAPTIVE_QUERY] Adaptive query failed: {str(e)}", exc_info=True)
+            
+            # Defensive parameter validation and fallback
+            try:
+                # Conservative fallback based on typical query needs with parameter validation
+                fallback_limit = self._get_safe_fallback_limit(max_sources)
+                
+                self.logger.info(f"[ADAPTIVE_QUERY] Using fallback query with limit: {fallback_limit}")
+                return await self.query_notebook(
+                    db=db,
+                    notebook_id=notebook_id,
+                    query=query,
+                    top_k=fallback_limit,
+                    include_metadata=include_metadata,
+                    collection_filter=collection_filter
+                )
+            except Exception as fallback_error:
+                self.logger.error(f"[ADAPTIVE_QUERY] Fallback query also failed: {fallback_error}", exc_info=True)
+                # Return empty response instead of crashing
+                return NotebookRAGResponse(
+                    response="I apologize, but I encountered an error processing your query. Please try again with a simpler question.",
+                    sources=[],
+                    metadata={"error": "adaptive_query_fallback_failed", "original_error": str(e)}
+                )
+    
+    def _get_safe_fallback_limit(self, max_sources: Optional[int]) -> int:
+        """
+        Safely calculate fallback limit with parameter validation.
+        
+        Args:
+            max_sources: User-requested max sources (may be None or invalid)
+            
+        Returns:
+            int: Safe fallback limit for query
+        """
+        try:
+            # Validate and sanitize max_sources
+            if max_sources is None:
+                return 10  # Safe default
+            
+            if not isinstance(max_sources, int):
+                self.logger.warning(f"[DEFENSIVE_CODING] max_sources is not int: {type(max_sources)}, using default")
+                return 10
+            
+            if max_sources <= 0:
+                self.logger.warning(f"[DEFENSIVE_CODING] max_sources is non-positive: {max_sources}, using default")
+                return 10
+            
+            # Cap at reasonable limit to prevent system overload
+            safe_limit = min(max_sources, 30)
+            self.logger.debug(f"[DEFENSIVE_CODING] Calculated safe fallback limit: {safe_limit}")
+            return safe_limit
+            
+        except Exception as e:
+            self.logger.error(f"[DEFENSIVE_CODING] Error calculating fallback limit: {e}, using default")
+            return 10
+    
+    def _validate_query_parameters(
+        self, 
+        db: Session, 
+        notebook_id: str, 
+        query: str, 
+        max_sources: Optional[int], 
+        collection_filter: Optional[List[str]]
+    ) -> Optional[NotebookRAGResponse]:
+        """
+        Validate query parameters and return error response if invalid.
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID
+            query: Query string
+            max_sources: Max sources parameter
+            collection_filter: Collection filter
+            
+        Returns:
+            NotebookRAGResponse with error if validation fails, None if valid
+        """
+        try:
+            # Validate database session
+            if db is None:
+                self.logger.error("[VALIDATION] Database session is None")
+                return NotebookRAGResponse(
+                    response="Database connection error. Please try again.",
+                    sources=[],
+                    metadata={"error": "invalid_db_session"}
+                )
+            
+            # Validate notebook_id
+            if not notebook_id or not isinstance(notebook_id, str) or len(notebook_id.strip()) == 0:
+                self.logger.error(f"[VALIDATION] Invalid notebook_id: {notebook_id}")
+                return NotebookRAGResponse(
+                    response="Invalid notebook identifier. Please check your request.",
+                    sources=[],
+                    metadata={"error": "invalid_notebook_id"}
+                )
+            
+            # Validate query
+            if not query or not isinstance(query, str) or len(query.strip()) == 0:
+                self.logger.error(f"[VALIDATION] Invalid query: {query}")
+                return NotebookRAGResponse(
+                    response="Please provide a valid search query.",
+                    sources=[],
+                    metadata={"error": "invalid_query"}
+                )
+            
+            # Validate max_sources if provided
+            if max_sources is not None:
+                if not isinstance(max_sources, int) or max_sources <= 0:
+                    self.logger.warning(f"[VALIDATION] Invalid max_sources: {max_sources}, will use default")
+                    # Don't return error, just log - will be handled by _get_safe_fallback_limit
+                elif max_sources > 1000:  # Prevent abuse
+                    self.logger.warning(f"[VALIDATION] max_sources too large: {max_sources}, will be capped")
+            
+            # Validate collection_filter if provided
+            if collection_filter is not None:
+                if not isinstance(collection_filter, list):
+                    self.logger.warning(f"[VALIDATION] collection_filter is not list: {type(collection_filter)}")
+                    # Don't error, just ignore the filter
+                else:
+                    # Filter out invalid collection names
+                    valid_collections = []
+                    for col in collection_filter:
+                        if isinstance(col, str) and len(col.strip()) > 0:
+                            valid_collections.append(col.strip())
+                        else:
+                            self.logger.warning(f"[VALIDATION] Invalid collection name in filter: {col}")
+                    
+                    if len(valid_collections) != len(collection_filter):
+                        self.logger.info(f"[VALIDATION] Cleaned collection_filter: {len(collection_filter)} -> {len(valid_collections)}")
+            
+            # All validations passed
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"[VALIDATION] Parameter validation error: {e}", exc_info=True)
+            return NotebookRAGResponse(
+                response="Parameter validation error. Please try again.",
+                sources=[],
+                metadata={"error": "validation_exception", "details": str(e)}
             )
     
     async def estimate_query_matches(
@@ -968,7 +1113,8 @@ class NotebookRAGService:
         query: str,
         top_k: int = 5,
         include_metadata: bool = True,
-        collection_filter: Optional[List[str]] = None
+        collection_filter: Optional[List[str]] = None,
+        skip_extraction: bool = False
     ) -> NotebookRAGResponse:
         """
         Query notebook documents using RAG.
@@ -1159,31 +1305,31 @@ class NotebookRAGService:
                             )
                             self.logger.info(f"[BOTTLENECK_DEBUG] After full collection scan: {len(initial_results)} initial_results")
                         else:
-                            # Use standard similarity search
-                            search_results = collection.search(
-                                data=[query_embedding],
-                                anns_field="vector",
-                                param=search_params,
-                                limit=limit,
-                                expr=doc_filter,
-                                output_fields=["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
-                            )
+                            # Use standard similarity search with Redis vector caching
                             
-                            # Convert similarity search results to our format
-                            initial_results = []
-                            for hits in search_results:
-                                for hit in hits:
-                                    # Extract fields from Milvus result
-                                    content = hit.entity.get('content', '')
+                            # Generate cache key for vector results
+                            vector_cache_key = await self._get_vector_cache_key(notebook_id, query, limit)
+                            
+                            # Check cache first
+                            cached_vector_results = await self._get_cached_vector_results(vector_cache_key)
+                            
+                            if cached_vector_results:
+                                # Cache hit - use cached results
+                                self.logger.info(f"[VECTOR_CACHE] Cache HIT - Retrieved {len(cached_vector_results)} cached vector results")
+                                
+                                # Convert cached results to our format
+                                initial_results = []
+                                for cached_hit in cached_vector_results:
+                                    content = cached_hit.get('content', '')
                                     metadata = {
-                                        'doc_id': hit.entity.get('doc_id', ''),
-                                        'source': hit.entity.get('source', ''),
-                                        'page': hit.entity.get('page', 0),
-                                        'doc_type': hit.entity.get('doc_type', ''),
-                                        'uploaded_at': hit.entity.get('uploaded_at', ''),
-                                        'section': hit.entity.get('section', ''),
-                                        'author': hit.entity.get('author', ''),
-                                        'hash': hit.entity.get('hash', '')
+                                        'doc_id': cached_hit.get('doc_id', ''),
+                                        'source': cached_hit.get('source', ''),
+                                        'page': cached_hit.get('page', 0),
+                                        'doc_type': cached_hit.get('doc_type', ''),
+                                        'uploaded_at': cached_hit.get('uploaded_at', ''),
+                                        'section': cached_hit.get('section', ''),
+                                        'author': cached_hit.get('author', ''),
+                                        'hash': cached_hit.get('hash', '')
                                     }
                                     
                                     # Create a document-like object that matches our processing logic
@@ -1192,7 +1338,49 @@ class NotebookRAGService:
                                         'metadata': metadata
                                     }
                                     
-                                    initial_results.append((doc, hit.score))
+                                    score = cached_hit.get('distance', 0.0)
+                                    initial_results.append((doc, score))
+                            else:
+                                # Cache miss - perform Milvus search
+                                self.logger.info(f"[VECTOR_CACHE] Cache MISS - Performing Milvus search")
+                                
+                                search_results = collection.search(
+                                    data=[query_embedding],
+                                    anns_field="vector",
+                                    param=search_params,
+                                    limit=limit,
+                                    expr=doc_filter,
+                                    output_fields=["content", "doc_id", "source", "page", "doc_type", "uploaded_at", "section", "author", "hash"]
+                                )
+                                
+                                # Cache the raw search results immediately after successful retrieval
+                                await self._cache_vector_results(vector_cache_key, search_results, ttl=3600)
+                                self.logger.info(f"[VECTOR_CACHE] Cached {len(search_results)} vector results")
+                                
+                                # Convert similarity search results to our format
+                                initial_results = []
+                                for hits in search_results:
+                                    for hit in hits:
+                                        # Extract fields from Milvus result
+                                        content = hit.entity.get('content', '')
+                                        metadata = {
+                                            'doc_id': hit.entity.get('doc_id', ''),
+                                            'source': hit.entity.get('source', ''),
+                                            'page': hit.entity.get('page', 0),
+                                            'doc_type': hit.entity.get('doc_type', ''),
+                                            'uploaded_at': hit.entity.get('uploaded_at', ''),
+                                            'section': hit.entity.get('section', ''),
+                                            'author': hit.entity.get('author', ''),
+                                            'hash': hit.entity.get('hash', '')
+                                        }
+                                        
+                                        # Create a document-like object that matches our processing logic
+                                        doc = {
+                                            'page_content': content,
+                                            'metadata': metadata
+                                        }
+                                        
+                                        initial_results.append((doc, hit.score))
                         
                         # Convert full collection scan results to processing format if needed
                         if should_use_full_scan and initial_results:
@@ -1414,18 +1602,22 @@ class NotebookRAGService:
             
             # Extract structured professional data for comprehensive queries using AI detection
             extracted_projects = None
-            should_extract = await self._should_extract_structured_data(query, top_sources)
-            if should_extract:
-                self.logger.info(f"[STRUCTURED_EXTRACTION] Detected comprehensive query: '{query[:50]}...', extracting structured professional data")
-                
-                # Removed execution state tracking to fix Redis async/sync errors
-                
-                try:
-                    extracted_projects = await self.extract_project_data(top_sources)
-                    self.logger.info(f"[STRUCTURED_EXTRACTION] Successfully extracted {len(extracted_projects) if extracted_projects else 0} structured activities")
-                except Exception as e:
-                    self.logger.error(f"[STRUCTURED_EXTRACTION] Extraction failed: {str(e)}")
-                    extracted_projects = None
+            
+            if skip_extraction:
+                self.logger.info(f"[SKIP_EXTRACTION] Skipping extraction for immediate response - {len(top_sources)} sources")
+            else:
+                should_extract = await self._should_extract_structured_data(query, top_sources)
+                if should_extract:
+                    self.logger.info(f"[STRUCTURED_EXTRACTION] Detected comprehensive query: '{query[:50]}...', extracting structured professional data")
+                    
+                    # Removed execution state tracking to fix Redis async/sync errors
+                    
+                    try:
+                        extracted_projects = await self.extract_project_data(top_sources)
+                        self.logger.info(f"[STRUCTURED_EXTRACTION] Successfully extracted {len(extracted_projects) if extracted_projects else 0} structured activities")
+                    except Exception as e:
+                        self.logger.error(f"[STRUCTURED_EXTRACTION] Extraction failed: {str(e)}")
+                        extracted_projects = None
             
             return NotebookRAGResponse(
                 notebook_id=notebook_id,
@@ -1908,6 +2100,7 @@ class NotebookRAGService:
         try:
             import re
             self.logger.info(f"[PROJECT_EXTRACTION] Starting extraction from {len(sources)} sources")
+            self.logger.info(f"[EXTRACTION_DEBUG] Starting extraction with {len(sources)} sources")
             
             # Initialize professional activity collection
             raw_activities = []
@@ -1916,12 +2109,19 @@ class NotebookRAGService:
             raw_activities = await self._extract_projects_from_sources_batch(sources)
             
             self.logger.info(f"[STRUCTURED_EXTRACTION] Found {len(raw_activities)} raw professional activities")
+            self.logger.info(f"[EXTRACTION_DEBUG] Extracted {len(raw_activities)} raw projects before deduplication")
+            if raw_activities[:3]:  # Log first 3 for debugging
+                for i, proj in enumerate(raw_activities[:3]):
+                    self.logger.info(f"[EXTRACTION_DEBUG] Sample {i+1}: {proj.name} at {proj.company} ({proj.year})")
             
             # Complete missing metadata using cross-referencing
             completed_activities = await self._complete_project_metadata(raw_activities, sources)
+            self.logger.info(f"[EXTRACTION_DEBUG] After metadata completion: {len(completed_activities)} projects")
             
             # Deduplicate and merge similar activities
+            self.logger.info(f"[EXTRACTION_DEBUG] Before deduplication: {len(completed_activities)} projects")
             final_activities = await self._deduplicate_and_merge_projects(completed_activities)
+            self.logger.info(f"[EXTRACTION_DEBUG] After deduplication: {len(final_activities)} projects")
             
             # Sort activities chronologically by start year
             if final_activities:
@@ -1929,6 +2129,14 @@ class NotebookRAGService:
                 self.logger.info(f"[STRUCTURED_EXTRACTION] Activities sorted chronologically (default behavior)")
             
             self.logger.info(f"[STRUCTURED_EXTRACTION] Final extraction: {len(final_activities)} unique professional activities")
+            self.logger.info(f"[EXTRACTION_DEBUG] Final result: {len(final_activities)} projects after deduplication")
+            if final_activities:
+                self.logger.info(f"[EXTRACTION_DEBUG] Returning {len(final_activities)} ProjectData objects")
+                # Log samples of final results
+                for i, proj in enumerate(final_activities[:3]):
+                    self.logger.info(f"[EXTRACTION_DEBUG] Final sample {i+1}: {proj.name} at {proj.company} ({proj.year})")
+            else:
+                self.logger.warning(f"[EXTRACTION_DEBUG] WARNING: Returning empty list despite extraction attempts")
             return final_activities
             
         except Exception as e:
@@ -1996,8 +2204,17 @@ class NotebookRAGService:
             source_count = len(sources)
             self.logger.info(f"[CHUNKED_EXTRACTION] Processing {source_count} sources")
             
-            # Determine processing strategy based on source count
-            chunk_size = 12  # Optimal chunk size for performance vs timeout balance
+            # Determine processing strategy based on source count with adaptive chunking
+            # Base chunk size reduced to 5 for improved reliability and timeout avoidance
+            base_chunk_size = 5  # Smaller chunks for better reliability
+            
+            # Adaptive chunking: reduce chunk size further if we detect timeout patterns
+            if hasattr(self, '_recent_timeouts') and len(self._recent_timeouts) >= 2:
+                # If we've had recent timeouts, use even smaller chunks
+                chunk_size = max(3, base_chunk_size - len(self._recent_timeouts))  # Min 3, max 5
+                self.logger.info(f"[ADAPTIVE_CHUNKING] Detected {len(self._recent_timeouts)} recent timeouts, reducing chunk size to {chunk_size}")
+            else:
+                chunk_size = base_chunk_size
             
             if source_count <= chunk_size:
                 # Small batch - process normally
@@ -2008,13 +2225,20 @@ class NotebookRAGService:
             self.logger.info(f"[CHUNKED_EXTRACTION] Large batch ({source_count} sources) - splitting into chunks of {chunk_size}")
             
             chunks = [sources[i:i + chunk_size] for i in range(0, source_count, chunk_size)]
-            self.logger.info(f"[CHUNKED_EXTRACTION] Created {len(chunks)} chunks")
+            num_chunks = len(chunks)
+            self.logger.info(f"[CHUNKED_EXTRACTION] Created {num_chunks} chunks for better parallelization")
+            
+            # Calculate dynamic timeout for the overall operation
+            dynamic_timeout = calculate_dynamic_timeout(source_count)
+            self.logger.info(f"[CHUNKED_EXTRACTION] Using dynamic timeout: {dynamic_timeout}s for {source_count} sources")
             
             # Process chunks in parallel with individual timeouts
             chunk_tasks = []
             for i, chunk in enumerate(chunks):
-                self.logger.debug(f"[CHUNKED_EXTRACTION] Queuing chunk {i+1}/{len(chunks)} with {len(chunk)} sources")
-                task = self._extract_projects_from_chunk_with_timeout(chunk, i+1, len(chunks))
+                self.logger.debug(f"[CHUNKED_EXTRACTION] Queuing chunk {i+1}/{num_chunks} with {len(chunk)} sources")
+                task = self._extract_projects_from_chunk_with_timeout(
+                    chunk, i+1, num_chunks, source_count
+                )
                 chunk_tasks.append(task)
             
             # Progressive processing with as_completed for better user experience
@@ -2085,30 +2309,49 @@ class NotebookRAGService:
             # Fallback to individual processing for this chunk
             return await self._extract_projects_from_sources_individual(sources)
 
-    async def _extract_projects_from_chunk_with_timeout(self, chunk: List[NotebookRAGSource], chunk_num: int, total_chunks: int) -> List[ProjectData]:
-        """Process a chunk with timeout protection and circuit breaker"""
+    async def _extract_projects_from_chunk_with_timeout(self, chunk: List[NotebookRAGSource], chunk_num: int, total_chunks: int, total_source_count: int = None) -> List[ProjectData]:
+        """Process a chunk with timeout protection and enhanced circuit breaker"""
         import asyncio
         import time
         
         start_time = time.time()
         
         try:
-            # Calculate timeout based on chunk size (minimum 60s, maximum 120s)
-            # Increased based on test results showing 45-48s not sufficient
-            chunk_timeout = max(60, min(120, len(chunk) * 6))  # 6 seconds per source
+            # Use configurable chunk processing timeout with adaptive scaling
+            base_chunk_timeout = get_chunk_processing_timeout()  # 120s from config
             
-            self.logger.debug(f"[CHUNK_{chunk_num}] Processing {len(chunk)} sources with {chunk_timeout}s timeout")
+            # Adaptive timeout: increase for larger total datasets
+            if total_source_count and total_source_count >= 50:
+                # For large datasets (50+ sources), increase timeout per chunk
+                adaptive_multiplier = min(1.5, 1 + (total_source_count - 50) / 100)
+                chunk_timeout = int(base_chunk_timeout * adaptive_multiplier)
+            else:
+                # Standard timeout calculation: base + per-source allowance (increased)
+                chunk_timeout = base_chunk_timeout + (len(chunk) * 10)  # 10 seconds per source (increased from 8)
             
-            # Circuit breaker: if previous chunks are averaging >60s per chunk, reduce complexity
+            # Cap timeout to prevent excessive waits
+            chunk_timeout = min(chunk_timeout, 300)  # Maximum 5 minutes per chunk
+            
+            self.logger.debug(f"[CHUNK_{chunk_num}] Processing {len(chunk)} sources with {chunk_timeout}s adaptive timeout")
+            
+            # Enhanced circuit breaker: analyze performance patterns for better reliability
             performance_mode = "normal"
-            if hasattr(self, '_chunk_performance_history'):
+            if hasattr(self, '_chunk_performance_history') and len(self._chunk_performance_history) > 0:
                 avg_time = sum(self._chunk_performance_history) / len(self._chunk_performance_history)
-                if avg_time > 60 and len(self._chunk_performance_history) >= 2:
+                failure_rate = getattr(self, '_chunk_failure_count', 0) / max(len(self._chunk_performance_history), 1)
+                
+                # Activate fast mode if performance is degrading or failure rate is high
+                if (avg_time > 90 and len(self._chunk_performance_history) >= 2) or failure_rate > 0.3:
                     performance_mode = "fast"
-                    chunk_timeout = min(chunk_timeout, 45)  # Reduce timeout for fast mode
-                    self.logger.warning(f"[CIRCUIT_BREAKER] Activated fast mode due to slow performance (avg: {avg_time:.1f}s)")
+                    # Use more conservative timeout for fast mode but still reasonable for large datasets
+                    chunk_timeout = min(chunk_timeout, max(120, len(chunk) * 12))  # At least 120s or 12s per source (increased)
+                    self.logger.warning(f"[CIRCUIT_BREAKER] Activated fast mode - avg: {avg_time:.1f}s, failures: {failure_rate:.1%}")
+                elif total_source_count and total_source_count >= 100:
+                    # For very large datasets (100+ sources), use conservative approach from start
+                    performance_mode = "conservative"
+                    self.logger.info(f"[CIRCUIT_BREAKER] Using conservative mode for {total_source_count} sources")
             
-            # Process chunk with timeout
+            # Process chunk with timeout based on performance mode
             if performance_mode == "fast":
                 # In fast mode, try individual processing first (more reliable)
                 self.logger.debug(f"[CHUNK_{chunk_num}] Using fast mode - individual processing")
@@ -2116,19 +2359,27 @@ class NotebookRAGService:
                     self._extract_projects_from_sources_individual(chunk),
                     timeout=chunk_timeout
                 )
+            elif performance_mode == "conservative":
+                # Conservative mode for very large datasets - use individual processing with extended timeouts
+                self.logger.debug(f"[CHUNK_{chunk_num}] Using conservative mode - individual processing with extended timeout")
+                result = await asyncio.wait_for(
+                    self._extract_projects_from_sources_individual(chunk),
+                    timeout=chunk_timeout
+                )
             else:
+                # Normal mode - use batch processing
                 result = await asyncio.wait_for(
                     self._extract_projects_from_single_chunk(chunk),
                     timeout=chunk_timeout
                 )
             
-            # Track performance
+            # Track successful performance
             processing_time = time.time() - start_time
             if not hasattr(self, '_chunk_performance_history'):
                 self._chunk_performance_history = []
             self._chunk_performance_history.append(processing_time)
-            # Keep only last 3 chunk times for rolling average
-            if len(self._chunk_performance_history) > 3:
+            # Keep only last 5 chunk times for rolling average (increased from 3 for better analysis)
+            if len(self._chunk_performance_history) > 5:
                 self._chunk_performance_history.pop(0)
             
             self.logger.info(f"[CHUNK_{chunk_num}] Completed in {processing_time:.1f}s: {len(result)} activities extracted")
@@ -2136,12 +2387,32 @@ class NotebookRAGService:
             
         except asyncio.TimeoutError:
             processing_time = time.time() - start_time
+            # Track timeout for adaptive chunking
+            import time as time_module
+            self._recent_timeouts.append(time_module.time())
+            # Keep only recent timeouts (last 10 minutes)
+            cutoff_time = time_module.time() - 600  # 10 minutes ago
+            self._recent_timeouts = [t for t in self._recent_timeouts if t > cutoff_time]
+            
+            # Track failure for circuit breaker
+            if not hasattr(self, '_chunk_failure_count'):
+                self._chunk_failure_count = 0
+            self._chunk_failure_count += 1
+            
             self.logger.warning(f"[CHUNK_{chunk_num}] Timeout after {processing_time:.1f}s - falling back to individual processing")
             
-            # Emergency fallback to individual processing with adequate timeout
+            # Emergency fallback with adaptive timeout based on source count
             try:
-                # Calculate emergency timeout: 15s per source (from individual processing)
-                emergency_timeout = len(chunk) * 15
+                # Calculate adaptive emergency timeout based on total dataset size
+                if total_source_count and total_source_count >= 50:
+                    # For large datasets, give more time per source in emergency mode
+                    emergency_timeout = len(chunk) * 20  # 20s per source for large datasets
+                else:
+                    # Standard emergency timeout
+                    emergency_timeout = len(chunk) * 15  # 15s per source
+                
+                # Cap emergency timeout to prevent excessive waits
+                emergency_timeout = min(emergency_timeout, 180)  # Max 3 minutes for emergency fallback
                 result = await asyncio.wait_for(
                     self._extract_projects_from_sources_individual(chunk),
                     timeout=emergency_timeout
@@ -2153,6 +2424,11 @@ class NotebookRAGService:
                 return []
         except Exception as e:
             processing_time = time.time() - start_time
+            # Track failure for circuit breaker
+            if not hasattr(self, '_chunk_failure_count'):
+                self._chunk_failure_count = 0
+            self._chunk_failure_count += 1
+            
             self.logger.error(f"[CHUNK_{chunk_num}] Failed after {processing_time:.1f}s with error: {str(e)}")
             return []
 
@@ -2165,10 +2441,11 @@ class NotebookRAGService:
         # Process sources individually with per-source timeout
         for i, source in enumerate(sources):
             try:
-                # 15s timeout per source for emergency processing
+                # Use configurable per-source timeout for better scalability
+                per_source_timeout = get_extraction_timeout() // 6  # ~15s (90s / 6 sources)
                 activities_in_source = await asyncio.wait_for(
                     self._extract_projects_from_content(source),
-                    timeout=15
+                    timeout=per_source_timeout
                 )
                 all_activities.extend(activities_in_source)
                 self.logger.debug(f"[INDIVIDUAL_{i+1}] Extracted {len(activities_in_source)} activities")
@@ -2205,12 +2482,12 @@ class NotebookRAGService:
             # Create batch extraction prompt
             prompt = await self._build_batch_project_extraction_prompt(combined_content, len(sources))
             
-            # Single AI call for chunk with reasonable timeout (reduced from 300s to prevent parent timeouts)
+            # Single AI call for chunk with increased timeout for reliable extraction
             chunk_size = len(sources)
-            ai_timeout = min(120, max(60, chunk_size * 8))  # 8s per source, 60-120s range
-            self.logger.debug(f"[BATCH_AI] Using timeout of {ai_timeout}s for {chunk_size} sources")
+            ai_timeout = min(180, max(90, chunk_size * 10))  # 10s per source, 90-180s range (increased)
+            self.logger.debug(f"[BATCH_AI] Using increased timeout of {ai_timeout}s for {chunk_size} sources")
             
-            response = await llm.generate(prompt, timeout=ai_timeout)
+            response = await llm.generate(prompt, timeout=ai_timeout, task_type="batch_extraction")
             ai_response = response.text
             
             # Parse AI response into ProjectData objects
@@ -2661,6 +2938,155 @@ Text to analyze:
             
         except Exception as e:
             self.logger.error(f"[PROJECT_EXTRACTION] Error caching extraction: {str(e)}")
+
+    async def _get_vector_cache_key(self, notebook_id: str, query: str, max_sources: int) -> str:
+        """
+        Generate unique cache key for vector retrieval results.
+        
+        Args:
+            notebook_id: The notebook ID
+            query: The search query
+            max_sources: Maximum number of sources to retrieve
+            
+        Returns:
+            Cache key string
+        """
+        try:
+            # Create hash from query for consistent key generation
+            query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()[:12]  # Use first 12 chars
+            return f"notebook_vectors:{notebook_id}:{query_hash}:{max_sources}"
+        except Exception:
+            # Fallback to timestamp-based key if hashing fails
+            return f"notebook_vectors:{notebook_id}:{int(time.time())}:{max_sources}"
+
+    async def _cache_vector_results(self, cache_key: str, raw_results: list, ttl: int = 3600) -> None:
+        """
+        Store raw Milvus vector search results in cache.
+        
+        Args:
+            cache_key: Cache key for storage
+            raw_results: Raw results from Milvus search (list of hit objects)
+            ttl: Time to live in seconds (default: 3600 = 1 hour)
+        """
+        try:
+            redis_client = get_redis_client()
+            if not redis_client:
+                return
+            
+            # Convert Milvus results to JSON-serializable format
+            serializable_results = []
+            for result in raw_results:
+                if hasattr(result, '__iter__'):  # Handle search results which are lists of hits
+                    for hit in result:
+                        hit_data = {
+                            'content': hit.entity.get('content', ''),
+                            'doc_id': hit.entity.get('doc_id', ''),
+                            'source': hit.entity.get('source', ''),
+                            'page': hit.entity.get('page', 0),
+                            'doc_type': hit.entity.get('doc_type', ''),
+                            'uploaded_at': hit.entity.get('uploaded_at', ''),
+                            'section': hit.entity.get('section', ''),
+                            'author': hit.entity.get('author', ''),
+                            'hash': hit.entity.get('hash', ''),
+                            'distance': getattr(hit, 'distance', 0.0),
+                            'id': getattr(hit, 'id', '')
+                        }
+                        serializable_results.append(hit_data)
+                else:
+                    # Handle individual hit objects
+                    hit_data = {
+                        'content': result.entity.get('content', ''),
+                        'doc_id': result.entity.get('doc_id', ''),
+                        'source': result.entity.get('source', ''),
+                        'page': result.entity.get('page', 0),
+                        'doc_type': result.entity.get('doc_type', ''),
+                        'uploaded_at': result.entity.get('uploaded_at', ''),
+                        'section': result.entity.get('section', ''),
+                        'author': result.entity.get('author', ''),
+                        'hash': result.entity.get('hash', ''),
+                        'distance': getattr(result, 'distance', 0.0),
+                        'id': getattr(result, 'id', '')
+                    }
+                    serializable_results.append(hit_data)
+            
+            # Cache the results
+            redis_client.setex(cache_key, ttl, json.dumps(serializable_results))
+            
+            self.logger.debug(f"[VECTOR_CACHE] Cached {len(serializable_results)} vector results with key: {cache_key}")
+            
+        except Exception as e:
+            self.logger.error(f"[VECTOR_CACHE] Error caching vector results: {str(e)}")
+
+    async def _get_cached_vector_results(self, cache_key: str) -> Optional[list]:
+        """
+        Retrieve cached vector search results.
+        
+        Args:
+            cache_key: Cache key to lookup
+            
+        Returns:
+            List of cached results or None if not found/expired
+        """
+        try:
+            redis_client = get_redis_client()
+            if not redis_client:
+                return None
+            
+            cached_data = redis_client.get(cache_key)
+            if not cached_data:
+                return None
+            
+            # Parse cached JSON - handle bytes if necessary
+            if isinstance(cached_data, bytes):
+                cached_data = cached_data.decode('utf-8')
+            
+            results = json.loads(cached_data)
+            
+            self.logger.debug(f"[VECTOR_CACHE] Retrieved {len(results)} cached vector results with key: {cache_key}")
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"[VECTOR_CACHE] Error getting cached vector results: {str(e)}")
+            return None
+
+    async def invalidate_vector_cache(self, notebook_id: Optional[str] = None) -> int:
+        """
+        Invalidate vector cache entries.
+        
+        Args:
+            notebook_id: Optional specific notebook ID to invalidate. If None, clears all vector caches.
+            
+        Returns:
+            Number of cache entries invalidated
+        """
+        try:
+            redis_client = get_redis_client()
+            if not redis_client:
+                return 0
+            
+            if notebook_id:
+                # Clear cache entries for specific notebook
+                pattern = f"notebook_vectors:{notebook_id}:*"
+                keys = redis_client.keys(pattern)
+                if keys:
+                    count = redis_client.delete(*keys)
+                    self.logger.info(f"[VECTOR_CACHE] Invalidated {count} vector cache entries for notebook {notebook_id}")
+                    return count
+            else:
+                # Clear all vector caches
+                pattern = "notebook_vectors:*"
+                keys = redis_client.keys(pattern)
+                if keys:
+                    count = redis_client.delete(*keys)
+                    self.logger.info(f"[VECTOR_CACHE] Invalidated all {count} vector cache entries")
+                    return count
+                    
+            return 0
+                    
+        except Exception as e:
+            self.logger.error(f"[VECTOR_CACHE] Error invalidating cache: {str(e)}")
+            return 0
 
     async def _extract_metadata_with_ai(self, context: str, entity_name: str) -> dict:
         """Extract metadata using AI instead of hardcoded patterns."""
