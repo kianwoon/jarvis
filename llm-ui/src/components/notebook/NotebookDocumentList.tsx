@@ -38,6 +38,7 @@ import {
   Add as AddIcon,
   Upload as UploadIcon,
   Delete as DeleteIcon,
+  Edit as EditIcon,
   Description as DocumentIcon,
   Search as SearchIcon,
   Close as CloseIcon,
@@ -63,6 +64,7 @@ import {
   NotebookWithDocuments, 
   Document, 
   NotebookDocument,
+  UpdateDocumentRequest,
   getErrorMessage, 
   formatFileSize,
   formatRelativeTime
@@ -82,6 +84,9 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // Local state for optimistic document name updates
+  const [localDocumentNames, setLocalDocumentNames] = useState<Record<string, string>>({});
   
   // Add documents dialog
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -110,6 +115,12 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
   // Admin mode
   const [adminMode, setAdminMode] = useState(false);
   const [adminConfirmDialogOpen, setAdminConfirmDialogOpen] = useState(false);
+
+  // Edit document functionality
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingDocument, setEditingDocument] = useState<NotebookDocument | null>(null);
+  const [editDocumentName, setEditDocumentName] = useState('');
+  const [updating, setUpdating] = useState(false);
   const [preselectedDocumentId, setPreselectedDocumentId] = useState<string | null>(null);
 
   // Load available documents when add dialog opens
@@ -118,6 +129,11 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
       loadAvailableDocuments();
     }
   }, [addDialogOpen]);
+
+  // Clear optimistic updates when notebook data is refreshed from backend
+  useEffect(() => {
+    setLocalDocumentNames({});
+  }, [notebook]);
 
   const loadAvailableDocuments = async () => {
     try {
@@ -192,6 +208,72 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
   const handleAdminClose = () => {
     setAdminMode(false);
     setPreselectedDocumentId(null);
+  };
+
+  const handleEditDocument = (document: NotebookDocument) => {
+    console.log('=== EDIT DIALOG OPENING ===');
+    console.log('Document being edited:', document);
+    console.log('Setting initial editDocumentName to:', document.document_name || '');
+    
+    setEditingDocument(document);
+    setEditDocumentName(document.document_name || '');
+    setEditDialogOpen(true);
+    setContextMenu(null);
+  };
+
+  const handleUpdateDocument = async () => {
+    if (!editingDocument || !editDocumentName.trim()) {
+      setError('Document name is required');
+      return;
+    }
+
+    const newName = editDocumentName.trim();
+    const documentId = editingDocument.document_id;
+    const originalName = editingDocument.document_name || '';
+
+    console.log('=== DOCUMENT UPDATE DEBUG ===');
+    console.log('Original name:', originalName);
+    console.log('New name from input:', newName);
+    console.log('Document ID:', documentId);
+    console.log('editDocumentName state:', editDocumentName);
+    console.log('Are names different?', originalName !== newName);
+
+    try {
+      setUpdating(true);
+      setError('');
+
+      // Optimistically update the local state first for immediate UI feedback
+      setLocalDocumentNames(prev => ({
+        ...prev,
+        [documentId]: newName
+      }));
+
+      console.log('Sending API request with payload:', { name: newName });
+      
+      await notebookAPI.updateDocument(notebook.id, documentId, {
+        name: newName
+      });
+
+      console.log('API call completed successfully');
+
+      setEditDialogOpen(false);
+      setEditingDocument(null);
+
+      // Refresh the notebook to get updated document list and sync with backend
+      onDocumentChange();
+
+    } catch (err) {
+      console.error('API call failed:', err);
+      // If API call fails, revert the optimistic update
+      setLocalDocumentNames(prev => {
+        const updated = { ...prev };
+        delete updated[documentId];
+        return updated;
+      });
+      setError(getErrorMessage(err));
+    } finally {
+      setUpdating(false);
+    }
   };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -369,6 +451,11 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
     return <FileIcon />;
   };
 
+  // Helper function to get the display name, preferring local optimistic updates
+  const getDocumentDisplayName = (document: NotebookDocument): string => {
+    return localDocumentNames[document.document_id] || document.document_name || 'Unnamed Document';
+  };
+
   const handleContextMenu = (event: React.MouseEvent, document: NotebookDocument) => {
     event.preventDefault();
     setContextMenu({
@@ -378,9 +465,10 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
     });
   };
 
-  const filteredDocuments = (notebook.documents || []).filter(doc =>
-    doc?.document_name?.toLowerCase().includes(searchTerm.toLowerCase()) || false
-  );
+  const filteredDocuments = (notebook.documents || []).filter(doc => {
+    const displayName = getDocumentDisplayName(doc);
+    return displayName.toLowerCase().includes(searchTerm.toLowerCase());
+  });
 
   const filteredAvailableDocuments = (availableDocuments || []).filter(doc =>
     doc?.filename?.toLowerCase().includes(searchTerm.toLowerCase()) || false
@@ -539,7 +627,7 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
                   </ListItemIcon>
                   <Box sx={{ flex: 1, minWidth: 0 }}>
                     <Typography variant="subtitle1" noWrap>
-                      {notebookDoc.document_name}
+                      {getDocumentDisplayName(notebookDoc)}
                     </Typography>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
                       <Chip
@@ -871,6 +959,16 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
         <MenuItem 
           onClick={() => {
             if (contextMenu) {
+              handleEditDocument(contextMenu.document);
+            }
+          }}
+        >
+          <EditIcon sx={{ mr: 1 }} />
+          Edit Name
+        </MenuItem>
+        <MenuItem 
+          onClick={() => {
+            if (contextMenu) {
               handleRemoveDocument(contextMenu.document.document_id);
             }
           }}
@@ -932,6 +1030,67 @@ const NotebookDocumentList: React.FC<NotebookDocumentListProps> = ({
             startIcon={<AdminPanelSettingsIcon />}
           >
             Enable Admin Mode
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Edit Document Dialog */}
+      <Dialog 
+        open={editDialogOpen} 
+        onClose={() => setEditDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Edit Document Name</DialogTitle>
+        <DialogContent>
+          {editingDocument && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              <Typography variant="body2">
+                <strong>Current name:</strong> {editingDocument.document_name || 'Unnamed Document'}
+              </Typography>
+            </Alert>
+          )}
+          <TextField
+            label="Document Name"
+            value={editDocumentName}
+            onChange={(e) => {
+              console.log('=== TEXTFIELD ONCHANGE ===');
+              console.log('Previous state:', editDocumentName);
+              console.log('New value from event:', e.target.value);
+              setEditDocumentName(e.target.value);
+              console.log('Called setEditDocumentName with:', e.target.value);
+            }}
+            fullWidth
+            margin="normal"
+            required
+            helperText={`Enter the display name for this document${editDocumentName !== (editingDocument?.document_name || '') ? ' (Modified)' : ''}`}
+            InputProps={{
+              style: {
+                backgroundColor: editDocumentName !== (editingDocument?.document_name || '') ? 'rgba(255, 193, 7, 0.1)' : 'transparent'
+              }
+            }}
+          />
+          {error && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {error}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditDialogOpen(false)}>
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleUpdateDocument}
+            variant="contained"
+            disabled={updating || !editDocumentName.trim() || editDocumentName.trim() === (editingDocument?.document_name || '')}
+            startIcon={updating ? <CircularProgress size={16} /> : <EditIcon />}
+            aria-label={updating ? 'Updating document, please wait' : 'Update document name'}
+            color={editDocumentName !== (editingDocument?.document_name || '') ? 'primary' : 'inherit'}
+          >
+            {updating ? 'Updating...' : 
+             editDocumentName.trim() === (editingDocument?.document_name || '') ? 'No Changes' : 
+             'Update Name'}
           </Button>
         </DialogActions>
       </Dialog>

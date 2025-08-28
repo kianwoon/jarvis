@@ -218,6 +218,11 @@ export interface UpdateMemoryRequest {
   metadata?: Record<string, any>;
 }
 
+export interface UpdateDocumentRequest {
+  name?: string;
+  metadata?: Record<string, any>;
+}
+
 export interface MemoryListResponse {
   memories: Memory[];
   total_count: number;
@@ -285,6 +290,27 @@ export interface BulkChunkOperationResponse {
   operation_details: ChunkOperationResponse[];
   message: string;
   timestamp?: string;
+}
+
+// Cache management interfaces
+export interface CacheStatus {
+  conversation_id: string;
+  notebook_id: string;
+  cache_exists: boolean;
+  cache_size?: number;
+  created_at?: string;
+  last_accessed?: string;
+  ttl_remaining?: number;
+  memory_usage_bytes?: number;
+}
+
+export interface CacheClearResponse {
+  success: boolean;
+  conversation_id: string;
+  notebook_id: string;
+  message: string;
+  cleared_items?: number;
+  memory_freed_bytes?: number;
 }
 
 class NotebookAPI {
@@ -564,6 +590,30 @@ class NotebookAPI {
     return data;
   }
 
+  async updateDocument(notebookId: string, documentId: string, request: UpdateDocumentRequest): Promise<NotebookDocument> {
+    console.log('=== API CLIENT DEBUG ===');
+    console.log('notebookId:', notebookId);
+    console.log('documentId:', documentId);
+    console.log('request object:', request);
+    console.log('request.name:', request.name);
+    console.log('JSON.stringify(request):', JSON.stringify(request));
+    
+    const response = await fetch(`${this.baseUrl}/${notebookId}/documents/${documentId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+    
+    console.log('Response status:', response.status);
+    console.log('Response headers:', Object.fromEntries(response.headers));
+    
+    const data = await this.handleResponse<NotebookDocument>(response);
+    console.log('Response data:', data);
+    return data;
+  }
+
   // Chunk Management Methods
 
   async getChunksForDocument(
@@ -632,6 +682,22 @@ class NotebookAPI {
       body: JSON.stringify({ chunk_ids: chunkIds }),
     });
     const data = await this.handleResponse<BulkChunkOperationResponse>(response);
+    return data;
+  }
+
+  // Cache Management Methods
+
+  async getCacheStatus(notebookId: string, conversationId: string): Promise<CacheStatus> {
+    const response = await fetch(`${this.baseUrl}/${notebookId}/cache-status/${conversationId}`);
+    const data = await this.handleResponse<CacheStatus>(response);
+    return data;
+  }
+
+  async clearConversationCache(notebookId: string, conversationId: string): Promise<CacheClearResponse> {
+    const response = await fetch(`${this.baseUrl}/${notebookId}/cache/${conversationId}`, {
+      method: 'DELETE'
+    });
+    const data = await this.handleResponse<CacheClearResponse>(response);
     return data;
   }
 }

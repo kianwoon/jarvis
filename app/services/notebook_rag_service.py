@@ -1978,8 +1978,10 @@ class NotebookRAGService:
 
     async def _extract_projects_from_sources_batch(self, sources: List[NotebookRAGSource]) -> List[ProjectData]:
         """
-        Batch process multiple sources for professional activity extraction.
-        Uses single LLM instance and batched content processing for optimal performance.
+        Extract professional activities using chunked batch processing.
+        
+        For large source sets (>12 sources), splits into chunks and processes in parallel.
+        This prevents timeouts and improves performance for comprehensive queries.
         
         Args:
             sources: List of RAG sources to process
@@ -1991,46 +1993,194 @@ class NotebookRAGService:
             return []
             
         try:
-            # Removed execution state tracking to fix Redis async/sync errors
+            source_count = len(sources)
+            self.logger.info(f"[CHUNKED_EXTRACTION] Processing {source_count} sources")
             
-            self.logger.debug(f"[BATCH_EXTRACTION] Processing {len(sources)} sources in batch")
+            # Determine processing strategy based on source count
+            chunk_size = 12  # Optimal chunk size for performance vs timeout balance
             
-            # Process all sources in single batch - no loop needed
-            self.logger.debug(f"[BATCH_EXTRACTION] Processing all {len(sources)} sources in single call")
+            if source_count <= chunk_size:
+                # Small batch - process normally
+                self.logger.debug(f"[CHUNKED_EXTRACTION] Small batch ({source_count} sources) - processing directly")
+                return await self._extract_projects_from_single_chunk(sources)
             
-            # Create combined content for AI analysis
-            combined_content = ""
-            source_boundaries = []  # Track where each source starts/ends
-            current_pos = 0
+            # Large batch - split into chunks and process in parallel
+            self.logger.info(f"[CHUNKED_EXTRACTION] Large batch ({source_count} sources) - splitting into chunks of {chunk_size}")
             
-            for idx, source in enumerate(sources):
-                content = source.content
-                source_start = current_pos
-                combined_content += f"\n--- SOURCE {idx + 1} START ---\n{content}\n--- SOURCE {idx + 1} END ---\n"
-                current_pos = len(combined_content)
-                source_boundaries.append((source_start, current_pos, source))
+            chunks = [sources[i:i + chunk_size] for i in range(0, source_count, chunk_size)]
+            self.logger.info(f"[CHUNKED_EXTRACTION] Created {len(chunks)} chunks")
             
-            # Process all sources with single AI call
-            all_activities = await self._extract_projects_from_batch_content(combined_content, sources)
+            # Process chunks in parallel with individual timeouts
+            chunk_tasks = []
+            for i, chunk in enumerate(chunks):
+                self.logger.debug(f"[CHUNKED_EXTRACTION] Queuing chunk {i+1}/{len(chunks)} with {len(chunk)} sources")
+                task = self._extract_projects_from_chunk_with_timeout(chunk, i+1, len(chunks))
+                chunk_tasks.append(task)
             
-            self.logger.info(f"[BATCH_EXTRACTION] Total extraction: {len(all_activities)} activities from {len(sources)} sources")
+            # Progressive processing with as_completed for better user experience
+            import asyncio
             
-            # Removed execution state tracking to fix Redis async/sync errors
-                
+            all_activities = []
+            successful_chunks = 0
+            failed_chunks = 0
+            completed_chunks = 0
+            
+            self.logger.info(f"[PROGRESSIVE_EXTRACTION] Starting progressive processing of {len(chunks)} chunks")
+            
+            # Process chunks as they complete (progressive results)
+            for completed_task in asyncio.as_completed(chunk_tasks):
+                try:
+                    result = await completed_task
+                    completed_chunks += 1
+                    
+                    if isinstance(result, list):
+                        all_activities.extend(result)
+                        successful_chunks += 1
+                        self.logger.info(f"[PROGRESSIVE_EXTRACTION] Chunk {completed_chunks}/{len(chunks)} completed: {len(result)} activities (+{len(all_activities)} total)")
+                        
+                        # Yield intermediate results every 2 chunks or when significant progress is made
+                        if completed_chunks % 2 == 0 or len(all_activities) >= 10:
+                            self.logger.debug(f"[PROGRESSIVE_EXTRACTION] Intermediate result: {len(all_activities)} activities from {completed_chunks} chunks")
+                    else:
+                        failed_chunks += 1
+                        self.logger.warning(f"[PROGRESSIVE_EXTRACTION] Chunk {completed_chunks}/{len(chunks)} failed")
+                        
+                except Exception as e:
+                    completed_chunks += 1
+                    failed_chunks += 1
+                    self.logger.error(f"[PROGRESSIVE_EXTRACTION] Chunk {completed_chunks}/{len(chunks)} failed: {str(e)}")
+            
+            self.logger.info(f"[PROGRESSIVE_EXTRACTION] All chunks completed: {successful_chunks}/{len(chunks)} successful, {len(all_activities)} total activities")
+            
+            if failed_chunks > 0:
+                self.logger.warning(f"[CHUNKED_EXTRACTION] {failed_chunks} chunks failed - results may be incomplete")
+            
             return all_activities
             
         except Exception as e:
-            self.logger.error(f"[BATCH_EXTRACTION] Error in batch processing: {str(e)}")
+            self.logger.error(f"[CHUNKED_EXTRACTION] Critical error in chunked processing: {str(e)}")
             # Fallback to individual processing
-            self.logger.info("[BATCH_EXTRACTION] Falling back to individual source processing")
+            self.logger.info("[CHUNKED_EXTRACTION] Falling back to individual source processing")
             return await self._extract_projects_from_sources_individual(sources)
 
+    async def _extract_projects_from_single_chunk(self, sources: List[NotebookRAGSource]) -> List[ProjectData]:
+        """Process a single chunk of sources (old batch method)"""
+        try:
+            self.logger.debug(f"[SINGLE_CHUNK] Processing {len(sources)} sources in single call")
+            
+            # Create combined content for AI analysis
+            combined_content = ""
+            for idx, source in enumerate(sources):
+                content = source.content
+                combined_content += f"\n--- SOURCE {idx + 1} START ---\n{content}\n--- SOURCE {idx + 1} END ---\n"
+            
+            # Process with single AI call
+            all_activities = await self._extract_projects_from_batch_content(combined_content, sources)
+            
+            self.logger.debug(f"[SINGLE_CHUNK] Extracted {len(all_activities)} activities from {len(sources)} sources")
+            return all_activities
+            
+        except Exception as e:
+            self.logger.error(f"[SINGLE_CHUNK] Error processing chunk: {str(e)}")
+            # Fallback to individual processing for this chunk
+            return await self._extract_projects_from_sources_individual(sources)
+
+    async def _extract_projects_from_chunk_with_timeout(self, chunk: List[NotebookRAGSource], chunk_num: int, total_chunks: int) -> List[ProjectData]:
+        """Process a chunk with timeout protection and circuit breaker"""
+        import asyncio
+        import time
+        
+        start_time = time.time()
+        
+        try:
+            # Calculate timeout based on chunk size (minimum 60s, maximum 120s)
+            # Increased based on test results showing 45-48s not sufficient
+            chunk_timeout = max(60, min(120, len(chunk) * 6))  # 6 seconds per source
+            
+            self.logger.debug(f"[CHUNK_{chunk_num}] Processing {len(chunk)} sources with {chunk_timeout}s timeout")
+            
+            # Circuit breaker: if previous chunks are averaging >60s per chunk, reduce complexity
+            performance_mode = "normal"
+            if hasattr(self, '_chunk_performance_history'):
+                avg_time = sum(self._chunk_performance_history) / len(self._chunk_performance_history)
+                if avg_time > 60 and len(self._chunk_performance_history) >= 2:
+                    performance_mode = "fast"
+                    chunk_timeout = min(chunk_timeout, 45)  # Reduce timeout for fast mode
+                    self.logger.warning(f"[CIRCUIT_BREAKER] Activated fast mode due to slow performance (avg: {avg_time:.1f}s)")
+            
+            # Process chunk with timeout
+            if performance_mode == "fast":
+                # In fast mode, try individual processing first (more reliable)
+                self.logger.debug(f"[CHUNK_{chunk_num}] Using fast mode - individual processing")
+                result = await asyncio.wait_for(
+                    self._extract_projects_from_sources_individual(chunk),
+                    timeout=chunk_timeout
+                )
+            else:
+                result = await asyncio.wait_for(
+                    self._extract_projects_from_single_chunk(chunk),
+                    timeout=chunk_timeout
+                )
+            
+            # Track performance
+            processing_time = time.time() - start_time
+            if not hasattr(self, '_chunk_performance_history'):
+                self._chunk_performance_history = []
+            self._chunk_performance_history.append(processing_time)
+            # Keep only last 3 chunk times for rolling average
+            if len(self._chunk_performance_history) > 3:
+                self._chunk_performance_history.pop(0)
+            
+            self.logger.info(f"[CHUNK_{chunk_num}] Completed in {processing_time:.1f}s: {len(result)} activities extracted")
+            return result
+            
+        except asyncio.TimeoutError:
+            processing_time = time.time() - start_time
+            self.logger.warning(f"[CHUNK_{chunk_num}] Timeout after {processing_time:.1f}s - falling back to individual processing")
+            
+            # Emergency fallback to individual processing with adequate timeout
+            try:
+                # Calculate emergency timeout: 15s per source (from individual processing)
+                emergency_timeout = len(chunk) * 15
+                result = await asyncio.wait_for(
+                    self._extract_projects_from_sources_individual(chunk),
+                    timeout=emergency_timeout
+                )
+                self.logger.info(f"[CHUNK_{chunk_num}] Emergency fallback succeeded: {len(result)} activities")
+                return result
+            except asyncio.TimeoutError:
+                self.logger.error(f"[CHUNK_{chunk_num}] Emergency fallback also timed out - returning empty")
+                return []
+        except Exception as e:
+            processing_time = time.time() - start_time
+            self.logger.error(f"[CHUNK_{chunk_num}] Failed after {processing_time:.1f}s with error: {str(e)}")
+            return []
+
     async def _extract_projects_from_sources_individual(self, sources: List[NotebookRAGSource]) -> List[ProjectData]:
-        """Fallback individual processing method"""
+        """Fallback individual processing method with timeout protection"""
+        import asyncio
+        
         all_activities = []
-        for source in sources:
-            activities_in_source = await self._extract_projects_from_content(source)
-            all_activities.extend(activities_in_source)
+        
+        # Process sources individually with per-source timeout
+        for i, source in enumerate(sources):
+            try:
+                # 15s timeout per source for emergency processing
+                activities_in_source = await asyncio.wait_for(
+                    self._extract_projects_from_content(source),
+                    timeout=15
+                )
+                all_activities.extend(activities_in_source)
+                self.logger.debug(f"[INDIVIDUAL_{i+1}] Extracted {len(activities_in_source)} activities")
+                
+            except asyncio.TimeoutError:
+                self.logger.warning(f"[INDIVIDUAL_{i+1}] Source processing timeout after 15s - skipping")
+                continue
+            except Exception as e:
+                self.logger.warning(f"[INDIVIDUAL_{i+1}] Source processing failed: {str(e)} - skipping")
+                continue
+        
+        self.logger.info(f"[INDIVIDUAL_PROCESSING] Completed: {len(all_activities)} activities from {len(sources)} sources")
         return all_activities
 
     async def _extract_projects_from_batch_content(self, combined_content: str, sources: List[NotebookRAGSource]) -> List[ProjectData]:
@@ -2055,8 +2205,12 @@ class NotebookRAGService:
             # Create batch extraction prompt
             prompt = await self._build_batch_project_extraction_prompt(combined_content, len(sources))
             
-            # Single AI call for the entire batch with extended timeout for large batch processing
-            response = await llm.generate(prompt, timeout=300)  # 5 minutes for batch processing
+            # Single AI call for chunk with reasonable timeout (reduced from 300s to prevent parent timeouts)
+            chunk_size = len(sources)
+            ai_timeout = min(120, max(60, chunk_size * 8))  # 8s per source, 60-120s range
+            self.logger.debug(f"[BATCH_AI] Using timeout of {ai_timeout}s for {chunk_size} sources")
+            
+            response = await llm.generate(prompt, timeout=ai_timeout)
             ai_response = response.text
             
             # Parse AI response into ProjectData objects
@@ -2074,24 +2228,22 @@ class NotebookRAGService:
             return []
 
     async def _build_batch_project_extraction_prompt(self, combined_content: str, source_count: int) -> str:
-        """Build optimized prompt for comprehensive extraction without truncation"""
-        # FIXED: Remove 16k truncation limit to process all content
-        return f"""
-Extract professional activities, projects, work experiences, and accomplishments from the following {source_count} document sources.
+        """Build optimized, streamlined prompt for fast extraction"""
+        # Optimized prompt that focuses on speed and essential information only
+        return f"""Extract projects and experiences from {source_count} sources:
 
 {combined_content}
 
-Instructions:
-- Extract ALL professional activities across ALL sources - DO NOT MISS ANY
-- Include work projects, research, publications, presentations, awards, leadership roles
-- For each activity, provide: name, description, company/organization, time period
-- Return as JSON array: [{{"name": "...", "description": "...", "company": "...", "year": "..."}}]
-- If information is missing, use "Not specified"
-- Focus on substantial professional accomplishments and experiences
-- IMPORTANT: Process the entire content, not just the beginning
+Extract as JSON array - name, company, year, brief description only:
+[{{"name": "Project Name", "company": "Company", "year": "2024", "description": "Brief summary"}}]
 
-Return ONLY the JSON array, no other text.
-"""
+Rules:
+- Every substantial project/role from ALL sources
+- Keep descriptions under 100 characters
+- Use "Unknown" for missing info
+- JSON only, no extra text
+
+JSON:"""
 
     async def _parse_batch_ai_extraction_response(self, ai_response: str, sources: List[NotebookRAGSource]) -> List[ProjectData]:
         """Parse batch AI response into ProjectData objects"""
@@ -4112,6 +4264,28 @@ class ConversationContextManager:
         """Generate cache key for conversation metadata."""
         return f"conversation_meta:{conversation_id}"
     
+    def _format_cache_age(self, age_seconds: int) -> str:
+        """
+        Format cache age in human-readable format.
+        
+        Args:
+            age_seconds: Age in seconds
+            
+        Returns:
+            Human-readable age string (e.g., "5 minutes ago", "2 hours ago")
+        """
+        if age_seconds < 60:
+            return f"{age_seconds} seconds ago"
+        elif age_seconds < 3600:  # Less than 1 hour
+            minutes = age_seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        elif age_seconds < 86400:  # Less than 1 day
+            hours = age_seconds // 3600
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        else:  # 1 day or more
+            days = age_seconds // 86400
+            return f"{days} day{'s' if days != 1 else ''} ago"
+    
     async def cache_retrieval_context(self, conversation_id: str, context: Dict[str, Any]) -> bool:
         """
         Cache retrieval results and context for reuse in follow-up questions.
@@ -4285,27 +4459,47 @@ class ConversationContextManager:
             
     async def get_cache_stats(self, conversation_id: str) -> Dict[str, Any]:
         """
-        Get cache statistics for monitoring and debugging.
+        Get comprehensive cache statistics for monitoring and UI display.
         
         Args:
             conversation_id: Unique conversation identifier
             
         Returns:
-            Dictionary with cache statistics
+            Dictionary with cache statistics including:
+            - status: 'cached', 'no_cache', 'expired', 'redis_unavailable'
+            - cache_age_seconds: Age in seconds
+            - cache_age_human: Human-readable age (e.g., "5 minutes ago")
+            - original_query: Full original query text
+            - source_count: Number of cached sources
+            - cached_at: ISO timestamp when cached
+            - ttl_seconds: Time to live remaining
         """
         try:
             redis_client = self._get_redis_client()
             if not redis_client:
-                return {'status': 'redis_unavailable'}
+                self.logger.warning(f"[CACHE] Redis client unavailable for conversation {conversation_id}")
+                return {
+                    'status': 'redis_unavailable',
+                    'conversation_id': conversation_id,
+                    'has_context': False,
+                    'error': 'Redis connection unavailable'
+                }
                 
             metadata_key = self._get_metadata_key(conversation_id)
             metadata_json = redis_client.get(metadata_key)
             
             if not metadata_json:
+                self.logger.debug(f"[CACHE] No cache metadata found for conversation {conversation_id}")
                 return {
                     'status': 'no_cache',
                     'conversation_id': conversation_id,
-                    'has_context': False
+                    'has_context': False,
+                    'cache_age_seconds': None,
+                    'cache_age_human': 'No cache',
+                    'original_query': None,
+                    'source_count': 0,
+                    'cached_at': None,
+                    'ttl_seconds': -1
                 }
                 
             # Handle both bytes and string responses from Redis
@@ -4314,22 +4508,75 @@ class ConversationContextManager:
                 
             metadata = json.loads(metadata_json)
             
-            # Calculate TTL
+            # Calculate cache age and human-readable format
+            cached_at_str = metadata.get('cached_at')
+            cache_age_seconds = None
+            cache_age_human = 'Unknown age'
+            
+            if cached_at_str:
+                try:
+                    cached_at = datetime.fromisoformat(cached_at_str)
+                    cache_age_seconds = int((datetime.now() - cached_at).total_seconds())
+                    cache_age_human = self._format_cache_age(cache_age_seconds)
+                except (ValueError, TypeError) as e:
+                    self.logger.warning(f"[CACHE] Invalid cached_at format '{cached_at_str}': {e}")
+                    cache_age_human = 'Invalid timestamp'
+            
+            # Get TTL for cache expiration check
             cache_key = self._get_cache_key(conversation_id)
             ttl_seconds = redis_client.ttl(cache_key)
             
-            return {
-                'status': 'cached',
+            # Determine cache status
+            if ttl_seconds <= 0:
+                status = 'expired'
+                self.logger.info(f"[CACHE] Cache expired for conversation {conversation_id} (TTL: {ttl_seconds})")
+            else:
+                status = 'cached'
+                self.logger.debug(f"[CACHE] Active cache for conversation {conversation_id} (TTL: {ttl_seconds}s, Age: {cache_age_human})")
+            
+            # Get original query from cache context if available
+            original_query = None
+            try:
+                cache_data_json = redis_client.get(cache_key)
+                if cache_data_json:
+                    if isinstance(cache_data_json, bytes):
+                        cache_data_json = cache_data_json.decode('utf-8')
+                    cache_data = json.loads(cache_data_json)
+                    original_query = cache_data.get('query', metadata.get('query', ''))
+            except Exception as e:
+                self.logger.warning(f"[CACHE] Could not retrieve original query: {e}")
+                original_query = metadata.get('query', '')
+            
+            result = {
+                'status': status,
                 'conversation_id': conversation_id,
+                'has_context': status in ['cached', 'expired'],
+                'cache_age_seconds': cache_age_seconds,
+                'cache_age_human': cache_age_human,
+                'original_query': original_query or '',
                 'source_count': metadata.get('source_count', 0),
-                'cached_at': metadata.get('cached_at'),
-                'ttl_seconds': ttl_seconds,
-                'query_preview': metadata.get('query', '')[:50]
+                'cached_at': cached_at_str,
+                'ttl_seconds': ttl_seconds
             }
             
+            self.logger.info(f"[CACHE] Cache stats for {conversation_id}: {status}, {result['source_count']} sources, {cache_age_human}")
+            return result
+            
         except Exception as e:
-            self.logger.error(f"[CACHE] Failed to get cache stats: {str(e)}")
-            return {'status': 'error', 'error': str(e)}
+            self.logger.error(f"[CACHE] Failed to get cache stats for {conversation_id}: {str(e)}")
+            self.logger.error(f"[CACHE] Cache stats error traceback: {traceback.format_exc()}")
+            return {
+                'status': 'error',
+                'conversation_id': conversation_id,
+                'has_context': False,
+                'error': str(e),
+                'cache_age_seconds': None,
+                'cache_age_human': 'Error retrieving age',
+                'original_query': None,
+                'source_count': 0,
+                'cached_at': None,
+                'ttl_seconds': -1
+            }
     
     async def store_conversation_response(self, conversation_id: str, user_message: str, ai_response: str, sources: List[Dict] = None) -> bool:
         """

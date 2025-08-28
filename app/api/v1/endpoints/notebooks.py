@@ -29,6 +29,8 @@ from app.models.notebook_models import (
     DocumentUsageInfo, DocumentDeletionSummary, NotebookChatRequest, NotebookChatResponse,
     # Memory models
     MemoryCreateRequest, MemoryUpdateRequest, MemoryResponse, MemoryListResponse,
+    # Document update models
+    DocumentUpdateRequest,
     # Chunk editing models
     ChunkUpdateRequest, ChunkResponse, ChunkListResponse, BulkChunkReEmbedRequest,
     ChunkOperationResponse, BulkChunkOperationResponse
@@ -430,8 +432,8 @@ async def _handle_generic_transformation(
 
 async def classify_message_intent(message: str, conversation_context: Optional[Dict] = None) -> str:
     """
-    Lightweight classification - NO retrieval, just pattern matching
-    Returns intent category to determine if retrieval is needed
+    LLM-based message intent classification.
+    Uses the LLM to intelligently classify user intent instead of hardcoded patterns.
     
     Args:
         message: The user's message to classify
@@ -441,39 +443,56 @@ async def classify_message_intent(message: str, conversation_context: Optional[D
         str: Intent category ('greeting', 'acknowledgment', 'clarification', 
              'retrieval_required', 'domain_query', 'context_reference', 'general_chat')
     """
-    message_lower = message.lower().strip()
-    
-    # Categories that DON'T need retrieval
-    if any(greeting in message_lower for greeting in ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening']):
-        return 'greeting'
-    
-    if any(thanks in message_lower for thanks in ['thanks', 'thank you', 'appreciate', 'great', 'perfect', 'awesome', 'excellent']):
-        return 'acknowledgment'
-    
-    # Very short clarification questions (but not domain questions)
-    if (len(message_lower) < 15 and 
-        any(clarify in message_lower for clarify in ['what', 'why', 'how', 'when', 'where', 'ok', 'okay']) and
-        not any(domain in message_lower for domain in ['project', 'document', 'content', 'about'])):
-        return 'clarification'
-    
-    # Categories that NEED retrieval
-    if any(keyword in message_lower for keyword in ['list', 'show', 'find', 'search', 'get', 'display', 'explain', 'describe']):
+    try:
+        # Get LLM configuration
+        llm_config = get_main_llm_full_config()
+        if not llm_config:
+            # Fallback to basic heuristics if LLM unavailable
+            return 'retrieval_required' if len(message.strip()) > 20 else 'general_chat'
+        
+        # Create LLM instance
+        llm = OllamaLLM(LLMConfig(**llm_config))
+        
+        # Build classification prompt
+        context_info = ""
+        if conversation_context:
+            context_info = f"\nConversation context: User has been discussing {conversation_context.get('topic', 'various topics')}"
+        
+        classification_prompt = f"""Classify this user message into one of these categories:
+
+Categories:
+- greeting: Simple hello, hi, good morning etc.
+- acknowledgment: Thanks, appreciate, great job etc. (but NOT requests for work)
+- clarification: Short questions like "what?" "how?" when unclear
+- retrieval_required: Requests for data, lists, information, updates, tables, reports
+- domain_query: Questions about specific topics, projects, work, documents
+- context_reference: References to previous conversation ("that", "this", "it")  
+- general_chat: General conversation that doesn't need data
+
+User message: "{message}"{context_info}
+
+IMPORTANT: If the user is asking for data, updates, tables, lists, or information - classify as "retrieval_required" or "domain_query".
+
+Reply with just the category name, nothing else:"""
+
+        # Get classification from LLM with short timeout
+        response = await llm.generate(classification_prompt, timeout=10)
+        intent = response.text.strip().lower()
+        
+        # Validate response and map to known categories
+        valid_intents = ['greeting', 'acknowledgment', 'clarification', 'retrieval_required', 'domain_query', 'context_reference', 'general_chat']
+        
+        if intent in valid_intents:
+            return intent
+        
+        # If LLM gives invalid response, default to retrieval for safety
+        # Better to retrieve unnecessarily than miss a data request
         return 'retrieval_required'
-    
-    # Domain queries need retrieval - prioritize over other patterns
-    if any(keyword in message_lower for keyword in ['tell me about', 'project', 'work', 'built', 'developed', 'experience', 'portfolio', 'document', 'content', 'what is this']):
-        return 'domain_query'
-    
-    # References to previous context
-    if any(ref in message_lower for ref in ['that', 'this', 'it', 'those', 'them', 'previous', 'above', 'earlier']):
-        return 'context_reference'
-    
-    # Check for general conversational phrases that don't need retrieval
-    if any(convo in message_lower for convo in ['how are you', 'how do you', 'what can you']):
-        return 'general_chat'
-    
-    # Default to general_chat for short messages, retrieval_required for longer ones
-    return 'general_chat' if len(message_lower) < 20 else 'retrieval_required'
+        
+    except Exception as e:
+        # If LLM fails completely, always default to retrieval
+        # This ensures we don't miss any data requests due to classification errors
+        return 'retrieval_required'
 
 
 def enrich_response_metadata(
@@ -2600,7 +2619,18 @@ async def notebook_chat(
         HTTPException: If notebook not found or chat fails
     """
     # Get configurable timeout for intelligent plan execution
-    plan_timeout = get_intelligent_plan_timeout()
+    base_timeout = get_intelligent_plan_timeout()
+    
+    # Calculate dynamic timeout based on query characteristics and expected source count
+    # For comprehensive queries, use higher timeout
+    is_comprehensive_query = any(keyword in request.message.lower() for keyword in 
+                                 ['all projects', 'all experiences', 'complete list', 'entire', 'comprehensive'])
+    
+    if is_comprehensive_query:
+        plan_timeout = max(base_timeout, 480)  # 8 minutes for comprehensive queries
+        logger.info(f"[TIMEOUT_DYNAMIC] Using extended timeout {plan_timeout}s for comprehensive query")
+    else:
+        plan_timeout = base_timeout
     
     # === REMOVED EXECUTION STATE TRACKING ===
     # Removed to fix Redis async/sync errors and over-complication
@@ -2616,6 +2646,10 @@ async def notebook_chat(
         try:
             logger.info(f"Starting notebook chat for {notebook_id}: {request.message[:50]}...")
             logger.info(f"Chat request details: message='{request.message}', conversation_id='{request.conversation_id}', include_context={request.include_context}, max_sources={request.max_sources}")
+            
+            # Initialize variables early to prevent UnboundLocalError
+            execution_plan = None
+            verification_result = None
             
             if not request or not request.message:
                 yield json.dumps({
@@ -2967,8 +3001,6 @@ async def notebook_chat(
                     
                     # Step 1: Understand - Detect when to use intelligent planning
                     should_use_intelligent_pipeline = _should_use_intelligent_planning(request.message, intent_analysis, total_available)
-                    execution_plan = None
-                    verification_result = None
                     
                     if should_use_intelligent_pipeline:
                         logger.info(f"[AI_PIPELINE] Activating intelligent pipeline for complex query")
@@ -3100,7 +3132,7 @@ async def notebook_chat(
                                         max_sources=min(total_available, 20),  # Limit sources to reduce processing time
                                         include_metadata=True,
                                         force_simple_retrieval=True,
-                                    ), timeout=30  # Short timeout for emergency fallback
+                                    ), timeout=60  # Increased timeout for emergency fallback to prevent cascade
                                 )
                             except asyncio.TimeoutError:
                                 logger.error(f"[TIMEOUT_CRITICAL] Even simple RAG timed out - system may be under severe load")
@@ -4431,6 +4463,55 @@ async def update_memory(
         logger.error(f"Error updating memory: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to update memory: {str(e)}")
 
+@router.put("/{notebook_id}/documents/{document_id}", response_model=NotebookDocumentResponse)
+async def update_document(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    document_id: str = Path(..., description="Document ID"),
+    request: DocumentUpdateRequest = ...,
+    db: Session = Depends(get_db)
+):
+    """
+    Update a document's name and metadata.
+    
+    Args:
+        notebook_id: Target notebook ID
+        document_id: Document ID
+        request: Document update parameters
+        db: Database session
+        
+    Returns:
+        Updated document details
+        
+    Raises:
+        HTTPException: If update fails
+    """
+    try:
+        logger.info(f"Updating document {document_id} for notebook {notebook_id}")
+        logger.info(f"Request data - name: '{request.name}', metadata: {request.metadata}")
+        
+        document = await notebook_service.update_document(
+            db=db,
+            notebook_id=notebook_id,
+            document_id=document_id,
+            name=request.name,
+            metadata=request.metadata
+        )
+        
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        logger.info(f"Successfully updated document {document_id}")
+        return document
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.error(f"Validation error updating document: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update document: {str(e)}")
+
 @router.delete("/{notebook_id}/memories/{memory_id}")
 async def delete_memory(
     notebook_id: str = Path(..., description="Notebook ID"),
@@ -4716,6 +4797,126 @@ async def get_notebook_efficiency_metrics(
         raise HTTPException(
             status_code=500, 
             detail=f"Failed to retrieve efficiency metrics: {str(e)}"
+        )
+
+
+@router.get("/{notebook_id}/cache-status/{conversation_id}")
+async def get_notebook_cache_status(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    conversation_id: str = Path(..., description="Conversation ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get cache status and metadata for a specific notebook conversation.
+    
+    Returns detailed information about cached context including source count,
+    cache expiration time, and query preview for debugging and monitoring.
+    
+    Args:
+        notebook_id: Notebook ID to check cache for
+        conversation_id: Conversation ID to get cache status
+        db: Database session
+        
+    Returns:
+        Dict containing cache status, metadata, and statistics
+        
+    Raises:
+        HTTPException: If notebook not found or cache unavailable
+    """
+    try:
+        # Verify notebook exists
+        notebook_exists = await notebook_service.notebook_exists(db=db, notebook_id=notebook_id)
+        if not notebook_exists:
+            logger.warning(f"[CACHE_STATUS] Notebook not found: {notebook_id}")
+            raise HTTPException(status_code=404, detail="Notebook not found")
+        
+        # Get cache statistics
+        cache_stats = await notebook_rag_service.get_cache_stats(conversation_id)
+        
+        logger.info(f"[CACHE_STATUS] Retrieved cache status for notebook {notebook_id}, "
+                   f"conversation {conversation_id}: {cache_stats.get('status', 'unknown')}")
+        
+        return {
+            "notebook_id": notebook_id,
+            "conversation_id": conversation_id,
+            "cache_status": cache_stats,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[CACHE_STATUS] Failed to get cache status for notebook {notebook_id}, "
+                    f"conversation {conversation_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to retrieve cache status: {str(e)}"
+        )
+
+
+@router.delete("/{notebook_id}/cache/{conversation_id}")
+async def clear_notebook_cache(
+    notebook_id: str = Path(..., description="Notebook ID"),
+    conversation_id: str = Path(..., description="Conversation ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Clear cached context for a specific notebook conversation.
+    
+    Removes all cached conversation context and metadata for the specified
+    notebook and conversation. Useful for forcing fresh context retrieval
+    or clearing stale cache entries.
+    
+    Args:
+        notebook_id: Notebook ID to clear cache for
+        conversation_id: Conversation ID to clear cache
+        db: Database session
+        
+    Returns:
+        Dict containing operation result and metadata
+        
+    Raises:
+        HTTPException: If notebook not found or cache clearing fails
+    """
+    try:
+        # Verify notebook exists
+        notebook_exists = await notebook_service.notebook_exists(db=db, notebook_id=notebook_id)
+        if not notebook_exists:
+            logger.warning(f"[CACHE_CLEAR] Notebook not found: {notebook_id}")
+            raise HTTPException(status_code=404, detail="Notebook not found")
+        
+        # Clear cache
+        cache_cleared = await notebook_rag_service.invalidate_context(conversation_id)
+        
+        if cache_cleared:
+            logger.info(f"[CACHE_CLEAR] Successfully cleared cache for notebook {notebook_id}, "
+                       f"conversation {conversation_id}")
+            return {
+                "notebook_id": notebook_id,
+                "conversation_id": conversation_id,
+                "status": "cleared",
+                "message": "Cache successfully cleared",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            logger.warning(f"[CACHE_CLEAR] No cache found or failed to clear for notebook {notebook_id}, "
+                          f"conversation {conversation_id}")
+            return {
+                "notebook_id": notebook_id,
+                "conversation_id": conversation_id,
+                "status": "no_cache",
+                "message": "No cache found to clear",
+                "timestamp": datetime.now().isoformat()
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[CACHE_CLEAR] Failed to clear cache for notebook {notebook_id}, "
+                    f"conversation {conversation_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to clear cache: {str(e)}"
         )
 
 

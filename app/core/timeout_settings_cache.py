@@ -489,8 +489,8 @@ def get_notebook_timeout(setting_key: str, default: int = 60) -> int:
     return get_timeout_value("notebook_processing", setting_key, default)
 
 def get_intelligent_plan_timeout() -> int:
-    """Get intelligent plan execution timeout"""
-    return get_notebook_timeout("intelligent_plan_timeout", 180)
+    """Get intelligent plan execution timeout - increased for comprehensive queries"""
+    return get_notebook_timeout("intelligent_plan_timeout", 360)
 
 def get_extraction_batch_timeout() -> int:
     """Get extraction batch timeout"""

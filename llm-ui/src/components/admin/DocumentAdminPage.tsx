@@ -1263,7 +1263,7 @@ const DocumentAdminPage: React.FC = () => {
         <DialogTitle>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <Typography variant="h6">
-              Edit Chunks: {selectedDocumentForChunks?.filename}
+              Edit Chunks: {selectedDocumentForChunks ? getDisplayName(selectedDocumentForChunks) : ''}
             </Typography>
             <IconButton onClick={handleCloseChunkEditor}>
               <CloseIcon />
@@ -1276,7 +1276,7 @@ const DocumentAdminPage: React.FC = () => {
               collectionName={selectedDocumentForChunks.milvus_collection!}
               documentId={selectedDocumentForChunks.document_id}
               contentType={isMemoryDocument(selectedDocumentForChunks.filename) ? "memory" : "document"}
-              documentName={selectedDocumentForChunks.filename}
+              documentName={getDisplayName(selectedDocumentForChunks)}
               onChunkChange={() => {
                 // Optionally refresh documents list
                 loadDocuments();

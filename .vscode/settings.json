@@ -1,6 +1,11 @@
 {
     "editor.fontFamily": "Source Code Pro",
-    "editor.fontSize": 11,
+    "editor.fontSize": 10,
     "editor.fontVariations": false,
-    "editor.fontWeight": "100"
+    "editor.fontWeight": "100",
+    "editor.minimap.sectionHeaderFontSize": 10,
+    "scm.inputFontSize": 10,
+    "markdown.preview.fontSize": 10,
+    "editor.cursorStyle": "underline-thin",
+    "editor.cursorSmoothCaretAnimation": "on"
 }

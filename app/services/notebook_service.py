@@ -1203,6 +1203,128 @@ class NotebookService:
             self.logger.error(f"Error updating memory: {str(e)}")
             raise
     
+    async def update_document(
+        self,
+        db: Session,
+        notebook_id: str,
+        document_id: str,
+        name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Optional['NotebookDocumentResponse']:
+        """
+        Update a document's name and metadata.
+        
+        Args:
+            db: Database session
+            notebook_id: Notebook ID
+            document_id: Document ID
+            name: Updated document name
+            metadata: Updated metadata
+            
+        Returns:
+            Updated document response or None if not found
+        """
+        try:
+            self.logger.info(f"Updating document {document_id} for notebook {notebook_id}")
+            
+            # Import here to avoid circular imports
+            from app.models.notebook_models import NotebookDocumentResponse
+            from app.core.db import KnowledgeGraphDocument
+            
+            # Check if document exists in the notebook
+            doc_check_query = text("""
+                SELECT kg.id, kg.document_id, kg.filename, kg.file_type, kg.created_at, nd.metadata
+                FROM knowledge_graph_documents kg
+                INNER JOIN notebook_documents nd ON kg.document_id = nd.document_id
+                WHERE nd.notebook_id = :notebook_id AND kg.document_id = :document_id
+            """)
+            
+            doc_result = db.execute(doc_check_query, {
+                'notebook_id': notebook_id,
+                'document_id': document_id
+            }).fetchone()
+            
+            if not doc_result:
+                return None
+            
+            # Handle updates to different tables separately
+            updates_made = False
+            
+            # Update document_name in notebook_documents table (this is what frontend displays)
+            if name is not None and name.strip():
+                logger.info(f"Updating document name for document {document_id}: '{name.strip()}'")
+                nd_name_update_query = text("""
+                    UPDATE notebook_documents 
+                    SET document_name = :document_name
+                    WHERE document_id = :document_id AND notebook_id = :notebook_id
+                """)
+                
+                nd_result = db.execute(nd_name_update_query, {
+                    'document_id': document_id,
+                    'notebook_id': notebook_id,
+                    'document_name': name.strip()
+                })
+                
+                logger.info(f"Document name update result: {nd_result.rowcount} rows affected")
+                
+                if nd_result.rowcount > 0:
+                    updates_made = True
+            
+            # Update metadata in notebook_documents table
+            if metadata is not None:
+                nd_update_query = text("""
+                    UPDATE notebook_documents 
+                    SET metadata = :metadata
+                    WHERE document_id = :document_id AND notebook_id = :notebook_id
+                """)
+                
+                nd_result = db.execute(nd_update_query, {
+                    'document_id': document_id,
+                    'notebook_id': notebook_id,
+                    'metadata': json.dumps(metadata)
+                })
+                
+                if nd_result.rowcount > 0:
+                    updates_made = True
+            
+            if not updates_made:
+                # No changes to make - return current document
+                return NotebookDocumentResponse(
+                    id=str(doc_result.id),
+                    notebook_id=notebook_id,
+                    document_id=doc_result.document_id,
+                    document_name=doc_result.filename,
+                    document_type=DocumentType(doc_result.file_type) if doc_result.file_type else None,
+                    added_at=doc_result.created_at,
+                    metadata=json.loads(doc_result.metadata) if doc_result.metadata and isinstance(doc_result.metadata, str) else doc_result.metadata
+                )
+            
+            db.commit()
+            
+            # Get updated document
+            updated_result = db.execute(doc_check_query, {
+                'notebook_id': notebook_id,
+                'document_id': document_id
+            }).fetchone()
+            
+            if updated_result:
+                return NotebookDocumentResponse(
+                    id=str(updated_result.id),
+                    notebook_id=notebook_id,
+                    document_id=updated_result.document_id,
+                    document_name=updated_result.filename,
+                    document_type=DocumentType(updated_result.file_type) if updated_result.file_type else None,
+                    added_at=updated_result.created_at,
+                    metadata=json.loads(updated_result.metadata) if updated_result.metadata and isinstance(updated_result.metadata, str) else updated_result.metadata
+                )
+            
+            return None
+            
+        except Exception as e:
+            db.rollback()
+            self.logger.error(f"Error updating document: {str(e)}")
+            raise
+    
     async def delete_memory(
         self,
         db: Session,
@@ -1519,17 +1641,25 @@ class NotebookService:
                     'chunks': len(chunks)
                 })
             else:
-                # Content doesn't exist, create new record
-                kg_insert_query = text("""
+                # Upsert record (handles both new and existing memory updates)
+                kg_upsert_query = text("""
                     INSERT INTO knowledge_graph_documents 
                     (document_id, filename, file_hash, file_type, content_type, 
                      milvus_collection, processing_status, chunks_processed, 
                      total_chunks, processing_completed_at)
                     VALUES (:doc_id, :filename, :file_hash, 'memory', 'memory',
                             :collection, 'completed', :chunks, :chunks, NOW())
+                    ON CONFLICT (document_id) 
+                    DO UPDATE SET 
+                        filename = EXCLUDED.filename,
+                        file_hash = EXCLUDED.file_hash,
+                        chunks_processed = EXCLUDED.chunks_processed,
+                        total_chunks = EXCLUDED.total_chunks,
+                        processing_completed_at = EXCLUDED.processing_completed_at,
+                        updated_at = NOW()
                 """)
                 
-                db.execute(kg_insert_query, {
+                db.execute(kg_upsert_query, {
                     'doc_id': memory_id,
                     'filename': f'memory_{memory_id}',
                     'file_hash': content_hash,

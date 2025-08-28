@@ -386,6 +386,17 @@ class MemoryUpdateRequest(BaseModel):
             raise ValueError("Memory content cannot be empty")
         return v.strip() if v else v
 
+class DocumentUpdateRequest(BaseModel):
+    """Request model for updating a document."""
+    name: Optional[str] = Field(None, min_length=1, max_length=255, description="Updated document name")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Updated metadata")
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if v is not None and (not v or not v.strip()):
+            raise ValueError("Document name cannot be empty")
+        return v.strip() if v else v
+
 class MemoryResponse(BaseModel):
     """Response model for memory operations."""
     id: str = Field(..., description="Memory record ID")

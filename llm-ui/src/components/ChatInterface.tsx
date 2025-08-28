@@ -19,11 +19,14 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
-  DialogActions
+  DialogActions,
+  Tooltip
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import ClearIcon from '@mui/icons-material/Clear';
 import CloseIcon from '@mui/icons-material/Close';
+import DownloadIcon from '@mui/icons-material/Download';
+import CopyIcon from '@mui/icons-material/ContentCopy';
 import { 
   ExpandMore as ExpandMoreIcon, 
   Description as DocumentIcon,
@@ -627,6 +630,141 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
+  // Convert single message to Markdown format
+  const convertMessageToMarkdown = (message: Message): string => {
+    const timestamp = message.timestamp.toLocaleString();
+    const role = message.role === 'user' ? '**You**' : '**Assistant**';
+    
+    let content = `# ${role} Response - ${timestamp}\n\n${message.content}\n\n`;
+    
+    // Add tools used if available
+    if (message.toolsUsed && message.toolsUsed.length > 0) {
+      content += `### Tools Used\n\n`;
+      message.toolsUsed.forEach((tool, idx) => {
+        content += `- ${tool}\n`;
+      });
+      content += '\n';
+    }
+    
+    // Add context sources if available
+    if (message.context && message.context.length > 0) {
+      content += `### Sources (${message.context.length})\n\n`;
+      message.context.forEach((doc: any, idx: number) => {
+        content += `${idx + 1}. **${doc.source}** ${doc.score ? `(${(doc.score * 100).toFixed(1)}% match)` : ''}\n`;
+        content += `   ${doc.content.substring(0, 200)}${doc.content.length > 200 ? '...' : ''}\n\n`;
+      });
+    }
+    
+    return content;
+  };
+
+  // Convert messages to Markdown format (kept for compatibility)
+  const convertToMarkdown = (): string => {
+    const header = `# Chat Conversation: ${title}\n\n*Downloaded on ${new Date().toLocaleString()}*\n\n---\n\n`;
+    
+    const conversationMarkdown = messages.map((message, index) => {
+      const timestamp = message.timestamp.toLocaleString();
+      const role = message.role === 'user' ? '**You**' : '**Assistant**';
+      
+      let content = `## ${role} - ${timestamp}\n\n${message.content}\n\n`;
+      
+      // Add tools used if available
+      if (message.toolsUsed && message.toolsUsed.length > 0) {
+        content += `### Tools Used\n\n`;
+        message.toolsUsed.forEach((tool, idx) => {
+          content += `- ${tool}\n`;
+        });
+        content += '\n';
+      }
+      
+      // Add context sources if available
+      if (message.context && message.context.length > 0) {
+        content += `### Sources (${message.context.length})\n\n`;
+        message.context.forEach((doc: any, idx: number) => {
+          content += `${idx + 1}. **${doc.source}** ${doc.score ? `(${(doc.score * 100).toFixed(1)}% match)` : ''}\n`;
+          content += `   ${doc.content.substring(0, 200)}${doc.content.length > 200 ? '...' : ''}\n\n`;
+        });
+      }
+      
+      content += '---\n\n';
+      return content;
+    }).join('');
+    
+    return header + conversationMarkdown;
+  };
+
+  // Download single message as Markdown file
+  const downloadMessage = (message: Message) => {
+    const markdown = convertMessageToMarkdown(message);
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
+    const filename = `jarvis-response-${message.id}-${timestamp}.md`;
+    
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Download conversation as Markdown file (kept for compatibility)
+  const downloadConversation = () => {
+    if (messages.length === 0) return;
+    
+    const markdown = convertToMarkdown();
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
+    const filename = `chat-${title.replace(/[^a-zA-Z0-9]/g, '-')}-${timestamp}.md`;
+    
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Copy single message to clipboard
+  const copyMessageToClipboard = async (message: Message) => {
+    try {
+      const markdown = convertMessageToMarkdown(message);
+      await navigator.clipboard.writeText(markdown);
+      
+      // Show success feedback
+      setStatusMessage('Response copied to clipboard!');
+      setTimeout(() => setStatusMessage(''), 2000);
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      setStatusMessage('Failed to copy response to clipboard');
+    }
+  };
+
+  // Copy conversation to clipboard (kept for compatibility)
+  const copyToClipboard = async () => {
+    if (messages.length === 0) return;
+    
+    try {
+      const markdown = convertToMarkdown();
+      await navigator.clipboard.writeText(markdown);
+      
+      // Show success feedback
+      setStatusMessage('Conversation copied to clipboard!');
+      setTimeout(() => setStatusMessage(''), 2000);
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      setStatusMessage('Failed to copy conversation to clipboard');
+    }
+  };
+
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 2 }}>
       {/* Header */}
@@ -669,9 +807,17 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             </IconButton>
           )}
           
-          <IconButton onClick={clearChat} disabled={loading}>
-            <ClearIcon />
-          </IconButton>
+          
+          <Tooltip title="Clear conversation">
+            <IconButton 
+              onClick={clearChat} 
+              disabled={loading}
+              color="default"
+              aria-label="Clear conversation"
+            >
+              <ClearIcon />
+            </IconButton>
+          </Tooltip>
         </Box>
       </Box>
 
@@ -803,9 +949,70 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 p: 2,
                 borderRadius: 2,
                 backgroundColor: message.role === 'user' ? 'primary.light' : 'background.paper',
-                color: message.role === 'user' ? 'white' : 'text.primary'
+                color: message.role === 'user' ? 'white' : 'text.primary',
+                position: 'relative'
               }}
             >
+              {/* Copy/Download buttons for assistant messages only */}
+              {message.role === 'assistant' ? (
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: 8,
+                    right: 8,
+                    display: 'flex',
+                    gap: 0.5,
+                    opacity: 0.7,
+                    '&:hover': { opacity: 1 },
+                    zIndex: 1
+                  }}
+                >
+                  <Tooltip title="Copy this response to clipboard">
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyMessageToClipboard(message);
+                      }}
+                      sx={{
+                        backgroundColor: 'rgba(0,0,0,0.1)',
+                        color: 'text.secondary',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0,0,0,0.2)'
+                        },
+                        width: 24,
+                        height: 24
+                      }}
+                      aria-label="Copy response to clipboard"
+                    >
+                      <CopyIcon sx={{ fontSize: 14 }} />
+                    </IconButton>
+                  </Tooltip>
+                  
+                  <Tooltip title="Download this response as Markdown">
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        downloadMessage(message);
+                      }}
+                      sx={{
+                        backgroundColor: 'rgba(0,0,0,0.1)',
+                        color: 'text.secondary',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0,0,0,0.2)'
+                        },
+                        width: 24,
+                        height: 24
+                      }}
+                      aria-label="Download response as Markdown file"
+                    >
+                      <DownloadIcon sx={{ fontSize: 14 }} />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              ) : null}
+              
               <MessageContent content={message.content} />
               
               {message.source && (
@@ -974,8 +1181,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           {loading ? <CircularProgress size={24} /> : <SendIcon />}
         </Button>
 
-        {/* Agent Autocomplete Debug */}
-        {showAutocomplete && console.log('Rendering AgentAutocomplete')}
         {/* Agent Autocomplete */}
         {showAutocomplete && (
           <AgentAutocomplete
