@@ -109,3 +109,13 @@ temp/
 !CLAUDE.local.md
 # But ignore all other markdown files
 *.md
+# Environment variables
+.env.local
+.env.production
+.env.staging
+.env.development
+
+# API Keys and secrets
+*token*
+*key*
+*secret*
